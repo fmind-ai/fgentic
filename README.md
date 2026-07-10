@@ -51,7 +51,7 @@ Full step-by-step flow: [PLAN.md §3.1](PLAN.md#31-the-mention--a2a--reply-data-
 | Agents                     | kagent (Agent CRDs served as A2A on `:8083`)                                                | `kagent`              |
 | Shared state               | CloudNativePG (databases: `synapse`, `mas`, `bridge`, `kagent`)                             | `postgres`            |
 | Web ingress + TLS          | Gateway API (Traefik) + cert-manager (Let's Encrypt)                                        | `gateway`             |
-| Observability              | Prometheus · Grafana · OTel · MLflow ([SPEC.md §9](SPEC.md))                                | `monitoring`          |
+| Observability              | kube-prometheus-stack: Prometheus · Grafana · Alertmanager ([SPEC.md §9](SPEC.md))          | `monitoring`          |
 | Delivery                   | Flux v2 pull-based GitOps                                                                   | `flux-system`         |
 
 Reference deployment: `fgentic.fmind.ai` (Element at `chat.`, Synapse at `matrix.`, MAS at `auth.`; user IDs `@name:fgentic.fmind.ai` via apex `.well-known` delegation).
@@ -65,21 +65,25 @@ Reference deployment: `fgentic.fmind.ai` (Element at `chat.`, Synapse at `matrix
 
 ## Project status
 
-**Foundation built and reviewed — not yet deployed.** The adversarial architecture review is complete and every finding is fixed in code: async bounded dispatch, Postgres-backed state, federation-safe mention resolution, sender allowlists, rate limits, long-task polling with message edits, database backups, and CI/CD with signed, digest-pinned images ([SPEC.md §4](SPEC.md)). The bridge passes its race-enabled unit suite and all static gates; the first end-to-end deployment is Phase 1 of the [roadmap](SPEC.md). Contributions are welcome precisely at this stage — the design conversation is still open.
+**Live end-to-end on the local reference cluster.** A Matrix `@mention` in Element produces a real Gemini-backed agent reply — through the bridge, agentgateway (Vertex AI, no agent ever holds a model key), and kagent, with conversation threading, rate limits, sanitized failure replies, and Prometheus/Grafana observability (bridge delegation metrics + gateway GenAI token metering + the LLM spend alert). Every layer reconciles from this repository via Flux; the same manifests drive the GKE reference profile (`clusters/gcp`), which deploys next ([SPEC.md §13](SPEC.md)). The adversarial-review fixes (D1–D15) are all implemented and unit-tested ([SPEC.md §4](SPEC.md)).
 
 ## Quickstart (local, k3d)
 
-Prerequisites: Docker, [k3d](https://k3d.io/), `kubectl`, [helm](https://helm.sh/), [skaffold](https://skaffold.dev/), [mise](https://mise.jdx.dev/), [sops](https://github.com/getsops/sops) + an age key.
+Prerequisites: Docker, [k3d](https://k3d.io/), `kubectl`, [flux](https://fluxcd.io/), [mise](https://mise.jdx.dev/), [sops](https://github.com/getsops/sops) + an age key (`age-keygen`; recipient in [.sops.yaml](.sops.yaml)).
 
 ```bash
-mise install                 # git hooks + pinned toolchain
-mise run cluster:up          # create the local k3d cluster
-# apply the platform (Gateway API + cert-manager + CloudNativePG + ESS + agentgateway + kagent)
-# then run the bridge dev loop:
-mise run watch               # skaffold dev — builds & live-syncs matrix-a2a-bridge
+mise install                          # git hooks + pinned toolchain
+mise run cluster:up                   # k3d cluster on loopback 80/443 (*.fgentic.localhost)
+kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/experimental-install.yaml
+scripts/gen-secrets.sh fgentic.localhost local   # SOPS secret set -> commit + push
+kubectl create ns flux-system && kubectl -n flux-system create secret generic sops-age   --from-file=age.agekey="$HOME/.config/sops/age/keys.txt"
+scripts/local-ca.sh                   # local TLS CA (ESS bakes https URLs)
+scripts/local-adc.sh <gcp-project>    # Vertex AI credentials for agentgateway (or swap the provider)
+flux bootstrap github --owner=<you> --repository=fgentic --path=clusters/local
+mise run bridge:load                  # build + side-load the bridge image
 ```
 
-Open Element Web at the local gateway, create a room, invite `@agent-assistant`, and `@mention` it. See the [matrix-agents runbook](.agents/skills/matrix-agents/SKILL.md) for the full bootstrap (accounts, appservice registration, DNS/TLS).
+Flux reconciles the whole platform. Then open `https://chat.fgentic.localhost` (Element Web), sign in (create a user with `mas-cli manage register-user` in the MAS pod), create a room, invite `@agent-assistant:fgentic.localhost`, and `@mention` it. Grafana lives at `https://grafana.fgentic.localhost`. Full runbook: [matrix-agents](.agents/skills/matrix-agents/SKILL.md).
 
 ## Production (Kubernetes, any provider)
 
