@@ -26,6 +26,7 @@ config:
   logLevel: info
   logFormat: json
   listenPort: 29331
+  metricsPort: 9090 # Prometheus /metrics side port (SPEC §9.3)
 
 # Postgres backing the bridge state (mautrix StateStore + contexts + event dedup — SPEC §5).
 # The Secret holds a full connection URL under `key` (e.g. postgres://bridge:...@platform-pg-rw
@@ -71,6 +72,12 @@ networkPolicy:
   fromNamespaces:
     - matrix
     - monitoring
+
+# Prometheus scraping: the PodMonitor needs the monitoring.coreos.com CRDs (kube-prometheus-
+# stack) — enabled by the platform deploy values, off by default so the chart installs standalone.
+metrics:
+  podMonitor:
+    enabled: false
 
 podSecurityContext:
   runAsNonRoot: true

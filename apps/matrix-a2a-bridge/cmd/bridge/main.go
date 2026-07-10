@@ -10,15 +10,19 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	// Postgres driver for dbutil (mautrix SQL StateStore + the bridge's own state tables).
 	_ "github.com/jackc/pgx/v5/stdlib"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 	"go.mau.fi/util/dbutil"
 	"maunium.net/go/mautrix/appservice"
 	"maunium.net/go/mautrix/event"
@@ -91,6 +95,20 @@ func run(cfg config.Config, log *slog.Logger) error {
 	ep.On(event.StateMember, br.HandleMembership)
 	ep.Start(ctx)
 
+	// Prometheus metrics on a side port (SPEC §9.3), never on the appservice listener.
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("/metrics", promhttp.Handler())
+	metricsSrv := &http.Server{
+		Addr:              fmt.Sprintf("%s:%d", cfg.ListenHost, cfg.MetricsPort),
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	go func() {
+		if err := metricsSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+			log.Error("metrics server failed", "err", err)
+		}
+	}()
+
 	// as.Start() runs the blocking HTTP server that receives homeserver AS transactions.
 	// Ready gates mautrix's /_matrix/mau/ready (the Deployment readiness probe): everything is
 	// wired at this point — flip it before serving so the pod is routable.
@@ -103,6 +121,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 
 	<-ctx.Done()
 	log.Info("shutdown signal received, stopping")
+	_ = metricsSrv.Close()
 	as.Stop()
 	br.Stop() // drain in-flight delegations before releasing the database
 	return nil

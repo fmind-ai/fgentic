@@ -21,6 +21,9 @@ type Config struct {
 	ListenHost string `env:"LISTEN_HOST" envDefault:"0.0.0.0"`
 	ListenPort int    `env:"LISTEN_PORT" envDefault:"29331"`
 
+	// MetricsPort serves Prometheus /metrics (side port, never exposed publicly — SPEC §9.3).
+	MetricsPort int `env:"METRICS_PORT" envDefault:"9090"`
+
 	// RegistrationPath is the appservice registration.yaml (as_token/hs_token must match the
 	// homeserver's copy). AgentsPath is the ghost->agent routing map + sender policy.
 	RegistrationPath string `env:"REGISTRATION_PATH" envDefault:"/etc/matrix-a2a-bridge/registration.yaml"`
@@ -84,6 +87,9 @@ func (c Config) validate() error {
 	}
 	if c.ListenPort < 1 || c.ListenPort > 65535 {
 		return fmt.Errorf("LISTEN_PORT %d out of range 1-65535", c.ListenPort)
+	}
+	if c.MetricsPort < 1 || c.MetricsPort > 65535 {
+		return fmt.Errorf("METRICS_PORT %d out of range 1-65535", c.MetricsPort)
 	}
 	if c.GhostPrefix == "" {
 		return fmt.Errorf("GHOST_PREFIX must not be empty")

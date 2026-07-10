@@ -100,6 +100,7 @@ func (b *Bridge) HandleMessage(ctx context.Context, evt *event.Event) {
 	if err != nil {
 		b.log.Error("event dedup check failed, proceeding", "event", evt.ID, "err", err)
 	} else if !first {
+		dedupSkipsTotal.Inc()
 		b.log.Info("skipping already-processed event", "event", evt.ID)
 		return
 	}
@@ -149,6 +150,8 @@ func (b *Bridge) HandleMembership(ctx context.Context, evt *event.Event) {
 
 // dispatch delegates one prompt to one agent ghost and posts the reply back.
 func (b *Bridge) dispatch(ctx context.Context, evt *event.Event, localpart, prompt string) {
+	inflightDelegations.Inc()
+	defer inflightDelegations.Dec()
 	ref, ok := b.agents.Lookup(localpart)
 	if !ok {
 		b.log.Warn("no agent mapped for ghost", "ghost", localpart)
@@ -167,6 +170,7 @@ func (b *Bridge) dispatch(ctx context.Context, evt *event.Event, localpart, prom
 
 	// LLM-spend guards (SPEC §4 F7): per (sender, agent) and per room.
 	if !b.senderLimits.Allow(evt.Sender.String()+"|"+localpart) || !b.roomLimits.Allow(evt.RoomID.String()) {
+		delegationsTotal.WithLabelValues(localpart, outcomeRateLimited).Inc()
 		b.log.Warn("rate limited", "sender", evt.Sender, "ghost", localpart, "room", evt.RoomID)
 		b.postReply(ctx, intent, evt, rateLimitedText)
 		return
@@ -188,9 +192,12 @@ func (b *Bridge) dispatch(ctx context.Context, evt *event.Event, localpart, prom
 	}
 
 	callCtx, cancel := context.WithTimeout(a2aclient.WithUser(ctx, evt.Sender.String()), b.cfg.RequestTimeout)
+	started := time.Now()
 	res, err := b.client.Call(callCtx, ref.Path(), prompt, contextID)
 	cancel()
+	a2aLatency.WithLabelValues(localpart).Observe(time.Since(started).Seconds())
 	if err != nil {
+		delegationsTotal.WithLabelValues(localpart, outcomeError).Inc()
 		b.log.Error("a2a call failed", "agent", ref.Path(), "room", evt.RoomID, "err", err)
 		// Deliberately generic: internal endpoints/errors must not leak into rooms (SPEC §6).
 		b.postReply(ctx, intent, evt, fmt.Sprintf("⚠️ could not reach agent %q — see the bridge logs.", localpart))
@@ -207,11 +214,13 @@ func (b *Bridge) dispatch(ctx context.Context, evt *event.Event, localpart, prom
 		return
 	}
 	if res.Failed {
+		delegationsTotal.WithLabelValues(localpart, outcomeFailed).Inc()
 		// Agent-side failure detail stays in the logs — rooms get a generic notice (SPEC §6).
 		b.log.Error("agent task failed", "ghost", localpart, "agent", ref.Path(), "room", evt.RoomID, "detail", res.Text)
 		b.postReply(ctx, intent, evt, fmt.Sprintf("⚠️ agent %q could not complete the task — see the bridge logs.", localpart))
 		return
 	}
+	delegationsTotal.WithLabelValues(localpart, outcomeOK).Inc()
 	b.postReply(ctx, intent, evt, orDefault(res.Text, emptyReplyText))
 	b.log.Info("delegated to agent", "ghost", localpart, "agent", ref.Path(), "room", evt.RoomID)
 }
@@ -229,6 +238,7 @@ func (b *Bridge) awaitTask(ctx context.Context, intent *appservice.IntentAPI, ev
 	for {
 		select {
 		case <-pollCtx.Done():
+			delegationsTotal.WithLabelValues(localpart, outcomeTimeout).Inc()
 			b.editReply(ctx, intent, evt.RoomID, placeholder,
 				fmt.Sprintf("⚠️ agent %q did not finish within %s.", localpart, b.cfg.TaskTimeout))
 			return
@@ -244,6 +254,7 @@ func (b *Bridge) awaitTask(ctx context.Context, intent *appservice.IntentAPI, ev
 				b.log.Warn("tasks/get failed, retrying", "task", res.TaskID, "err", err)
 				continue
 			}
+			delegationsTotal.WithLabelValues(localpart, outcomeLost).Inc()
 			b.log.Error("tasks/get failed", "task", res.TaskID, "agent", ref.Path(), "err", err)
 			b.editReply(ctx, intent, evt.RoomID, placeholder,
 				fmt.Sprintf("⚠️ lost track of agent %q's task — see the bridge logs.", localpart))
@@ -252,11 +263,13 @@ func (b *Bridge) awaitTask(ctx context.Context, intent *appservice.IntentAPI, ev
 		errors = 0
 		if polled.Terminal {
 			if polled.Failed {
+				delegationsTotal.WithLabelValues(localpart, outcomeFailed).Inc()
 				b.log.Error("agent task failed", "ghost", localpart, "agent", ref.Path(), "room", evt.RoomID, "detail", polled.Text)
 				b.editReply(ctx, intent, evt.RoomID, placeholder,
 					fmt.Sprintf("⚠️ agent %q could not complete the task — see the bridge logs.", localpart))
 				return
 			}
+			delegationsTotal.WithLabelValues(localpart, outcomeOK).Inc()
 			b.editReply(ctx, intent, evt.RoomID, placeholder, orDefault(polled.Text, emptyReplyText))
 			b.log.Info("delegated to agent (long task)", "ghost", localpart, "agent", ref.Path(), "room", evt.RoomID)
 			return

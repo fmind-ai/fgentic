@@ -26,3 +26,6 @@ spec:
       tag: latest # CI overwrites with sha-<git>@sha256:<digest>
     config:
       serverName: ${server_name}
+    metrics:
+      podMonitor:
+        enabled: true # the observability layer provides the CRDs

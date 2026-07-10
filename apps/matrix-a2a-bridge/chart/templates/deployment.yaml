@@ -31,7 +31,12 @@ spec:
             - name: appservice
               containerPort: {{ .Values.config.listenPort }}
               protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.config.metricsPort }}
+              protocol: TCP
           env:
+            - name: METRICS_PORT
+              value: {{ .Values.config.metricsPort | quote }}
             - name: SERVER_NAME
               value: {{ .Values.config.serverName | quote }}
             - name: HOMESERVER_URL
