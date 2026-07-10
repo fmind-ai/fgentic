@@ -90,6 +90,9 @@ func run(cfg config.Config, log *slog.Logger) error {
 	ep.Start(ctx)
 
 	// as.Start() runs the blocking HTTP server that receives homeserver AS transactions.
+	// Ready gates mautrix's /_matrix/mau/ready (the Deployment readiness probe): everything is
+	// wired at this point — flip it before serving so the pod is routable.
+	as.Ready = true
 	go as.Start()
 	log.Info("matrix-a2a-bridge started",
 		"listen", cfg.ListenHost, "port", cfg.ListenPort,
