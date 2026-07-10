@@ -37,7 +37,9 @@ spec:
   chart:
     spec:
       chart: traefik
-      version: 41.0.2
+      # v3.6.x targets Gateway API v1.4 — matching the platform's pinned CRD bundle (v3.7 moved
+      # to v1.6, whose standard channel watches TLSRoute v1 that v1.4 does not serve).
+      version: 39.0.9
       sourceRef:
         kind: HelmRepository
         name: traefik
