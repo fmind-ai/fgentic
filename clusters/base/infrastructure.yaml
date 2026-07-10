@@ -27,6 +27,33 @@ spec:
     kind: GitRepository
     name: flux-system
 ---
+# Observability (SPEC §9): kube-prometheus-stack + platform monitors. Early in the DAG — other
+# layers reference its CRDs (PodMonitor) and NetworkPolicies already admit `monitoring` (D14).
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: observability
+  namespace: flux-system
+spec:
+  interval: 30m
+  retryInterval: 2m
+  path: ./infra/observability
+  prune: true
+  wait: true
+  timeout: 15m
+  dependsOn:
+    - name: namespaces
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true
+---
 # Platform operators: cert-manager, Traefik, CNPG operator, agentgateway + kagent control planes.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -91,6 +118,7 @@ spec:
   dependsOn:
     - name: controllers
     - name: platform-secrets
+    - name: observability # CNPG's PodMonitor needs the CRD
   sourceRef:
     kind: GitRepository
     name: flux-system

@@ -68,3 +68,15 @@ spec:
       allowedRoutes:
         namespaces:
           from: All
+    # Grafana (observability layer).
+    - name: https-grafana
+      protocol: HTTPS
+      port: 443
+      hostname: grafana.${server_name}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: matrix-tls
+      allowedRoutes:
+        namespaces:
+          from: All

@@ -28,10 +28,10 @@ spec:
       annotations:
         iam.gke.io/gcp-service-account: fgentic-pg-backup@${gcp_project}.iam.gserviceaccount.com
 
-  # PodMonitor for the observability layer — enable once the Prometheus Operator CRDs exist
-  # (SPEC §9), otherwise the operator cannot create it:
-  # monitoring:
-  #   enablePodMonitor: true
+  # PodMonitor for the observability layer (the postgres Kustomization depends on observability,
+  # so the Prometheus Operator CRDs exist by the time the operator reconciles this).
+  monitoring:
+    enablePodMonitor: true
 
   # Enforce TLS at the database boundary: clients must connect with sslmode=require.
   postgresql:

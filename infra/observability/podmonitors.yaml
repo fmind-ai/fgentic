@@ -1,0 +1,13 @@
+# Scrape the agentgateway data-plane proxy (:15020): per-proxy GenAI metrics — token usage,
+# cost, TTFT/TPOT — the platform's LLM budget signal (SPEC §9).
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: agentgateway-proxy
+  namespace: agentgateway-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: agentgateway-proxy
+  podMetricsEndpoints:
+    - port: metrics

@@ -1,0 +1,17 @@
+# Grafana behind the shared Gateway (TLS terminates there, like every web host).
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  parentRefs:
+    - name: fgentic-gateway
+      namespace: gateway
+      sectionName: https-grafana
+  hostnames:
+    - grafana.${server_name}
+  rules:
+    - backendRefs:
+        - name: kube-prometheus-stack-grafana
+          port: 80
