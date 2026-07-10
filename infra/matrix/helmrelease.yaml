@@ -17,6 +17,12 @@ metadata:
 spec:
   interval: 30m
   timeout: 15m
+  install:
+    remediation:
+      retries: -1 # self-heal: keep remediating failed installs (GitOps must converge unattended)
+  upgrade:
+    remediation:
+      retries: -1
   # Fixed release name: ESS names its Services `<release>-synapse` etc., and the HTTPRoutes +
   # the bridge's homeserver URL reference `ess-*` — keep them in lockstep.
   releaseName: ess

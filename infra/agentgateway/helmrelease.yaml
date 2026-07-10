@@ -8,6 +8,12 @@ metadata:
   namespace: agentgateway-system
 spec:
   interval: 30m
+  install:
+    remediation:
+      retries: -1 # self-heal: keep remediating failed installs (GitOps must converge unattended)
+  upgrade:
+    remediation:
+      retries: -1
   dependsOn:
     - name: agentgateway-crds
   chartRef:

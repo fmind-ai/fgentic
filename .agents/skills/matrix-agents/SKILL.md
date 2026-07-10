@@ -20,7 +20,7 @@ An open-standard AI-agent collaboration platform: humans + agents share Matrix r
 ## Runbook: one-time bootstrap
 
 1. **(Optional) Provision a cluster** — `cd infra/terraform && cp terraform.tfvars.example terraform.tfvars` (set your `/32`), then `terraform init && terraform apply`. Or use any conformant cluster / local k3d (`mise run cluster:up`).
-1. **Gateway API CRDs** (the one out-of-band install): `kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.0/experimental-install.yaml`.
+1. **Gateway API CRDs** (the one out-of-band install): `kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/experimental-install.yaml`.
 1. **Create the secrets** — `scripts/gen-secrets.sh <server_name> <local|gcp>` writes the full consistent SOPS set (Postgres roles, registration tokens, connection URLs) into `clusters/<env>/secrets/`; commit + push (Flux applies from git).
 1. **SOPS-age key**: `kubectl -n flux-system create secret generic sops-age --from-file=age.agekey="$HOME/.config/sops/age/keys.txt"` (create the namespace first if bootstrapping later).
 1. **Local TLS (k3d only)**: `scripts/local-ca.sh` — generates + loads the `local-ca` CA secret (ESS bakes https URLs, so even local runs terminate real TLS at the Gateway on loopback 80/443).
