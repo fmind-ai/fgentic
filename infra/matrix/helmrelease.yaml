@@ -1,0 +1,81 @@
+# The Matrix layer, deployed as Element Server Suite (ESS) Community — the `matrix-stack` chart
+# bundles Synapse (homeserver) + Matrix Authentication Service (MAS, OIDC) + Element Web + the
+# well-known delegation, all maintained by Element. See ADR 0003 and SPEC.md §10.2 (open-core
+# caveats + the Apache-2.0 homeserver alternatives).
+#
+# Values are validated against the 26.6.2 chart schema (`helm show values`): external Postgres
+# uses `password: {secret, secretKey}`, appservices use `{secret, secretKey}` entries, and
+# well-known additions are JSON strings. Ingress hosts are REQUIRED (they derive the public
+# URLs baked into Synapse/MAS/Element config); the Ingress objects ESS creates carry no
+# ingressClassName, so they stay inert — real traffic routes through our shared Gateway API
+# HTTPRoutes (infra/matrix/httproutes.yaml) which terminate TLS at the Gateway.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: matrix-stack
+  namespace: matrix
+spec:
+  interval: 30m
+  timeout: 15m
+  chartRef:
+    kind: OCIRepository
+    name: ess-matrix-stack
+    namespace: flux-system
+  values:
+    serverName: fgentic.fmind.ai # the ":fgentic.fmind.ai" of every user ID; delegated via well-known
+
+    synapse:
+      ingress:
+        host: matrix.fgentic.fmind.ai
+        tlsEnabled: false # TLS terminates at the shared Gateway (cert-manager)
+      # Use the shared CloudNativePG cluster (database `synapse`, C collation — ADR 0007) instead
+      # of a bundled Postgres. Password from the SOPS `pg-synapse` Secret (key `password`).
+      postgres:
+        host: platform-pg-rw.postgres.svc.cluster.local
+        port: 5432
+        user: synapse
+        database: synapse
+        sslMode: require
+        password:
+          secret: pg-synapse
+          secretKey: password
+      # The Matrix<->A2A bridge appservice: Synapse must load the SAME registration the bridge
+      # uses (matching as_token/hs_token). Provided as a Secret with key registration.yaml.
+      appservices:
+        - secret: matrix-a2a-bridge-registration
+          secretKey: registration.yaml
+
+    matrixAuthenticationService:
+      ingress:
+        host: auth.fgentic.fmind.ai
+        tlsEnabled: false
+      postgres:
+        host: platform-pg-rw.postgres.svc.cluster.local
+        port: 5432
+        user: mas
+        database: mas
+        sslMode: require
+        password:
+          secret: pg-mas
+          secretKey: password
+
+    elementWeb:
+      ingress:
+        host: chat.fgentic.fmind.ai
+        tlsEnabled: false
+
+    wellKnownDelegation:
+      # Serves /.well-known/matrix/{client,server}. We ALSO force-disable room encryption for the
+      # whole server here so agent rooms stay plaintext (ADR 0008; revisit for federation — SPEC
+      # §8.4) — the bridge is not E2EE-aware. `additional.*` entries are JSON strings.
+      enabled: true
+      ingress:
+        host: fgentic.fmind.ai
+        tlsEnabled: false
+      additional:
+        client: |
+          {"io.element.e2ee": {"default": false, "force_disable": true}}
+
+    # Use the external shared CloudNativePG cluster, not the chart-bundled one.
+    postgres:
+      enabled: false

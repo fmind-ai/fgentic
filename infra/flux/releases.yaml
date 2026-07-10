@@ -1,0 +1,185 @@
+# Platform operators/controllers (Flux HelmReleases, values inlined). CRD-bearing charts install
+# their own CRDs. The only out-of-band CRD install is the Gateway API (one-time bootstrap). The
+# ESS matrix-stack HelmRelease lives in infra/matrix; the CNPG Cluster in infra/postgres.
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec:
+  interval: 30m
+  install:
+    createNamespace: true
+  chart:
+    spec:
+      chart: cert-manager
+      version: v1.20.3
+      sourceRef:
+        kind: HelmRepository
+        name: jetstack
+        namespace: flux-system
+  values:
+    crds:
+      enabled: true
+    config:
+      enableGatewayAPI: true # ACME HTTP-01 solved through the Gateway API
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: traefik
+  namespace: gateway
+spec:
+  interval: 30m
+  install:
+    createNamespace: true
+  chart:
+    spec:
+      chart: traefik
+      version: 41.0.2
+      sourceRef:
+        kind: HelmRepository
+        name: traefik
+        namespace: flux-system
+  values:
+    providers:
+      kubernetesGateway:
+        enabled: true # watch Gateway API (Gateway/HTTPRoute)
+      kubernetesIngress:
+        enabled: false
+    gateway:
+      enabled: false # we manage our own shared Gateway (infra/gateway)
+    gatewayClass:
+      enabled: true # provides GatewayClass "traefik"
+    service:
+      type: LoadBalancer
+      annotations:
+        # Pin the Terraform-reserved static address by NAME (infra/terraform/vpc.tf) so DNS
+        # survives Service recreation. GKE-specific; ignored by other providers/k3d (SPEC §4 F2).
+        networking.gke.io/load-balancer-ip-addresses: fgentic-ingress-ip
+    deployment:
+      replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        memory: 128Mi
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cloudnative-pg
+  namespace: cnpg-system
+spec:
+  interval: 30m
+  install:
+    createNamespace: true
+  chart:
+    spec:
+      chart: cloudnative-pg
+      version: 0.29.0
+      sourceRef:
+        kind: HelmRepository
+        name: cnpg
+        namespace: flux-system
+  values:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 100Mi
+      limits:
+        memory: 200Mi
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: agentgateway-crds
+  namespace: agentgateway-system
+spec:
+  interval: 30m
+  install:
+    createNamespace: true
+  chartRef:
+    kind: OCIRepository
+    name: agentgateway-crds
+    namespace: flux-system
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: agentgateway
+  namespace: agentgateway-system
+spec:
+  interval: 30m
+  dependsOn:
+    - name: agentgateway-crds
+  chartRef:
+    kind: OCIRepository
+    name: agentgateway
+    namespace: flux-system
+  # Control plane only; the data-plane proxy is spawned per-Gateway and shaped by
+  # AgentgatewayParameters (infra/agentgateway).
+  values: {}
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kagent-crds
+  namespace: kagent
+spec:
+  interval: 30m
+  install:
+    createNamespace: true
+  chartRef:
+    kind: OCIRepository
+    name: kagent-crds
+    namespace: flux-system
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kagent
+  namespace: kagent
+spec:
+  interval: 30m
+  dependsOn:
+    - name: kagent-crds
+  chartRef:
+    kind: OCIRepository
+    name: kagent
+    namespace: flux-system
+  # Model egress THROUGH agentgateway (OpenAI baseUrl -> single credential chokepoint); shared
+  # Postgres (no bundled DB); built-in k8s + helm agents enabled and exposed over A2A.
+  values:
+    providers:
+      default: openAI
+      openAI:
+        provider: OpenAI
+        model: claude-sonnet-5
+        apiKeySecretRef: kagent-model-auth
+        apiKeySecretKey: OPENAI_API_KEY
+        config:
+          baseUrl: http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080/v1
+    database:
+      postgres:
+        bundled:
+          enabled: false
+        urlFile: /var/run/secrets/kagent/url
+        vectorEnabled: false
+    controller:
+      volumes:
+        - name: kagent-db
+          secret:
+            secretName: kagent-db
+      volumeMounts:
+        - name: kagent-db
+          mountPath: /var/run/secrets/kagent
+          readOnly: true
+    rbac:
+      namespaces:
+        - kagent
+        - default
+    k8s-agent: { enabled: true }
+    helm-agent: { enabled: true }

@@ -1,0 +1,13 @@
+matrix-a2a-bridge {{ .Chart.AppVersion }} deployed as "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Ghosts served: {{ range $g, $r := .Values.agents }}@{{ $g }}:{{ $.Values.config.serverName }} ({{ $r.namespace }}/{{ $r.name }})  {{ end }}
+
+Checklist:
+  1. The appservice registration Secret "{{ .Values.registration.secretName }}" (key {{ .Values.registration.key }})
+     must exist AND the SAME registration must be loaded by the homeserver (ESS/Synapse app_service config).
+  2. The homeserver ({{ .Values.config.homeserverURL }}) must be able to reach this service on port
+     {{ .Values.config.listenPort }} (NetworkPolicy admits the {{ join ", " .Values.networkPolicy.fromNamespaces }} namespace).
+  3. Invite a ghost into a room and @mention it, e.g.:  "@agent-k8s:{{ .Values.config.serverName }} why is pod X crashing?"
+
+Health:  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "matrix-a2a-bridge.fullname" . }} {{ .Values.config.listenPort }}
+         curl localhost:{{ .Values.config.listenPort }}/_matrix/mau/live

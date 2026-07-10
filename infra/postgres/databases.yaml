@@ -1,0 +1,53 @@
+# A database per stateful tenant, owned by its scoped role. Synapse REQUIRES its database be
+# created with C collation (LC_COLLATE/LC_CTYPE=C) — a hard upstream requirement. MAS and the
+# bridge (mautrix StateStore) use standard UTF-8. CloudNativePG reconciles these declaratively.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: synapse
+  namespace: postgres
+spec:
+  cluster:
+    name: platform-pg
+  name: synapse
+  owner: synapse
+  encoding: UTF8
+  localeCollate: C
+  localeCType: C
+  template: template0
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: mas
+  namespace: postgres
+spec:
+  cluster:
+    name: platform-pg
+  name: mas
+  owner: mas
+  encoding: UTF8
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: bridge
+  namespace: postgres
+spec:
+  cluster:
+    name: platform-pg
+  name: bridge
+  owner: bridge
+  encoding: UTF8
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: kagent
+  namespace: postgres
+spec:
+  cluster:
+    name: platform-pg
+  name: kagent
+  owner: kagent
+  encoding: UTF8

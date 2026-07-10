@@ -1,0 +1,7 @@
+# Platform Helm layer: chart sources + operator HelmReleases (cert-manager, Traefik, CloudNativePG
+# operator, agentgateway control plane, kagent). Applied by the "controllers" Flux Kustomization.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - sources.yaml
+  - releases.yaml

@@ -1,0 +1,18 @@
+# Project Trivy config (trivy auto-loads ./trivy.yaml). Signal-over-noise: only actionable,
+# fixable HIGH/CRITICAL findings, so local `mise run check:scan` and CI produce identical results.
+severity:
+  - HIGH
+  - CRITICAL
+scan:
+  scanners:
+    - license
+    - misconfig
+    - secret
+    - vuln
+vulnerability:
+  ignore-unfixed: true
+misconfiguration:
+  # SOPS-encrypted Secrets are ciphertext, not plaintext leaks; the bridge chart is rendered
+  # and schema-checked by kubeconform, so skip Helm-template heuristics here.
+  helm:
+    values: []

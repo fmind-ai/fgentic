@@ -1,0 +1,123 @@
+# Flux Kustomization DAG for the Fgentic platform. `flux bootstrap ... --path=clusters/platform`
+# reconciles this directory; these Kustomizations then reconcile the infra/ paths in dependency
+# order. Sources/HelmReleases install their own CRDs; the only out-of-band step is the Gateway API
+# CRDs (one-time bootstrap — see the matrix-agents runbook).
+---
+# SOPS-encrypted secrets, decrypted in-cluster by kustomize-controller (age key = secret sops-age
+# in flux-system). No dependsOn: it retries until each target namespace exists.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: platform-secrets
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 2m
+  path: ./infra/secrets
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  decryption:
+    provider: sops
+    secretRef:
+      name: sops-age
+---
+# Platform operators: cert-manager, Traefik, CNPG operator, agentgateway + kagent control planes.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: controllers
+  namespace: flux-system
+spec:
+  interval: 30m
+  path: ./infra/flux
+  prune: true
+  wait: true
+  timeout: 10m
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+---
+# Web gateway: ClusterIssuers + the multi-SAN TLS Gateway + HTTP->HTTPS redirect.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: gateway
+  namespace: flux-system
+spec:
+  interval: 30m
+  path: ./infra/gateway
+  prune: true
+  dependsOn:
+    - name: controllers
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+---
+# Shared CloudNativePG cluster + per-tenant databases. Role passwords come from platform-secrets.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: postgres
+  namespace: flux-system
+spec:
+  interval: 30m
+  path: ./infra/postgres
+  prune: true
+  dependsOn:
+    - name: controllers
+    - name: platform-secrets
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+---
+# The Matrix layer (ESS). Depends on Postgres (its databases/roles) + the gateway (HTTPRoutes).
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: matrix
+  namespace: flux-system
+spec:
+  interval: 30m
+  path: ./infra/matrix
+  prune: true
+  dependsOn:
+    - name: postgres
+    - name: gateway
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+---
+# agentgateway data plane (LLM egress + A2A route to kagent). Depends on the control plane + CRDs.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: agentgateway
+  namespace: flux-system
+spec:
+  interval: 30m
+  path: ./infra/agentgateway
+  prune: true
+  dependsOn:
+    - name: controllers
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+---
+# kagent extras (ModelConfig + sample Agent). The kagent HelmRelease is in the controllers layer.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: kagent
+  namespace: flux-system
+spec:
+  interval: 30m
+  path: ./infra/kagent
+  prune: true
+  dependsOn:
+    - name: controllers
+    - name: agentgateway
+  sourceRef:
+    kind: GitRepository
+    name: flux-system

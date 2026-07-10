@@ -1,0 +1,10 @@
+# SOPS configuration — portable, cloud-agnostic secret management (age backend).
+# Encrypt only the Secret payload keys, leaving structure/metadata readable in git.
+# Decrypt at deploy time with: SOPS_AGE_KEY_FILE=~/.config/sops/age/keys.txt sops -d <file>
+# The private age key NEVER lives in the repo (kept at ~/.config/sops/age/keys.txt and
+# mirrored into CI as the SOPS_AGE_KEY secret). Replace the recipient below with your own
+# age *public* key (`age-keygen`); the one here is the fmind platform recipient.
+creation_rules:
+  - path_regex: \.sops\.ya?ml$
+    encrypted_regex: ^(data|stringData)$
+    age: age1nhwmnjct2c7jjes9f7qw45rphzjdvp2meluzzpm3myltaueahg2stefk6e

@@ -1,0 +1,68 @@
+# Production shared Gateway. cert-manager watches the annotation and provisions the single
+# multi-SAN `matrix-tls` Secret (SANs: fgentic.fmind.ai + chat/matrix/auth.fgentic.fmind.ai) via HTTP-01.
+# HTTP-01 cannot issue wildcards, so listeners are per-host; every HTTPS listener references the
+# one `matrix-tls` secret, so cert-manager issues a single certificate covering all of them.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: fgentic-gateway
+  namespace: gateway
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  gatewayClassName: traefik
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All
+    # Apex — serves /.well-known/matrix/{client,server} delegation so user IDs are @name:fgentic.fmind.ai.
+    - name: https-wellknown
+      protocol: HTTPS
+      port: 443
+      hostname: fgentic.fmind.ai
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: matrix-tls
+      allowedRoutes:
+        namespaces:
+          from: All
+    # Element Web.
+    - name: https-chat
+      protocol: HTTPS
+      port: 443
+      hostname: chat.fgentic.fmind.ai
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: matrix-tls
+      allowedRoutes:
+        namespaces:
+          from: All
+    # Synapse (Matrix Client-Server + federation API).
+    - name: https-matrix
+      protocol: HTTPS
+      port: 443
+      hostname: matrix.fgentic.fmind.ai
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: matrix-tls
+      allowedRoutes:
+        namespaces:
+          from: All
+    # Matrix Authentication Service (OIDC).
+    - name: https-auth
+      protocol: HTTPS
+      port: 443
+      hostname: auth.fgentic.fmind.ai
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: matrix-tls
+      allowedRoutes:
+        namespaces:
+          from: All

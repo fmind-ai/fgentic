@@ -1,0 +1,26 @@
+# Zero-trust ingress to the agent data plane: only the agent workloads (the bridge in ns `bridge`
+# and kagent in ns `kagent`) may reach agentgateway. Enforced by a NetworkPolicy-capable CNI (GKE
+# Dataplane V2 / Cilium); inert on k3d flannel. Combined with the ClusterIP Service, agentgateway
+# is unreachable from outside the cluster and from other namespaces.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentgateway-allow-agents
+  namespace: agentgateway-system
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: bridge
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kagent
+        # Prometheus scrapes the proxy metrics port (:15020) — without this the observability
+        # layer silently loses the gateway's GenAI metrics (SPEC §4 F14).
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring

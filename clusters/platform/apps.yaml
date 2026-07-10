@@ -1,0 +1,20 @@
+# Application layer. Each app is wrapped in its own Flux Kustomization so it can depend on the
+# infra Kustomizations (HelmRelease.dependsOn can only reference other HelmReleases — SPEC §4 F1).
+# The bridge's deployable manifests live with the app (apps/matrix-a2a-bridge/deploy).
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: bridge
+  namespace: flux-system
+spec:
+  interval: 30m
+  path: ./apps/matrix-a2a-bridge/deploy
+  prune: true
+  dependsOn:
+    - name: platform-secrets # registration + database Secrets
+    - name: matrix # the homeserver that pushes AS transactions
+    - name: agentgateway # the A2A route the bridge dials
+    - name: kagent # the agents behind it
+  sourceRef:
+    kind: GitRepository
+    name: flux-system

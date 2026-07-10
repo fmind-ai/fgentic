@@ -1,0 +1,14 @@
+# Nightly base backup to the GCS object store configured on the Cluster (WAL archiving runs
+# continuously, so PITR covers the gaps between base backups). Remove alongside the Cluster's
+# backup block on non-GCP deployments.
+apiVersion: postgresql.cnpg.io/v1
+kind: ScheduledBackup
+metadata:
+  name: platform-pg-nightly
+  namespace: postgres
+spec:
+  cluster:
+    name: platform-pg
+  schedule: "0 0 3 * * *" # 03:00 daily (6-field cron: seconds first)
+  backupOwnerReference: self
+  immediate: true # take the first base backup as soon as the schedule is created

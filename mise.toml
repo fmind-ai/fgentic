@@ -1,0 +1,137 @@
+# Root task vocabulary for the Fgentic platform (infra + orchestration).
+# The Go bridge under apps/matrix-a2a-bridge is self-contained and carries its OWN mise.toml;
+# this root delegates the app-scoped tasks to it (format:app, check:app, test, build) so
+# `mise run <task>` at the repo root drives the whole monorepo. mise is the single source of
+# truth for WHAT each check does; lefthook (git hooks) and GitHub Actions only decide WHEN.
+
+[settings.task]
+run_auto_install = false # fail fast in hooks/CI on a missing tool (never silently install)
+
+# Pinned infra toolchain (reproducible local + CI). The app pins its own Go toolchain separately.
+# flux is installed out-of-band (no mise registry entry).
+[tools]
+dprint = "latest"
+gitleaks = "latest"
+lefthook = "latest"
+actionlint = "latest"
+kubeconform = "latest"
+trivy = "latest"
+terraform = "latest"
+helm = "latest"
+sops = "latest"
+yq = "latest"
+
+# --- Aggregate vocabulary (install / format / check / test / build / watch) ---
+
+[tasks.install]
+alias = "i"
+description = "Install git hooks and the pinned toolchain"
+depends = ["install:hooks"]
+
+[tasks."install:hooks"]
+description = "Install git hooks (lefthook)"
+run = "lefthook install"
+
+[tasks.format]
+alias = "f"
+description = "Format everything (config/markup, Terraform, and the app)"
+depends = ["format:dprint", "format:terraform", "format:app"]
+
+[tasks."format:dprint"]
+description = "Format JSON, Markdown, TOML, YAML at the repo root + infra/docs (dprint)"
+run = "dprint fmt"
+
+[tasks."format:terraform"]
+description = "Canonicalise Terraform formatting"
+run = "terraform fmt -recursive infra"
+
+[tasks."format:app"]
+description = "Format the application (delegates to apps/matrix-a2a-bridge)"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run format"
+
+[tasks.check]
+alias = "c"
+description = "Run every static check (config, Terraform, manifests, scan, secrets, workflows, app)"
+depends = [
+  "check:format",
+  "check:terraform",
+  "check:manifests",
+  "check:scan",
+  "check:leaks",
+  "check:workflows",
+  "check:app",
+]
+
+[tasks."check:format"]
+alias = "cf"
+description = "Verify config/markup formatting (dprint)"
+run = "dprint check"
+
+[tasks."check:terraform"]
+alias = "ct"
+description = "Terraform fmt-check + validate (no backend/creds needed)"
+run = """
+terraform fmt -check -recursive infra
+for dir in infra/terraform infra/terraform/bootstrap; do
+  [ -d "$dir" ] || continue
+  terraform -chdir="$dir" init -backend=false -input=false >/dev/null
+  terraform -chdir="$dir" validate
+done
+"""
+
+[tasks."check:manifests"]
+alias = "cm"
+description = "Schema-validate the Helm chart render + raw manifests (kubeconform)"
+run = "bash scripts/kubeconform.sh"
+
+[tasks."check:scan"]
+alias = "cn"
+description = "Scan IaC/manifests/Dockerfiles for misconfigurations (trivy config)"
+run = "trivy config ."
+
+[tasks."check:leaks"]
+alias = "cs"
+description = "Audit git history for leaked secrets (gitleaks); --staged auto-appends for pre-commit"
+run = "gitleaks git --log-opts=\"--max-count=100\" --verbose"
+
+[tasks."check:workflows"]
+alias = "cw"
+description = "Lint GitHub Actions workflows (actionlint)"
+run = "actionlint"
+
+[tasks."check:app"]
+description = "Run the application's static checks (delegates to apps/matrix-a2a-bridge)"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run check"
+
+[tasks.test]
+alias = "t"
+description = "Run the application test suite (delegates to apps/matrix-a2a-bridge)"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run test"
+
+[tasks.build]
+alias = "b"
+description = "Build the production application image (delegates to apps/matrix-a2a-bridge)"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run build:image"
+
+[tasks.watch]
+alias = "w"
+description = "Run the local Kubernetes dev loop (Skaffold)"
+run = "skaffold dev"
+
+# --- Local cluster lifecycle (k3d) ---
+
+[tasks."cluster:up"]
+description = "Create the local k3d cluster (exposes host ports 8080/8443)"
+dir = "infra"
+run = """
+docker info >/dev/null 2>&1 || { echo "Error: Docker daemon is not running"; exit 1; }
+k3d cluster create --config k3d-config.yaml
+"""
+
+[tasks."cluster:down"]
+description = "Delete the local k3d cluster"
+run = "k3d cluster delete fgentic"

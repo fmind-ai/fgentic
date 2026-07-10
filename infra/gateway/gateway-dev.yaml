@@ -1,0 +1,16 @@
+# Local k3d Gateway: HTTP only (no public ACME). Same name/namespace as prod so the HTTPRoutes
+# in infra/matrix stay environment-agnostic. Access Element/Synapse via *.localhost:8080.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: fgentic-gateway
+  namespace: gateway
+spec:
+  gatewayClassName: traefik
+  listeners:
+    - name: http
+      protocol: HTTP
+      port: 80
+      allowedRoutes:
+        namespaces:
+          from: All

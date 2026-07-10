@@ -1,0 +1,103 @@
+replicaCount: 1
+
+image:
+  repository: ghcr.io/fmind/matrix-a2a-bridge
+  pullPolicy: IfNotPresent
+  tag: "" # set by CI to an immutable digest; defaults to .Chart.AppVersion
+
+# --- Bridge configuration (rendered into the Deployment env) ---
+config:
+  serverName: fgentic.fmind.ai
+  homeserverURL: http://synapse.matrix.svc.cluster.local:8008
+  # Route A2A THROUGH agentgateway by default (telemetry + the LLM-credential chokepoint on the
+  # agent's own egress). Point directly at kagent to skip the gateway hop:
+  #   http://kagent-controller.kagent.svc.cluster.local:8083
+  a2aBaseURL: http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080
+  ghostPrefix: agent-
+  requestTimeout: 60s # transport deadline for one A2A message/send
+  taskTimeout: 10m # overall deadline when polling a long-running task (tasks/get)
+  concurrency: 16 # max in-flight delegations across all rooms (per-room FIFO regardless)
+  # Token-bucket rate limits guarding LLM spend (SPEC §4 F7).
+  senderRatePerMinute: 6
+  senderRateBurst: 3
+  roomRatePerMinute: 30
+  roomRateBurst: 10
+  logLevel: info
+  logFormat: json
+  listenPort: 29331
+
+# Postgres backing the bridge state (mautrix StateStore + contexts + event dedup — SPEC §5).
+# The Secret holds a full connection URL under `key` (e.g. postgres://bridge:...@platform-pg-rw
+# .postgres.svc.cluster.local:5432/bridge?sslmode=require). Disable only for local dev:
+# in-memory state loses conversation threading and dedup on restart.
+database:
+  enabled: true
+  secretName: matrix-a2a-bridge-db
+  key: url
+
+# The appservice registration (id + as_token/hs_token + namespaces) is SENSITIVE and lives in a
+# pre-existing SOPS-encrypted Secret with key `registration.yaml`. The SAME registration must be
+# loaded by the homeserver (ESS/Synapse). See registration.example.yaml.
+registration:
+  secretName: matrix-a2a-bridge-registration
+  key: registration.yaml
+
+# The ghost -> kagent agent routing map (also the invocation allowlist). Rendered into a ConfigMap.
+agents:
+  agent-assistant:
+    namespace: kagent
+    name: platform-assistant
+  agent-k8s:
+    namespace: kagent
+    name: k8s-agent
+  agent-helm:
+    namespace: kagent
+    name: helm-agent
+
+service:
+  type: ClusterIP
+  port: 29331
+
+serviceAccount:
+  create: true
+  automountServiceAccountToken: false
+
+# Default-deny ingress except from the homeserver namespace (Synapse pushes AS transactions here)
+# and monitoring (future metrics scrapes — SPEC §4 F14). Enforced by a CNI with NetworkPolicy
+# support (GKE Dataplane V2 / Cilium); inert on k3d flannel.
+networkPolicy:
+  enabled: true
+  fromNamespaces:
+    - matrix
+    - monitoring
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532 # distroless:nonroot
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+podDisruptionBudget:
+  enabled: false # a single stateless appservice; enable + raise replicas for HA
+
+revisionHistoryLimit: 3
+nodeSelector: {}
+tolerations: []
+affinity: {}

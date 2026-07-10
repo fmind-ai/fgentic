@@ -1,0 +1,21 @@
+# Ghost -> kagent agent routing map, and the bridge's authorization allowlist: only ghosts
+# listed here can be invoked. Key = the agent ghost local-part (@agent-k8s -> "agent-k8s");
+# value = the kagent Agent's namespace + name. The A2A endpoint the bridge dials is
+# <A2A_BASE_URL>/api/a2a/<namespace>/<name>, with the AgentCard at .../.well-known/agent-card.json.
+#
+# Sender policy (SPEC §4 F6) — per agent, optional:
+#   allowedServers: extra homeservers whose users may invoke the agent (the bridge's own
+#                   server is always allowed; federated senders are deny-by-default).
+#   allowedSenders: '*' globs over full user IDs; empty = anyone on an allowed server.
+agents:
+  agent-assistant:
+    namespace: kagent
+    name: platform-assistant
+    # allowedServers: [partner.example]
+    # allowedSenders: ["@ops-*:partner.example", "@admin:fgentic.fmind.ai"]
+  agent-k8s:
+    namespace: kagent
+    name: k8s-agent
+  agent-helm:
+    namespace: kagent
+    name: helm-agent

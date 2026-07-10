@@ -1,0 +1,14 @@
+apiVersion: v2
+name: matrix-a2a-bridge
+description: Matrix Application Service that delegates @mentions to AI agents over A2A
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - matrix
+  - a2a
+  - ai-agents
+  - appservice
+home: https://github.com/fmind/fgentic
+sources:
+  - https://github.com/fmind/fgentic

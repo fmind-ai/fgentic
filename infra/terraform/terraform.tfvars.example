@@ -1,0 +1,14 @@
+# Copy to terraform.tfvars (gitignored) and set your real values.
+project_id = "fgentic-ai"
+
+# REQUIRED: restrict the public control-plane endpoint. Fetch your /32:  echo "$(curl -s ifconfig.me)/32"
+master_authorized_networks = [
+  { cidr_block = "203.0.113.10/32", display_name = "home" }, # RFC 5737 doc range — replace
+]
+
+# Production profile: regional control plane (zonal by default for the disposable reference).
+# regional = true
+
+# DNS-as-code: create the A records in an existing Cloud DNS zone for fgentic.fmind.ai.
+# manage_dns    = true
+# dns_zone_name = "fgentic-dev"

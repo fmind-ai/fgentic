@@ -1,0 +1,24 @@
+# A sample DECLARATIVE agent. Because it sets a2aConfig, kagent serves it as an A2A server at
+# http://kagent-controller.kagent:8083/api/a2a/kagent/platform-assistant with an AgentCard at
+# .../.well-known/agent-card.json — exactly what the Matrix bridge (and agentgateway) dial. Add
+# more Agents the same way; map each to a @agent-<name> ghost in the bridge's agents map.
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: platform-assistant
+  namespace: kagent
+spec:
+  description: General assistant for the Fgentic platform, reachable from Matrix over A2A.
+  modelConfig: agentgateway-claude
+  systemMessage: |
+    You are the platform assistant for the Fgentic platform. You help humans and other agents
+    in shared Matrix rooms: answer questions, summarise, and coordinate tasks. Be concise and
+    factual; when you are unsure, say so. You are addressed by @mention and reply in the room.
+  a2aConfig:
+    skills:
+      - id: general-assistance
+        name: General assistance
+        description: Answer questions and help coordinate tasks in a shared room.
+        tags:
+          - general
+          - coordination

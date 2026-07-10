@@ -1,0 +1,14 @@
+# Gitleaks config — extends the default ruleset, allowlists SOPS-encrypted material.
+[extend]
+useDefault = true
+
+[allowlist]
+description = "SOPS-encrypted secrets and public key material are safe to commit"
+paths = [
+  '''.*\.sops\.ya?ml$''', # age-encrypted Secret payloads (ENC[AES256_GCM,...])
+  '''\.sops\.yaml$''', # the SOPS config itself (contains only the public recipient)
+]
+regexes = [
+  '''age1[0-9a-z]{58}''', # age *public* recipients are not secret
+  '''ENC\[AES256_GCM.*''', # SOPS ciphertext envelopes
+]

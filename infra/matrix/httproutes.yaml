@@ -1,0 +1,76 @@
+# Gateway API routes attaching the ESS component Services to the shared fgentic-gateway HTTPS
+# listeners. Service names follow ESS's chart naming — verify with `kubectl -n matrix get svc`
+# after the HelmRelease reconciles and adjust backendRefs if the release name differs.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: element-web
+  namespace: matrix
+spec:
+  parentRefs:
+    - name: fgentic-gateway
+      namespace: gateway
+      sectionName: https-chat
+  hostnames:
+    - chat.fgentic.fmind.ai
+  rules:
+    - backendRefs:
+        - name: ess-element-web
+          port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: synapse
+  namespace: matrix
+spec:
+  parentRefs:
+    - name: fgentic-gateway
+      namespace: gateway
+      sectionName: https-matrix
+  hostnames:
+    - matrix.fgentic.fmind.ai
+  rules:
+    - backendRefs:
+        - name: ess-synapse
+          port: 8008
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: matrix-authentication-service
+  namespace: matrix
+spec:
+  parentRefs:
+    - name: fgentic-gateway
+      namespace: gateway
+      sectionName: https-auth
+  hostnames:
+    - auth.fgentic.fmind.ai
+  rules:
+    - backendRefs:
+        - name: ess-matrix-authentication-service
+          port: 8080
+---
+# Apex delegation: /.well-known/matrix/{client,server} at https://fgentic.fmind.ai so user IDs are
+# @name:fgentic.fmind.ai while the actual homeserver lives at matrix.fgentic.fmind.ai.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: well-known
+  namespace: matrix
+spec:
+  parentRefs:
+    - name: fgentic-gateway
+      namespace: gateway
+      sectionName: https-wellknown
+  hostnames:
+    - fgentic.fmind.ai
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /.well-known/matrix
+      backendRefs:
+        - name: ess-well-known-web
+          port: 8080

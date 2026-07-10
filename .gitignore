@@ -1,0 +1,44 @@
+# --- Secrets (defense in depth; real secrets live SOPS-encrypted as *.sops.yaml) ---
+# Never commit decrypted secrets or private keys.
+*.dec.yaml
+*.dec.yml
+age.key
+*.agekey
+**/secrets/*.plain.yaml
+
+# --- Terraform ---
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# Keep the lock file committed for reproducible provider versions:
+!**/.terraform.lock.hcl
+# Never commit real variable values; keep the example template:
+*.tfvars
+!*.tfvars.example
+
+# --- Env & local config ---
+.env
+.env.*
+!.env.example
+!.env.sample
+
+# --- Build artifacts & caches ---
+**/bin/
+**/tmp/
+coverage.out
+*.coverprofile
+.task/
+
+# --- Agent scratch (global standard) ---
+.agents/tmp/
+
+# --- OS / editor ---
+.DS_Store
+*.swp

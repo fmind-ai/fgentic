@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "matrix-a2a-bridge.fullname" . }}-agents
+  labels:
+    {{- include "matrix-a2a-bridge.labels" . | nindent 4 }}
+data:
+  # The ghost -> kagent agent routing map + invocation allowlist (see values.yaml `agents`).
+  agents.yaml: |
+    agents:
+      {{- range $ghost, $ref := .Values.agents }}
+      {{ $ghost }}:
+        namespace: {{ $ref.namespace }}
+        name: {{ $ref.name }}
+      {{- end }}

@@ -1,0 +1,68 @@
+# Continuous delivery of the bridge image (SPEC §4 F13): build multi-arch → scan → push to GHCR
+# → keyless cosign sign → commit the immutable digest into the Flux-reconciled HelmRelease.
+# CI is the only writer of that digest line; Flux then pulls the change (GitOps — never deploy
+# a mutable tag).
+name: CD
+on:
+  push:
+    branches: [main]
+    paths:
+      - apps/matrix-a2a-bridge/**
+      - .github/workflows/cd.yml
+permissions:
+  contents: write # commit the image digest back to the deploy manifest
+  id-token: write # keyless signing via OIDC
+  packages: write # push to GHCR
+concurrency:
+  group: ${{ github.workflow }}
+  cancel-in-progress: false # never cancel a half-published release
+jobs:
+  bridge-image:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Install mise system
+        uses: jdx/mise-action@v4
+      - name: Set lower-case registry path
+        run: |
+          echo "IMAGE_REPOSITORY=$(echo "ghcr.io/${{ github.repository_owner }}/matrix-a2a-bridge" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+      - name: Set up QEMU (for multi-platform builds)
+        uses: docker/setup-qemu-action@v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@v7
+        with:
+          context: apps/matrix-a2a-bridge
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: |
+            ${{ env.IMAGE_REPOSITORY }}:latest
+            ${{ env.IMAGE_REPOSITORY }}:sha-${{ github.sha }}
+      - name: Scan pushed image (trivy)
+        run: mise exec -- trivy image --exit-code 1 --severity HIGH,CRITICAL "${{ env.IMAGE_REPOSITORY }}@${{ steps.build.outputs.digest }}"
+      - name: Install cosign
+        uses: sigstore/cosign-installer@v4
+      - name: Sign the image (keyless OIDC)
+        run: cosign sign --yes "${{ env.IMAGE_REPOSITORY }}@${{ steps.build.outputs.digest }}"
+      - name: Pin the digest in the deploy manifest
+        run: |
+          mise exec -- yq -i \
+            '.spec.values.image.tag = "sha-${{ github.sha }}@${{ steps.build.outputs.digest }}"' \
+            apps/matrix-a2a-bridge/deploy/helmrelease.yaml
+      - name: Commit the digest (Flux picks it up)
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add apps/matrix-a2a-bridge/deploy/helmrelease.yaml
+          git diff --cached --quiet && exit 0
+          git commit -m "chore(bridge): pin image sha-${GITHUB_SHA::7} [skip ci]"
+          git push

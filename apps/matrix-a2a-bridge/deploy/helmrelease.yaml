@@ -1,0 +1,25 @@
+# The Matrix<->A2A bridge, deployed from its in-repo Helm chart, pinned by CI to the signed
+# image digest. Ordering (matrix/agentgateway/kagent first) is enforced by the `bridge` Flux
+# Kustomization's dependsOn (clusters/platform/apps.yaml); its registration and database
+# Secrets come from platform-secrets.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: matrix-a2a-bridge
+  namespace: bridge
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: ./apps/matrix-a2a-bridge/chart
+      reconcileStrategy: Revision # redeploy when the chart in git changes
+      sourceRef:
+        kind: GitRepository
+        name: flux-system
+        namespace: flux-system
+  # Only the image is overridden here; the chart's values.yaml supplies the rest (config, the
+  # agents routing map, NetworkPolicy, security context). CI rewrites the tag to an immutable digest.
+  values:
+    image:
+      repository: ghcr.io/fmind/matrix-a2a-bridge
+      tag: latest # CI overwrites with sha-<git>@sha256:<digest>

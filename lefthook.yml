@@ -1,0 +1,34 @@
+# Git hooks — thin delegators to `mise run` so hooks and CI run the identical checks.
+# mise owns WHAT each task does; lefthook only decides WHEN. Formatters run first (staged,
+# restage their fixes), then the secret scan, then the full check. See lefthook + mise skills.
+# The repo root has no Go module; `mise` is the globally-installed binary. Root `mise run`
+# tasks delegate app-scoped work into apps/matrix-a2a-bridge/mise.toml.
+pre-commit:
+  parallel: false # priority-ordered: formatters restage before `check` reads from disk
+  commands:
+    format:dprint:
+      priority: 1
+      glob: "*.{json,md,toml,yaml,yml}"
+      run: mise run format:dprint # whole-tree; dprint.json excludes apps/ + *.sops.yaml
+      stage_fixed: true
+    format:terraform:
+      priority: 1
+      glob: "infra/**/*.tf"
+      run: mise run format:terraform
+      stage_fixed: true
+    format:app:
+      priority: 1
+      root: "apps/matrix-a2a-bridge/" # scope to the app; its own mise.toml formats Go
+      glob: "*.go"
+      run: mise run format
+      stage_fixed: true
+    check:leaks:
+      priority: 2
+      run: mise run check:leaks --staged # staged scan gates the incoming commit (history mode can't)
+    check:
+      priority: 3
+      run: mise run check
+pre-push:
+  commands:
+    test:
+      run: mise run test

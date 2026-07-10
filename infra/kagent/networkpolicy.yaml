@@ -1,0 +1,28 @@
+# kagent's A2A endpoint is UNAUTHENTICATED by default (auth.mode: unsecure, NoopAuthorizer —
+# SPEC §4 F11), so this NetworkPolicy is a load-bearing security control: only agentgateway
+# (the governed A2A route), the bridge (direct-dial fallback), kagent's own agent pods (they
+# call the controller's session/persistence APIs), and monitoring (metrics scrapes) may reach
+# the kagent namespace. Enforced by a NetworkPolicy-capable CNI; inert on k3d flannel.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kagent-allow-platform
+  namespace: kagent
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentgateway-system
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: bridge
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kagent
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring

@@ -1,0 +1,68 @@
+# Shared CloudNativePG cluster — the "bridging infra" for all stateful tenants. Each service gets
+# its OWN database + scoped login role (see databases.yaml), never an embedded/bundled database.
+# instances=1 keeps it portable to single-node k3d; raise to 3 for HA on a multi-node cluster.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: platform-pg
+  namespace: postgres
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.5
+
+  storage:
+    size: 10Gi
+
+  # WAL archiving + base backups to GCS (SPEC §4 F12): the bucket + Workload-Identity-bound GSA
+  # are provisioned by infra/terraform (backups.tf); the KSA annotation below completes the
+  # keyless binding. GKE-only — on k3d/other providers, remove this block and the annotation
+  # (backups then need an alternative object store, e.g. MinIO).
+  backup:
+    retentionPolicy: 30d
+    barmanObjectStore:
+      destinationPath: gs://fgentic-ai-pg-backups
+      googleCredentials:
+        gkeEnvironment: true # Workload Identity, no key file
+  serviceAccountTemplate:
+    metadata:
+      annotations:
+        iam.gke.io/gcp-service-account: fgentic-pg-backup@fgentic-ai.iam.gserviceaccount.com
+
+  # PodMonitor for the observability layer — enable once the Prometheus Operator CRDs exist
+  # (SPEC §9), otherwise the operator cannot create it:
+  # monitoring:
+  #   enablePodMonitor: true
+
+  # Enforce TLS at the database boundary: clients must connect with sslmode=require.
+  postgresql:
+    pg_hba:
+      - hostssl all all all scram-sha-256
+      - hostnossl all all all reject
+
+  # Declarative login roles for each tenant; passwords come from SOPS-encrypted Secrets
+  # (infra/secrets). No superuser is exposed to tenants.
+  managed:
+    roles:
+      - name: synapse
+        login: true
+        passwordSecret:
+          name: pg-synapse
+      - name: mas
+        login: true
+        passwordSecret:
+          name: pg-mas
+      - name: bridge
+        login: true
+        passwordSecret:
+          name: pg-bridge
+      - name: kagent
+        login: true
+        passwordSecret:
+          name: pg-kagent
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi

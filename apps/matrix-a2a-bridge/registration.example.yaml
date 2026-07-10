@@ -1,0 +1,22 @@
+# Appservice registration for matrix-a2a-bridge — TEMPLATE. Do NOT commit a real one.
+#
+# Generate a real registration (fills as_token/hs_token) with:
+#   go run ./cmd/bridge -generate-registration        # writes to $REGISTRATION_PATH
+# or replace the REPLACE_* placeholders with `openssl rand -hex 32` values by hand.
+#
+# The SAME file must be handed to BOTH:
+#   1. the homeserver — ESS/Synapse `appservice` config (loads it at startup), and
+#   2. the bridge     — mounted at REGISTRATION_PATH (default /etc/matrix-a2a-bridge/registration.yaml).
+# as_token/hs_token are SECRETS: store the real file as a SOPS-encrypted Kubernetes Secret.
+id: matrix-a2a-bridge
+url: http://matrix-a2a-bridge.bridge.svc.cluster.local:29331
+as_token: REPLACE_WITH_64_HEX_CHARS_AS_TOKEN
+hs_token: REPLACE_WITH_64_HEX_CHARS_HS_TOKEN
+sender_localpart: a2a-bridge
+rate_limited: false
+namespaces:
+  users:
+    - regex: '@a2a-bridge:ai\.fmind\.dev'
+      exclusive: true
+    - regex: '@agent-.*:ai\.fmind\.dev'
+      exclusive: true

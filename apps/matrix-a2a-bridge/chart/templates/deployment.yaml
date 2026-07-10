@@ -1,0 +1,117 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "matrix-a2a-bridge.fullname" . }}
+  labels:
+    {{- include "matrix-a2a-bridge.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  selector:
+    matchLabels:
+      {{- include "matrix-a2a-bridge.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "matrix-a2a-bridge.selectorLabels" . | nindent 8 }}
+      annotations:
+        # Roll the pod when the routing map changes so a config edit reconciles without a manual bounce.
+        checksum/agents: {{ toYaml .Values.agents | sha256sum }}
+    spec:
+      serviceAccountName: {{ include "matrix-a2a-bridge.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: bridge
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: []
+          ports:
+            - name: appservice
+              containerPort: {{ .Values.config.listenPort }}
+              protocol: TCP
+          env:
+            - name: SERVER_NAME
+              value: {{ .Values.config.serverName | quote }}
+            - name: HOMESERVER_URL
+              value: {{ .Values.config.homeserverURL | quote }}
+            - name: A2A_BASE_URL
+              value: {{ .Values.config.a2aBaseURL | quote }}
+            - name: GHOST_PREFIX
+              value: {{ .Values.config.ghostPrefix | quote }}
+            - name: REQUEST_TIMEOUT
+              value: {{ .Values.config.requestTimeout | quote }}
+            - name: TASK_TIMEOUT
+              value: {{ .Values.config.taskTimeout | quote }}
+            - name: CONCURRENCY
+              value: {{ .Values.config.concurrency | quote }}
+            - name: SENDER_RATE_PER_MINUTE
+              value: {{ .Values.config.senderRatePerMinute | quote }}
+            - name: SENDER_RATE_BURST
+              value: {{ .Values.config.senderRateBurst | quote }}
+            - name: ROOM_RATE_PER_MINUTE
+              value: {{ .Values.config.roomRatePerMinute | quote }}
+            - name: ROOM_RATE_BURST
+              value: {{ .Values.config.roomRateBurst | quote }}
+            {{- if .Values.database.enabled }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.secretName }}
+                  key: {{ .Values.database.key }}
+            {{- end }}
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.config.logFormat | quote }}
+            - name: LISTEN_PORT
+              value: {{ .Values.config.listenPort | quote }}
+            - name: REGISTRATION_PATH
+              value: /etc/matrix-a2a-bridge/registration.yaml
+            - name: AGENTS_PATH
+              value: /etc/matrix-a2a-bridge/agents.yaml
+          volumeMounts:
+            - name: registration
+              mountPath: /etc/matrix-a2a-bridge/registration.yaml
+              subPath: {{ .Values.registration.key }}
+              readOnly: true
+            - name: agents
+              mountPath: /etc/matrix-a2a-bridge/agents.yaml
+              subPath: agents.yaml
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /_matrix/mau/live
+              port: appservice
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /_matrix/mau/ready
+              port: appservice
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: registration
+          secret:
+            secretName: {{ .Values.registration.secretName }}
+        - name: agents
+          configMap:
+            name: {{ include "matrix-a2a-bridge.fullname" . }}-agents
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
