@@ -206,6 +206,12 @@ func (b *Bridge) dispatch(ctx context.Context, evt *event.Event, localpart, prom
 		b.awaitTask(ctx, intent, evt, ref, localpart, res)
 		return
 	}
+	if res.Failed {
+		// Agent-side failure detail stays in the logs — rooms get a generic notice (SPEC §6).
+		b.log.Error("agent task failed", "ghost", localpart, "agent", ref.Path(), "room", evt.RoomID, "detail", res.Text)
+		b.postReply(ctx, intent, evt, fmt.Sprintf("⚠️ agent %q could not complete the task — see the bridge logs.", localpart))
+		return
+	}
 	b.postReply(ctx, intent, evt, orDefault(res.Text, emptyReplyText))
 	b.log.Info("delegated to agent", "ghost", localpart, "agent", ref.Path(), "room", evt.RoomID)
 }
@@ -245,6 +251,12 @@ func (b *Bridge) awaitTask(ctx context.Context, intent *appservice.IntentAPI, ev
 		}
 		errors = 0
 		if polled.Terminal {
+			if polled.Failed {
+				b.log.Error("agent task failed", "ghost", localpart, "agent", ref.Path(), "room", evt.RoomID, "detail", polled.Text)
+				b.editReply(ctx, intent, evt.RoomID, placeholder,
+					fmt.Sprintf("⚠️ agent %q could not complete the task — see the bridge logs.", localpart))
+				return
+			}
 			b.editReply(ctx, intent, evt.RoomID, placeholder, orDefault(polled.Text, emptyReplyText))
 			b.log.Info("delegated to agent (long task)", "ghost", localpart, "agent", ref.Path(), "room", evt.RoomID)
 			return

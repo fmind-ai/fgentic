@@ -45,11 +45,14 @@ func (t *userTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 // Result is the bridge-shaped outcome of an A2A call: the extracted reply text, the contextId
 // to reuse for the next turn, and — for long-running tasks — the task ID to poll until Terminal.
+// Failed marks a task that ended without completing (failed/canceled/rejected): its Text is
+// agent-side error detail for the logs, never for the room (SPEC §6).
 type Result struct {
 	Text      string
 	ContextID string
 	TaskID    string
 	Terminal  bool
+	Failed    bool
 }
 
 // Client dials A2A agents under a common base URL (the agentgateway proxy, or kagent directly).
@@ -160,6 +163,7 @@ func taskResult(t *a2a.Task) Result {
 		ContextID: t.ContextID,
 		TaskID:    string(t.ID),
 		Terminal:  t.Status.State.Terminal(),
+		Failed:    t.Status.State != a2a.TaskStateCompleted && t.Status.State.Terminal(),
 	}
 	if r.Terminal {
 		r.Text = taskText(t)
