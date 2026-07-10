@@ -50,7 +50,7 @@ jobs:
       - name: Scan pushed image (trivy)
         run: mise exec -- trivy image --exit-code 1 --severity HIGH,CRITICAL "${{ env.IMAGE_REPOSITORY }}@${{ steps.build.outputs.digest }}"
       - name: Install cosign
-        uses: sigstore/cosign-installer@v4
+        uses: sigstore/cosign-installer@v3
       - name: Sign the image (keyless OIDC)
         run: cosign sign --yes "${{ env.IMAGE_REPOSITORY }}@${{ steps.build.outputs.digest }}"
       - name: Pin the digest in the deploy manifest

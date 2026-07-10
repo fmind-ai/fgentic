@@ -9,7 +9,7 @@ metadata:
   name: fgentic
 servers: 1
 agents: 0
-image: rancher/k3s:v1.31.5-k3s1
+image: rancher/k3s:v1.35.5-k3s1
 ports:
   - port: 127.0.0.1:80:80
     nodeFilters:
@@ -23,5 +23,13 @@ options:
       # Disable k3s's bundled Traefik + servicelb; we install our own Traefik (Gateway API)
       # and use k3d's loadbalancer, matching the GKE Gateway API path.
       - arg: --disable=traefik
+        nodeFilters:
+          - server:*
+      # Tolerate user-namespace/rootless hosts (ChromeOS crostini, rootless Docker) where the
+      # kubelet cannot write kernel flags under /proc/sys; harmless on regular Linux.
+      - arg: --kubelet-arg=feature-gates=KubeletInUserNamespace=true
+        nodeFilters:
+          - server:*
+      - arg: --kubelet-arg=fail-cgroupv1=false
         nodeFilters:
           - server:*

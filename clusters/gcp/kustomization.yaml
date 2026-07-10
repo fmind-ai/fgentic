@@ -8,3 +8,4 @@ resources:
   - flux-system
   - ../base
   - platform-settings.yaml
+  - secrets.yaml

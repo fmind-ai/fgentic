@@ -4,18 +4,23 @@
 # URLs — every value consistent across the files that share it. Encrypts in place with sops
 # (age recipient from .sops.yaml) so only ciphertext ever exists in the working tree.
 #
-#   scripts/gen-secrets.sh fgentic.localhost        # local cluster
-#   scripts/gen-secrets.sh fgentic.fmind.ai         # reference deployment
+#   scripts/gen-secrets.sh fgentic.localhost local  # k3d cluster
+#   scripts/gen-secrets.sh fgentic.fmind.ai gcp      # reference deployment
 #
+# Files land in clusters/<env>/secrets/ (each cluster owns its secret set — the registration
+# regexes embed the server_name and credentials never span environments) and MUST be committed:
+# Flux applies them from git. Only SOPS ciphertext is ever written.
 # Existing *.sops.yaml files are left untouched unless --force is passed (regenerating the
 # registration invalidates the one Synapse has loaded — restart ESS after rotating).
 # The model key for agentgateway is read from $GEMINI_API_KEY if set (placeholder otherwise —
 # Vertex AI/ADC setups do not need it).
 set -euo pipefail
 
-SERVER_NAME="${1:?usage: gen-secrets.sh <server_name> [--force]}"
-FORCE="${2:-}"
-DIR="infra/secrets"
+SERVER_NAME="${1:?usage: gen-secrets.sh <server_name> <local|gcp> [--force]}"
+ENV="${2:?usage: gen-secrets.sh <server_name> <local|gcp> [--force]}"
+FORCE="${3:-}"
+DIR="clusters/${ENV}/secrets"
+mkdir -p "${DIR}"
 ESCAPED_SERVER_NAME="${SERVER_NAME//./\\.}"
 
 PG_HOST="platform-pg-rw.postgres.svc.cluster.local"

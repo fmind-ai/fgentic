@@ -7,6 +7,7 @@ resources:
   - flux-system
   - ../base
   - platform-settings.yaml
+  - secrets.yaml
 patches:
   # No object store locally: strip the CNPG GCS backup config (WAL archiving + ScheduledBackup +
   # the Workload Identity service-account binding). Postgres itself is unchanged.
