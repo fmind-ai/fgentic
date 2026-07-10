@@ -63,19 +63,20 @@ variable "pg_backups_bucket_name" {
 
 variable "manage_dns" {
   type        = bool
-  default     = false
-  description = "Create the platform A records (apex, chat., matrix., auth.) in an existing Cloud DNS zone"
+  default     = true
+  description = "Create the Cloud DNS zone + platform A records (apex, chat., matrix., auth., grafana.) for var.domain"
+}
+
+variable "domain" {
+  type        = string
+  default     = "fgentic.fmind.ai"
+  description = "The platform apex domain (the Matrix server_name) — must match the cluster's platform-settings"
 }
 
 variable "dns_zone_name" {
   type        = string
-  default     = ""
-  description = "Name of the existing Cloud DNS managed zone for the apex domain (required when manage_dns)"
-
-  validation {
-    condition     = !var.manage_dns || var.dns_zone_name != ""
-    error_message = "Set dns_zone_name when manage_dns is true."
-  }
+  default     = "fgentic"
+  description = "Name of the Cloud DNS managed zone Terraform creates for var.domain"
 }
 
 variable "master_authorized_networks" {

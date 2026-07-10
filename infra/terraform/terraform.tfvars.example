@@ -9,6 +9,7 @@ master_authorized_networks = [
 # Production profile: regional control plane (zonal by default for the disposable reference).
 # regional = true
 
-# DNS-as-code: create the A records in an existing Cloud DNS zone for fgentic.fmind.ai.
-# manage_dns    = true
-# dns_zone_name = "fgentic-dev"
+# DNS-as-code (on by default): Terraform creates the Cloud DNS zone + A records for the domain;
+# delegate it at the parent DNS with `terraform output dns_name_servers`.
+# domain     = "fgentic.fmind.ai"
+# manage_dns = false # when DNS lives elsewhere (registrar, Cloudflare, ...)
