@@ -33,3 +33,9 @@ options:
       - arg: --kubelet-arg=fail-cgroupv1=false
         nodeFilters:
           - server:*
+      # Hosts without br_netfilter (ChromeOS/termina kernels) cannot conntrack bridged traffic,
+      # so same-node pod->Service replies bypass un-DNAT and time out; masquerade-all forces the
+      # reply path through the node. Harmless elsewhere (services see the node IP as source).
+      - arg: --kube-proxy-arg=masquerade-all=true
+        nodeFilters:
+          - server:*
