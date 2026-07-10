@@ -31,7 +31,33 @@ spec:
   hostnames:
     - matrix.${server_name}
   rules:
-    - backendRefs:
+    # MSC3861: login/refresh/logout are served by MAS's compatibility layer, not Synapse —
+    # mirrors the path split of the ESS-generated Ingress. Longest-prefix precedence keeps the
+    # /_matrix catch-all below from shadowing these. Two rules: max 8 matches per rule.
+    - matches:
+        - path: { type: PathPrefix, value: /_matrix/client/api/v1/login }
+        - path: { type: PathPrefix, value: /_matrix/client/api/v1/refresh }
+        - path: { type: PathPrefix, value: /_matrix/client/api/v1/logout }
+        - path: { type: PathPrefix, value: /_matrix/client/r0/login }
+        - path: { type: PathPrefix, value: /_matrix/client/r0/refresh }
+        - path: { type: PathPrefix, value: /_matrix/client/r0/logout }
+      backendRefs:
+        - name: ess-matrix-authentication-service
+          port: 8080
+    - matches:
+        - path: { type: PathPrefix, value: /_matrix/client/v3/login }
+        - path: { type: PathPrefix, value: /_matrix/client/v3/refresh }
+        - path: { type: PathPrefix, value: /_matrix/client/v3/logout }
+        - path: { type: PathPrefix, value: /_matrix/client/unstable/login }
+        - path: { type: PathPrefix, value: /_matrix/client/unstable/refresh }
+        - path: { type: PathPrefix, value: /_matrix/client/unstable/logout }
+      backendRefs:
+        - name: ess-matrix-authentication-service
+          port: 8080
+    - matches:
+        - path: { type: PathPrefix, value: /_matrix }
+        - path: { type: PathPrefix, value: /_synapse }
+      backendRefs:
         - name: ess-synapse
           port: 8008
 ---
