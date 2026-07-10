@@ -67,6 +67,28 @@ stringData:
   username: mas
   password: ${PG_MAS}
 ---
+# ESS reads the synapse/MAS DB passwords from ITS namespace (matrix) while CNPG manages the
+# roles from the postgres namespace — same credentials, two Secrets each.
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg-synapse
+  namespace: matrix
+type: kubernetes.io/basic-auth
+stringData:
+  username: synapse
+  password: ${PG_SYNAPSE}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg-mas
+  namespace: matrix
+type: kubernetes.io/basic-auth
+stringData:
+  username: mas
+  password: ${PG_MAS}
+---
 apiVersion: v1
 kind: Secret
 metadata:
