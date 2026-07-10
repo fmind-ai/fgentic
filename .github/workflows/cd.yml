@@ -68,4 +68,5 @@ jobs:
           git add apps/matrix-a2a-bridge/deploy/helmrelease.yaml
           git diff --cached --quiet && exit 0
           git commit -m "chore(bridge): pin image sha-${GITHUB_SHA::7} [skip ci]"
+          git pull --rebase origin main # main may have moved during the build
           git push
