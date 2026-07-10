@@ -63,24 +63,15 @@ spec:
   ref:
     tag: v1.3.1
 ---
+# kagent charts come through an OCI-type HelmRepository (not chartRef->OCIRepository): Flux
+# appends the artifact digest as semver build metadata on chartRef pulls, and the kagent chart
+# stamps raw .Chart.Version into app.kubernetes.io/version — '+' is invalid in a label value.
 apiVersion: source.toolkit.fluxcd.io/v1
-kind: OCIRepository
-metadata:
-  name: kagent-crds
-  namespace: flux-system
-spec:
-  interval: 24h
-  url: oci://ghcr.io/kagent-dev/kagent/helm/kagent-crds
-  ref:
-    tag: "0.9.11"
----
-apiVersion: source.toolkit.fluxcd.io/v1
-kind: OCIRepository
+kind: HelmRepository
 metadata:
   name: kagent
   namespace: flux-system
 spec:
   interval: 24h
-  url: oci://ghcr.io/kagent-dev/kagent/helm/kagent
-  ref:
-    tag: "0.9.11"
+  type: oci
+  url: oci://ghcr.io/kagent-dev/kagent/helm
