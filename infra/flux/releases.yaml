@@ -109,23 +109,6 @@ spec:
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
-  name: agentgateway
-  namespace: agentgateway-system
-spec:
-  interval: 30m
-  dependsOn:
-    - name: agentgateway-crds
-  chartRef:
-    kind: OCIRepository
-    name: agentgateway
-    namespace: flux-system
-  # Control plane only; the data-plane proxy is spawned per-Gateway and shaped by
-  # AgentgatewayParameters (infra/agentgateway).
-  values: {}
----
-apiVersion: helm.toolkit.fluxcd.io/v2
-kind: HelmRelease
-metadata:
   name: kagent-crds
   namespace: kagent
 spec:
@@ -138,66 +121,3 @@ spec:
         kind: HelmRepository
         name: kagent
         namespace: flux-system
----
-apiVersion: helm.toolkit.fluxcd.io/v2
-kind: HelmRelease
-metadata:
-  name: kagent
-  namespace: kagent
-spec:
-  interval: 30m
-  dependsOn:
-    - name: kagent-crds
-  chart:
-    spec:
-      chart: kagent
-      version: "0.9.11"
-      sourceRef:
-        kind: HelmRepository
-        name: kagent
-        namespace: flux-system
-  # Model egress THROUGH agentgateway (OpenAI baseUrl -> single credential chokepoint); shared
-  # Postgres (no bundled DB); built-in k8s + helm agents enabled and exposed over A2A.
-  values:
-    providers:
-      default: openAI
-      openAI:
-        provider: OpenAI
-        model: ${llm_model}
-        apiKeySecretRef: kagent-model-auth
-        apiKeySecretKey: OPENAI_API_KEY
-        config:
-          baseUrl: http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080/v1
-    database:
-      postgres:
-        bundled:
-          enabled: false
-        urlFile: /var/run/secrets/kagent/url
-        vectorEnabled: false
-    controller:
-      volumes:
-        - name: kagent-db
-          secret:
-            secretName: kagent-db
-      volumeMounts:
-        - name: kagent-db
-          mountPath: /var/run/secrets/kagent
-          readOnly: true
-    rbac:
-      namespaces:
-        - kagent
-        - default
-    # Only the agents the platform maps to Matrix ghosts; every enabled agent runs a pod and can
-    # spend LLM budget (SPEC D7). Enable more deliberately, together with a bridge ghost mapping.
-    k8s-agent: { enabled: true }
-    helm-agent: { enabled: true }
-    kgateway-agent: { enabled: false }
-    istio-agent: { enabled: false }
-    promql-agent: { enabled: false }
-    observability-agent: { enabled: false }
-    argo-rollouts-agent: { enabled: false }
-    cilium-policy-agent: { enabled: false }
-    cilium-manager-agent: { enabled: false }
-    cilium-debug-agent: { enabled: false }
-    grafana-mcp: { enabled: false }
-    querydoc: { enabled: false }

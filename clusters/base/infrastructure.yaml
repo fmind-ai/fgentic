@@ -83,8 +83,11 @@ metadata:
   namespace: flux-system
 spec:
   interval: 30m
+  retryInterval: 2m
   path: ./infra/postgres
   prune: true
+  wait: true # gate dependents on the CNPG Cluster actually being healthy
+  timeout: 10m
   dependsOn:
     - name: controllers
     - name: platform-secrets
@@ -107,8 +110,11 @@ metadata:
   namespace: flux-system
 spec:
   interval: 30m
+  retryInterval: 2m
   path: ./infra/matrix
   prune: true
+  wait: true # ESS is the platform's core — dependents (the bridge) need it actually up
+  timeout: 20m
   dependsOn:
     - name: postgres
     - name: gateway
@@ -123,7 +129,8 @@ spec:
         name: platform-settings-overrides
         optional: true
 ---
-# agentgateway data plane (LLM egress + A2A route to kagent). Depends on the control plane + CRDs.
+# agentgateway control plane + data plane (LLM egress + A2A route to kagent). Depends on the
+# CRDs chart (controllers) and platform-secrets (the model credential).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -131,10 +138,14 @@ metadata:
   namespace: flux-system
 spec:
   interval: 30m
+  retryInterval: 2m
   path: ./infra/agentgateway
   prune: true
+  wait: true
+  timeout: 10m
   dependsOn:
     - name: controllers
+    - name: platform-secrets
   sourceRef:
     kind: GitRepository
     name: flux-system
@@ -146,7 +157,8 @@ spec:
         name: platform-settings-overrides
         optional: true
 ---
-# kagent extras (ModelConfig + sample Agent). The kagent HelmRelease is in the controllers layer.
+# kagent platform + extras (ModelConfig + sample Agent). Depends on postgres — the kagent
+# controller migrates its database at startup (which is why it cannot sit in controllers).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -154,11 +166,16 @@ metadata:
   namespace: flux-system
 spec:
   interval: 30m
+  retryInterval: 2m
   path: ./infra/kagent
   prune: true
+  wait: true
+  timeout: 10m
   dependsOn:
     - name: controllers
     - name: agentgateway
+    - name: postgres
+    - name: platform-secrets
   sourceRef:
     kind: GitRepository
     name: flux-system
