@@ -57,3 +57,21 @@ patches:
                   repository: matrix-a2a-bridge
                   tag: local
                   pullPolicy: Never
+  # Local Vertex AI auth: ambient credentials do not exist on k3d — point the LLM backend at the
+  # ADC JSON Secret created by scripts/local-adc.sh (kept out of git).
+  - patch: |
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: agentgateway
+        namespace: flux-system
+      spec:
+        patches:
+          - target:
+              kind: AgentgatewayBackend
+              name: llm
+            patch: |
+              - op: add
+                path: /spec/policies/auth/gcp/secretRef
+                value:
+                  name: gcp-adc

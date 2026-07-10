@@ -14,3 +14,4 @@ data:
   pg_backups_bucket: fgentic-ai-pg-backups
   ingress_ip_name: fgentic-ingress-ip
   llm_model: gemini-2.5-flash
+  vertex_region: europe-west1

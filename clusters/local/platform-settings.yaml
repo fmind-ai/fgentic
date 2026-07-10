@@ -15,10 +15,11 @@ data:
   # creates + trusts it) — *.localhost is not ACME-issuable.
   cluster_issuer: local-ca
   acme_email: mederic.hurier@fmind.dev # unused locally (ACME issuers stay idle)
-  # GCP settings are inert here: the local overlay strips the CNPG GCS backup + Workload Identity
-  # fields (clusters/local/kustomization.yaml) and the ingress-IP annotation is GKE-only.
-  gcp_project: unused-local
+  # The GCP project is REAL even locally: agentgateway calls Vertex AI with it (ADC secret via
+  # scripts/local-adc.sh). The backup/ingress settings stay inert (stripped by the overlay).
+  gcp_project: fgentic-ai
   pg_backups_bucket: unused-local
   ingress_ip_name: unused-local
   # The model agentgateway fronts (single credential/telemetry chokepoint for every agent).
   llm_model: gemini-2.5-flash
+  vertex_region: europe-west1
