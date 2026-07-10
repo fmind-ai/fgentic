@@ -1,14 +1,15 @@
 replicaCount: 1
 
 image:
-  repository: ghcr.io/fmind/matrix-a2a-bridge
+  repository: ghcr.io/fmind-ai/matrix-a2a-bridge
   pullPolicy: IfNotPresent
   tag: "" # set by CI to an immutable digest; defaults to .Chart.AppVersion
 
 # --- Bridge configuration (rendered into the Deployment env) ---
 config:
-  serverName: fgentic.fmind.ai
-  homeserverURL: http://synapse.matrix.svc.cluster.local:8008
+  serverName: fgentic.fmind.ai # overridden per cluster (deploy/helmrelease.yaml: ${server_name})
+  # ESS's Synapse Service (release name `ess` — infra/matrix/helmrelease.yaml keeps it fixed).
+  homeserverURL: http://ess-synapse.matrix.svc.cluster.local:8008
   # Route A2A THROUGH agentgateway by default (telemetry + the LLM-credential chokepoint on the
   # agent's own egress). Point directly at kagent to skip the gateway hop:
   #   http://kagent-controller.kagent.svc.cluster.local:8083

@@ -1,7 +1,11 @@
-# Flux Kustomization DAG for the Fgentic platform. `flux bootstrap ... --path=clusters/platform`
-# reconciles this directory; these Kustomizations then reconcile the infra/ paths in dependency
+# Flux Kustomization DAG for the Fgentic platform infra. `flux bootstrap ... --path=clusters/<env>`
+# reconciles the overlay; these Kustomizations then reconcile the infra/ paths in dependency
 # order. Sources/HelmReleases install their own CRDs; the only out-of-band step is the Gateway API
 # CRDs (one-time bootstrap — see the matrix-agents runbook).
+#
+# Every Kustomization substitutes flux post-build variables from the per-cluster
+# `platform-settings` ConfigMap (plus an optional `platform-settings-overrides` for ad-hoc
+# tweaks) — the single place a deployment sets its domain, GCP project, TLS issuer, and model.
 ---
 # SOPS-encrypted secrets, decrypted in-cluster by kustomize-controller (age key = secret sops-age
 # in flux-system). No dependsOn: it retries until each target namespace exists.
@@ -22,6 +26,13 @@ spec:
     provider: sops
     secretRef:
       name: sops-age
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true
 ---
 # Platform operators: cert-manager, Traefik, CNPG operator, agentgateway + kagent control planes.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
@@ -38,6 +49,13 @@ spec:
   sourceRef:
     kind: GitRepository
     name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true
 ---
 # Web gateway: ClusterIssuers + the multi-SAN TLS Gateway + HTTP->HTTPS redirect.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
@@ -54,6 +72,13 @@ spec:
   sourceRef:
     kind: GitRepository
     name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true
 ---
 # Shared CloudNativePG cluster + per-tenant databases. Role passwords come from platform-secrets.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
@@ -71,6 +96,13 @@ spec:
   sourceRef:
     kind: GitRepository
     name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true
 ---
 # The Matrix layer (ESS). Depends on Postgres (its databases/roles) + the gateway (HTTPRoutes).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
@@ -88,6 +120,13 @@ spec:
   sourceRef:
     kind: GitRepository
     name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true
 ---
 # agentgateway data plane (LLM egress + A2A route to kagent). Depends on the control plane + CRDs.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
@@ -104,6 +143,13 @@ spec:
   sourceRef:
     kind: GitRepository
     name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true
 ---
 # kagent extras (ModelConfig + sample Agent). The kagent HelmRelease is in the controllers layer.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
@@ -121,3 +167,10 @@ spec:
   sourceRef:
     kind: GitRepository
     name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true

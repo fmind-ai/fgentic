@@ -5,7 +5,7 @@ An open-standard, **federated** AI-agent collaboration platform: humans and AI a
 ## Layout
 
 - `apps/matrix-a2a-bridge/` — the custom Go bridge (a Matrix Application Service using `mautrix/go` + the `a2a-go` client). Self-contained: own Go module, Dockerfile, Helm chart, and `deploy/` (its Flux unit — Namespace + HelmRelease, reconciled by the `bridge` Kustomization).
-- `clusters/platform/` — Flux entrypoint: the Kustomization DAG reconciling `infra/` + `apps/`.
+- `clusters/` — Flux entrypoints: `base/` (the shared Kustomization DAG reconciling `infra/` + `apps/`, parameterized by flux post-build substitution) + per-cluster overlays `local/` (k3d) and `gcp/` (GKE reference), each carrying its `platform-settings` ConfigMap (domain, GCP project, TLS issuer, model).
 - `.github/workflows/` — CI (`ci.yml`: the same `mise run` gates as the git hooks + clean-tree assert) and CD (`cd.yml`: bridge image build → trivy scan → cosign sign → digest committed back into `deploy/helmrelease.yaml`).
 - `infra/terraform/` — GKE reference cluster (private nodes + Cloud NAT, Workload Identity, CNPG backups bucket; `bootstrap/` = one-time tfstate bucket, apply it first). Workloads stay provider-independent.
 - `infra/flux/` — platform Helm layer (HelmRepositories/OCIRepositories + HelmReleases).

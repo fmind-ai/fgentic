@@ -171,7 +171,7 @@ fgentic/
 
 ## 6. Delivery & Environments
 
-- **Production CD: Flux v2, pull-based GitOps.** `clusters/platform/` is the Flux entrypoint; Kustomizations reconcile `infra/` + `apps/` in dependency order. Commit to git → Flux reconciles. GitHub Actions is CI-only (build/test/scan/sign the bridge image, push to GHCR, commit the digest).
+- **Production CD: Flux v2, pull-based GitOps.** `clusters/` holds the Flux entrypoints (base DAG + per-cluster overlays); Kustomizations reconcile `infra/` + `apps/` in dependency order. Commit to git → Flux reconciles. GitHub Actions is CI-only (build/test/scan/sign the bridge image, push to GHCR, commit the digest).
 - **Helm-first manifests.** Platform components are `HelmRepository`/`OCIRepository` + `HelmRelease` with inline values; per-directory `kustomization.yaml` lists resources; `base` + overlays where environments differ.
 - **Secrets: SOPS + age.** Real secrets committed only as `*.sops.yaml`; decrypted in-cluster by Flux's kustomize-controller. `*.example` templates document each secret's shape. (Secrets here: ESS registration/signing keys, the appservice `as_token`/`hs_token`, Postgres role passwords, the agentgateway model key or Workload Identity, MAS encryption secrets.)
 - **Local development: k3d (or kind) + Skaffold.** The same charts/overlays deploy locally; the bridge has a Skaffold dev loop. Element X requires public HTTPS + MAS, so mobile testing uses a real domain; Element Web works locally over the k3d gateway.

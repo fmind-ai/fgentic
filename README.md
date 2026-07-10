@@ -83,14 +83,14 @@ Open Element Web at the local gateway, create a room, invite `@agent-assistant`,
 
 ## Production (Kubernetes, any provider)
 
-Production reconciles itself from git via **Flux v2** (`clusters/platform/` is the entrypoint). An optional GKE reference cluster lives in [`infra/terraform/`](infra/terraform/); the workloads are plain Kubernetes and run on any conformant cluster. Delivery model: [PLAN.md §6](PLAN.md); hardening and production profile: [SPEC.md](SPEC.md).
+Production reconciles itself from git via **Flux v2** (`clusters/<cluster>/` overlays over `clusters/base/` are the entrypoints). An optional GKE reference cluster lives in [`infra/terraform/`](infra/terraform/); the workloads are plain Kubernetes and run on any conformant cluster. Delivery model: [PLAN.md §6](PLAN.md); hardening and production profile: [SPEC.md](SPEC.md).
 
 ## Repository layout
 
 ```text
 apps/matrix-a2a-bridge/  # the Go bridge (mautrix/go appservice + a2a-go client) + its deploy/ Flux unit
 infra/{terraform,flux,gateway,postgres,matrix,agentgateway,kagent,bridges,secrets}
-clusters/platform/       # Flux entrypoint (Kustomization DAG)
+clusters/               # Flux entrypoints: base/ DAG + local/ (k3d) and gcp/ (GKE) overlays
 docs/adr/                # Architecture Decision Records
 .github/workflows/       # CI (mise gates) + CD (signed, digest-pinned bridge image)
 .agents/                 # AGENTS.md + operator runbooks

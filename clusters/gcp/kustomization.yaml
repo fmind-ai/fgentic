@@ -1,0 +1,10 @@
+# GCP (GKE) reference cluster overlay: the shared base DAG + GCP settings, no structural patches
+# (the base manifests ARE the reference profile: GCS backups, Workload Identity, ACME TLS).
+# Bootstrap: Terraform first (infra/terraform), then `flux bootstrap github ... --path=clusters/gcp`.
+# flux bootstrap adds ./flux-system below this directory.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - flux-system
+  - ../base
+  - platform-settings.yaml

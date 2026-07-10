@@ -9,7 +9,7 @@ metadata:
   namespace: kagent
 spec:
   description: General assistant for the Fgentic platform, reachable from Matrix over A2A.
-  modelConfig: agentgateway-claude
+  modelConfig: agentgateway-model
   systemMessage: |
     You are the platform assistant for the Fgentic platform. You help humans and other agents
     in shared Matrix rooms: answer questions, summarise, and coordinate tasks. Be concise and

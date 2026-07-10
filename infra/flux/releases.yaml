@@ -56,8 +56,8 @@ spec:
       type: LoadBalancer
       annotations:
         # Pin the Terraform-reserved static address by NAME (infra/terraform/vpc.tf) so DNS
-        # survives Service recreation. GKE-specific; ignored by other providers/k3d (SPEC §4 F2).
-        networking.gke.io/load-balancer-ip-addresses: fgentic-ingress-ip
+        # survives Service recreation. GKE-specific; ignored by other providers/k3d (SPEC §4 D2).
+        networking.gke.io/load-balancer-ip-addresses: ${ingress_ip_name}
     deployment:
       replicas: 1
     resources:
@@ -157,7 +157,7 @@ spec:
       default: openAI
       openAI:
         provider: OpenAI
-        model: claude-sonnet-5
+        model: ${llm_model}
         apiKeySecretRef: kagent-model-auth
         apiKeySecretKey: OPENAI_API_KEY
         config:

@@ -1,5 +1,5 @@
 # Application layer. Each app is wrapped in its own Flux Kustomization so it can depend on the
-# infra Kustomizations (HelmRelease.dependsOn can only reference other HelmReleases — SPEC §4 F1).
+# infra Kustomizations (HelmRelease.dependsOn can only reference other HelmReleases — SPEC §4 D1).
 # The bridge's deployable manifests live with the app (apps/matrix-a2a-bridge/deploy).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -18,3 +18,10 @@ spec:
   sourceRef:
     kind: GitRepository
     name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true

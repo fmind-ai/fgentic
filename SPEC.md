@@ -52,7 +52,7 @@ Each entry records the problem found in the first draft, the evidence, and what 
 
 ### D1 — Apps depend on infra via Flux Kustomizations (was: broken `dependsOn`)
 
-The draft's bridge **HelmRelease** listed Flux **Kustomizations** in `dependsOn` — but `HelmRelease.spec.dependsOn` only resolves other HelmReleases; the release would wait forever. **Now:** each app is wrapped in its own Flux `Kustomization` (`clusters/platform/apps.yaml` → `apps/matrix-a2a-bridge/deploy/`) that `dependsOn` the infra Kustomizations — the DAG stays homogeneous.
+The draft's bridge **HelmRelease** listed Flux **Kustomizations** in `dependsOn` — but `HelmRelease.spec.dependsOn` only resolves other HelmReleases; the release would wait forever. **Now:** each app is wrapped in its own Flux `Kustomization` (`clusters/base/apps.yaml` → `apps/matrix-a2a-bridge/deploy/`) that `dependsOn` the infra Kustomizations — the DAG stays homogeneous.
 
 ### D2 — The reserved ingress IP is pinned by name (was: orphaned)
 

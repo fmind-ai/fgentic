@@ -2,7 +2,7 @@
 # agentgateway Service; it forwards to the model provider below. The model credential lives ONLY
 # here (SOPS `model-secret`), so agents never see the raw key — the single model chokepoint.
 # agentgateway supports anthropic / openai / gemini / vertexai / bedrock; swap the provider block
-# and the model to retarget without touching any agent. Default here: latest Claude.
+# (and ${llm_model} in platform-settings) to retarget without touching any agent.
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayBackend
 metadata:
@@ -11,8 +11,8 @@ metadata:
 spec:
   ai:
     provider:
-      anthropic:
-        model: claude-sonnet-5
+      gemini:
+        model: ${llm_model}
   policies:
     auth:
       secretRef:

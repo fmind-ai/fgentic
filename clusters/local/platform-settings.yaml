@@ -1,0 +1,24 @@
+# Deployment values for the LOCAL (k3d) cluster, substituted into every manifest by the Flux
+# Kustomizations in clusters/base (postBuild). This ConfigMap is the single place a deployment
+# configures its domain, TLS issuer, cloud project, and model — manifests carry no environment
+# specifics. For ad-hoc tweaks without editing git-tracked defaults, create a ConfigMap named
+# `platform-settings-overrides` in flux-system (optional, wins over this one).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-settings
+  namespace: flux-system
+data:
+  # Matrix server_name — user IDs are @name:fgentic.localhost; hosts are chat./matrix./auth. of it.
+  server_name: fgentic.localhost
+  # cert-manager ClusterIssuer for the shared Gateway: the openssl local CA (scripts/local-ca.sh
+  # creates + trusts it) — *.localhost is not ACME-issuable.
+  cluster_issuer: local-ca
+  acme_email: mederic.hurier@fmind.dev # unused locally (ACME issuers stay idle)
+  # GCP settings are inert here: the local overlay strips the CNPG GCS backup + Workload Identity
+  # fields (clusters/local/kustomization.yaml) and the ingress-IP annotation is GKE-only.
+  gcp_project: unused-local
+  pg_backups_bucket: unused-local
+  ingress_ip_name: unused-local
+  # The model agentgateway fronts (single credential/telemetry chokepoint for every agent).
+  llm_model: gemini-2.5-flash

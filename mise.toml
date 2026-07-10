@@ -8,9 +8,9 @@
 run_auto_install = false # fail fast in hooks/CI on a missing tool (never silently install)
 
 # Pinned infra toolchain (reproducible local + CI). The app pins its own Go toolchain separately.
-# flux is installed out-of-band (no mise registry entry).
 [tools]
 dprint = "latest"
+flux2 = "latest"
 gitleaks = "latest"
 lefthook = "latest"
 actionlint = "latest"
@@ -125,7 +125,7 @@ run = "skaffold dev"
 # --- Local cluster lifecycle (k3d) ---
 
 [tasks."cluster:up"]
-description = "Create the local k3d cluster (exposes host ports 8080/8443)"
+description = "Create the local k3d cluster (binds loopback 80/443 for *.fgentic.localhost)"
 dir = "infra"
 run = """
 docker info >/dev/null 2>&1 || { echo "Error: Docker daemon is not running"; exit 1; }
@@ -135,3 +135,10 @@ k3d cluster create --config k3d-config.yaml
 [tasks."cluster:down"]
 description = "Delete the local k3d cluster"
 run = "k3d cluster delete fgentic"
+
+[tasks."bridge:load"]
+description = "Build the bridge image and side-load it into the local k3d cluster (matrix-a2a-bridge:local)"
+run = """
+docker build -t matrix-a2a-bridge:local apps/matrix-a2a-bridge
+k3d image import --cluster fgentic matrix-a2a-bridge:local
+"""

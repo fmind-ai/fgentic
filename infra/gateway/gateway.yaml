@@ -1,14 +1,16 @@
-# Production shared Gateway. cert-manager watches the annotation and provisions the single
-# multi-SAN `matrix-tls` Secret (SANs: fgentic.fmind.ai + chat/matrix/auth.fgentic.fmind.ai) via HTTP-01.
-# HTTP-01 cannot issue wildcards, so listeners are per-host; every HTTPS listener references the
-# one `matrix-tls` secret, so cert-manager issues a single certificate covering all of them.
+# The shared web Gateway — identical for every environment; only ${server_name} and
+# ${cluster_issuer} come from platform-settings (letsencrypt-prod on GCP, local-ca on k3d).
+# cert-manager watches the annotation and provisions the single multi-SAN `matrix-tls` Secret
+# (SANs: apex + chat/matrix/auth). ACME HTTP-01 cannot issue wildcards, so listeners are
+# per-host; every HTTPS listener references the one `matrix-tls` secret, so cert-manager issues
+# a single certificate covering all of them.
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
   name: fgentic-gateway
   namespace: gateway
   annotations:
-    cert-manager.io/cluster-issuer: letsencrypt-prod
+    cert-manager.io/cluster-issuer: ${cluster_issuer}
 spec:
   gatewayClassName: traefik
   listeners:
@@ -18,11 +20,11 @@ spec:
       allowedRoutes:
         namespaces:
           from: All
-    # Apex — serves /.well-known/matrix/{client,server} delegation so user IDs are @name:fgentic.fmind.ai.
+    # Apex — serves /.well-known/matrix/{client,server} delegation so user IDs are @name:${server_name}.
     - name: https-wellknown
       protocol: HTTPS
       port: 443
-      hostname: fgentic.fmind.ai
+      hostname: ${server_name}
       tls:
         mode: Terminate
         certificateRefs:
@@ -34,7 +36,7 @@ spec:
     - name: https-chat
       protocol: HTTPS
       port: 443
-      hostname: chat.fgentic.fmind.ai
+      hostname: chat.${server_name}
       tls:
         mode: Terminate
         certificateRefs:
@@ -46,7 +48,7 @@ spec:
     - name: https-matrix
       protocol: HTTPS
       port: 443
-      hostname: matrix.fgentic.fmind.ai
+      hostname: matrix.${server_name}
       tls:
         mode: Terminate
         certificateRefs:
@@ -58,7 +60,7 @@ spec:
     - name: https-auth
       protocol: HTTPS
       port: 443
-      hostname: auth.fgentic.fmind.ai
+      hostname: auth.${server_name}
       tls:
         mode: Terminate
         certificateRefs:

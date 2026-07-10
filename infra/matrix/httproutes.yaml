@@ -12,7 +12,7 @@ spec:
       namespace: gateway
       sectionName: https-chat
   hostnames:
-    - chat.fgentic.fmind.ai
+    - chat.${server_name}
   rules:
     - backendRefs:
         - name: ess-element-web
@@ -29,7 +29,7 @@ spec:
       namespace: gateway
       sectionName: https-matrix
   hostnames:
-    - matrix.fgentic.fmind.ai
+    - matrix.${server_name}
   rules:
     - backendRefs:
         - name: ess-synapse
@@ -46,14 +46,14 @@ spec:
       namespace: gateway
       sectionName: https-auth
   hostnames:
-    - auth.fgentic.fmind.ai
+    - auth.${server_name}
   rules:
     - backendRefs:
         - name: ess-matrix-authentication-service
           port: 8080
 ---
-# Apex delegation: /.well-known/matrix/{client,server} at https://fgentic.fmind.ai so user IDs are
-# @name:fgentic.fmind.ai while the actual homeserver lives at matrix.fgentic.fmind.ai.
+# Apex delegation: /.well-known/matrix/{client,server} at the apex host so user IDs are
+# @name:${server_name} while the actual homeserver lives at matrix.${server_name}.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
@@ -65,7 +65,7 @@ spec:
       namespace: gateway
       sectionName: https-wellknown
   hostnames:
-    - fgentic.fmind.ai
+    - ${server_name}
   rules:
     - matches:
         - path:

@@ -1,15 +1,15 @@
 # kagent talks OpenAI-protocol to agentgateway (baseUrl below); agentgateway forwards to the real
-# provider (Claude, by default) holding the ONLY model credential. So kagent carries no raw model
-# key — only the agentgateway endpoint. (apiKeySecretRef is a placeholder token agentgateway
-# ignores for ambient/keyless setups; for a dev key, put it in the SOPS `kagent-model-auth`.)
+# provider (${llm_model} from platform-settings) holding the ONLY model credential. So kagent
+# carries no raw model key — only the agentgateway endpoint. (apiKeySecretRef is a placeholder
+# token agentgateway ignores; for a caller-side dev key, put it in the SOPS `kagent-model-auth`.)
 apiVersion: kagent.dev/v1alpha2
 kind: ModelConfig
 metadata:
-  name: agentgateway-claude
+  name: agentgateway-model
   namespace: kagent
 spec:
   provider: OpenAI
-  model: claude-sonnet-5
+  model: ${llm_model}
   apiKeySecretRef: kagent-model-auth
   apiKeySecretKey: OPENAI_API_KEY
   openAI:

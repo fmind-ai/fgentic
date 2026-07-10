@@ -1,0 +1,16 @@
+# Deployment values for the GCP (GKE) reference cluster — see clusters/local/platform-settings.yaml
+# for how this ConfigMap is consumed. Values here must match infra/terraform/terraform.tfvars
+# (project, bucket, ingress IP name) — Terraform provisions what these names point at.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-settings
+  namespace: flux-system
+data:
+  server_name: fgentic.fmind.ai
+  cluster_issuer: letsencrypt-prod # switch to letsencrypt-staging while testing DNS/ACME
+  acme_email: mederic.hurier@fmind.dev
+  gcp_project: fgentic-ai
+  pg_backups_bucket: fgentic-ai-pg-backups
+  ingress_ip_name: fgentic-ingress-ip
+  llm_model: gemini-2.5-flash

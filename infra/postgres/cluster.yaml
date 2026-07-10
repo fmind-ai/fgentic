@@ -13,20 +13,20 @@ spec:
   storage:
     size: 10Gi
 
-  # WAL archiving + base backups to GCS (SPEC §4 F12): the bucket + Workload-Identity-bound GSA
+  # WAL archiving + base backups to GCS (SPEC §4 D12): the bucket + Workload-Identity-bound GSA
   # are provisioned by infra/terraform (backups.tf); the KSA annotation below completes the
-  # keyless binding. GKE-only — on k3d/other providers, remove this block and the annotation
-  # (backups then need an alternative object store, e.g. MinIO).
+  # keyless binding. GKE-only — the local overlay (clusters/local) strips this block and the
+  # serviceAccountTemplate (backups elsewhere need an alternative object store, e.g. MinIO).
   backup:
     retentionPolicy: 30d
     barmanObjectStore:
-      destinationPath: gs://fgentic-ai-pg-backups
+      destinationPath: gs://${pg_backups_bucket}
       googleCredentials:
         gkeEnvironment: true # Workload Identity, no key file
   serviceAccountTemplate:
     metadata:
       annotations:
-        iam.gke.io/gcp-service-account: fgentic-pg-backup@fgentic-ai.iam.gserviceaccount.com
+        iam.gke.io/gcp-service-account: fgentic-pg-backup@${gcp_project}.iam.gserviceaccount.com
 
   # PodMonitor for the observability layer — enable once the Prometheus Operator CRDs exist
   # (SPEC §9), otherwise the operator cannot create it:

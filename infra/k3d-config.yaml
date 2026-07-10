@@ -1,5 +1,6 @@
-# Local k3d cluster for Fgentic. Exposes host ports 8080/8443 through the Traefik/Gateway
-# LoadBalancer so Element Web + the Synapse client API are reachable at *.localhost. Flannel
+# Local k3d cluster for Fgentic. Binds loopback 80/443 to the Traefik/Gateway LoadBalancer so
+# Element Web + Synapse + MAS are reachable at their canonical https://*.fgentic.localhost URLs
+# (ESS bakes https public URLs into its config — a port suffix would break MAS/Element). Flannel
 # CNI does not enforce NetworkPolicy locally (that is a GKE Dataplane-V2 concern) — manifests
 # stay identical; the policy is simply inert on k3d.
 apiVersion: k3d.io/v1alpha5
@@ -10,10 +11,10 @@ servers: 1
 agents: 0
 image: rancher/k3s:v1.31.5-k3s1
 ports:
-  - port: 8080:80
+  - port: 127.0.0.1:80:80
     nodeFilters:
       - loadbalancer
-  - port: 8443:443
+  - port: 127.0.0.1:443:443
     nodeFilters:
       - loadbalancer
 options:

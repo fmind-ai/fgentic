@@ -21,7 +21,7 @@ An open-standard AI-agent collaboration platform: humans + agents share Matrix r
 
 1. **(Optional) Provision a cluster** — `cd infra/terraform && cp terraform.tfvars.example terraform.tfvars` (set your `/32`), then `terraform init && terraform apply`. Or use any conformant cluster / local k3d (`mise run cluster:up`).
 1. **Gateway API CRDs** (the one out-of-band install): `kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.6.0/standard-install.yaml`.
-1. **Bootstrap Flux**: `flux bootstrap github --owner=fmind --repository=fgentic --path=clusters/platform --personal`.
+1. **Bootstrap Flux**: `flux bootstrap github --owner=fmind-ai --repository=fgentic --path=clusters/local`.
 1. **SOPS-age key**: `kubectl -n flux-system create secret generic sops-age --from-file=age.agekey="$HOME/.config/sops/age/keys.txt"`.
 1. **Create the secrets** — fill the `infra/secrets/*.sops.yaml.example` templates, `sops -e -i` each to `*.sops.yaml`, and uncomment them in `infra/secrets/kustomization.yaml`. Generate the bridge registration first: `cd apps/matrix-a2a-bridge && REGISTRATION_PATH=./registration.yaml go run ./cmd/bridge -generate-registration`, then paste its `as_token`/`hs_token` into the registration Secret (both `bridge` and `matrix` namespaces).
 1. **DNS A records** — point `fgentic.fmind.ai`, `chat.`, `matrix.`, `auth.` at the ingress IP (`terraform output -raw ingress_ip`); cert-manager then issues the multi-SAN Let's Encrypt cert on `fgentic-gateway`.
@@ -30,7 +30,7 @@ An open-standard AI-agent collaboration platform: humans + agents share Matrix r
 ## Runbook: add an agent
 
 1. **Declare the agent** — add a kagent `Agent` (with `a2aConfig`) in `infra/kagent/` referencing the `agentgateway-claude` ModelConfig; commit. kagent serves it over A2A at `…/api/a2a/kagent/<name>` with an AgentCard.
-1. **Map a ghost** — add `agent-<name>: {namespace: kagent, name: <name>}` to the bridge's `agents` map (chart `values.yaml` in `clusters/platform/apps.yaml` or `apps/matrix-a2a-bridge/chart/values.yaml`); commit. The ghost `@agent-<name>:fgentic.fmind.ai` becomes invokable (the map is the allowlist).
+1. **Map a ghost** — add `agent-<name>: {namespace: kagent, name: <name>}` to the bridge's `agents` map (chart `values.yaml` in `clusters/base/apps.yaml` or `apps/matrix-a2a-bridge/chart/values.yaml`); commit. The ghost `@agent-<name>:fgentic.fmind.ai` becomes invokable (the map is the allowlist).
 1. **Use it** — invite `@agent-<name>` into a room and `@mention` it.
 
 ## Runbook: add an external-network bridge (interop)
