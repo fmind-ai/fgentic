@@ -52,6 +52,20 @@ spec:
       enabled: false # we manage our own shared Gateway (infra/gateway)
     gatewayClass:
       enabled: true # provides GatewayClass "traefik"
+    # Traefik's Gateway provider matches listener ports against its entryPoint PORTS (not the
+    # Service's exposed ports) — bind the real 80/443 so the shared Gateway stays portable
+    # across providers; the sysctl (kubelet-safe since k8s 1.22) permits the non-root bind.
+    ports:
+      web:
+        port: 80
+        exposedPort: 80
+      websecure:
+        port: 443
+        exposedPort: 443
+    podSecurityContext:
+      sysctls:
+        - name: net.ipv4.ip_unprivileged_port_start
+          value: "0"
     service:
       type: LoadBalancer
       annotations:
