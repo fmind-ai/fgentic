@@ -32,7 +32,8 @@ echo "==> Substituting + validating raw infra manifests"
 manifest_list="$(find infra clusters -type f \( -name '*.yaml' -o -name '*.yml' \) \
   ! -name 'kustomization.yaml' \
   ! -name '*.sops.yaml' \
-  ! -path '*/terraform/*')"
+  ! -path '*/terraform/*' \
+  ! -path '*/flux-system/*')"
 while IFS= read -r manifest; do
   flux envsubst --strict < "${manifest}"
   echo "---"
