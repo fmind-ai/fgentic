@@ -9,6 +9,11 @@ scan:
     - misconfig
     - secret
     - vuln
+  # Flux's generated component manifests are upstream-owned (its controllers legitimately
+  # manage cluster Secrets — KSV-0041 et al.); scanning them only flags Flux itself.
+  skip-dirs:
+    - clusters/local/flux-system
+    - clusters/gcp/flux-system
 vulnerability:
   ignore-unfixed: true
 misconfiguration:

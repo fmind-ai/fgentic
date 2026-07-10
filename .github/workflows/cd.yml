@@ -48,7 +48,10 @@ jobs:
             ${{ env.IMAGE_REPOSITORY }}:latest
             ${{ env.IMAGE_REPOSITORY }}:sha-${{ github.sha }}
       - name: Scan pushed image (trivy)
-        run: mise exec -- trivy image --exit-code 1 --severity HIGH,CRITICAL "${{ env.IMAGE_REPOSITORY }}@${{ steps.build.outputs.digest }}"
+        # Vulnerabilities only: the repo trivy.yaml also enables the license scanner, which
+        # flags the distroless base's GPL OS packages — a deliberate, documented inclusion
+        # (SPEC §10), not a CI-actionable finding.
+        run: mise exec -- trivy image --scanners vuln --exit-code 1 --severity HIGH,CRITICAL "${{ env.IMAGE_REPOSITORY }}@${{ steps.build.outputs.digest }}"
       - name: Install cosign
         uses: sigstore/cosign-installer@v3
       - name: Sign the image (keyless OIDC)

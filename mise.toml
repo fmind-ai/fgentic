@@ -88,7 +88,7 @@ run = "bash scripts/kubeconform.sh"
 [tasks."check:scan"]
 alias = "cn"
 description = "Scan IaC/manifests/Dockerfiles for misconfigurations (trivy config)"
-run = "trivy config ."
+run = "trivy config --config trivy.yaml ." # pin the repo config (a user-level trivy.yaml would otherwise win)
 
 [tasks."check:leaks"]
 alias = "cs"
