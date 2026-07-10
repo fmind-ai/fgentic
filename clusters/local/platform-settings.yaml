@@ -21,5 +21,6 @@ data:
   pg_backups_bucket: unused-local
   ingress_ip_name: unused-local
   # The model agentgateway fronts (single credential/telemetry chokepoint for every agent).
-  llm_model: gemini-2.5-flash
+  # Vertex AI OpenAI-compatible endpoint requires <publisher>/<model>.
+  llm_model: google/gemini-2.5-flash
   vertex_region: europe-west1

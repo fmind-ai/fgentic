@@ -13,5 +13,6 @@ data:
   gcp_project: fgentic-ai
   pg_backups_bucket: fgentic-ai-pg-backups
   ingress_ip_name: fgentic-ingress-ip
-  llm_model: gemini-2.5-flash
+  # Vertex AI OpenAI-compatible endpoint requires <publisher>/<model>.
+  llm_model: google/gemini-2.5-flash
   vertex_region: europe-west1
