@@ -67,11 +67,15 @@ patches:
         namespace: flux-system
       spec:
         patches:
-          - target:
+          - patch: |
+              apiVersion: agentgateway.dev/v1alpha1
               kind: AgentgatewayBackend
-              name: llm
-            patch: |
-              - op: add
-                path: /spec/policies/auth/gcp/secretRef
-                value:
-                  name: gcp-adc
+              metadata:
+                name: llm
+                namespace: agentgateway-system
+              spec:
+                policies:
+                  auth:
+                    gcp:
+                      secretRef:
+                        name: gcp-adc
