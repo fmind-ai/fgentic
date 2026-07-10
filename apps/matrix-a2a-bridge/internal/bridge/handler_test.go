@@ -132,3 +132,32 @@ func TestIsOwnUser(t *testing.T) {
 		}
 	}
 }
+
+func membershipEvent(target string, membership event.Membership) *event.Event {
+	return &event.Event{
+		Sender:   id.NewUserID("alice", ownServer),
+		RoomID:   "!room:fgentic.fmind.ai",
+		StateKey: &target,
+		Content:  event.Content{Parsed: &event.MemberEventContent{Membership: membership}},
+	}
+}
+
+// Invites that must NOT be accepted never touch the homeserver (the test AppService has no
+// client — reaching Intent would panic): unmapped ghosts, foreign homeservers, regular users,
+// and non-invite membership changes.
+func TestHandleMembership_IgnoresNonEligibleInvites(t *testing.T) {
+	b := testBridge(t)
+	for name, evt := range map[string]*event.Event{
+		"unmapped ghost":     membershipEvent("@agent-unknown:"+ownServer, event.MembershipInvite),
+		"foreign homeserver": membershipEvent("@agent-k8s:evil.example", event.MembershipInvite),
+		"regular user":       membershipEvent("@alice:"+ownServer, event.MembershipInvite),
+		"join not invite":    membershipEvent("@agent-k8s:"+ownServer, event.MembershipJoin),
+		"missing state key": {
+			Sender: id.NewUserID("alice", ownServer), RoomID: "!room:fgentic.fmind.ai",
+			Content: event.Content{Parsed: &event.MemberEventContent{Membership: event.MembershipInvite}},
+		},
+	} {
+		b.HandleMembership(t.Context(), evt) // must be a no-op
+		_ = name
+	}
+}

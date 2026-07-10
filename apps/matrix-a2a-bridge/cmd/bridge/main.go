@@ -87,6 +87,8 @@ func run(cfg config.Config, log *slog.Logger) error {
 
 	ep := appservice.NewEventProcessor(as)
 	ep.On(event.EventMessage, br.HandleMessage)
+	// Invites to the bot/ghosts must be accepted for Synapse to deliver room traffic at all.
+	ep.On(event.StateMember, br.HandleMembership)
 	ep.Start(ctx)
 
 	// as.Start() runs the blocking HTTP server that receives homeserver AS transactions.

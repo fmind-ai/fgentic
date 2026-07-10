@@ -111,6 +111,42 @@ func (b *Bridge) HandleMessage(ctx context.Context, evt *event.Event) {
 	}
 }
 
+// HandleMembership auto-accepts invites addressed to the bridge's own users (the bot and MAPPED
+// agent ghosts). This is what activates a room: Synapse only pushes room traffic to the
+// appservice once one of its namespaced users is a member, so "invite @agent-x, then @mention
+// it" hinges on the invite being accepted. Invites for unmapped agent-like users are ignored
+// (the allowlist is the agents map — SPEC §4 D6).
+func (b *Bridge) HandleMembership(ctx context.Context, evt *event.Event) {
+	content := evt.Content.AsMember()
+	if content == nil || content.Membership != event.MembershipInvite || evt.StateKey == nil {
+		return
+	}
+	target := id.UserID(*evt.StateKey)
+	if target.Homeserver() != b.cfg.ServerName {
+		return
+	}
+	localpart := target.Localpart()
+	if localpart != b.as.Registration.SenderLocalpart {
+		if !strings.HasPrefix(localpart, b.cfg.GhostPrefix) {
+			return
+		}
+		if _, ok := b.agents.Lookup(localpart); !ok {
+			b.log.Warn("ignoring invite for unmapped ghost", "ghost", localpart, "room", evt.RoomID)
+			return
+		}
+	}
+	intent := b.as.Intent(target)
+	if err := intent.EnsureRegistered(ctx); err != nil {
+		b.log.Error("ensure invited user registered", "user", target, "err", err)
+		return
+	}
+	if err := intent.EnsureJoined(ctx, evt.RoomID); err != nil {
+		b.log.Error("join invited room", "user", target, "room", evt.RoomID, "err", err)
+		return
+	}
+	b.log.Info("accepted room invite", "user", target, "room", evt.RoomID)
+}
+
 // dispatch delegates one prompt to one agent ghost and posts the reply back.
 func (b *Bridge) dispatch(ctx context.Context, evt *event.Event, localpart, prompt string) {
 	ref, ok := b.agents.Lookup(localpart)
