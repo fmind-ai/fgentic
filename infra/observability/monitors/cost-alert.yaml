@@ -11,7 +11,7 @@ spec:
       rules:
         - alert: LLMTokenBurnHigh
           # >100k tokens over 15m sustained — tune per deployment budget.
-          expr: sum(increase(gen_ai_client_token_usage_sum[15m])) > 100000
+          expr: sum(increase(agentgateway_gen_ai_client_token_usage_sum[15m])) > 100000
           for: 5m
           labels:
             severity: warning
