@@ -72,5 +72,5 @@ spec:
             type: PathPrefix
             value: /.well-known/matrix
       backendRefs:
-        - name: ess-well-known-web
-          port: 8080
+        - name: ess-well-known # the haproxy-fronted well-known service (port name haproxy-wkd)
+          port: 8010

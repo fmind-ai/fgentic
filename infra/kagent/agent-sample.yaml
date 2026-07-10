@@ -9,16 +9,18 @@ metadata:
   namespace: kagent
 spec:
   description: General assistant for the Fgentic platform, reachable from Matrix over A2A.
-  modelConfig: agentgateway-model
-  systemMessage: |
-    You are the platform assistant for the Fgentic platform. You help humans and other agents
-    in shared Matrix rooms: answer questions, summarise, and coordinate tasks. Be concise and
-    factual; when you are unsure, say so. You are addressed by @mention and reply in the room.
-  a2aConfig:
-    skills:
-      - id: general-assistance
-        name: General assistance
-        description: Answer questions and help coordinate tasks in a shared room.
-        tags:
-          - general
-          - coordination
+  type: Declarative
+  declarative:
+    modelConfig: agentgateway-model
+    systemMessage: |
+      You are the platform assistant for the Fgentic platform. You help humans and other agents
+      in shared Matrix rooms: answer questions, summarise, and coordinate tasks. Be concise and
+      factual; when you are unsure, say so. You are addressed by @mention and reply in the room.
+    a2aConfig:
+      skills:
+        - id: general-assistance
+          name: General assistance
+          description: Answer questions and help coordinate tasks in a shared room.
+          tags:
+            - general
+            - coordination

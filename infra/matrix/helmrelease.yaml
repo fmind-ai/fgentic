@@ -73,13 +73,20 @@ spec:
         host: chat.${server_name}
         tlsEnabled: false
 
+    # Lean profile: no admin console, no voice/video stack (LiveKit). Enable deliberately —
+    # each adds a public host + workloads.
+    elementAdmin:
+      enabled: false
+    matrixRTC:
+      enabled: false
+
     wellKnownDelegation:
-      # Serves /.well-known/matrix/{client,server}. We ALSO force-disable room encryption for the
-      # whole server here so agent rooms stay plaintext (ADR 0008; revisit for federation — SPEC
-      # §8.4) — the bridge is not E2EE-aware. `additional.*` entries are JSON strings.
+      # Serves /.well-known/matrix/{client,server} at the serverName apex (no host key in its
+      # ingress schema — the apex IS the serverName). We ALSO force-disable room encryption for
+      # the whole server here so agent rooms stay plaintext (ADR 0008; revisit for federation —
+      # SPEC §8.4) — the bridge is not E2EE-aware. `additional.*` entries are JSON strings.
       enabled: true
       ingress:
-        host: ${server_name}
         tlsEnabled: false
       additional:
         client: |
