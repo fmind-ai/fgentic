@@ -23,7 +23,7 @@ spec:
   values:
     image:
       repository: ghcr.io/fmind-ai/matrix-a2a-bridge
-      tag: sha-6c61d737e7d637d4580af3bdea316580e9d76c82@sha256:24d5bed5f4895f40c19e7887125051347df586b5867bc73e8a30fdf02779165e # CI overwrites with sha-<git>@sha256:<digest>
+      tag: sha-6bc5efefae9520529268da4ca7399e3abefd53d2@sha256:a9452fa9f2ca88aed89864500d12065dbacaa25b932ff3e83dbd248a10f8f948 # CI overwrites with sha-<git>@sha256:<digest>
     config:
       serverName: ${server_name}
     metrics:
