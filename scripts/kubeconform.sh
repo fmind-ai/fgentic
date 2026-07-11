@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# Schema-validate Kubernetes manifests: render the bridge Helm chart and lint it + the raw
-# infra manifests with kubeconform. Manifests carry ${vars} substituted in-cluster by Flux
+# Schema-validate Kubernetes manifests: render the bridge and pinned tracing Helm charts, then
+# lint them plus the raw infra manifests with kubeconform. Manifests carry ${vars} substituted
+# in-cluster by Flux
 # (postBuild.substituteFrom platform-settings), so each file is rendered through
 # `flux envsubst --strict` first, using the GCP reference settings as the canonical value set —
 # a missing/undeclared variable fails the build. CRDs (Gateway API, cert-manager, CloudNativePG,
@@ -20,6 +21,23 @@ settings_env="$(yq -r '.data | to_entries[] | .key + "=" + .value' "${SETTINGS}"
 while IFS='=' read -r key value; do
   export "${key}=${value}"
 done <<< "${settings_env}"
+
+echo "==> Rendering + validating the pinned tracing charts"
+TRACING_RELEASE=infra/observability/tracing-helmreleases.yaml
+for release in otel-collector jaeger; do
+  chart="$(yq -er "select(.metadata.name == \"${release}\") | .spec.chart.spec.chart" "${TRACING_RELEASE}")"
+  version="$(yq -er "select(.metadata.name == \"${release}\") | .spec.chart.spec.version" "${TRACING_RELEASE}")"
+  source="$(yq -er "select(.metadata.name == \"${release}\") | .spec.chart.spec.sourceRef.name" "${TRACING_RELEASE}")"
+  repository="$(yq -er "select(.kind == \"HelmRepository\" and .metadata.name == \"${source}\") | .spec.url" infra/flux/sources.yaml)"
+  yq -e "select(.metadata.name == \"${release}\") | .spec.values" "${TRACING_RELEASE}" \
+    | flux envsubst --strict \
+    | helm template "${release}" "${chart}" \
+      --repo "${repository}" \
+      --version "${version}" \
+      --namespace monitoring \
+      --values - \
+    | "${KUBECONFORM[@]}"
+done
 
 echo "==> Rendering + validating apps/matrix-a2a-bridge/chart"
 if [ -d apps/matrix-a2a-bridge/chart ]; then

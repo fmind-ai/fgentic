@@ -1,0 +1,69 @@
+# Every workload namespace may submit OTLP to the central Collector, as required by the platform
+# trace contract. Only Prometheus in this namespace may scrape its internal telemetry.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: otel-collector
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: otel-collector
+      app.kubernetes.io/name: opentelemetry-collector
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector: {}
+      ports:
+        - { protocol: TCP, port: 4317 }
+        - { protocol: TCP, port: 4318 }
+    - from:
+        - podSelector: {}
+      ports:
+        - { protocol: TCP, port: 8888 }
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: jaeger
+              app.kubernetes.io/name: jaeger
+      ports:
+        - { protocol: TCP, port: 4317 }
+---
+# Jaeger is an internal backend, not another platform ingress. Only the Collector can ingest
+# spans; monitoring peers can query/scrape it for Grafana and Prometheus.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jaeger
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: jaeger
+      app.kubernetes.io/name: jaeger
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: otel-collector
+              app.kubernetes.io/name: opentelemetry-collector
+      ports:
+        - { protocol: TCP, port: 4317 }
+    - from:
+        - podSelector: {}
+      ports:
+        - { protocol: TCP, port: 16686 }
+        - { protocol: TCP, port: 8888 }
+  egress: []
