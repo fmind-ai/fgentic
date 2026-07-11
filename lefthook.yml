@@ -1,8 +1,8 @@
 # Git hooks — thin delegators to `mise run` so hooks and CI run the identical checks.
 # mise owns WHAT each task does; lefthook only decides WHEN. Formatters run first (staged,
 # restage their fixes), then the secret scan, then the full check. See lefthook + mise skills.
-# The repo root has no Go module; `mise` is the globally-installed binary. Root `mise run`
-# tasks delegate app-scoped work into apps/matrix-a2a-bridge/mise.toml.
+# The repo root has no language module; `mise` is the globally-installed binary. Root `mise run`
+# tasks delegate app-scoped work into each app's mise.toml.
 pre-commit:
   parallel: false # priority-ordered: formatters restage before `check` reads from disk
   commands:
@@ -20,6 +20,12 @@ pre-commit:
       priority: 1
       root: "apps/matrix-a2a-bridge/" # scope to the app; its own mise.toml formats Go
       glob: "*.go"
+      run: mise run format
+      stage_fixed: true
+    format:policy:
+      priority: 1
+      root: "apps/synapse-federation-policy/"
+      glob: "*.{py,json,md,toml,yaml,yml}"
       run: mise run format
       stage_fixed: true
     check:leaks:

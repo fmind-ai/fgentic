@@ -1,7 +1,27 @@
 # Convert the canonical Matrix release into homeserver A of the provider-free federation lab.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
+components:
+  - ../../../apps/synapse-federation-policy
 patches:
+  # Scope only the namespace-neutral policy objects. A global namespace transformer would also
+  # move shared Gateway resources out of their owning namespace when this Component is composed.
+  - target:
+      version: v1
+      kind: ConfigMap
+      name: fgentic-synapse-federation-policy-v1
+    patch: |
+      - op: add
+        path: /metadata/namespace
+        value: matrix
+  - target:
+      version: v1
+      kind: ConfigMap
+      name: fgentic-federation-policy
+    patch: |
+      - op: add
+        path: /metadata/namespace
+        value: matrix
   - target:
       group: helm.toolkit.fluxcd.io
       version: v2
@@ -57,6 +77,14 @@ patches:
                 - key: ca.crt
                   path: ca.crt
             mountContext: both
+          - name: federation-policy-module
+            configMap:
+              name: fgentic-synapse-federation-policy-v1
+            mountContext: both
+          - name: federation-policy
+            configMap:
+              name: fgentic-federation-policy
+            mountContext: both
       - op: add
         path: /spec/values/synapse/extraVolumeMounts
         value:
@@ -64,6 +92,21 @@ patches:
             mountPath: /etc/fgentic-ca
             readOnly: true
             mountContext: both
+          - name: federation-policy-module
+            mountPath: /opt/fgentic/synapse-modules
+            readOnly: true
+            mountContext: both
+          - name: federation-policy
+            mountPath: /etc/fgentic/federation-policy
+            readOnly: true
+            mountContext: both
+      - op: add
+        path: /spec/values/synapse/extraEnv
+        value:
+          - name: PYTHONPATH
+            value: /opt/fgentic/synapse-modules
+          - name: PYTHONDONTWRITEBYTECODE
+            value: "1"
       - op: add
         path: /spec/values/synapse/additional
         value:
@@ -80,6 +123,12 @@ patches:
               trusted_key_servers:
                 - server_name: ${federation_partner_server_name}
               federation_whitelist_endpoint_enabled: true
+          20-federation-policy:
+            config: |
+              modules:
+                - module: fgentic_federation_policy.FederationPolicyModule
+                  config:
+                    policy_path: /etc/fgentic/federation-policy/policy.json
   - target:
       group: gateway.networking.k8s.io
       version: v1

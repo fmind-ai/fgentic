@@ -56,11 +56,32 @@ spec:
               - key: ca.crt
                 path: ca.crt
           mountContext: both
+        - name: federation-policy-module
+          configMap:
+            name: fgentic-synapse-federation-policy-v1
+          mountContext: both
+        - name: federation-policy
+          configMap:
+            name: fgentic-federation-policy
+          mountContext: both
       extraVolumeMounts:
         - name: federation-ca
           mountPath: /etc/fgentic-ca
           readOnly: true
           mountContext: both
+        - name: federation-policy-module
+          mountPath: /opt/fgentic/synapse-modules
+          readOnly: true
+          mountContext: both
+        - name: federation-policy
+          mountPath: /etc/fgentic/federation-policy
+          readOnly: true
+          mountContext: both
+      extraEnv:
+        - name: PYTHONPATH
+          value: /opt/fgentic/synapse-modules
+        - name: PYTHONDONTWRITEBYTECODE
+          value: "1"
       additional:
         10-federation:
           config: |
@@ -75,6 +96,12 @@ spec:
             trusted_key_servers:
               - server_name: ${server_name}
             federation_whitelist_endpoint_enabled: true
+        20-federation-policy:
+          config: |
+            modules:
+              - module: fgentic_federation_policy.FederationPolicyModule
+                config:
+                  policy_path: /etc/fgentic/federation-policy/policy.json
       appservices: []
 
     matrixAuthenticationService:

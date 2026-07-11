@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+configMapGenerator:
+  - name: fgentic-synapse-federation-policy-v1
+    files:
+      - fgentic_federation_policy.py=src/fgentic_federation_policy/__init__.py
+    options:
+      disableNameSuffixHash: true
+      immutable: true
+  - name: fgentic-federation-policy
+    files:
+      - policy.json=policy/policy.json
+    options:
+      disableNameSuffixHash: true

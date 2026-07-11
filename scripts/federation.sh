@@ -22,6 +22,8 @@ images.
 Environment:
   FGENTIC_FED_CLUSTER  must be fgentic-fed when set
   FGENTIC_FED_TIMEOUT  reconciliation timeout (default: 20m)
+  FGENTIC_FED_POLICY_PROBE
+                       deny (default) or allow; allow changes only the ephemeral Git snapshot
   FGENTIC_DEMO_CACHE_DIR
                        optional persistent BuildKit cache directory for the source image
 EOF
@@ -42,11 +44,22 @@ cluster_name="${FGENTIC_FED_CLUSTER:-${FEDERATION_CLUSTER}}"
 	die "FGENTIC_FED_CLUSTER must be ${FEDERATION_CLUSTER}"
 
 case "$1" in
-up | down)
+up)
+	case "${FGENTIC_FED_POLICY_PROBE:-deny}" in
+	allow | deny) ;;
+	*) die "FGENTIC_FED_POLICY_PROBE must be allow or deny" ;;
+	esac
+	export FGENTIC_FED_POLICY_PROBE="${FGENTIC_FED_POLICY_PROBE:-deny}"
 	export FGENTIC_DEMO_PROFILE=federation
 	export FGENTIC_DEMO_CLUSTER="${cluster_name}"
 	export FGENTIC_DEMO_TIMEOUT="${FGENTIC_FED_TIMEOUT:-20m}"
-	exec "${ROOT_DIR}/scripts/demo.sh" "$1"
+	exec "${ROOT_DIR}/scripts/demo.sh" up
+	;;
+down)
+	export FGENTIC_DEMO_PROFILE=federation
+	export FGENTIC_DEMO_CLUSTER="${cluster_name}"
+	export FGENTIC_DEMO_TIMEOUT="${FGENTIC_FED_TIMEOUT:-20m}"
+	exec "${ROOT_DIR}/scripts/demo.sh" down
 	;;
 -h | --help)
 	usage
