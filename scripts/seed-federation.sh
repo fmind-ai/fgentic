@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Prove partner federation, room-version/ACL policy, and rejection of a third homeserver.
+# Prove partner federation, room/ACL hardening, callback policy, and a denied third homeserver.
 set -euo pipefail
 
 readonly SERVER_A="org-a.fgentic.localhost"
@@ -10,6 +10,9 @@ readonly MATRIX_B_URL="https://matrix.${SERVER_B}"
 readonly MATRIX_C_URL="https://matrix.${SERVER_C}"
 readonly CA_CERT="${FGENTIC_CA_DIR:-${HOME}/.local/share/fgentic/local-ca}/ca.crt"
 readonly FEDERATION_LOOPBACK="127.0.0.2"
+readonly POLICY_EVENT_TYPE="com.fgentic.blocked"
+readonly POLICY_LOG_PREFIX="fgentic_federation_policy_violation "
+readonly POLICY_PROBE_MODE="${FGENTIC_FED_POLICY_PROBE:-deny}"
 readonly WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-federation-seed.XXXXXX")"
 
 ALICE_TOKEN=""
@@ -174,6 +177,28 @@ verify_control_whitelist() {
 		'.whitelist_enabled == true and (.whitelist | sort) == ([$a, $b, $c] | sort)' >/dev/null
 }
 
+wait_for_mounted_policy_mode() {
+	local namespace="$1"
+	local deadline=$((SECONDS + 180))
+	local policy
+	while ((SECONDS < deadline)); do
+		policy="$(kubectl --namespace "${namespace}" exec statefulset/ess-synapse-main -- \
+			cat /etc/fgentic/federation-policy/policy.json 2>/dev/null || true)"
+		if jq -e --arg type "${POLICY_EVENT_TYPE}" --arg mode "${POLICY_PROBE_MODE}" '
+	      .version == 1 and
+	      if $mode == "allow" then
+	        (.allowed_event_types | index($type)) != null
+	      else
+	        (.allowed_event_types | index($type)) == null
+	      end
+	    ' <<<"${policy}" >/dev/null 2>&1; then
+			return
+		fi
+		sleep 2
+	done
+	die "${namespace} did not project federation policy mode ${POLICY_PROBE_MODE} within 3 minutes"
+}
+
 initial_sync_token() {
 	local matrix_url="$1"
 	local token="$2"
@@ -289,13 +314,15 @@ assert_forbidden_response() {
 
 create_federated_room() {
 	local output_variable="$1"
+	local room_name="${2:-Fgentic Federation Proof}"
 	local document response created_room_id
 	# This is the lab's only supported federated-room constructor: the ACL is initial state, so no
 	# federated event can race ahead of the participant-only policy.
-	document="$(jq --null-input --compact-output --arg a "${SERVER_A}" --arg b "${SERVER_B}" '{
-    name: "Fgentic Federation Proof",
-    preset: "private_chat",
-    visibility: "private",
+	document="$(jq --null-input --compact-output --arg a "${SERVER_A}" --arg b "${SERVER_B}" \
+		--arg name "${room_name}" '{
+	    name: $name,
+	    preset: "private_chat",
+	    visibility: "private",
     room_version: "12",
     creation_content: {"m.federate": true},
     initial_state: [
@@ -317,6 +344,143 @@ create_federated_room() {
 		"${MATRIX_A_URL}/_matrix/client/v3/createRoom")"
 	created_room_id="$(jq -er '.room_id' <<<"${response}")"
 	printf -v "${output_variable}" '%s' "${created_room_id}"
+}
+
+invite_and_join_partner() {
+	local encoded_room="$1"
+	local invite_document encoded_a
+	invite_document="$(jq --null-input --compact-output --arg user_id "@bob:${SERVER_B}" \
+		'{user_id: $user_id}')"
+	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" --request POST \
+		--header "Authorization: Bearer ${ALICE_TOKEN}" \
+		--header 'Content-Type: application/json' --data "${invite_document}" \
+		"${MATRIX_A_URL}/_matrix/client/v3/rooms/${encoded_room}/invite" >/dev/null
+	encoded_a="$(jq --null-input --raw-output --arg value "${SERVER_A}" '$value | @uri')"
+	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" --request POST \
+		--header "Authorization: Bearer ${BOB_TOKEN}" \
+		--header 'Content-Type: application/json' --data '{}' \
+		"${MATRIX_B_URL}/_matrix/client/v3/join/${encoded_room}?server_name=${encoded_a}" >/dev/null
+	verify_membership "${MATRIX_A_URL}" "${ALICE_TOKEN}" "${encoded_room}"
+	verify_membership "${MATRIX_B_URL}" "${BOB_TOKEN}" "${encoded_room}"
+}
+
+verify_local_policy_event() {
+	local encoded_room="$1"
+	local encoded_event="$2"
+	local event_id="$3"
+	local marker="$4"
+	local event
+	event="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
+		--header "Authorization: Bearer ${BOB_TOKEN}" \
+		"${MATRIX_B_URL}/_matrix/client/v3/rooms/${encoded_room}/event/${encoded_event}")"
+	jq -e --arg event_id "${event_id}" --arg sender "@bob:${SERVER_B}" \
+		--arg type "${POLICY_EVENT_TYPE}" --arg marker "${marker}" '
+	    .event_id == $event_id and .sender == $sender and .type == $type and
+	    .content.probe_id == $marker
+	  ' <<<"${event}" >/dev/null || die "homeserver B did not retain the local policy probe"
+}
+
+wait_for_policy_violation() {
+	local room_id="$1"
+	local event_id="$2"
+	local marker="$3"
+	local deadline=$((SECONDS + 180))
+	local logs payload
+	while ((SECONDS < deadline)); do
+		logs="$(kubectl --namespace matrix logs statefulset/ess-synapse-main \
+			--since=10m 2>/dev/null || true)"
+		# Parse the module's structured record instead of matching a Matrix event ID as shell text.
+		# Event IDs are opaque and commonly begin with `$`.
+		payload="$(printf '%s\n' "${logs}" |
+			sed -n "s/^.*${POLICY_LOG_PREFIX}//p" |
+			jq --compact-output --arg event_id "${event_id}" \
+			'select(.event == $event_id)' | tail -n 1 || true)"
+		if [ -z "${payload}" ]; then
+			sleep 2
+			continue
+		fi
+		if rg --fixed-strings "${marker}" <<<"${logs}" >/dev/null; then
+			die "federation policy logs exposed denied event content"
+		fi
+		jq -e --arg event_id "${event_id}" --arg room_id "${room_id}" \
+			--arg server "${SERVER_B}" --arg type "${POLICY_EVENT_TYPE}" '
+	      (keys | sort) == ([
+	        "allowed_event_type_count", "allowed_server_count", "event", "invite_rule",
+	        "policy_digest", "reason", "room", "server", "type"
+	      ] | sort) and
+	      .event == $event_id and .room == $room_id and .server == $server and
+	      .type == $type and .reason == "event_type_not_allowed" and
+	      .invite_rule == "allow_from_allowed_servers" and
+	      (.allowed_event_type_count | type == "number" and . > 0) and
+	      (.allowed_server_count | type == "number" and . == 2) and
+	      (.policy_digest | type == "string" and test("^[0-9a-f]{64}$"))
+	    ' <<<"${payload}" >/dev/null ||
+			die "federation policy violation log is not the content-free canonical record"
+		return
+	done
+	die "homeserver A did not log policy denial for ${event_id} within 3 minutes"
+}
+
+verify_remote_policy_event_absent() {
+	local encoded_room="$1"
+	local encoded_event="$2"
+	local event_id="$3"
+	local response="${WORK_DIR}/policy-event-on-a.json"
+	local deadline=$((SECONDS + 20))
+	local status
+	while ((SECONDS < deadline)); do
+		status="$(request_status "${response}" \
+			--header "Authorization: Bearer ${ALICE_TOKEN}" \
+			"${MATRIX_A_URL}/_matrix/client/v3/rooms/${encoded_room}/event/${encoded_event}")"
+		case "${status}" in
+		404)
+			jq -e '.errcode == "M_NOT_FOUND"' "${response}" >/dev/null ||
+				die "homeserver A returned a non-Matrix missing-event response"
+			;;
+		200) die "homeserver A retained policy-denied event ${event_id}" ;;
+		*) die "homeserver A event lookup failed while proving denial (HTTP ${status})" ;;
+		esac
+		sleep 2
+	done
+}
+
+wait_for_remote_policy_event() {
+	local encoded_room="$1"
+	local encoded_event="$2"
+	local event_id="$3"
+	local marker="$4"
+	local response="${WORK_DIR}/policy-event-on-a.json"
+	local deadline=$((SECONDS + 180))
+	local status logs
+	while ((SECONDS < deadline)); do
+		status="$(request_status "${response}" \
+			--header "Authorization: Bearer ${ALICE_TOKEN}" \
+			"${MATRIX_A_URL}/_matrix/client/v3/rooms/${encoded_room}/event/${encoded_event}")"
+		case "${status}" in
+		200)
+			jq -e --arg event_id "${event_id}" --arg sender "@bob:${SERVER_B}" \
+				--arg type "${POLICY_EVENT_TYPE}" --arg marker "${marker}" '
+		        .event_id == $event_id and .sender == $sender and .type == $type and
+		        .content.probe_id == $marker
+		      ' "${response}" >/dev/null ||
+				die "homeserver A returned an invalid allowed policy probe"
+			logs="$(kubectl --namespace matrix logs statefulset/ess-synapse-main \
+				--since=10m 2>/dev/null || true)"
+			if printf '%s\n' "${logs}" | rg --fixed-strings "${POLICY_LOG_PREFIX}" |
+				rg --fixed-strings "\"event\":\"${event_id}\"" >/dev/null; then
+				die "homeserver A logged an allowed policy probe as a violation"
+			fi
+			return
+			;;
+		404)
+			jq -e '.errcode == "M_NOT_FOUND"' "${response}" >/dev/null ||
+				die "homeserver A returned a non-Matrix missing-event response"
+			;;
+		*) die "homeserver A event lookup failed while proving allow (HTTP ${status})" ;;
+		esac
+		sleep 2
+	done
+	die "policy-allowed event ${event_id} did not reach homeserver A within 3 minutes"
 }
 
 sign_federation_request() {
@@ -392,6 +556,10 @@ for command in curl date jq kubectl openssl; do
 	require_command "${command}"
 done
 [ -r "${CA_CERT}" ] || die "local CA certificate not found: ${CA_CERT}"
+case "${POLICY_PROBE_MODE}" in
+allow | deny) ;;
+*) die "FGENTIC_FED_POLICY_PROBE must be allow or deny" ;;
+esac
 
 alice_password="$(bootstrap_secret_value alice-password)"
 bob_password="$(bootstrap_secret_value bob-password)"
@@ -412,24 +580,13 @@ verify_server "${SERVER_C}"
 verify_whitelist "${MATRIX_A_URL}" "${ALICE_TOKEN}"
 verify_whitelist "${MATRIX_B_URL}" "${BOB_TOKEN}"
 verify_control_whitelist "${MATRIX_C_URL}" "${CHARLIE_TOKEN}"
+wait_for_mounted_policy_mode matrix
+wait_for_mounted_policy_mode matrix-b
 
 create_federated_room room_id
 encoded_room="$(jq --null-input --raw-output --arg value "${room_id}" '$value | @uri')"
-
-invite_document="$(jq --null-input --compact-output --arg user_id "@bob:${SERVER_B}" \
-	'{user_id: $user_id}')"
-curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" --request POST \
-	--header "Authorization: Bearer ${ALICE_TOKEN}" \
-	--header 'Content-Type: application/json' --data "${invite_document}" \
-	"${MATRIX_A_URL}/_matrix/client/v3/rooms/${encoded_room}/invite" >/dev/null
+invite_and_join_partner "${encoded_room}"
 encoded_a="$(jq --null-input --raw-output --arg value "${SERVER_A}" '$value | @uri')"
-curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" --request POST \
-	--header "Authorization: Bearer ${BOB_TOKEN}" \
-	--header 'Content-Type: application/json' --data '{}' \
-	"${MATRIX_B_URL}/_matrix/client/v3/join/${encoded_room}?server_name=${encoded_a}" >/dev/null
-
-verify_membership "${MATRIX_A_URL}" "${ALICE_TOKEN}" "${encoded_room}"
-verify_membership "${MATRIX_B_URL}" "${BOB_TOKEN}" "${encoded_room}"
 verify_federated_room_policy "${MATRIX_A_URL}" "${ALICE_TOKEN}" "${encoded_room}"
 verify_federated_room_policy "${MATRIX_B_URL}" "${BOB_TOKEN}" "${encoded_room}"
 
@@ -486,6 +643,36 @@ event_b="$(jq -er '.event_id' <<<"${event_b_response}")"
 wait_for_event "${MATRIX_A_URL}" "${ALICE_TOKEN}" "${room_id}" "${alice_since}" "${event_b}" \
 	"@bob:${SERVER_B}" "${marker_b}"
 
+# The drop callback intentionally splits the local DAG. Keep the denied event as the final event
+# in a throwaway room so this proof cannot poison the bidirectional acceptance room above.
+create_federated_room policy_room_id "Fgentic Federation Policy Probe"
+encoded_policy_room="$(jq --null-input --raw-output --arg value "${policy_room_id}" '$value | @uri')"
+invite_and_join_partner "${encoded_policy_room}"
+policy_marker="policy-content-must-not-be-logged-${RANDOM}-$$"
+policy_document="$(jq --null-input --compact-output --arg marker "${policy_marker}" \
+	--arg expected "${POLICY_PROBE_MODE}" '{probe_id: $marker, expected: $expected}')"
+policy_response="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
+	--request PUT --header "Authorization: Bearer ${BOB_TOKEN}" \
+	--header 'Content-Type: application/json' --data "${policy_document}" \
+	"${MATRIX_B_URL}/_matrix/client/v3/rooms/${encoded_policy_room}/send/${POLICY_EVENT_TYPE}/policy-${RANDOM}-$$")"
+policy_event_id="$(jq -er '.event_id' <<<"${policy_response}")"
+encoded_policy_event="$(jq --null-input --raw-output --arg value "${policy_event_id}" '$value | @uri')"
+verify_local_policy_event "${encoded_policy_room}" "${encoded_policy_event}" \
+	"${policy_event_id}" "${policy_marker}"
+case "${POLICY_PROBE_MODE}" in
+allow)
+	wait_for_remote_policy_event "${encoded_policy_room}" "${encoded_policy_event}" \
+		"${policy_event_id}" "${policy_marker}"
+	policy_outcome="allowed on A after Flux policy reconcile"
+	;;
+deny)
+	wait_for_policy_violation "${policy_room_id}" "${policy_event_id}" "${policy_marker}"
+	verify_remote_policy_event_absent "${encoded_policy_room}" "${encoded_policy_event}" \
+		"${policy_event_id}"
+	policy_outcome="retained on B, absent on A"
+	;;
+esac
+
 local_room_document="$(jq --null-input --compact-output '{
   name: "Fgentic Local-only Proof",
   preset: "private_chat",
@@ -522,6 +709,7 @@ Federation proof passed without a provider connection.
 Room:        ${room_id}
 A -> B:      ${event_a}
 B -> A:      ${event_b}
+Policy ${POLICY_PROBE_MODE}: ${policy_event_id} (${policy_outcome})
 C rejected:  join and signed federation sends
 Local-only:  ${local_room_id} (default room version 12)
 Homeservers: ${SERVER_A}, ${SERVER_B}; denied control ${SERVER_C}

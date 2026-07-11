@@ -1,0 +1,69 @@
+[settings.task]
+run_auto_install = false
+
+[tools]
+dprint = "latest"
+python = "3.13.14"
+uv = "0.11.28"
+
+[tasks.install]
+alias = "i"
+description = "Sync the locked Python development environment"
+run = "uv sync"
+
+[tasks.format]
+alias = "f"
+description = "Format Python, JSON, Markdown, TOML, and YAML"
+depends = ["format:python", "format:dprint"]
+
+[tasks."format:python"]
+description = "Format Python sources and imports"
+run = [
+  "uv run ruff check --select I --fix --force-exclude .",
+  "uv run ruff format --force-exclude .",
+]
+
+[tasks."format:dprint"]
+description = "Format config and markup"
+run = "dprint fmt"
+
+[tasks.check]
+alias = "c"
+description = "Run all static and dependency checks"
+depends = ["check:format", "check:lint", "check:types", "check:vuln"]
+
+[tasks."check:format"]
+alias = "cf"
+description = "Verify source, metadata, and lock-file formatting"
+run = [
+  "uv run validate-pyproject pyproject.toml",
+  "uv run ruff format --check .",
+  "dprint check",
+  "cmp -s LICENSE ../../LICENSE",
+  "uv lock --check",
+]
+
+[tasks."check:lint"]
+alias = "cl"
+description = "Lint Python sources"
+run = "uv run ruff check --force-exclude ."
+
+[tasks."check:types"]
+alias = "ct"
+description = "Type-check Python sources"
+run = "uv run ty check"
+
+[tasks."check:vuln"]
+alias = "cv"
+description = "Audit locked dependencies for known vulnerabilities"
+run = "uv run pip-audit"
+
+[tasks.test]
+alias = "t"
+description = "Run the unit suite with branch coverage"
+run = "uv run pytest --cov=fgentic_federation_policy --cov-branch --cov-report=term-missing --cov-fail-under=100"
+
+[tasks.build]
+alias = "b"
+description = "Build the wheel and source distribution"
+run = "uv build"

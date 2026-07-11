@@ -1,13 +1,12 @@
 # Root task vocabulary for the Fgentic platform (infra + orchestration).
-# The Go bridge under apps/matrix-a2a-bridge is self-contained and carries its OWN mise.toml;
-# this root delegates the app-scoped tasks to it (format:app, check:app, test:app, build) so
-# `mise run <task>` at the repo root drives the whole monorepo. mise is the single source of
-# truth for WHAT each check does; lefthook (git hooks) and GitHub Actions only decide WHEN.
+# Each application under apps/ is self-contained and carries its own mise.toml. This root delegates
+# app-scoped tasks so `mise run <task>` drives the whole monorepo. mise is the single source of truth
+# for WHAT each check does; lefthook (git hooks) and GitHub Actions only decide WHEN.
 
 [settings.task]
 run_auto_install = false # fail fast in hooks/CI on a missing tool (never silently install)
 
-# Pinned infra toolchain (reproducible local + CI). The app pins its own Go toolchain separately.
+# Pinned infra toolchain (reproducible local + CI). Each app pins its own toolchain separately.
 [tools]
 age = "latest"
 dprint = "latest"
@@ -36,17 +35,32 @@ yq = "latest"
 
 [tasks.install]
 alias = "i"
-description = "Install git hooks and the pinned toolchain"
-depends = ["install:hooks"]
+description = "Install git hooks and application toolchains"
+depends = ["install:hooks", "install:apps"]
 
 [tasks."install:hooks"]
 description = "Install git hooks (lefthook)"
 run = "lefthook install"
 
+[tasks."install:apps"]
+description = "Install all application toolchains and locked environments"
+depends = ["install:bridge", "install:policy"]
+
+[tasks."install:bridge"]
+description = "Install the bridge toolchain"
+run = "mise --cd apps/matrix-a2a-bridge install"
+
+[tasks."install:policy"]
+description = "Install the Synapse policy toolchain and locked environment"
+run = [
+  "mise --cd apps/synapse-federation-policy install",
+  "mise --cd apps/synapse-federation-policy run install",
+]
+
 [tasks.format]
 alias = "f"
-description = "Format everything (config/markup, Terraform, and the app)"
-depends = ["format:dprint", "format:terraform", "format:app"]
+description = "Format everything (config/markup, Terraform, and applications)"
+depends = ["format:dprint", "format:terraform", "format:app", "format:policy"]
 
 [tasks."format:dprint"]
 description = "Format JSON, Markdown, TOML, YAML at the repo root + infra/docs (dprint)"
@@ -61,9 +75,14 @@ description = "Format the application (delegates to apps/matrix-a2a-bridge)"
 dir = "apps/matrix-a2a-bridge"
 run = "mise run format"
 
+[tasks."format:policy"]
+description = "Format the Synapse federation policy application"
+dir = "apps/synapse-federation-policy"
+run = "mise run format"
+
 [tasks.check]
 alias = "c"
-description = "Run every static check (config, Terraform, manifests, scan, secrets, workflows, app)"
+description = "Run every static check (config, Terraform, manifests, scans, workflows, and apps)"
 depends = [
   "check:format",
   "check:terraform",
@@ -87,6 +106,7 @@ depends = [
   "check:mautrix-bridges",
   "check:workflows",
   "check:app",
+  "check:policy",
 ]
 
 [tasks."check:format"]
@@ -221,15 +241,25 @@ description = "Run the application's static checks (delegates to apps/matrix-a2a
 dir = "apps/matrix-a2a-bridge"
 run = "mise run check"
 
+[tasks."check:policy"]
+description = "Run the Synapse federation policy static checks"
+dir = "apps/synapse-federation-policy"
+run = "mise run check"
+
 [tasks."test:app"]
 description = "Run the application test suite (delegates to apps/matrix-a2a-bridge)"
 dir = "apps/matrix-a2a-bridge"
 run = "mise run test"
 
+[tasks."test:policy"]
+description = "Run the Synapse federation policy unit suite"
+dir = "apps/synapse-federation-policy"
+run = "mise run test"
+
 [tasks.test]
 alias = "t"
 description = "Run deterministic application and pinned external-bridge runtime tests"
-depends = ["test:app", "test:mautrix-bridges"]
+depends = ["test:app", "test:policy", "test:mautrix-bridges"]
 
 [tasks."test:integration"]
 description = "Run the bridge's kind-based Matrix appservice integration test"
@@ -252,9 +282,18 @@ run = "mise run eval:models"
 
 [tasks.build]
 alias = "b"
-description = "Build the production application image (delegates to apps/matrix-a2a-bridge)"
+description = "Build all application artifacts"
+depends = ["build:bridge", "build:policy"]
+
+[tasks."build:bridge"]
+description = "Build the production bridge image"
 dir = "apps/matrix-a2a-bridge"
 run = "mise run build:image"
+
+[tasks."build:policy"]
+description = "Build the standalone Synapse policy package"
+dir = "apps/synapse-federation-policy"
+run = "mise run build"
 
 [tasks.watch]
 alias = "w"
@@ -290,6 +329,10 @@ run = "bash scripts/federation.sh up"
 [tasks."fed:down"]
 description = "Delete only the owned fgentic-fed federation cluster"
 run = "bash scripts/federation.sh down"
+
+[tasks."fed:policy-reload"]
+description = "Prove a Flux policy allow/deny reload without restarting Synapse"
+run = "bash scripts/reload-federation-policy.sh"
 
 [tasks."bridge:load"]
 description = "Build the bridge image and side-load it into the local k3d cluster (matrix-a2a-bridge:local)"

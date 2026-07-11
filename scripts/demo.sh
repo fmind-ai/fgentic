@@ -9,6 +9,8 @@ readonly DEMO_SERVER_NAME="fgentic.localhost"
 readonly FEDERATION_CLUSTER_NAME="fgentic-fed"
 readonly FEDERATION_SERVER_NAME="org-a.fgentic.localhost"
 readonly FEDERATION_LOOPBACK="127.0.0.2"
+readonly FEDERATION_POLICY_PATH="apps/synapse-federation-policy/policy/policy.json"
+readonly FEDERATION_POLICY_EVENT_TYPE="com.fgentic.blocked"
 readonly MAS_ADMIN_CLIENT_ID="01KX8D3M0AD3M0ADM1NC13NT01"
 readonly SOURCE_BASE_IMAGE="alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40"
 readonly SOURCE_GIT_PACKAGES="git=2.52.0-r0 git-daemon=2.52.0-r0 busybox-extras=1.37.0-r30"
@@ -21,6 +23,8 @@ Environment:
   FGENTIC_DEMO_CLUSTER       k3d cluster name (default: fgentic-demo)
   FGENTIC_DEMO_TIMEOUT       reconciliation timeout (default: 15m)
   FGENTIC_DEMO_CACHE_DIR     optional persistent BuildKit cache directory
+  FGENTIC_FED_POLICY_PROBE   federation profile only: deny (default) or allow; allow mutates only
+                             the ephemeral Git snapshot used by the disposable lab
   FGENTIC_LLM_PROVIDER       demo (default), vllm, vertex, mistral, anthropic,
                              openai, or azure-openai
   FGENTIC_LLM_MODEL          model identifier; required for API profiles except Vertex
@@ -155,17 +159,46 @@ snapshot_source() {
 		FED_GATEWAY_IP="${FEDERATION_GATEWAY_IP}" yq --inplace \
 			'.data.federation_gateway_ip = strenv(FED_GATEWAY_IP)' \
 			"${SNAPSHOT_DIR}/${OVERLAY_PATH}/platform-settings.yaml"
+		configure_federation_policy_snapshot
 	fi
 
-	git -C "${SNAPSHOT_DIR}" init --quiet --initial-branch main
+	# Flux reports Git artifacts as `sha1:<40 hex>` in the pinned source-controller contract.
+	# Force that object format even when the caller globally defaults new repositories to SHA-256.
+	git -C "${SNAPSHOT_DIR}" init --quiet --object-format=sha1 --initial-branch main
 	git -C "${SNAPSHOT_DIR}" add --all
 	git -C "${SNAPSHOT_DIR}" \
 		-c user.name='Fgentic demo' -c user.email='demo@localhost' \
 		commit --quiet --message='chore: create ephemeral demo source'
+	SOURCE_REVISION="$(git -C "${SNAPSHOT_DIR}" rev-parse HEAD)"
+	[[ "${SOURCE_REVISION}" =~ ^[0-9a-f]{40}$ ]] || die "invalid ephemeral Git revision"
 	SOURCE_CONTEXT="${WORK_DIR}/source-image"
 	mkdir -p "${SOURCE_CONTEXT}"
 	git clone --quiet --bare "${SNAPSHOT_DIR}" "${SOURCE_CONTEXT}/repo.git"
 	git --git-dir="${SOURCE_CONTEXT}/repo.git" update-server-info
+}
+
+configure_federation_policy_snapshot() {
+	local policy_file="${SNAPSHOT_DIR}/${FEDERATION_POLICY_PATH}"
+	local next_policy
+	[ -f "${policy_file}" ] || die "federation policy not found: ${FEDERATION_POLICY_PATH}"
+	jq -e '.allowed_event_types | type == "array"' "${policy_file}" >/dev/null ||
+		die "federation policy allowed_event_types must be an array"
+
+	case "${FEDERATION_POLICY_PROBE}" in
+	deny)
+		jq -e --arg event_type "${FEDERATION_POLICY_EVENT_TYPE}" \
+			'.allowed_event_types | index($event_type) == null' "${policy_file}" >/dev/null ||
+			die "canonical federation policy must deny ${FEDERATION_POLICY_EVENT_TYPE}"
+		;;
+	allow)
+		next_policy="${policy_file}.next"
+		jq --arg event_type "${FEDERATION_POLICY_EVENT_TYPE}" \
+			'.allowed_event_types |= (. + [$event_type] | unique)' \
+			"${policy_file}" >"${next_policy}"
+		mv "${next_policy}" "${policy_file}"
+		;;
+	*) die "unsupported federation policy probe mode: ${FEDERATION_POLICY_PROBE}" ;;
+	esac
 }
 
 build_and_load_images() {
@@ -220,6 +253,9 @@ build_image() {
 }
 
 apply_source_server() {
+	local actual_revision
+	local expected_revision="main@sha1:${SOURCE_REVISION}"
+	local source_deadline
 	kubectl apply --filename - >/dev/null <<EOF
 apiVersion: apps/v1
 kind: Deployment
@@ -302,9 +338,20 @@ spec:
   ref:
     branch: main
 EOF
-	flux reconcile source git flux-system --timeout=2m >/dev/null
-	kubectl --namespace flux-system wait gitrepository/flux-system \
-		--for=condition=ready --timeout=2m
+	# A replaced in-cluster source pod can briefly serve the previous Git artifact through an
+	# existing connection. Reconcile until Flux proves it fetched this snapshot's exact commit.
+	actual_revision=""
+	source_deadline=$((SECONDS + 120))
+	while ((SECONDS < source_deadline)); do
+		flux reconcile source git flux-system --timeout=2m >/dev/null
+		actual_revision="$(kubectl --namespace flux-system get gitrepository flux-system \
+			--output jsonpath='{.status.artifact.revision}')"
+		[ "${actual_revision}" = "${expected_revision}" ] && break
+		sleep 2
+	done
+	[ "${actual_revision}" = "${expected_revision}" ] ||
+		die "Flux fetched ${actual_revision:-no revision}, expected ${expected_revision}"
+	echo "Flux fetched exact ephemeral revision ${expected_revision}."
 }
 
 timeout_seconds() {
@@ -675,9 +722,11 @@ federation)
 *) die "unsupported internal evaluation profile: ${PROFILE}" ;;
 esac
 DEMO_TIMEOUT="${FGENTIC_DEMO_TIMEOUT:-15m}"
+FEDERATION_POLICY_PROBE="${FGENTIC_FED_POLICY_PROBE:-deny}"
 FEDERATION_GATEWAY_IP=""
 BRIDGE_TAG="demo-${RANDOM}-$$"
 SOURCE_IMAGE="fgentic-demo-source-${CLUSTER_NAME}:${BRIDGE_TAG}"
+SOURCE_REVISION=""
 BRIDGE_IMAGE="matrix-a2a-bridge:${BRIDGE_TAG}"
 [[ "${CLUSTER_NAME}" =~ ^[a-z0-9][a-z0-9-]{0,47}$ ]] || die "invalid FGENTIC_DEMO_CLUSTER"
 if [ "${PROFILE}" = "demo" ]; then
@@ -689,6 +738,12 @@ elif [ "${CLUSTER_NAME}" != "${FEDERATION_CLUSTER_NAME}" ]; then
 	die "the federation profile cluster must be ${FEDERATION_CLUSTER_NAME}"
 fi
 [[ "${DEMO_TIMEOUT}" =~ ^[1-9][0-9]*[smh]$ ]] || die "invalid FGENTIC_DEMO_TIMEOUT"
+if [ "${PROFILE}" = "federation" ]; then
+	case "${FEDERATION_POLICY_PROBE}" in
+	allow | deny) ;;
+	*) die "FGENTIC_FED_POLICY_PROBE must be allow or deny" ;;
+	esac
+fi
 
 case "$1" in
 up) demo_up ;;

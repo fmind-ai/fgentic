@@ -9,6 +9,7 @@ The repository is licensed **Apache-2.0** (was MIT in the first draft). Justific
 1. **Stack coherence.** A2A, MCP, kagent, agentgateway, CloudNativePG, Flux, cert-manager are all Apache-2.0.
 1. **Cost.** Trivial now (sole author); painful after external contributions. Done before the first outside PR. **DCO** (not CLA) — matches kagent/agentgateway and avoids the asymmetric-rights problem Element's CLA exemplifies.
 1. **Obligation:** the bridge binary embeds `maunium.net/go/mautrix` (**MPL-2.0** — verified, not AGPL). The `NOTICE` files (repo root + app, shipped in the image) state that and link the source. That is MPL's entire ask for unmodified use.
+1. **Synapse policy module:** `apps/synapse-federation-policy` is original Apache-2.0 project code, distributed independently from Synapse and loaded through Synapse's documented module API. The repository neither copies Synapse implementation code nor builds or redistributes a modified Synapse image; the deployment continues to reference the separately published upstream AGPL image. The module README records this packaging boundary and the operational obligation to reassess it before vendoring, modifying, or redistributing Synapse.
 
 ### 10.2 The honest AGPL/open-core map (the "no strings attached" audit)
 

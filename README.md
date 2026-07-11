@@ -96,7 +96,7 @@ Choose the model boundary before using non-demo data:
 
 For example, `FGENTIC_LLM_PROVIDER=vllm mise run demo:up` selects the real credential-free self-hosted profile. API profiles require the matching key, `FGENTIC_LLM_MODEL`, and `FGENTIC_ALLOW_PAID_PROVIDER=yes`; see the complete [provider contract](docs/models.md). Do not use evaluation credentials or the deterministic stub in production.
 
-To exercise the federation thesis without a model or provider account, run `mise run fed:up`. It creates a separate `fgentic-fed` cluster with participating Synapse homeservers at `org-a.fgentic.localhost` and `org-b.fgentic.localhost`, plus `org-c.fgentic.localhost` as a denied control. The proof requires room-v12 policy, participant-only server ACLs, bidirectional messages between A and B, and rejected join plus signed-federation-send attempts from C. The cluster stays running for inspection; remove only that lab with `mise run fed:down`. See the [federation lab topology and trust boundary](docs/federation.md#85-disposable-federation-hardening-lab).
+To exercise the federation thesis without a model or provider account, run `mise run fed:up`. It creates a separate `fgentic-fed` cluster with participating Synapse homeservers at `org-a.fgentic.localhost` and `org-b.fgentic.localhost`, plus `org-c.fgentic.localhost` as a denied control. The proof requires room-v12 policy, participant-only server ACLs, bidirectional messages between A and B, rejected join plus signed-federation-send attempts from C, and a Synapse callback dropping a disallowed event before it reaches A. `mise run fed:policy-reload` additionally proves a git policy change takes effect through Flux without restarting either Synapse pod and restores the canonical deny policy. The cluster stays running for inspection; remove only that lab with `mise run fed:down`. See the [federation lab topology and trust boundary](docs/federation.md#85-disposable-federation-hardening-lab).
 
 ## Production
 
@@ -106,6 +106,7 @@ Production is a separate GitOps path: SOPS-encrypted secrets, a reviewed git sou
 
 ```text
 apps/matrix-a2a-bridge/  # the Go bridge (mautrix/go appservice + a2a-go client) + its deploy/ Flux unit
+apps/synapse-federation-policy/ # standalone Python Synapse callback policy + namespace-neutral ConfigMaps
 infra/{terraform,flux,gateway,postgres,matrix,keycloak,agentgateway,models,kagent,bridges,secrets}
 clusters/               # Flux entrypoints: base/ DAG + demo/, federation/, local/ (k3d), and gcp/ (GKE) overlays
 docs/                    # the specification split by topic (architecture, decisions, security, federation, …) + docs/adr/

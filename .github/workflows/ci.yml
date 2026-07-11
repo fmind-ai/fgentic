@@ -18,9 +18,9 @@ jobs:
           fetch-depth: 0 # check:leaks scans recent git history
       - name: Install mise system
         uses: jdx/mise-action@v4
-      - name: Install app toolchain
-        # The app pins its own tools (go, golangci-lint, ...) and run_auto_install is off.
-        run: mise --cd apps/matrix-a2a-bridge install
+      - name: Install application toolchains
+        # Each app pins its own tools and run_auto_install is off; Python also syncs its lockfile.
+        run: mise run install:apps
       - name: Format sources
         run: mise run format
       - name: Run checks

@@ -18,14 +18,18 @@ assert_yq() {
 	yq --exit-status "${expression}" "${document}" >/dev/null || fail "${message}"
 }
 
-for command in kubectl rg yq; do
+for command in jq kubectl rg yq; do
 	command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
 done
 
 readonly LIFECYCLE="${ROOT_DIR}/scripts/federation.sh"
 readonly SEED="${ROOT_DIR}/scripts/seed-federation.sh"
+readonly RELOAD="${ROOT_DIR}/scripts/reload-federation-policy.sh"
 readonly CLUSTER_OVERLAY="${ROOT_DIR}/clusters/federation"
 readonly FEDERATION_ROOT="${ROOT_DIR}/infra/federation"
+readonly POLICY_APP="${ROOT_DIR}/apps/synapse-federation-policy"
+readonly POLICY_DOCUMENT="${POLICY_APP}/policy/policy.json"
+readonly POLICY_MODULE="${POLICY_APP}/src/fgentic_federation_policy/__init__.py"
 readonly MATRIX_A_COMPONENT="${FEDERATION_ROOT}/matrix-a/kustomization.yaml"
 readonly MATRIX_B_LAYER="${FEDERATION_ROOT}/matrix-b"
 readonly MATRIX_C_LAYER="${FEDERATION_ROOT}/matrix-c"
@@ -35,6 +39,10 @@ readonly POSTGRES_COMPONENT="${FEDERATION_ROOT}/postgres"
 
 [ -x "${LIFECYCLE}" ] || fail 'scripts/federation.sh must exist and be executable'
 [ -x "${SEED}" ] || fail 'scripts/seed-federation.sh must exist and be executable'
+[ -x "${RELOAD}" ] || fail 'scripts/reload-federation-policy.sh must exist and be executable'
+[ -f "${POLICY_APP}/kustomization.yaml" ] || fail 'federation policy component is missing'
+[ -f "${POLICY_DOCUMENT}" ] || fail 'canonical federation policy is missing'
+[ -f "${POLICY_MODULE}" ] || fail 'federation policy module is missing'
 [ -f "${CLUSTER_OVERLAY}/kustomization.yaml" ] || fail 'clusters/federation is missing'
 [ -f "${FEDERATION_ROOT}/cluster/kustomization.yaml" ] || fail 'federation Flux wiring is missing'
 [ -f "${MATRIX_A_COMPONENT}" ] || fail 'homeserver A component is missing'
@@ -43,7 +51,7 @@ readonly POSTGRES_COMPONENT="${FEDERATION_ROOT}/postgres"
 [ -f "${NAMESPACE_COMPONENT}/kustomization.yaml" ] || fail 'federation namespace component is missing'
 [ -f "${POSTGRES_COMPONENT}/kustomization.yaml" ] || fail 'federation Postgres component is missing'
 
-bash -n "${LIFECYCLE}" "${SEED}"
+bash -n "${LIFECYCLE}" "${SEED}" "${RELOAD}" "${ROOT_DIR}/scripts/demo.sh"
 "${LIFECYCLE}" --help >"${WORK_DIR}/help.txt"
 for contract in \
 	'fgentic-fed' \
@@ -137,6 +145,10 @@ yq --unwrapScalar '
   .[] | select(.path == "/spec/values/synapse/additional") |
   .value."10-federation".config
 ' "${WORK_DIR}/homeserver-a-patch.yaml" >"${WORK_DIR}/homeserver-a-config.yaml"
+yq --unwrapScalar '
+  .[] | select(.path == "/spec/values/synapse/additional") |
+  .value."20-federation-policy".config
+' "${WORK_DIR}/homeserver-a-patch.yaml" >"${WORK_DIR}/homeserver-a-policy-config.yaml"
 for contract in \
 	'default_room_version: "12"' \
 	'federation_domain_whitelist:' \
@@ -165,10 +177,23 @@ if rg --fixed-strings '${federation_denied_server_name}' \
 	"${WORK_DIR}/homeserver-a-config.yaml" >/dev/null; then
 	fail 'homeserver A federation allowlist includes denied homeserver C'
 fi
+for contract in \
+	'fgentic_federation_policy.FederationPolicyModule' \
+	'policy_path: /etc/fgentic/federation-policy/policy.json'; do
+	rg --fixed-strings "${contract}" "${WORK_DIR}/homeserver-a-policy-config.yaml" >/dev/null ||
+		fail "homeserver A policy module config omits ${contract}"
+done
 
 for contract in \
+	'../../../apps/synapse-federation-policy' \
 	'name: fgentic-local-ca' \
+	'name: fgentic-synapse-federation-policy-v1' \
+	'name: fgentic-federation-policy' \
 	'mountPath: /etc/fgentic-ca' \
+	'mountPath: /opt/fgentic/synapse-modules' \
+	'mountPath: /etc/fgentic/federation-policy' \
+	'name: PYTHONPATH' \
+	'value: /opt/fgentic/synapse-modules' \
 	'readOnly: true' \
 	'${federation_denied_server_name}' \
 	'matrix.${federation_denied_server_name}' \
@@ -181,6 +206,42 @@ kubectl kustomize "${MATRIX_B_LAYER}" >"${WORK_DIR}/matrix-b.yaml"
 kubectl kustomize "${MATRIX_C_LAYER}" >"${WORK_DIR}/matrix-c.yaml"
 kubectl kustomize "${NAMESPACE_COMPONENT}" >"${WORK_DIR}/namespaces.yaml"
 kubectl kustomize "${POSTGRES_COMPONENT}" >"${WORK_DIR}/postgres.yaml"
+
+assert_yq \
+	'select(.kind == "ConfigMap" and .metadata.name == "fgentic-synapse-federation-policy-v1") |
+    .metadata.namespace == "matrix-b" and .immutable == true and
+    (.data."fgentic_federation_policy.py" | contains("class FederationPolicyModule"))' \
+	"${WORK_DIR}/matrix-b.yaml" 'homeserver B does not receive the immutable policy module source'
+assert_yq \
+	'select(.kind == "ConfigMap" and .metadata.name == "fgentic-federation-policy") |
+    .metadata.namespace == "matrix-b" and .immutable == null and
+    (.data."policy.json" | from_json | .version == 1)' \
+	"${WORK_DIR}/matrix-b.yaml" 'homeserver B does not receive the reloadable versioned policy'
+
+jq -e --arg a 'org-a.fgentic.localhost' --arg b 'org-b.fgentic.localhost' \
+	--arg blocked 'com.fgentic.blocked' '
+  keys == ["allowed_event_types", "allowed_servers", "invite_rule", "version"] and
+  .version == 1 and .allowed_servers == [$a, $b] and
+  .invite_rule == "allow_from_allowed_servers" and
+  (.allowed_event_types | index($blocked)) == null and
+  (["m.room.create", "m.room.join_rules", "m.room.member", "m.room.message",
+    "m.room.power_levels", "m.room.server_acl"] - .allowed_event_types | length) == 0
+' "${POLICY_DOCUMENT}" >/dev/null || fail 'canonical federation policy is not exact and deny-by-default'
+for contract in \
+	'should_drop_federated_event' \
+	'federated_user_may_invite' \
+	'event_type_not_allowed' \
+	'run_db_interaction' \
+	'federation_inbound_events_staging' \
+	'WHERE room_id = ? AND event_id = ?' \
+	'fgentic_federation_policy_staged_event_grandfathered' \
+	'fgentic_federation_policy_violation' \
+	'allowed_event_type_count' \
+	'allowed_server_count' \
+	'policy_digest'; do
+	rg --fixed-strings "${contract}" "${POLICY_MODULE}" >/dev/null ||
+		fail "federation policy module omits ${contract}"
+done
 
 assert_yq \
 	'select(.kind == "Namespace" and .metadata.name == "matrix-b") |
@@ -226,6 +287,10 @@ yq --unwrapScalar '
   select(.kind == "HelmRelease" and .metadata.name == "matrix-stack-b") |
   .spec.values.synapse.additional."10-federation".config
 ' "${WORK_DIR}/matrix-b.yaml" >"${WORK_DIR}/homeserver-b-config.yaml"
+yq --unwrapScalar '
+  select(.kind == "HelmRelease" and .metadata.name == "matrix-stack-b") |
+  .spec.values.synapse.additional."20-federation-policy".config
+' "${WORK_DIR}/matrix-b.yaml" >"${WORK_DIR}/homeserver-b-policy-config.yaml"
 for contract in \
 	'default_room_version: "12"' \
 	'federation_domain_whitelist:' \
@@ -254,6 +319,23 @@ if rg --fixed-strings '${federation_denied_server_name}' \
 	"${WORK_DIR}/homeserver-b-config.yaml" >/dev/null; then
 	fail 'homeserver B federation allowlist includes denied homeserver C'
 fi
+for contract in \
+	'fgentic_federation_policy.FederationPolicyModule' \
+	'policy_path: /etc/fgentic/federation-policy/policy.json'; do
+	rg --fixed-strings "${contract}" "${WORK_DIR}/homeserver-b-policy-config.yaml" >/dev/null ||
+		fail "homeserver B policy module config omits ${contract}"
+done
+assert_yq \
+	'select(.kind == "HelmRelease" and .metadata.name == "matrix-stack-b") |
+    ([.spec.values.synapse.extraVolumes[] | select(
+      .configMap.name == "fgentic-synapse-federation-policy-v1" or
+      .configMap.name == "fgentic-federation-policy")] | length) == 2 and
+    ([.spec.values.synapse.extraVolumeMounts[] | select(
+      .mountPath == "/opt/fgentic/synapse-modules" or
+      .mountPath == "/etc/fgentic/federation-policy")] | length) == 2 and
+    ([.spec.values.synapse.extraEnv[] | select(
+      .name == "PYTHONPATH" and .value == "/opt/fgentic/synapse-modules")] | length) == 1' \
+	"${WORK_DIR}/matrix-b.yaml" 'homeserver B policy source, data, or Python path is not mounted'
 
 assert_yq \
 	'select(.kind == "HelmRelease" and .metadata.name == "matrix-stack-c") |
@@ -448,8 +530,44 @@ if rg --fixed-strings 'ca.key' "${LIFECYCLE}" "${ROOT_DIR}/scripts/demo.sh" \
 	fail 'federation assets reference the private local-CA key'
 fi
 
-# The up path is the acceptance proof: create an explicitly federated v12 room with a partner-only
-# ACL, exchange A/B messages, reject C's join and send, then prove the default v12 local-only room.
+# The reload drill must make its allow revision only in the disposable Git snapshot, reconcile it
+# through the normal source, prove both Synapse pods survive, and restore the tracked deny policy.
+for contract in \
+	'FEDERATION_POLICY_PATH="apps/synapse-federation-policy/policy/policy.json"' \
+	'local policy_file="${SNAPSHOT_DIR}/${FEDERATION_POLICY_PATH}"' \
+	'.allowed_event_types |= (. + [$event_type] | unique)' \
+	'mv "${next_policy}" "${policy_file}"' \
+	'canonical federation policy must deny' \
+	'init --quiet --object-format=sha1 --initial-branch main' \
+	'expected_revision="main@sha1:${SOURCE_REVISION}"' \
+	'[ "${actual_revision}" = "${expected_revision}" ]' \
+	'Flux fetched exact ephemeral revision'; do
+	rg --fixed-strings "${contract}" "${ROOT_DIR}/scripts/demo.sh" >/dev/null ||
+		fail "ephemeral federation policy snapshot omits ${contract}"
+done
+for contract in \
+	'FGENTIC_FED_POLICY_PROBE=deny "${ROOT_DIR}/scripts/federation.sh" up' \
+	'FGENTIC_FED_POLICY_PROBE=allow "${ROOT_DIR}/scripts/federation.sh" up' \
+	'SYNAPSE_A_UID="$(synapse_pod_uid matrix)"' \
+	'SYNAPSE_B_UID="$(synapse_pod_uid matrix-b)"' \
+	'assert_synapse_uids allow' \
+	'assert_synapse_uids deny' \
+	'Policy reload drill failed; deleting the disposable federation lab.' \
+	'canonical deny remains running'; do
+	rg --fixed-strings "${contract}" "${RELOAD}" >/dev/null ||
+		fail "federation policy reload drill omits ${contract}"
+done
+rg --fixed-strings '[tasks."fed:policy-reload"]' "${ROOT_DIR}/mise.toml" >/dev/null ||
+	fail 'mise task fed:policy-reload is missing'
+if rg --regexp 'kubectl.*(patch|replace).*fgentic-federation-policy' \
+	"${ROOT_DIR}/scripts/demo.sh" "${RELOAD}" >/dev/null; then
+	fail 'policy reload bypasses Git and mutates the live ConfigMap directly'
+fi
+
+# The up path proves both boundaries: the hardened v12 room still exchanges A/B messages and
+# rejects C, while a final custom event in a throwaway room is retained by B but dropped by A with
+# a content-free, event-addressable policy record. The explicit allow mode is used only by the
+# ephemeral-Git reload drill; deny remains the canonical default.
 for contract in \
 	'FGENTIC_DEMO_PROFILE=federation' \
 	'room_version' \
@@ -486,7 +604,29 @@ for contract in \
 	'SYNAPSE_REGISTRATION_SHARED_SECRET' \
 	'whitelist_enabled == true' \
 	'federation-a-to-b-' \
-	'federation-b-to-a-'; do
+	'federation-b-to-a-' \
+	'POLICY_EVENT_TYPE="com.fgentic.blocked"' \
+	'POLICY_PROBE_MODE="${FGENTIC_FED_POLICY_PROBE:-deny}"' \
+	'FGENTIC_FED_POLICY_PROBE must be allow or deny' \
+	'wait_for_mounted_policy_mode matrix' \
+	'wait_for_mounted_policy_mode matrix-b' \
+	'/etc/fgentic/federation-policy/policy.json' \
+	'(.allowed_event_types | index($type)) != null' \
+	'(.allowed_event_types | index($type)) == null' \
+	'Fgentic Federation Policy Probe' \
+	'policy-content-must-not-be-logged-' \
+	'verify_local_policy_event' \
+	'wait_for_policy_violation' \
+	'select(.event == $event_id)' \
+	'fgentic_federation_policy_violation ' \
+	'event_type_not_allowed' \
+	'allowed_event_type_count' \
+	'policy_digest' \
+	'federation policy logs exposed denied event content' \
+	'verify_remote_policy_event_absent' \
+	'.errcode == "M_NOT_FOUND"' \
+	'wait_for_remote_policy_event' \
+	'allowed on A after Flux policy reconcile'; do
 	rg --fixed-strings "${contract}" "${LIFECYCLE}" "${SEED}" >/dev/null ||
 		fail "federation acceptance proof omits ${contract}"
 done
