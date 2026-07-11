@@ -180,7 +180,7 @@ description = "Validate the credential-free demo overlay, lifecycle script, and 
 run = "bash scripts/test-demo.sh"
 
 [tasks."check:federation"]
-description = "Validate the offline two-homeserver federation topology, trust, and lifecycle contracts"
+description = "Validate the offline federation topology, room policy, and denied control"
 run = "bash scripts/test-federation.sh"
 
 [tasks."check:smoke-workflow"]
@@ -284,7 +284,7 @@ description = "Delete only the ephemeral fgentic-demo evaluation cluster"
 run = "bash scripts/demo.sh down"
 
 [tasks."fed:up"]
-description = "Reconcile and prove the provider-free two-homeserver federation lab"
+description = "Reconcile and prove the provider-free federation hardening lab"
 run = "bash scripts/federation.sh up"
 
 [tasks."fed:down"]

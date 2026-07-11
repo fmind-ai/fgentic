@@ -40,6 +40,87 @@ request_status() {
 		--write-out '%{http_code}' "$@"
 }
 
+create_lobby() {
+	local output_variable="$1"
+	local document status created_room_id
+	document="$(jq --null-input --compact-output '{
+    name: "Fgentic Lobby",
+    topic: "Humans and agents collaborate here.",
+    preset: "private_chat",
+    visibility: "private",
+    creation_content: {"m.federate": false}
+  }')"
+	status="$(request_status "${OUTPUT}" --request POST \
+		--header "Authorization: Bearer ${MATRIX_TOKEN}" \
+		--header 'Content-Type: application/json' --data "${document}" \
+		"${MATRIX_URL}/_matrix/client/v3/createRoom")"
+	[ "${status}" = "200" ] || die "Matrix could not create #lobby (HTTP ${status})"
+	created_room_id="$(jq -er '.room_id' "${OUTPUT}")"
+	printf -v "${output_variable}" '%s' "${created_room_id}"
+}
+
+set_lobby_canonical_alias() {
+	local room_id="$1"
+	local encoded_room canonical_document status
+	encoded_room="$(jq --null-input --raw-output --arg value "${room_id}" '$value | @uri')"
+	canonical_document="$(jq --null-input --compact-output --arg alias "${room_alias}" \
+		'{alias: $alias}')"
+	status="$(request_status "${OUTPUT}" --request PUT \
+		--header "Authorization: Bearer ${MATRIX_TOKEN}" \
+		--header 'Content-Type: application/json' --data "${canonical_document}" \
+		"${MATRIX_URL}/_matrix/client/v3/rooms/${encoded_room}/state/m.room.canonical_alias")"
+	[ "${status}" = "200" ] || die "Matrix could not set #lobby as canonical (HTTP ${status})"
+}
+
+publish_lobby_alias() {
+	local room_id="$1"
+	local alias_document status
+	alias_document="$(jq --null-input --compact-output --arg room_id "${room_id}" \
+		'{room_id: $room_id}')"
+	status="$(request_status "${OUTPUT}" --request PUT \
+		--header "Authorization: Bearer ${MATRIX_TOKEN}" \
+		--header 'Content-Type: application/json' --data "${alias_document}" \
+		"${MATRIX_URL}/_matrix/client/v3/directory/room/${encoded_alias}")"
+	[ "${status}" = "200" ] || die "Matrix could not publish #lobby (HTTP ${status})"
+	set_lobby_canonical_alias "${room_id}"
+}
+
+lobby_is_local_only() {
+	local room_id="$1"
+	local encoded_room status
+	encoded_room="$(jq --null-input --raw-output --arg value "${room_id}" '$value | @uri')"
+	status="$(request_status "${OUTPUT}" \
+		--header "Authorization: Bearer ${MATRIX_TOKEN}" \
+		"${MATRIX_URL}/_matrix/client/v3/rooms/${encoded_room}/state/m.room.create")"
+	[ "${status}" = "200" ] && jq -e '."m.federate" == false' "${OUTPUT}" >/dev/null
+}
+
+lobby_has_canonical_alias() {
+	local room_id="$1"
+	local encoded_room status
+	encoded_room="$(jq --null-input --raw-output --arg value "${room_id}" '$value | @uri')"
+	status="$(request_status "${OUTPUT}" \
+		--header "Authorization: Bearer ${MATRIX_TOKEN}" \
+		"${MATRIX_URL}/_matrix/client/v3/rooms/${encoded_room}/state/m.room.canonical_alias")"
+	[ "${status}" = "200" ] &&
+		jq -e --arg alias "${room_alias}" '.alias == $alias' "${OUTPUT}" >/dev/null
+}
+
+retire_legacy_lobby_alias() {
+	local room_id="$1"
+	local encoded_room status
+	encoded_room="$(jq --null-input --raw-output --arg value "${room_id}" '$value | @uri')"
+	status="$(request_status "${OUTPUT}" --request PUT \
+		--header "Authorization: Bearer ${MATRIX_TOKEN}" \
+		--header 'Content-Type: application/json' --data '{}' \
+		"${MATRIX_URL}/_matrix/client/v3/rooms/${encoded_room}/state/m.room.canonical_alias")"
+	[ "${status}" = "200" ] || die "Matrix could not retire the legacy lobby alias (HTTP ${status})"
+	status="$(request_status "${OUTPUT}" --request DELETE \
+		--header "Authorization: Bearer ${MATRIX_TOKEN}" \
+		"${MATRIX_URL}/_matrix/client/v3/directory/room/${encoded_alias}")"
+	[ "${status}" = "200" ] || die "Matrix could not release the legacy lobby alias (HTTP ${status})"
+}
+
 for command in curl jq kubectl yq; do
 	require_command "${command}"
 done
@@ -110,21 +191,17 @@ status="$(request_status "${OUTPUT}" \
 case "${status}" in
 200)
 	room_id="$(jq -er '.room_id' "${OUTPUT}")"
+	if ! lobby_is_local_only "${room_id}"; then
+		echo 'Migrating legacy #lobby to immutable local-only federation policy.' >&2
+		legacy_room_id="${room_id}"
+		create_lobby room_id
+		retire_legacy_lobby_alias "${legacy_room_id}"
+		publish_lobby_alias "${room_id}"
+	fi
 	;;
 404)
-	room_document="$(jq --null-input --compact-output '{
-    room_alias_name: "lobby",
-    name: "Fgentic Lobby",
-    topic: "Humans and agents collaborate here.",
-    preset: "private_chat",
-    visibility: "private"
-  }')"
-	status="$(request_status "${OUTPUT}" --request POST \
-		--header "Authorization: Bearer ${MATRIX_TOKEN}" \
-		--header 'Content-Type: application/json' --data "${room_document}" \
-		"${MATRIX_URL}/_matrix/client/v3/createRoom")"
-	[ "${status}" = "200" ] || die "Matrix could not create #lobby (HTTP ${status})"
-	room_id="$(jq -er '.room_id' "${OUTPUT}")"
+	create_lobby room_id
+	publish_lobby_alias "${room_id}"
 	;;
 *)
 	die "Matrix room lookup failed (HTTP ${status})"
@@ -132,6 +209,11 @@ case "${status}" in
 esac
 
 encoded_room="$(jq --null-input --raw-output --arg value "${room_id}" '$value | @uri')"
+lobby_is_local_only "${room_id}" || die "#lobby is not local-only after reconciliation"
+if ! lobby_has_canonical_alias "${room_id}"; then
+	set_lobby_canonical_alias "${room_id}"
+fi
+
 agents_yaml="$(kubectl --namespace bridge get configmap matrix-a2a-bridge-agents \
 	--output 'go-template={{index .data "agents.yaml"}}')"
 GHOSTS=()

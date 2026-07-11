@@ -1,4 +1,4 @@
-# Keep only namespaces used by the provider-free federation topology and add homeserver B.
+# Keep only namespaces used by the provider-free federation topology and add homeservers B and C.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 resources:

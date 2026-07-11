@@ -29,11 +29,16 @@ patches:
             login: true
             passwordSecret:
               name: pg-synapse-b
+          - name: synapse_c
+            login: true
+            passwordSecret:
+              name: pg-synapse-c
       - op: replace
         path: /spec/postgresql/pg_hba
         value:
           - hostssl synapse synapse all scram-sha-256
           - hostssl synapse_b synapse_b all scram-sha-256
+          - hostssl synapse_c synapse_c all scram-sha-256
           - hostssl all all all reject
           - hostnossl all all all reject
   - target:

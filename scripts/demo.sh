@@ -502,17 +502,27 @@ EOF
 create_federation_secrets() {
 	local ca_cert="${FGENTIC_CA_DIR:-${HOME}/.local/share/fgentic/local-ca}/ca.crt"
 	[ -r "${ca_cert}" ] || die "local CA certificate not found: ${ca_cert}"
-	if ! kubectl --namespace flux-system get secret fgentic-demo-bootstrap >/dev/null 2>&1; then
-		apply_secret flux-system fgentic-demo-bootstrap \
-			--from-literal=pg-synapse="$(random_hex 24)" \
-			--from-literal=pg-synapse-b="$(random_hex 24)" \
-			--from-literal=alice-password="$(random_hex 24)" \
-			--from-literal=bob-password="$(random_hex 24)"
-	fi
+	local bootstrap_json key value
+	local bootstrap_arguments=()
+	bootstrap_json="$(kubectl --namespace flux-system get secret fgentic-demo-bootstrap \
+		--output json 2>/dev/null || printf '{}')"
+	# Preserve existing lab identities while making upgrades self-healing when a new homeserver is
+	# added to an already running, ownership-labelled cluster.
+	for key in pg-synapse pg-synapse-b pg-synapse-c \
+		alice-password bob-password charlie-password; do
+		value="$(jq -r --arg key "${key}" '.data[$key] // "" | @base64d' \
+			<<<"${bootstrap_json}")"
+		[ -n "${value}" ] || value="$(random_hex 24)"
+		bootstrap_arguments+=("--from-literal=${key}=${value}")
+	done
+	apply_secret flux-system fgentic-demo-bootstrap "${bootstrap_arguments[@]}"
+	bootstrap_json=""
+	value=""
 
-	local pg_synapse pg_synapse_b namespace
+	local pg_synapse pg_synapse_b pg_synapse_c namespace
 	pg_synapse="$(bootstrap_secret_value pg-synapse)"
 	pg_synapse_b="$(bootstrap_secret_value pg-synapse-b)"
+	pg_synapse_c="$(bootstrap_secret_value pg-synapse-c)"
 	apply_secret postgres pg-synapse --type=kubernetes.io/basic-auth \
 		--from-literal=username=synapse --from-literal=password="${pg_synapse}"
 	apply_secret matrix pg-synapse --type=kubernetes.io/basic-auth \
@@ -521,10 +531,14 @@ create_federation_secrets() {
 		--from-literal=username=synapse_b --from-literal=password="${pg_synapse_b}"
 	apply_secret matrix-b pg-synapse-b --type=kubernetes.io/basic-auth \
 		--from-literal=username=synapse_b --from-literal=password="${pg_synapse_b}"
+	apply_secret postgres pg-synapse-c --type=kubernetes.io/basic-auth \
+		--from-literal=username=synapse_c --from-literal=password="${pg_synapse_c}"
+	apply_secret matrix-c pg-synapse-c --type=kubernetes.io/basic-auth \
+		--from-literal=username=synapse_c --from-literal=password="${pg_synapse_c}"
 
 	# Only the public root is mirrored into the homeserver namespaces. The CA key remains in
 	# cert-manager, and both runtime and config-check pods mount this ConfigMap read-only.
-	for namespace in matrix matrix-b; do
+	for namespace in matrix matrix-b matrix-c; do
 		kubectl --namespace "${namespace}" create configmap fgentic-local-ca \
 			--from-file="ca.crt=${ca_cert}" --dry-run=client --output=yaml |
 			kubectl apply --filename - >/dev/null
