@@ -18,7 +18,9 @@ kubeconform = "latest"
 trivy = "latest"
 terraform = "latest"
 helm = "latest"
+jq = "latest"
 sops = "latest"
+xh = "latest"
 yq = "latest"
 
 # --- Aggregate vocabulary (install / format / check / test / build / watch) ---
@@ -110,6 +112,10 @@ alias = "t"
 description = "Run the application test suite (delegates to apps/matrix-a2a-bridge)"
 dir = "apps/matrix-a2a-bridge"
 run = "mise run test"
+
+[tasks."test:tracing"]
+description = "Render the tracing stack and prove an OTLP span reaches Jaeger locally"
+run = "bash scripts/test-tracing.sh"
 
 [tasks.build]
 alias = "b"
