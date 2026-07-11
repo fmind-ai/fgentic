@@ -1,0 +1,79 @@
+# The model data plane is closed by default. Only the gateway can submit prompts and Prometheus
+# can scrape metrics; the serving Pod receives no egress allowance at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: models-default-deny
+  namespace: models
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: vllm-allow-platform-ingress
+  namespace: models
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: vllm
+      app.kubernetes.io/component: serving-engine
+      app.kubernetes.io/part-of: vllm-stack
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentgateway-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agentgateway-proxy
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+# Model bootstrap is the sole external exception. Standard NetworkPolicy cannot constrain HTTPS
+# by FQDN, so this short-lived, prompt-free Job may reach public addresses but not private ranges.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: model-loader-allow-download
+  namespace: models
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: model-loader
+      app.kubernetes.io/part-of: vllm-stack
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 169.254.0.0/16
+      ports:
+        - protocol: TCP
+          port: 443

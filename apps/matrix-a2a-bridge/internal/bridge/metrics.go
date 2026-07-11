@@ -10,7 +10,7 @@ import (
 var (
 	delegationsTotal = promauto.NewCounterVec(prometheus.CounterOpts{
 		Name: "fgentic_delegations_total",
-		Help: "Delegations dispatched to agent ghosts, by ghost and outcome.",
+		Help: "Delegation attempts addressed to agent ghosts, by ghost and outcome.",
 	}, []string{"ghost", "outcome"})
 
 	a2aLatency = promauto.NewHistogramVec(prometheus.HistogramOpts{
@@ -25,6 +25,11 @@ var (
 		Help: "Delegations currently running on the dispatcher worker pool.",
 	})
 
+	queueDepth = promauto.NewGauge(prometheus.GaugeOpts{
+		Name: "fgentic_queue_depth",
+		Help: "Delegations currently queued across all rooms.",
+	})
+
 	dedupSkipsTotal = promauto.NewCounter(prometheus.CounterOpts{
 		Name: "fgentic_dedup_skips_total",
 		Help: "Events skipped because the homeserver redelivered an already-processed transaction.",
@@ -37,6 +42,9 @@ const (
 	outcomeFailed      = "failed"       // agent task ended failed/canceled/rejected
 	outcomeError       = "error"        // A2A transport/protocol error
 	outcomeRateLimited = "rate_limited" // D7 budget rejection
+	outcomeDenied      = "denied"       // sender policy rejection before A2A
+	outcomeQueueFull   = "queue_full"   // bounded dispatcher rejected before admission
+	outcomeShutdown    = "shutdown"     // target did not start before dispatcher shutdown
 	outcomeTimeout     = "timeout"      // long task exceeded TASK_TIMEOUT
 	outcomeLost        = "lost"         // tasks/get error budget exhausted
 )

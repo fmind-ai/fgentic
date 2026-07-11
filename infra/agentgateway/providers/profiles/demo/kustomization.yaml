@@ -1,0 +1,10 @@
+# Credential-free deterministic evaluation profile. It exercises the full Matrix -> bridge ->
+# agentgateway -> kagent path but is not a language model and is forbidden for production use.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../models/demo
+  - llm-backend.yaml
+  - networkpolicy.yaml
+components:
+  - ../../base

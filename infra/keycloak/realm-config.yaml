@@ -1,0 +1,200 @@
+# Bootstrap-only realm import. Keycloak skips this file once the `fgentic` realm exists; later
+# lifecycle changes must use a deliberate Admin API migration rather than overwriting live state.
+# Runtime placeholders use Flux's double-dollar escape and are resolved by Keycloak from the
+# SOPS-backed keycloak-credentials Secret. The stable MAS provider ULID binds the redirect URI to
+# the provider in the SOPS-backed MAS fragment.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: keycloak-realm
+  namespace: keycloak
+data:
+  fgentic-realm.json: |
+    {
+      "realm": "fgentic",
+      "displayName": "Fgentic",
+      "enabled": true,
+      "sslRequired": "external",
+      "registrationAllowed": false,
+      "loginWithEmailAllowed": true,
+      "duplicateEmailsAllowed": false,
+      "resetPasswordAllowed": false,
+      "rememberMe": true,
+      "bruteForceProtected": true,
+      "eventsEnabled": true,
+      "adminEventsEnabled": true,
+      "adminEventsDetailsEnabled": true,
+      "clientScopes": [
+        {
+          "name": "fgentic-groups",
+          "description": "Full-path groups for identity-contract diagnostics; not an authorization credential.",
+          "protocol": "openid-connect",
+          "attributes": {
+            "display.on.consent.screen": "false",
+            "include.in.token.scope": "true"
+          },
+          "protocolMappers": [
+            {
+              "name": "groups",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-group-membership-mapper",
+              "consentRequired": false,
+              "config": {
+                "claim.name": "groups",
+                "full.path": "true",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "userinfo.token.claim": "true",
+                "introspection.token.claim": "true"
+              }
+            }
+          ]
+        }
+      ],
+      "clients": [
+        {
+          "clientId": "fgentic",
+          "name": "Fgentic Matrix Authentication Service",
+          "description": "Reference OIDC client reserved for MAS wiring in issue #17.",
+          "enabled": true,
+          "clientAuthenticatorType": "client-secret",
+          "secret": "$${FGENTIC_CLIENT_SECRET}",
+          "protocol": "openid-connect",
+          "publicClient": false,
+          "bearerOnly": false,
+          "standardFlowEnabled": true,
+          "implicitFlowEnabled": false,
+          "directAccessGrantsEnabled": false,
+          "serviceAccountsEnabled": false,
+          "frontchannelLogout": true,
+          "attributes": {
+            "pkce.code.challenge.method": "S256"
+          },
+          "protocolMappers": [
+            {
+              "name": "matrix-localpart",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-usermodel-attribute-mapper",
+              "consentRequired": false,
+              "config": {
+                "user.attribute": "matrix_localpart",
+                "claim.name": "matrix_localpart",
+                "jsonType.label": "String",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "userinfo.token.claim": "true",
+                "introspection.token.claim": "true"
+              }
+            },
+            {
+              "name": "full-name",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-full-name-mapper",
+              "consentRequired": false,
+              "config": {
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "userinfo.token.claim": "true",
+                "introspection.token.claim": "true"
+              }
+            },
+            {
+              "name": "email",
+              "protocol": "openid-connect",
+              "protocolMapper": "oidc-usermodel-property-mapper",
+              "consentRequired": false,
+              "config": {
+                "user.attribute": "email",
+                "claim.name": "email",
+                "jsonType.label": "String",
+                "id.token.claim": "true",
+                "access.token.claim": "true",
+                "userinfo.token.claim": "true",
+                "introspection.token.claim": "true"
+              }
+            }
+          ],
+          "optionalClientScopes": [
+            "fgentic-groups"
+          ],
+          "redirectUris": [
+            "https://auth.${server_name}/upstream/callback/01H8PKNWKKRPCBW4YGH1RWV279"
+          ]
+        }
+      ],
+      "groups": [
+        {
+          "name": "platform",
+          "subGroups": [
+            {
+              "name": "admins"
+            },
+            {
+              "name": "users"
+            }
+          ]
+        }
+      ],
+      "users": [
+        {
+          "username": "alice",
+          "firstName": "Alice",
+          "lastName": "Example",
+          "email": "alice@${server_name}",
+          "emailVerified": true,
+          "enabled": true,
+          "attributes": {
+            "matrix_localpart": [
+              "alice"
+            ]
+          },
+          "groups": [
+            "/platform/admins",
+            "/platform/users"
+          ],
+          "credentials": [
+            {
+              "type": "password",
+              "value": "$${FGENTIC_ALICE_PASSWORD}",
+              "temporary": false
+            }
+          ]
+        },
+        {
+          "username": "bob",
+          "firstName": "Bob",
+          "lastName": "Example",
+          "email": "bob@${server_name}",
+          "emailVerified": true,
+          "enabled": true,
+          "attributes": {
+            "matrix_localpart": [
+              "bob"
+            ]
+          },
+          "groups": [
+            "/platform/users"
+          ],
+          "credentials": [
+            {
+              "type": "password",
+              "value": "$${FGENTIC_BOB_PASSWORD}",
+              "temporary": false
+            }
+          ]
+        }
+      ],
+      "components": {
+        "org.keycloak.userprofile.UserProfileProvider": [
+          {
+            "providerId": "declarative-user-profile",
+            "subComponents": {},
+            "config": {
+              "kc.user.profile.config": [
+                "{\"attributes\":[{\"name\":\"username\",\"displayName\":\"Username\",\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"validations\":{\"length\":{\"min\":3,\"max\":255},\"username-prohibited-characters\":{},\"up-username-not-idn-homograph\":{}}},{\"name\":\"email\",\"displayName\":\"Email\",\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"validations\":{\"email\":{},\"length\":{\"max\":255}}},{\"name\":\"firstName\",\"displayName\":\"First name\",\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"validations\":{\"length\":{\"max\":255},\"person-name-prohibited-characters\":{}}},{\"name\":\"lastName\",\"displayName\":\"Last name\",\"required\":{\"roles\":[\"user\"]},\"permissions\":{\"view\":[\"admin\",\"user\"],\"edit\":[\"admin\",\"user\"]},\"validations\":{\"length\":{\"max\":255},\"person-name-prohibited-characters\":{}}},{\"name\":\"matrix_localpart\",\"displayName\":\"Matrix localpart\",\"required\":{\"roles\":[\"user\",\"admin\"]},\"permissions\":{\"view\":[\"admin\"],\"edit\":[\"admin\"]},\"validations\":{\"length\":{\"min\":3,\"max\":64},\"pattern\":{\"pattern\":\"^[a-z][a-z0-9._=-]{2,63}$\"}}}]}"
+              ]
+            }
+          }
+        ]
+      }
+    }

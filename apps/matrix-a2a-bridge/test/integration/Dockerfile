@@ -1,0 +1,25 @@
+# syntax=docker/dockerfile:1
+# One image carries the production bridge and the two tiny fixture commands, so kind only needs
+# one locally-built image load. The runtime remains distroless and non-root.
+FROM docker.io/library/golang:1.25@sha256:d7912cedddfa15b2900a8dfb7187df0af5ec2cb424a371139b5b352fd3e6b740 AS build
+WORKDIR /src
+ENV CGO_ENABLED=0
+COPY go.mod go.sum ./
+RUN go mod download
+COPY cmd ./cmd
+COPY internal ./internal
+COPY test/integration/cmd ./test/integration/cmd
+RUN go build -trimpath -ldflags="-s -w" -o /out/bridge ./cmd/bridge \
+  && go build -trimpath -ldflags="-s -w" -o /out/a2a-stub ./test/integration/cmd/a2a-stub \
+  && go build -trimpath -ldflags="-s -w" -o /out/integration-driver ./test/integration/cmd/driver
+
+FROM gcr.io/distroless/static-debian12:nonroot@sha256:b7bb25d9f7c31d2bdd1982feb4dafcaf137703c7075dbe2febb41c24212b946f
+LABEL org.opencontainers.image.source="https://github.com/fmind-ai/fgentic"
+LABEL org.opencontainers.image.title="matrix-a2a-bridge integration fixture"
+LABEL org.opencontainers.image.licenses="Apache-2.0"
+COPY NOTICE /usr/share/doc/matrix-a2a-bridge/NOTICE
+COPY --from=build /out/bridge /usr/local/bin/bridge
+COPY --from=build /out/a2a-stub /usr/local/bin/a2a-stub
+COPY --from=build /out/integration-driver /usr/local/bin/integration-driver
+USER 65532:65532
+ENTRYPOINT ["/usr/local/bin/bridge"]

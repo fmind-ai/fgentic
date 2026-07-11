@@ -1,13 +1,18 @@
-# agentgateway data plane: the secured (ClusterIP) proxy Gateway, the governed LLM egress backend
-# + route, and the A2A route to kagent. The agentgateway control plane is a HelmRelease
-# (helmrelease.yaml); the model credential is a SOPS Secret (clusters/<env>/secrets).
+# Common agentgateway data plane: the secured (ClusterIP) proxy Gateway and A2A route/backend. A
+# selected profile under providers/ adds exactly one governed LLM backend + route. The control
+# plane is a HelmRelease (helmrelease.yaml).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - helmrelease.yaml
   - parameters.yaml
   - gateway.yaml
-  - llm-backend.yaml
   - a2a-backend.yaml
-  - routes.yaml
+  - a2a-route.yaml
+  - a2a-authorization.yaml
+  - mcp-backend.yaml
+  - mcp-route.yaml
+  - mcp-authorization.yaml
+  - mcp-audit.yaml
+  - tracing-policy.yaml
   - networkpolicy.yaml

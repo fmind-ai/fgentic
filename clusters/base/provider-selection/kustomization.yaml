@@ -1,0 +1,22 @@
+# Replace only the provider segment of the agentgateway-provider Flux path. Keeping the path prefix
+# here fail-fast validates llm_provider: an unknown profile points Flux at a missing directory.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+replacements:
+  - source:
+      kind: ConfigMap
+      name: platform-settings
+      namespace: flux-system
+      fieldPath: data.llm_provider
+    targets:
+      - select:
+          group: kustomize.toolkit.fluxcd.io
+          version: v1
+          kind: Kustomization
+          name: agentgateway-provider
+          namespace: flux-system
+        fieldPaths:
+          - spec.path
+        options:
+          delimiter: /
+          index: 5

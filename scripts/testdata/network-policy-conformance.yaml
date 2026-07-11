@@ -1,0 +1,314 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bridge
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kagent
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentgateway-system
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: models
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: network-policy-target
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kagent-controller
+  namespace: kagent
+  labels:
+    app.kubernetes.io/name: kagent
+    app.kubernetes.io/instance: kagent
+    app.kubernetes.io/component: controller
+    fgentic.dev/network-policy-fixture: server
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: server
+      image: docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+      imagePullPolicy: IfNotPresent
+      command: [httpd, -f, -p, "8083"]
+      ports:
+        - name: a2a
+          containerPort: 8083
+          protocol: TCP
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 1m
+          memory: 2Mi
+        limits:
+          cpu: 20m
+          memory: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kagent-controller
+  namespace: kagent
+spec:
+  selector:
+    app.kubernetes.io/name: kagent
+    app.kubernetes.io/instance: kagent
+    app.kubernetes.io/component: controller
+  ports:
+    - name: a2a
+      port: 8083
+      targetPort: a2a
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: kagent-tools
+  namespace: kagent
+  labels:
+    app.kubernetes.io/name: kagent-tools
+    app.kubernetes.io/instance: kagent
+    fgentic.dev/network-policy-fixture: server
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: server
+      image: docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+      imagePullPolicy: IfNotPresent
+      command: [httpd, -f, -p, "8084"]
+      ports:
+        - name: mcp
+          containerPort: 8084
+          protocol: TCP
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 1m
+          memory: 2Mi
+        limits:
+          cpu: 20m
+          memory: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: kagent-tools
+  namespace: kagent
+spec:
+  selector:
+    app.kubernetes.io/name: kagent-tools
+    app.kubernetes.io/instance: kagent
+  ports:
+    - name: mcp
+      port: 8084
+      targetPort: mcp
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: agentgateway-proxy
+  namespace: agentgateway-system
+  labels:
+    app.kubernetes.io/name: agentgateway-proxy
+    fgentic.dev/network-policy-fixture: server
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: server
+      image: docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+      imagePullPolicy: IfNotPresent
+      command: [httpd, -f, -p, "8080"]
+      ports:
+        - name: proxy
+          containerPort: 8080
+          protocol: TCP
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 1m
+          memory: 2Mi
+        limits:
+          cpu: 20m
+          memory: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: agentgateway-proxy
+  namespace: agentgateway-system
+spec:
+  selector:
+    app.kubernetes.io/name: agentgateway-proxy
+  ports:
+    - name: proxy
+      port: 8080
+      targetPort: proxy
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: vllm
+  namespace: models
+  labels:
+    app.kubernetes.io/instance: vllm
+    app.kubernetes.io/component: serving-engine
+    app.kubernetes.io/part-of: vllm-stack
+    fgentic.dev/network-policy-fixture: server
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: server
+      image: docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+      imagePullPolicy: IfNotPresent
+      command: [httpd, -f, -p, "8000"]
+      ports:
+        - name: model
+          containerPort: 8000
+          protocol: TCP
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 1m
+          memory: 2Mi
+        limits:
+          cpu: 20m
+          memory: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: vllm-qwen2-5-0-5b-engine-service
+  namespace: models
+spec:
+  selector:
+    app.kubernetes.io/instance: vllm
+    app.kubernetes.io/component: serving-engine
+    app.kubernetes.io/part-of: vllm-stack
+  ports:
+    - name: model
+      port: 80
+      targetPort: model
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: egress-target
+  namespace: network-policy-target
+  labels:
+    app.kubernetes.io/name: egress-target
+    fgentic.dev/network-policy-fixture: server
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: server
+      image: docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+      imagePullPolicy: IfNotPresent
+      command: [httpd, -f, -p, "8443"]
+      ports:
+        - name: target
+          containerPort: 8443
+          protocol: TCP
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 1m
+          memory: 2Mi
+        limits:
+          cpu: 20m
+          memory: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: egress-target
+  namespace: network-policy-target
+spec:
+  selector:
+    app.kubernetes.io/name: egress-target
+  ports:
+    - name: target
+      port: 8443
+      targetPort: target

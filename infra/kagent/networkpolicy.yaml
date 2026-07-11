@@ -2,7 +2,8 @@
 # SPEC §4 F11), so this NetworkPolicy is a load-bearing security control: only agentgateway
 # (the governed A2A route), the bridge (direct-dial fallback), kagent's own agent pods (they
 # call the controller's session/persistence APIs), and monitoring (metrics scrapes) may reach
-# the kagent namespace. Enforced by a NetworkPolicy-capable CNI; inert on k3d flannel.
+# the kagent namespace. The exact policy passes the isolated kind+Calico deny/allow and deletion
+# guard; repeat `mise run test:network-policies` on each installed target CNI before acceptance.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -26,3 +27,59 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: monitoring
+---
+# Sample agents need only DNS, kagent's controller, and agentgateway's model/MCP routes.
+# The policy is an impact boundary, not a prompt-injection fix. In particular, docs-qa and scribe
+# receive no general internet path. platform-helper cannot dial kagent-tools on :8084 directly;
+# agentgateway is the only agent-pod path to that RBAC-scoped server. The controller retains its
+# direct discovery path because this policy selects only managed zoo pods. The generic kagent
+# conformance is automated; target acceptance must additionally probe direct :8084 denial.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agent-zoo-egress
+  namespace: kagent
+spec:
+  podSelector:
+    matchLabels:
+      fgentic.dev/agent-zoo: "true"
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kagent
+      ports:
+        - protocol: TCP
+          port: 8083
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentgateway-system
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: otel-collector
+              app.kubernetes.io/name: opentelemetry-collector
+      ports:
+        - protocol: TCP
+          port: 4317

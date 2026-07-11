@@ -33,10 +33,17 @@ spec:
   monitoring:
     enablePodMonitor: true
 
-  # Enforce TLS at the database boundary: clients must connect with sslmode=require.
+  # Enforce TLS and exact database/role pairing at the connection boundary. PostgreSQL grants
+  # CONNECT to PUBLIC by default, so an `all all` HBA rule would let one tenant authenticate to
+  # another tenant's database even when schema ownership later blocks normal reads.
   postgresql:
     pg_hba:
-      - hostssl all all all scram-sha-256
+      - hostssl synapse synapse all scram-sha-256
+      - hostssl mas mas all scram-sha-256
+      - hostssl bridge bridge all scram-sha-256
+      - hostssl kagent kagent all scram-sha-256
+      - hostssl keycloak keycloak all scram-sha-256
+      - hostssl all all all reject
       - hostnossl all all all reject
 
   # Declarative login roles for each tenant; passwords come from SOPS-encrypted Secrets
@@ -59,6 +66,10 @@ spec:
         login: true
         passwordSecret:
           name: pg-kagent
+      - name: keycloak
+        login: true
+        passwordSecret:
+          name: pg-keycloak
 
   resources:
     requests:

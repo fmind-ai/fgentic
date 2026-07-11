@@ -1,7 +1,7 @@
 # Zero-trust ingress to the agent data plane: only the agent workloads (the bridge in ns `bridge`
-# and kagent in ns `kagent`) may reach agentgateway. Enforced by a NetworkPolicy-capable CNI (GKE
-# Dataplane V2 / Cilium); inert on k3d flannel. Combined with the ClusterIP Service, agentgateway
-# is unreachable from outside the cluster and from other namespaces.
+# and kagent in ns `kagent`) may reach agentgateway. The exact policy passes isolated kind+Calico
+# deny/allow conformance; repeat the active-cluster probe on each target CNI. Combined with the
+# ClusterIP Service, this policy restricts other namespaces.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:

@@ -7,9 +7,10 @@
     "**/references/**",
     ".git",
     "apps/**",
+    "infra/bridges/chart/templates/**",
     "**/.terraform/**",
     "**/*.tfstate*",
-    "infra/**/*.sops.yaml"
+    "**/*.sops.yaml"
   ],
   "markdown": { "textWrap": "never" },
   "plugins": [

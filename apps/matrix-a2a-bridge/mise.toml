@@ -11,6 +11,8 @@ gotestsum = "latest"
 gitleaks = "latest"
 dprint = "latest"
 lefthook = "latest"
+kind = "0.32.0"
+kubectl = "1.35.0"
 
 [tasks.all]
 alias = "a"
@@ -65,7 +67,23 @@ run = "gitleaks git --log-opts=\"--max-count=100\" --verbose"
 [tasks.test]
 alias = "t"
 description = "Run the test suite (gotestsum, race + coverage)"
-run = "gotestsum --format pkgname -- -race -coverprofile=coverage.out ./..."
+run = """
+set -e
+gotestsum --format pkgname -- -race -coverprofile=coverage.out ./...
+bash scripts/check-coverage.sh coverage.out
+"""
+
+[tasks."test:integration"]
+description = "Exercise the real Matrix appservice wire path in an isolated kind cluster"
+run = "bash test/integration/run.sh"
+
+[tasks."test:load"]
+description = "Run the resource-bounded D3 dispatcher regression scenario"
+run = "bash test/integration/run-load.sh"
+
+[tasks."eval:models"]
+description = "Evaluate the three sample agents against the selected local model profile"
+run = "bash scripts/eval-models.sh"
 
 [tasks.format]
 alias = "f"

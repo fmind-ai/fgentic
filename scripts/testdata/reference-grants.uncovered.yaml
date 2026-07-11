@@ -1,0 +1,11 @@
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: uncovered
+  namespace: caller
+spec:
+  rules:
+    - backendRefs:
+        - name: api
+          namespace: backend
+          port: 8080

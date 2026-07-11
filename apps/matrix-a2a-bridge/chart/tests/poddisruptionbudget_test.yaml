@@ -1,0 +1,22 @@
+suite: bridge disruption budget
+templates:
+  - templates/poddisruptionbudget.yaml
+tests:
+  - it: renders no budget by default for the single-replica deployment
+    asserts:
+      - hasDocuments:
+          count: 0
+  - it: selects bridge pods and preserves one replica when enabled
+    set:
+      podDisruptionBudget.enabled: true
+      podDisruptionBudget.minAvailable: 1
+    asserts:
+      - equal:
+          path: spec.minAvailable
+          value: 1
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/name"]
+          value: matrix-a2a-bridge
+      - equal:
+          path: spec.selector.matchLabels["app.kubernetes.io/instance"]
+          value: RELEASE-NAME

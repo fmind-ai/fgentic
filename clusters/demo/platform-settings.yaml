@@ -1,0 +1,22 @@
+# Defaults for the ephemeral evaluation installer. scripts/demo.sh copies this overlay into its
+# cluster-local source snapshot and changes only these values when FGENTIC_LLM_* selects a profile.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-settings
+  namespace: flux-system
+data:
+  server_name: fgentic.localhost
+  cluster_issuer: local-ca
+  acme_email: unused@fgentic.localhost
+  gcp_project: not-configured
+  pg_backups_bucket: unused-demo
+  ingress_ip_name: unused-demo
+  llm_provider: demo
+  llm_model: fgentic-demo
+  demo_bridge_tag: local
+  vertex_region: europe-west1
+  openai_host: api.openai.com
+  azure_openai_resource: not-configured
+  llm_usage_budget_15m: "100000"
+  mas_local_login_enabled: "true"

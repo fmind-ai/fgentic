@@ -1,0 +1,73 @@
+# While vLLM is selected, the data-plane proxy can reach only its internal control/data-plane
+# dependencies. This policy is part of the selected provider inventory and is pruned on switch.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentgateway-vllm-egress
+  namespace: agentgateway-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agentgateway-proxy
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentgateway-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agentgateway
+      ports:
+        - protocol: TCP
+          port: 9978
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: models
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: vllm
+              app.kubernetes.io/component: serving-engine
+              app.kubernetes.io/part-of: vllm-stack
+      ports:
+        - protocol: TCP
+          port: 8000
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kagent
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kagent
+              app.kubernetes.io/instance: kagent
+              app.kubernetes.io/component: controller
+      ports:
+        - protocol: TCP
+          port: 8083
+    # MCP calls originate at this proxy after agentgateway authenticates the calling agent and
+    # enforces its tool allowlist. Agent pods themselves cannot reach :8084.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kagent
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kagent-tools
+              app.kubernetes.io/instance: kagent
+      ports:
+        - protocol: TCP
+          port: 8084

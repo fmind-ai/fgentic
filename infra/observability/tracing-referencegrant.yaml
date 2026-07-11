@@ -1,0 +1,16 @@
+# agentgateway's typed tracing policy lives with the Gateway, while the OTLP Service lives here.
+# The controller rejects that cross-namespace backendRef unless the destination opts in exactly.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: agentgateway-tracing
+  namespace: monitoring
+spec:
+  from:
+    - group: agentgateway.dev
+      kind: AgentgatewayPolicy
+      namespace: agentgateway-system
+  to:
+    - group: ""
+      kind: Service
+      name: otel-collector

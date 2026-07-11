@@ -1,0 +1,30 @@
+# Authenticate the bridge as a workload before any A2A path (including AgentCards) reaches
+# kagent. The API key is resolved from SOPS and removed by agentgateway before proxying; Matrix
+# X-User-Id remains attribution only. Restrict the credential to kagent A2A GET/POST traffic so it
+# cannot authorize another namespace or an unrelated route if the HTTPRoute is widened by mistake.
+# Require is fail-closed when CEL evaluation fails.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: a2a-bridge-authorization
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: kagent-a2a
+  traffic:
+    apiKeyAuthentication:
+      mode: Strict
+      secretRef:
+        name: a2a-bridge-callers
+    authorization:
+      action: Require
+      policy:
+        matchExpressions:
+          - >-
+            apiKey.workload == "matrix-a2a-bridge" &&
+            request.path.startsWith("/api/a2a/kagent/") &&
+            (request.method == "POST" ||
+            (request.method == "GET" &&
+            request.path.endsWith("/.well-known/agent-card.json")))

@@ -16,6 +16,8 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	sdk "github.com/a2aproject/a2a-go/v2/a2aclient"
 	"github.com/a2aproject/a2a-go/v2/a2aclient/agentcard"
+	"go.opentelemetry.io/otel"
+	"go.opentelemetry.io/otel/propagation"
 )
 
 // userHeader carries the Matrix sender to kagent for session/audit attribution (SPEC §4 F11):
@@ -32,14 +34,25 @@ func WithUser(ctx context.Context, userID string) context.Context {
 // userTransport injects the user header from the request context (requests inherit the
 // context passed to the SDK call, so per-call attribution works with one cached client).
 type userTransport struct {
-	base http.RoundTripper
+	base   http.RoundTripper
+	apiKey string
 }
 
 func (t *userTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	if user, ok := req.Context().Value(userKey{}).(string); ok && user != "" {
-		req = req.Clone(req.Context())
+	user, _ := req.Context().Value(userKey{}).(string)
+	req = req.Clone(req.Context())
+	if req.Header == nil {
+		req.Header = make(http.Header)
+	}
+	if user != "" {
 		req.Header.Set(userHeader, user)
 	}
+	if t.apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+t.apiKey)
+	}
+	// The bridge owns the client span, while this boundary injects its W3C context into both
+	// JSON-RPC and REST requests produced by the A2A SDK.
+	otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
 	return t.base.RoundTrip(req)
 }
 
@@ -68,8 +81,10 @@ type Client struct {
 }
 
 // New returns a Client that resolves agents relative to baseURL (e.g. the agentgateway proxy).
-func New(baseURL string, log *slog.Logger) *Client {
-	httpClient := &http.Client{Transport: &userTransport{base: http.DefaultTransport}}
+// apiKey is the bridge workload credential enforced by the A2A route; it may be empty only when
+// directly dialing an unsecured development fixture or kagent endpoint.
+func New(baseURL, apiKey string, log *slog.Logger) *Client {
+	httpClient := &http.Client{Transport: &userTransport{base: http.DefaultTransport, apiKey: apiKey}}
 	return &Client{
 		baseURL:    strings.TrimRight(baseURL, "/"),
 		log:        log,
@@ -80,9 +95,9 @@ func New(baseURL string, log *slog.Logger) *Client {
 }
 
 // Call delegates text to the agent served under agentPath (e.g. "/api/a2a/kagent/k8s-agent")
-// via A2A message/send. A non-empty contextID threads the conversation; the returned Result
-// carries the contextId for the next turn and, when the agent answered with a still-running
-// Task, the TaskID to poll (Terminal=false).
+// via A2A message/send. A non-empty contextID threads the conversation. ReturnImmediately keeps
+// long-running agents from holding the bridge request open: a non-terminal Task is returned as
+// soon as it exists and the bridge follows it with tasks/get polling.
 func (c *Client) Call(ctx context.Context, agentPath, text, contextID string) (Result, error) {
 	client, err := c.clientFor(ctx, agentPath)
 	if err != nil {
@@ -92,7 +107,10 @@ func (c *Client) Call(ctx context.Context, agentPath, text, contextID string) (R
 	if contextID != "" {
 		msg.ContextID = contextID // thread the room's conversation so the agent keeps context
 	}
-	res, err := client.SendMessage(ctx, &a2a.SendMessageRequest{Message: msg})
+	res, err := client.SendMessage(ctx, &a2a.SendMessageRequest{
+		Message: msg,
+		Config:  &a2a.SendMessageConfig{ReturnImmediately: true},
+	})
 	if err != nil {
 		return Result{}, fmt.Errorf("a2a message/send to %s: %w", agentPath, err)
 	}
@@ -112,6 +130,21 @@ func (c *Client) PollTask(ctx context.Context, agentPath string, taskID string) 
 	return taskResult(task), nil
 }
 
+// ResolveAgentCard fetches the current public AgentCard for agentPath through the configured
+// A2A base URL. Unlike clientFor, this deliberately bypasses the SDK-client cache so profile
+// synchronization observes metadata changes on a config reload.
+func (c *Client) ResolveAgentCard(ctx context.Context, agentPath string) (*a2a.AgentCard, error) {
+	cardPath := strings.TrimRight(agentPath, "/") + "/.well-known/agent-card.json"
+	card, err := c.resolver.Resolve(ctx, c.baseURL, agentcard.WithPath(cardPath))
+	if err != nil {
+		return nil, fmt.Errorf("resolve agent card %s%s: %w", c.baseURL, cardPath, err)
+	}
+	if card == nil {
+		return nil, fmt.Errorf("resolve agent card %s%s: empty response", c.baseURL, cardPath)
+	}
+	return card, nil
+}
+
 // clientFor resolves (and caches) an SDK client for a given agent path by fetching its AgentCard.
 // Routing baseURL + card path keeps clients pointing through agentgateway when it rewrites the
 // card's advertised URL (a no-op when talking to kagent directly).
@@ -124,10 +157,9 @@ func (c *Client) clientFor(ctx context.Context, agentPath string) (*sdk.Client, 
 		return cached, nil
 	}
 
-	cardPath := strings.TrimRight(agentPath, "/") + "/.well-known/agent-card.json"
-	card, err := c.resolver.Resolve(ctx, c.baseURL, agentcard.WithPath(cardPath))
+	card, err := c.ResolveAgentCard(ctx, agentPath)
 	if err != nil {
-		return nil, fmt.Errorf("resolve agent card %s%s: %w", c.baseURL, cardPath, err)
+		return nil, err
 	}
 	// The user-stamping HTTP client is registered for both wire flavors kagent may advertise.
 	client, err := sdk.NewFromCard(

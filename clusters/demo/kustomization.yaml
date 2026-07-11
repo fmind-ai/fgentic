@@ -1,0 +1,231 @@
+# Ephemeral evaluation overlay. The demo script installs Flux controllers locally and points the
+# unchanged HelmRelease graph at a cluster-local snapshot of this checkout; no GitHub source or
+# SOPS key is involved. Production continues to use clusters/local or clusters/gcp.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+  - platform-settings.yaml
+  - secrets.yaml
+components:
+  - ../base/provider-selection
+patches:
+  # Evaluation omits the optional IdP and observability stacks. Local password auth is created
+  # through MAS's supported Admin API, while production remains SSO-first and fully monitored.
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: keycloak
+      namespace: flux-system
+    patch: |
+      $patch: delete
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: keycloak
+        namespace: flux-system
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: observability
+      namespace: flux-system
+    patch: |
+      $patch: delete
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: observability
+        namespace: flux-system
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: observability-monitors
+      namespace: flux-system
+    patch: |
+      $patch: delete
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: observability-monitors
+        namespace: flux-system
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: postgres
+      namespace: flux-system
+    patch: |
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: postgres
+        namespace: flux-system
+      spec:
+        dependsOn:
+          - name: controllers
+          - name: platform-secrets
+        patches:
+          - target:
+              kind: Cluster
+              name: platform-pg
+            patch: |
+              - op: remove
+                path: /spec/backup
+              - op: remove
+                path: /spec/serviceAccountTemplate
+              - op: replace
+                path: /spec/monitoring/enablePodMonitor
+                value: false
+              - op: remove
+                path: /spec/managed/roles/4
+          - target:
+              kind: ScheduledBackup
+              name: platform-pg-nightly
+            patch: |
+              $patch: delete
+              apiVersion: postgresql.cnpg.io/v1
+              kind: ScheduledBackup
+              metadata:
+                name: platform-pg-nightly
+                namespace: postgres
+          - target:
+              kind: Database
+              name: keycloak
+            patch: |
+              $patch: delete
+              apiVersion: postgresql.cnpg.io/v1
+              kind: Database
+              metadata:
+                name: keycloak
+                namespace: postgres
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: matrix
+      namespace: flux-system
+    patch: |
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: matrix
+        namespace: flux-system
+      spec:
+        patches:
+          - target:
+              kind: HelmRelease
+              name: matrix-stack
+            patch: |
+              - op: remove
+                path: /spec/values/matrixAuthenticationService/additional/10-upstream-oidc
+              - op: add
+                path: /spec/values/matrixAuthenticationService/additional/05-demo-admin
+                value:
+                  configSecret: mas-demo-admin
+                  configSecretKey: config.yaml
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: agentgateway
+      namespace: flux-system
+    patch: |
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: agentgateway
+        namespace: flux-system
+      spec:
+        patches:
+          - target:
+              group: agentgateway.dev
+              version: v1alpha1
+              kind: AgentgatewayPolicy
+              name: tracing
+              namespace: agentgateway-system
+            patch: |
+              $patch: delete
+              apiVersion: agentgateway.dev/v1alpha1
+              kind: AgentgatewayPolicy
+              metadata:
+                name: tracing
+                namespace: agentgateway-system
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: agentgateway-provider
+      namespace: flux-system
+    patch: |
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: agentgateway-provider
+        namespace: flux-system
+      spec:
+        patches:
+          - target:
+              group: agentgateway.dev
+              version: v1alpha1
+              kind: AgentgatewayBackend
+              name: llm-vertex
+              namespace: agentgateway-system
+            patch: |
+              - op: add
+                path: /spec/policies/auth/gcp/secretRef
+                value:
+                  name: gcp-adc
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: kagent
+      namespace: flux-system
+    patch: |
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: kagent
+        namespace: flux-system
+      spec:
+        patches:
+          - target:
+              kind: HelmRelease
+              name: kagent
+            patch: |
+              - op: replace
+                path: /spec/values/otel/tracing/enabled
+                value: false
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: bridge
+      namespace: flux-system
+    patch: |
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: bridge
+        namespace: flux-system
+      spec:
+        patches:
+          - target:
+              kind: HelmRelease
+              name: matrix-a2a-bridge
+            patch: |
+              - op: replace
+                path: /spec/values/image
+                value:
+                  repository: matrix-a2a-bridge
+                  tag: ${demo_bridge_tag}
+                  pullPolicy: Never
+              - op: replace
+                path: /spec/values/config/otelEndpoint
+                value: ""
+              - op: replace
+                path: /spec/values/metrics/podMonitor/enabled
+                value: false

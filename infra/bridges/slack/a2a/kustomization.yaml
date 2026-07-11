@@ -1,0 +1,16 @@
+# Classify the Slack appservice namespace in the canonical Matrix-to-A2A bridge only when this
+# network profile is selected. Classification never grants an agent invocation permission.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: matrix-a2a-bridge
+      namespace: bridge
+    patch: |
+      - op: add
+        path: /spec/values/bridgedOrigins/slack
+        value:
+          - "@slack_*:${server_name}"

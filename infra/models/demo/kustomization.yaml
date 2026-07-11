@@ -1,0 +1,7 @@
+# Deterministic, OpenAI-compatible response stub for the evaluation installer. This is not a
+# language model and must never be selected by a production overlay.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - server.yaml
+  - networkpolicy.yaml

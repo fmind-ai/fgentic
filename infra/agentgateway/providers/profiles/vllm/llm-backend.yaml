@@ -1,0 +1,14 @@
+# Host override keeps the OpenAI-compatible request path unchanged and sends it over plain HTTP
+# only inside the cluster. NetworkPolicy, not a model API key, is this backend's trust boundary.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: llm-vllm
+  namespace: agentgateway-system
+spec:
+  ai:
+    provider:
+      openai:
+        model: ${llm_model}
+      host: vllm-qwen2-5-0-5b-engine-service.models.svc.cluster.local
+      port: 80

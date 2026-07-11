@@ -1,0 +1,10 @@
+# Self-hosted vLLM profile selected by platform-settings.data.llm_provider=vllm. The selected
+# provider inventory owns both the backend and model runtime so switching profiles prunes both.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../models/vllm
+  - llm-backend.yaml
+  - networkpolicy.yaml
+components:
+  - ../../base

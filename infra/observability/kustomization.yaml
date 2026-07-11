@@ -5,4 +5,20 @@ resources:
   - helmrelease.yaml
   - tracing-helmreleases.yaml
   - tracing-networkpolicy.yaml
+  - tracing-referencegrant.yaml
   - grafana-route.yaml
+
+# kube-prometheus-stack's Grafana sidecar watches this stable ConfigMap label in every namespace.
+# Keep dashboard JSON as standalone files so dprint and the deterministic contract check parse the
+# exact payload Grafana receives. Flux post-build substitution resolves the token-budget threshold.
+configMapGenerator:
+  - name: fgentic-grafana-dashboards
+    namespace: monitoring
+    files:
+      - dashboards/fgentic-bridge.json
+      - dashboards/fgentic-llm-token-cost.json
+    options:
+      labels:
+        grafana_dashboard: "1"
+generatorOptions:
+  disableNameSuffixHash: true

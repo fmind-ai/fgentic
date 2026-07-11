@@ -64,7 +64,7 @@ variable "pg_backups_bucket_name" {
 variable "manage_dns" {
   type        = bool
   default     = true
-  description = "Create the Cloud DNS zone + platform A records (apex, chat., matrix., auth., grafana.) for var.domain"
+  description = "Create the Cloud DNS zone + platform A records (apex, chat., matrix., auth., id., grafana.) for var.domain"
 }
 
 variable "domain" {

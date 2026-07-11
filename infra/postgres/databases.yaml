@@ -51,3 +51,15 @@ spec:
   name: kagent
   owner: kagent
   encoding: UTF8
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: keycloak
+  namespace: postgres
+spec:
+  cluster:
+    name: platform-pg
+  name: keycloak
+  owner: keycloak
+  encoding: UTF8

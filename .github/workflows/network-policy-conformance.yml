@@ -1,0 +1,34 @@
+name: NetworkPolicy conformance
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  conformance:
+    name: kind and Calico policy enforcement
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Install mise toolchain
+        uses: jdx/mise-action@v4
+      - name: Verify A2A authorization boundary
+        run: mise run test:a2a-authorization
+      - name: Verify governed MCP boundary
+        run: mise run test:mcp-governance
+      - name: Run conformance and mutation guard
+        run: mise run test:network-policies:kind
+        env:
+          NETWORK_POLICY_DIAGNOSTICS_DIR: ${{ runner.temp }}/network-policy-diagnostics
+      - name: Preserve cluster diagnostics
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: network-policy-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/network-policy-diagnostics
+          if-no-files-found: warn
+          retention-days: 14

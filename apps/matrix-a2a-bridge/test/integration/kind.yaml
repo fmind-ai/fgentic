@@ -1,0 +1,18 @@
+apiVersion: kind.x-k8s.io/v1alpha4
+kind: Cluster
+nodes:
+  - role: control-plane
+    kubeadmConfigPatches:
+      # Rootless Docker/Crostini cannot write host kernel flags from the nested kubelet. This
+      # alpha gate tells kubelet to tolerate those permission errors; it is harmless on CI.
+      - |
+        apiVersion: kubelet.config.k8s.io/v1beta1
+        kind: KubeletConfiguration
+        featureGates:
+          KubeletInUserNamespace: true
+      # Constrained hosts may lack br_netfilter, so force Service traffic through conntrack.
+      - |
+        apiVersion: kubeproxy.config.k8s.io/v1alpha1
+        kind: KubeProxyConfiguration
+        iptables:
+          masqueradeAll: true

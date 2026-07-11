@@ -1,0 +1,21 @@
+# Native OpenAI request/response handling with a configurable API host. The explicit host supports
+# eligible regional projects (for example eu.api.openai.com); host overrides require explicit TLS.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: llm-openai
+  namespace: agentgateway-system
+spec:
+  ai:
+    provider:
+      openai:
+        model: ${llm_model}
+      host: ${openai_host}
+      port: 443
+      path: /v1/chat/completions
+  policies:
+    auth:
+      secretRef:
+        name: openai-secret
+    tls:
+      sni: ${openai_host}

@@ -12,7 +12,7 @@ resource "google_dns_managed_zone" "platform" {
 
 locals {
   # Apex (well-known delegation) + every public host the Gateway serves.
-  dns_hosts = var.manage_dns ? toset(["", "chat.", "matrix.", "auth.", "grafana."]) : toset([])
+  dns_hosts = var.manage_dns ? toset(["", "chat.", "matrix.", "auth.", "id.", "grafana."]) : toset([])
 }
 
 resource "google_dns_record_set" "platform" {

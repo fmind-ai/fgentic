@@ -1,0 +1,19 @@
+# Temporary teardown component. Reconcile this in place of the Telegram runtime component and
+# wait for CNPG to apply NOLOGIN before removing the declaration; the retained role stays inert.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: postgresql.cnpg.io
+      version: v1
+      kind: Cluster
+      name: platform-pg
+      namespace: postgres
+    patch: |
+      - op: add
+        path: /spec/managed/roles/-
+        value:
+          name: telegrambridge
+          ensure: present
+          login: false
+          disablePassword: true

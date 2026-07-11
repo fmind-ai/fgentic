@@ -28,6 +28,18 @@ spec:
   interval: 24h
   url: https://cloudnative-pg.github.io/charts
 ---
+# KeycloakX is the maintained Apache-2.0 chart that deploys Keycloak's official Quay image.
+# Bitnami's public Keycloak images/charts stopped receiving production updates in August 2025;
+# the official Keycloak Operator is upstream-owned but disproportionate for one optional instance.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: codecentric
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: https://codecentric.github.io/helm-charts
+---
 # Element Server Suite (Synapse + MAS + Element + well-known). Pin to the latest release:
 # https://github.com/element-hq/ess-helm/releases
 apiVersion: source.toolkit.fluxcd.io/v1
@@ -102,3 +114,13 @@ metadata:
 spec:
   interval: 24h
   url: https://jaegertracing.github.io/helm-charts
+---
+# Official vLLM Production Stack chart; the selected vLLM provider owns its HelmRelease.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: vllm
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: https://vllm-project.github.io/production-stack

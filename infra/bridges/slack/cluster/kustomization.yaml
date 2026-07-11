@@ -1,0 +1,37 @@
+# Select this component from a cluster overlay only after generating that environment's Slack
+# SOPS secret. Every Slack-specific declaration remains inside infra/bridges/slack/.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - flux-kustomization.yaml
+patches:
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: postgres
+      namespace: flux-system
+    patch: |
+      - op: add
+        path: /spec/components/-
+        value: ../bridges/slack/postgres
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: matrix
+      namespace: flux-system
+    patch: |
+      - op: add
+        path: /spec/components/-
+        value: ../bridges/slack/matrix
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: bridge
+      namespace: flux-system
+    patch: |
+      - op: add
+        path: /spec/components/-
+        value: ../../../infra/bridges/slack/a2a

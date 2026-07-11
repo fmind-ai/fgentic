@@ -1,0 +1,52 @@
+evaluation_interval: 1m
+# The test runner replaces this with the extracted PrometheusRule payload.
+rule_files: []
+tests:
+  - name: vertex usage triggers the provider-neutral budget alert
+    interval: 1m
+    input_series:
+      - series: 'agentgateway_gen_ai_client_token_usage_sum{gen_ai_system="gcp.vertex_ai",gen_ai_request_model="google/gemini-2.5-flash",gen_ai_token_type="input"}'
+        values: "0+10000x25"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LLMTokenBurnHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: LLM token throughput is unusually high
+              description: >-
+                More than 100000 model tokens were consumed in 15 minutes through agentgateway
+                across all providers and models. Check for mention storms, agent loops, or a
+                misbehaving automation (bridge rate limits and this global token budget bound the
+                current blast radius; per-room budgets are tracked in issue #99).
+    promql_expr_test:
+      - expr: system_model_token_type:agentgateway_gen_ai_client_token_usage_sum:increase15m
+        eval_time: 20m
+        exp_samples:
+          - labels: 'system_model_token_type:agentgateway_gen_ai_client_token_usage_sum:increase15m{gen_ai_system="gcp.vertex_ai",gen_ai_request_model="google/gemini-2.5-flash",gen_ai_token_type="input"}'
+            value: 150000
+  - name: openai-compatible usage triggers the same budget alert
+    interval: 1m
+    input_series:
+      - series: 'agentgateway_gen_ai_client_token_usage_sum{gen_ai_system="openai",gen_ai_request_model="mistral-small-latest",gen_ai_token_type="output"}'
+        values: "0+10000x25"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: LLMTokenBurnHigh
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+            exp_annotations:
+              summary: LLM token throughput is unusually high
+              description: >-
+                More than 100000 model tokens were consumed in 15 minutes through agentgateway
+                across all providers and models. Check for mention storms, agent loops, or a
+                misbehaving automation (bridge rate limits and this global token budget bound the
+                current blast radius; per-room budgets are tracked in issue #99).
+    promql_expr_test:
+      - expr: system_model_token_type:agentgateway_gen_ai_client_token_usage_sum:increase15m
+        eval_time: 20m
+        exp_samples:
+          - labels: 'system_model_token_type:agentgateway_gen_ai_client_token_usage_sum:increase15m{gen_ai_system="openai",gen_ai_request_model="mistral-small-latest",gen_ai_token_type="output"}'
+            value: 150000

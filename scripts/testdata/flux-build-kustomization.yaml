@@ -1,0 +1,28 @@
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: cluster-overlay-validation
+  namespace: flux-system
+spec:
+  interval: 1h
+  path: ./
+  prune: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  postBuild:
+    # Offline CI cannot resolve substituteFrom. These canonical sample values exercise the same
+    # strict substitution surface while each overlay still carries its own platform-settings.
+    substitute:
+      server_name: ci.fgentic.example
+      cluster_issuer: ci-issuer
+      acme_email: ci@fgentic.example
+      gcp_project: ci-fgentic
+      pg_backups_bucket: ci-fgentic-pg-backups
+      ingress_ip_name: ci-fgentic-ingress
+      llm_provider: vertex
+      llm_model: google/gemini-2.5-flash
+      vertex_region: europe-west1
+      openai_host: api.openai.com
+      azure_openai_resource: not-configured
+      llm_usage_budget_15m: "100000"

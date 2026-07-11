@@ -1,0 +1,18 @@
+# Governed Vertex AI egress: consumers POST OpenAI-compatible /v1/chat/completions to the
+# agentgateway Service. `auth.gcp {}` uses Workload Identity on GKE; the local cluster overlay
+# supplies an ADC Secret reference because k3d has no ambient Google credentials.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: llm-vertex
+  namespace: agentgateway-system
+spec:
+  ai:
+    provider:
+      vertexai:
+        model: ${llm_model}
+        projectId: ${gcp_project}
+        region: ${vertex_region}
+  policies:
+    auth:
+      gcp: {}

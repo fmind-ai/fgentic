@@ -1,4 +1,5 @@
-replicaCount: 1
+replicaCount: 1 # fixed single appservice consumer; the chart rejects higher values
+terminationGracePeriodSeconds: 45
 
 image:
   repository: ghcr.io/fmind-ai/matrix-a2a-bridge
@@ -17,16 +18,23 @@ config:
   ghostPrefix: agent-
   requestTimeout: 60s # transport deadline for one A2A message/send
   taskTimeout: 10m # overall deadline when polling a long-running task (tasks/get)
+  shutdownTimeout: 25s # dispatcher drain before cancellation; pod grace also covers intake/telemetry
   concurrency: 16 # max in-flight delegations across all rooms (per-room FIFO regardless)
+  roomQueueCapacity: 32 # accepted running + queued jobs per room
+  globalQueueCapacity: 256 # accepted running + queued jobs across all rooms
   # Token-bucket rate limits guarding LLM spend (SPEC §4 F7).
   senderRatePerMinute: 6
   senderRateBurst: 3
   roomRatePerMinute: 30
   roomRateBurst: 10
+  rateLimitBucketCapacity: 4096 # hard cap for each sender/room invocation/notice bucket map
   logLevel: info
   logFormat: json
   listenPort: 29331
   metricsPort: 9090 # Prometheus /metrics side port (SPEC §9.3)
+  agentsReloadInterval: 5s # poll the projected ConfigMap for routing/profile changes
+  # Standard OTLP/HTTP endpoint. Empty keeps tracing disabled for standalone installs.
+  otelEndpoint: ""
 
 # Postgres backing the bridge state (mautrix StateStore + contexts + event dedup — SPEC §5).
 # The Secret holds a full connection URL under `key` (e.g. postgres://bridge:...@platform-pg-rw
@@ -44,17 +52,41 @@ registration:
   secretName: matrix-a2a-bridge-registration
   key: registration.yaml
 
+# Workload credential for the agentgateway A2A route. X-User-Id remains end-user attribution;
+# this independent key proves that the caller is the bridge and is removed by the gateway.
+a2aAuthentication:
+  enabled: true
+  secretName: a2a-bridge-credential
+  key: token
+
+# Anchored full-MXID namespaces owned by external bridges. Matching senders require an explicit
+# per-agent allowedSenders match even though their MXID is local. Network names are low-cardinality
+# audit values; patterns use one trailing localpart '*' and an exact homeserver.
+bridgedOrigins: {}
+
 # The ghost -> kagent agent routing map (also the invocation allowlist). Rendered into a ConfigMap.
+# `description` is only a startup/card-outage fallback; live profiles and `!agents` prefer the
+# current AgentCard. Optional avatarURL values must be existing mxc:// URIs.
 agents:
-  agent-assistant:
+  agent-platform-helper:
     namespace: kagent
-    name: platform-assistant
-  agent-k8s:
+    name: platform-helper
+    description: Read-only diagnostics for the evaluation profile's Kubernetes namespaces.
+    # avatarURL: mxc://fgentic.fmind.ai/media-id
+    allowedSenders:
+      - "@alice:fgentic.fmind.ai"
+  agent-docs-qa:
     namespace: kagent
-    name: k8s-agent
-  agent-helm:
+    name: docs-qa
+    description: Answers architecture and operations questions from local Fgentic documentation.
+    allowedSenders:
+      - "@alice:fgentic.fmind.ai"
+  agent-scribe:
     namespace: kagent
-    name: helm-agent
+    name: scribe
+    description: Summarizes pasted or quoted room discussion without tools.
+    allowedSenders:
+      - "@alice:fgentic.fmind.ai"
 
 service:
   type: ClusterIP
@@ -65,8 +97,8 @@ serviceAccount:
   automountServiceAccountToken: false
 
 # Default-deny ingress except from the homeserver namespace (Synapse pushes AS transactions here)
-# and monitoring (future metrics scrapes — SPEC §4 F14). Enforced by a CNI with NetworkPolicy
-# support (GKE Dataplane V2 / Cilium); inert on k3d flannel.
+# and monitoring (future metrics scrapes — SPEC §4 F14). Validate enforcement on GKE Dataplane V2
+# or Cilium; constrained rootless k3d programs kube-router rules but failed a deny-egress probe.
 networkPolicy:
   enabled: true
   fromNamespaces:
@@ -103,7 +135,8 @@ resources:
     memory: 128Mi
 
 podDisruptionBudget:
-  enabled: false # a single stateless appservice; enable + raise replicas for HA
+  enabled: false # optional single-replica disruption guard; may block voluntary maintenance
+  minAvailable: 1
 
 revisionHistoryLimit: 3
 nodeSelector: {}
