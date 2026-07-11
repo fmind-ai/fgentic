@@ -1,51 +1,51 @@
-# B owns a distinct leaf certificate and Gateway listeners while sharing the Traefik data plane.
+# C owns a distinct leaf certificate and Gateway listeners while sharing the Traefik data plane.
 apiVersion: cert-manager.io/v1
 kind: Certificate
 metadata:
-  name: matrix-b-tls
+  name: matrix-c-tls
   namespace: gateway
 spec:
-  secretName: matrix-b-tls
+  secretName: matrix-c-tls
   issuerRef:
     kind: ClusterIssuer
     name: ${cluster_issuer}
   dnsNames:
-    - ${federation_partner_server_name}
-    - matrix.${federation_partner_server_name}
+    - ${federation_denied_server_name}
+    - matrix.${federation_denied_server_name}
 ---
 apiVersion: gateway.networking.k8s.io/v1
 kind: Gateway
 metadata:
-  name: federation-b
+  name: federation-c
   namespace: gateway
 spec:
   gatewayClassName: traefik
   listeners:
-    - name: https-wellknown-b
+    - name: https-wellknown-c
       protocol: HTTPS
       port: 443
-      hostname: ${federation_partner_server_name}
+      hostname: ${federation_denied_server_name}
       tls:
         mode: Terminate
         certificateRefs:
-          - name: matrix-b-tls
+          - name: matrix-c-tls
       allowedRoutes:
         namespaces:
           from: Selector
           selector:
             matchLabels:
-              kubernetes.io/metadata.name: matrix-b
-    - name: https-matrix-b
+              kubernetes.io/metadata.name: matrix-c
+    - name: https-matrix-c
       protocol: HTTPS
       port: 443
-      hostname: matrix.${federation_partner_server_name}
+      hostname: matrix.${federation_denied_server_name}
       tls:
         mode: Terminate
         certificateRefs:
-          - name: matrix-b-tls
+          - name: matrix-c-tls
       allowedRoutes:
         namespaces:
           from: Selector
           selector:
             matchLabels:
-              kubernetes.io/metadata.name: matrix-b
+              kubernetes.io/metadata.name: matrix-c

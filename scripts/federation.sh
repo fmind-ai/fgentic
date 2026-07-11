@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# Provider-free lifecycle for the disposable two-homeserver federation lab. The generic demo
-# installer owns the shared mechanics; this wrapper fixes the profile, cluster, and deletion guard.
+# Provider-free lifecycle for the disposable federation hardening lab. The generic demo installer
+# owns the shared mechanics; this wrapper fixes the profile, cluster, and deletion guard.
 set -euo pipefail
 
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -10,12 +10,14 @@ usage() {
 	cat <<'EOF'
 usage: scripts/federation.sh up|down
 
-Creates the owned fgentic-fed k3d cluster with two provider-free Synapse homeservers:
+Creates the owned fgentic-fed k3d cluster with three provider-free Synapse homeservers:
   org-a.fgentic.localhost
   org-b.fgentic.localhost
+  org-c.fgentic.localhost (denied control)
 
-`up` reconciles the lab, proves a bidirectional federated room exchange, and leaves the cluster
-running for inspection. `down` deletes only that ownership-labelled cluster and its local images.
+`up` reconciles the lab, proves a bidirectional A/B exchange plus C's rejection, and leaves the
+cluster running for inspection. `down` deletes only that ownership-labelled cluster and its local
+images.
 
 Environment:
   FGENTIC_FED_CLUSTER  must be fgentic-fed when set

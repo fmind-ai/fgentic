@@ -15,6 +15,10 @@ Design position: **Matrix federation for the collaboration plane (humans + agent
 1. **Synapse module callbacks** (`federated_user_may_invite`, `should_drop_federated_event`) as the programmatic policy border — this is Fgentic's open equivalent of the "Secure Border Gateway" that TI-Messenger mandates between parties (and which Element gates behind ESS Pro; ours is policy-as-code instead of a paid appliance).
 1. **Bridge sender policy** (D6): per-agent `allowedServers`/`allowedSenders`; federated senders deny-by-default — already implemented and tested, ahead of Phase 6.
 
+The executable lab encodes the first three controls as one defense-in-depth contract. Every Synapse release sets `default_room_version: "12"`. Organizations A and B each allow exactly their own server and the partner in `federation_domain_whitelist`; the partner also serves as the reachable `trusted_key_servers` notary, so the proof has no public notary dependency. The denied control server is deliberately absent from both allowlists.
+
+Room creation is equally explicit. The bootstrap helper is the lab's supported federated-room constructor: it requests room version 12, sets `m.federate: true`, and installs an initial `m.room.server_acl` state event whose `allow` list contains only A and B and whose `allow_ip_literals` is `false`. Applying the ACL as initial state prevents an ungoverned-event race. A separate local-only room deliberately sets `m.federate: false`; this creation-time flag is the operational default for rooms that must never federate, because it cannot be changed later. Flux owns the homeserver configuration, while the bootstrap owns and verifies the per-room state.
+
 ### 8.3 Cross-org delegation plane
 
 When org B's agents should be _invoked_ (not just conversed with): expose selected A2A endpoints through agentgateway on a dedicated Gateway listener with **JWT (OIDC federation between orgs) or mTLS** per A2A v1.0 security schemes, Signed AgentCard published at the well-known path, per-consumer token quotas. The bridge's agents map gains a `url:` variant (today it can only address kagent `namespace/name`) so remote signed agents become mentionable ghosts too.
@@ -23,18 +27,19 @@ When org B's agents should be _invoked_ (not just conversed with): expose select
 
 For federated rooms, "unencrypted" means the partner's server operators read everything, forever. Options, in order of preference: (a) keep federated agent rooms plaintext but **scoped** — dedicated per-project rooms, no sensitive-room federation, contractual controls (ship this first; it is what TI-Messenger-style deployments do in practice); (b) adopt appservice E2EE (mautrix crypto) later if demanded — acknowledged as officially "not recommended" and config-heavy. Document (a) as ADR 0008-bis when Phase 6 starts.
 
-### 8.5 Disposable two-homeserver federation lab
+### 8.5 Disposable federation hardening lab
 
-`mise run fed:up` is the executable M8 baseline: two independently named Matrix homeservers in the separately owned `fgentic-fed` k3d cluster. The lab deliberately uses one Kubernetes control plane. That still exercises Matrix discovery, TLS, server signing, event replication, and federation authorization while keeping cross-cluster routing out of the first acceptance boundary. It does **not** claim infrastructure or failure-domain isolation; use two clusters when testing independent networks, control planes, or disaster recovery.
+`mise run fed:up` is the executable M8 baseline: two independently named participating Matrix homeservers plus one denied control homeserver in the separately owned `fgentic-fed` k3d cluster. The lab deliberately uses one Kubernetes control plane. That still exercises Matrix discovery, TLS, server signing, event replication, federation authorization, and rejection of an untrusted server while keeping cross-cluster routing out of the first acceptance boundary. It does **not** claim infrastructure or failure-domain isolation; use separate clusters when testing independent networks, control planes, or disaster recovery.
 
-| Organization | Matrix server name        | Namespace  | Synapse database |
-| ------------ | ------------------------- | ---------- | ---------------- |
-| A            | `org-a.fgentic.localhost` | `matrix`   | `synapse`        |
-| B            | `org-b.fgentic.localhost` | `matrix-b` | `synapse_b`      |
+| Organization | Matrix server name        | Namespace  | Synapse database | Lab role                |
+| ------------ | ------------------------- | ---------- | ---------------- | ----------------------- |
+| A            | `org-a.fgentic.localhost` | `matrix`   | `synapse`        | Federated participant   |
+| B            | `org-b.fgentic.localhost` | `matrix-b` | `synapse_b`      | Federated participant   |
+| C            | `org-c.fgentic.localhost` | `matrix-c` | `synapse_c`      | Denied negative control |
 
-Both homeservers are Synapse-only ESS Community releases. They share one CloudNativePG cluster but have separate roles, databases, credentials, and namespace-local credential copies. Each server owns its apex `/.well-known/matrix/server` delegation and local-CA certificate; the public lab CA is mounted as outbound federation trust. No MAS, IdP, Matrix-to-A2A appservice, agent runtime, model endpoint, or provider account is part of this lab.
+All three homeservers are Synapse-only ESS Community releases. They share one CloudNativePG cluster but have separate roles, databases, credentials, and namespace-local credential copies. Each server owns its apex `/.well-known/matrix/server` delegation and local-CA certificate; the public lab CA is mounted as outbound federation trust. No MAS, IdP, Matrix-to-A2A appservice, agent runtime, model endpoint, or provider account is part of this lab.
 
-Federation is closed in both directions: each Synapse `federation_domain_whitelist` contains exactly the two lab server names. The lab disables public signing-key notaries with `trusted_key_servers: []`, so each server retrieves its partner's signing key directly. That direct-lookup choice is a local-lab exception, not the final trust policy; [issue #52](https://github.com/fmind-ai/fgentic/issues/52) owns the hardened room and federation policy layer.
+Federation is closed between the two participants: A and B each admit exactly A and B through `federation_domain_whitelist`, and each trusts the other participant as its signing-key notary. C is routable only so the acceptance test can make a real federation attempt; it is not admitted by either participant's domain allowlist or the shared room's server ACL. Each Gateway listener also accepts `HTTPRoute` attachments only from its owning Matrix namespace (and the HTTP redirect only from `gateway`). The duplicated controls are intentional: ingress ownership and homeserver policy limit federation globally, while room state remains an independently replicated authorization boundary.
 
 Run the proof from a clean workstation with Docker, Git, and mise:
 
@@ -43,7 +48,7 @@ mise install
 mise run fed:up
 ```
 
-The command creates or reuses only the owned `fgentic-fed` cluster, reconciles the federation profile, provisions Alice on A and Bob on B, creates a federated room, and requires a message from each user to arrive through the other homeserver before it succeeds. It leaves the cluster running so the homeservers, room, and reconciliation state can be inspected. No provider connection or paid service is used.
+The command creates or reuses only the owned `fgentic-fed` cluster and reconciles the federation profile through Flux. It provisions Alice on A, Bob on B, and Charlie on C; verifies the room-v12, ACL, and explicit federation state; and requires a message from each participant to arrive through the other homeserver. For the negative path, Charlie's join must fail, a locally accepted C-signed transaction first proves the probe signature is valid, and that same signed federation send must be forbidden by both A and B. It leaves the cluster running so the homeservers, room, and reconciliation state can be inspected. No provider connection or paid service is used.
 
 Remove the lab when inspection is complete:
 

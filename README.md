@@ -96,7 +96,7 @@ Choose the model boundary before using non-demo data:
 
 For example, `FGENTIC_LLM_PROVIDER=vllm mise run demo:up` selects the real credential-free self-hosted profile. API profiles require the matching key, `FGENTIC_LLM_MODEL`, and `FGENTIC_ALLOW_PAID_PROVIDER=yes`; see the complete [provider contract](docs/models.md). Do not use evaluation credentials or the deterministic stub in production.
 
-To exercise the federation thesis without a model or provider account, run `mise run fed:up`. It creates a separate `fgentic-fed` cluster with Synapse homeservers at `org-a.fgentic.localhost` and `org-b.fgentic.localhost`, provisions one user on each, and proves bidirectional messages in a shared room. The cluster stays running for inspection; remove only that lab with `mise run fed:down`. See the [two-homeserver topology and trust boundary](docs/federation.md#85-disposable-two-homeserver-federation-lab).
+To exercise the federation thesis without a model or provider account, run `mise run fed:up`. It creates a separate `fgentic-fed` cluster with participating Synapse homeservers at `org-a.fgentic.localhost` and `org-b.fgentic.localhost`, plus `org-c.fgentic.localhost` as a denied control. The proof requires room-v12 policy, participant-only server ACLs, bidirectional messages between A and B, and rejected join plus signed-federation-send attempts from C. The cluster stays running for inspection; remove only that lab with `mise run fed:down`. See the [federation lab topology and trust boundary](docs/federation.md#85-disposable-federation-hardening-lab).
 
 ## Production
 

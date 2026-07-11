@@ -23,10 +23,10 @@ while IFS='=' read -r key value; do
   export "${key}=${value}"
 done <<< "${settings_env}"
 
-# Federation-only manifests introduce two overlay-scoped substitutions that intentionally do not
+# Federation-only manifests introduce three overlay-scoped substitutions that intentionally do not
 # belong in production settings. Export their unreachable fixture values for the raw schema pass;
-# the effective org-a/org-b releases are rendered separately below through the recursive overlay.
-for key in federation_partner_server_name federation_gateway_ip; do
+# the effective org-a/org-b/org-c releases are rendered separately through the recursive overlay.
+for key in federation_partner_server_name federation_denied_server_name federation_gateway_ip; do
   value="$(yq -er ".data.${key}" clusters/federation/platform-settings.yaml)"
   export "${key}=${value}"
 done
@@ -98,7 +98,7 @@ yq -e '.spec.values' "${ESS_RELEASE}" \
   | sed -e '/^Pulled: /d' -e '/^Digest: /d' \
   | "${KUBECONFORM[@]}"
 
-echo "==> Rendering + validating both federation-lab ESS releases"
+echo "==> Rendering + validating all federation-lab ESS releases"
 federation_render="$(flux build kustomization cluster-overlay-validation \
   --path clusters/federation \
   --kustomization-file scripts/testdata/flux-build-kustomization.yaml \
@@ -107,7 +107,10 @@ federation_render="$(flux build kustomization cluster-overlay-validation \
   --strict-substitute \
   --recursive \
   --local-sources GitRepository/flux-system/flux-system=.)"
-for homeserver in 'matrix matrix-stack' 'matrix-b matrix-stack-b'; do
+for homeserver in \
+  'matrix matrix-stack' \
+  'matrix-b matrix-stack-b' \
+  'matrix-c matrix-stack-c'; do
   read -r namespace release <<< "${homeserver}"
   yq -e "select(.kind == \"HelmRelease\" and .metadata.namespace == \"${namespace}\" and
     .metadata.name == \"${release}\") | .spec.values" <<< "${federation_render}" \

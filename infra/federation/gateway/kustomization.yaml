@@ -17,7 +17,10 @@ patches:
             port: 80
             allowedRoutes:
               namespaces:
-                from: All
+                from: Selector
+                selector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: gateway
           - name: https-wellknown
             protocol: HTTPS
             port: 443
@@ -28,7 +31,10 @@ patches:
                 - name: matrix-tls
             allowedRoutes:
               namespaces:
-                from: All
+                from: Selector
+                selector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: matrix
           - name: https-matrix
             protocol: HTTPS
             port: 443
@@ -39,4 +45,7 @@ patches:
                 - name: matrix-tls
             allowedRoutes:
               namespaces:
-                from: All
+                from: Selector
+                selector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: matrix

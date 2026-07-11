@@ -1,9 +1,10 @@
 # Opt-in wiring for the provider-free federation lab. Components keep one Flux field owner for
-# namespaces, controllers, Postgres, and homeserver A; homeserver B gets its own Flux unit.
+# namespaces, controllers, Postgres, and homeserver A; homeservers B and C get their own Flux units.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 resources:
   - matrix-b-flux.yaml
+  - matrix-c-flux.yaml
 patches:
   - target:
       group: kustomize.toolkit.fluxcd.io

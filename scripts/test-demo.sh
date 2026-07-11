@@ -91,6 +91,20 @@ rg --fixed-strings 'git-http-backend' "${ROOT_DIR}/scripts/demo.sh" >/dev/null
 rg --fixed-strings 'http://fgentic-demo-source.flux-system.svc.cluster.local:8080/cgi-bin/git/repo.git' \
 	"${ROOT_DIR}/scripts/demo.sh" >/dev/null
 rg --fixed-strings '#lobby:fgentic.localhost' "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
+rg --fixed-strings 'creation_content: {"m.federate": false}' \
+	"${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
+rg --fixed-strings '/state/m.room.create' "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
+for contract in \
+	'create_lobby' \
+	'publish_lobby_alias' \
+	'set_lobby_canonical_alias' \
+	'lobby_has_canonical_alias' \
+	'retire_legacy_lobby_alias' \
+	'Migrating legacy #lobby to immutable local-only federation policy.' \
+	'#lobby is not local-only after reconciliation' \
+	'--request DELETE'; do
+	rg --fixed-strings -- "${contract}" "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
+done
 rg --fixed-strings '/api/admin/v1/users' "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
 
 if rg -n 'mas_password_login_enabled|llm_token_budget_15m' \

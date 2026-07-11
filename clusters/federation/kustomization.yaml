@@ -1,5 +1,5 @@
-# Disposable two-homeserver federation overlay. It keeps only the controllers, Gateway,
-# CloudNativePG, and two Synapse releases needed to exercise Matrix federation.
+# Disposable federation hardening overlay. It keeps only the controllers, Gateway,
+# CloudNativePG, and three Synapse releases needed to exercise allow and deny paths.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:

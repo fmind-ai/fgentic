@@ -1,5 +1,5 @@
-# Cluster-local settings for the two-homeserver federation lab. The lifecycle installer must
-# override federation_gateway_ip with the reachable k3d Gateway address before reconciliation.
+# Cluster-local settings for the federation hardening lab. The lifecycle installer must override
+# federation_gateway_ip with the reachable k3d Gateway address before reconciliation.
 apiVersion: v1
 kind: ConfigMap
 metadata:
@@ -8,6 +8,7 @@ metadata:
 data:
   server_name: org-a.fgentic.localhost
   federation_partner_server_name: org-b.fgentic.localhost
+  federation_denied_server_name: org-c.fgentic.localhost
   # RFC 5737 placeholder: valid for offline rendering, deliberately unreachable at runtime.
   federation_gateway_ip: 192.0.2.1
   cluster_issuer: local-ca

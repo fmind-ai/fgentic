@@ -45,6 +45,8 @@ patches:
               - matrix.${server_name}
               - ${federation_partner_server_name}
               - matrix.${federation_partner_server_name}
+              - ${federation_denied_server_name}
+              - matrix.${federation_denied_server_name}
       - op: add
         path: /spec/values/synapse/extraVolumes
         value:
@@ -67,6 +69,7 @@ patches:
         value:
           10-federation:
             config: |
+              default_room_version: "12"
               federation_domain_whitelist:
                 - ${server_name}
                 - ${federation_partner_server_name}
@@ -74,7 +77,8 @@ patches:
                 - /etc/fgentic-ca/ca.crt
               ip_range_whitelist:
                 - ${federation_gateway_ip}/32
-              trusted_key_servers: []
+              trusted_key_servers:
+                - server_name: ${federation_partner_server_name}
               federation_whitelist_endpoint_enabled: true
   - target:
       group: gateway.networking.k8s.io
