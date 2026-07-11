@@ -96,6 +96,8 @@ Choose the model boundary before using non-demo data:
 
 For example, `FGENTIC_LLM_PROVIDER=vllm mise run demo:up` selects the real credential-free self-hosted profile. API profiles require the matching key, `FGENTIC_LLM_MODEL`, and `FGENTIC_ALLOW_PAID_PROVIDER=yes`; see the complete [provider contract](docs/models.md). Do not use evaluation credentials or the deterministic stub in production.
 
+To exercise the federation thesis without a model or provider account, run `mise run fed:up`. It creates a separate `fgentic-fed` cluster with Synapse homeservers at `org-a.fgentic.localhost` and `org-b.fgentic.localhost`, provisions one user on each, and proves bidirectional messages in a shared room. The cluster stays running for inspection; remove only that lab with `mise run fed:down`. See the [two-homeserver topology and trust boundary](docs/federation.md#85-disposable-two-homeserver-federation-lab).
+
 ## Production
 
 Production is a separate GitOps path: SOPS-encrypted secrets, a reviewed git source, the full observability and SSO layers, and Flux reconciliation. Follow the self-contained [production installation](docs/production.md), then the [security](docs/security.md), [identity](docs/identity.md), and [operator](.agents/skills/matrix-agents/SKILL.md) runbooks. Enable an external network only through the [opt-in interop contract](docs/interop.md); the [Slack provider walkthrough](docs/interop-slack.md) is separate because it requires a workspace owner and live evidence.
@@ -105,7 +107,7 @@ Production is a separate GitOps path: SOPS-encrypted secrets, a reviewed git sou
 ```text
 apps/matrix-a2a-bridge/  # the Go bridge (mautrix/go appservice + a2a-go client) + its deploy/ Flux unit
 infra/{terraform,flux,gateway,postgres,matrix,keycloak,agentgateway,models,kagent,bridges,secrets}
-clusters/               # Flux entrypoints: base/ DAG + demo/, local/ (k3d), and gcp/ (GKE) overlays
+clusters/               # Flux entrypoints: base/ DAG + demo/, federation/, local/ (k3d), and gcp/ (GKE) overlays
 docs/                    # the specification split by topic (architecture, decisions, security, federation, …) + docs/adr/
 .github/                 # CI (mise gates) + CD (signed, digest-pinned bridge image) + issue/PR templates
 .agents/                 # AGENTS.md + operator runbooks

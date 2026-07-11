@@ -23,6 +23,14 @@ An open-standard AI-agent collaboration platform: humans + agents share Matrix r
 
 Use [README.md](../../../README.md#evaluate-in-15-minutes) for evaluation choices and [docs/production.md](../../../docs/production.md) for the full GitOps/SOPS path. Never promote evaluation credentials, its local Git source, or the deterministic provider into production.
 
+## Runbook: disposable federation lab
+
+`mise run fed:up` creates or reuses only the separately owned `fgentic-fed` k3d cluster, reconciles two Synapse-only ESS homeservers, provisions Alice on `org-a.fgentic.localhost` and Bob on `org-b.fgentic.localhost`, then requires bidirectional messages to arrive in a shared federated room. It uses the local CA and cluster-only credentials but no MAS, IdP, appservice, agent, model endpoint, provider account, or paid service. The command leaves the cluster running for inspection.
+
+The two homeservers live in `matrix` and `matrix-b`. They share a CloudNativePG cluster but use the separate `synapse` and `synapse_b` roles/databases. Their mutual `federation_domain_whitelist` admits only the two lab server names; `trusted_key_servers: []` makes each server retrieve the partner's signing key directly. Treat that as a local-lab exception pending [issue #52](https://github.com/fmind-ai/fgentic/issues/52), not a production federation trust pattern.
+
+Inspect the lab after running `export KUBECONFIG="$(k3d kubeconfig write fgentic-fed)"`; the installer deliberately does not switch the default context. When finished, run `mise run fed:down`. Teardown verifies ownership and deletes only the federation cluster and its locally built images. The canonical topology, trade-off, and acceptance contract are in [docs/federation.md](../../../docs/federation.md#85-disposable-two-homeserver-federation-lab).
+
 ## Runbook: one-time bootstrap
 
 1. **(Optional) Provision a cluster** — `cd infra/terraform && cp terraform.tfvars.example terraform.tfvars` (set your `/32`), then `terraform init && terraform apply`. Or use any conformant cluster / local k3d (`mise run cluster:up`).

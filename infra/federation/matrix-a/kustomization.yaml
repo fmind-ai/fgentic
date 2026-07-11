@@ -1,0 +1,120 @@
+# Convert the canonical Matrix release into homeserver A of the provider-free federation lab.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: matrix-stack
+      namespace: matrix
+    patch: |
+      - op: add
+        path: /spec/values/storage
+        value:
+          resourcePolicy: delete
+      - op: replace
+        path: /spec/values/matrixAuthenticationService
+        value:
+          enabled: false
+      - op: replace
+        path: /spec/values/elementWeb
+        value:
+          enabled: false
+      - op: replace
+        path: /spec/values/elementAdmin
+        value:
+          enabled: false
+      - op: replace
+        path: /spec/values/matrixRTC
+        value:
+          enabled: false
+      - op: replace
+        path: /spec/values/synapse/appservices
+        value: []
+      - op: add
+        path: /spec/values/synapse/serviceMonitors
+        value:
+          enabled: false
+      - op: add
+        path: /spec/values/synapse/hostAliases
+        value:
+          - ip: ${federation_gateway_ip}
+            hostnames:
+              - ${server_name}
+              - matrix.${server_name}
+              - ${federation_partner_server_name}
+              - matrix.${federation_partner_server_name}
+      - op: add
+        path: /spec/values/synapse/extraVolumes
+        value:
+          - name: federation-ca
+            configMap:
+              name: fgentic-local-ca
+              items:
+                - key: ca.crt
+                  path: ca.crt
+            mountContext: both
+      - op: add
+        path: /spec/values/synapse/extraVolumeMounts
+        value:
+          - name: federation-ca
+            mountPath: /etc/fgentic-ca
+            readOnly: true
+            mountContext: both
+      - op: add
+        path: /spec/values/synapse/additional
+        value:
+          10-federation:
+            config: |
+              federation_domain_whitelist:
+                - ${server_name}
+                - ${federation_partner_server_name}
+              federation_custom_ca_list:
+                - /etc/fgentic-ca/ca.crt
+              ip_range_whitelist:
+                - ${federation_gateway_ip}/32
+              trusted_key_servers: []
+              federation_whitelist_endpoint_enabled: true
+  - target:
+      group: gateway.networking.k8s.io
+      version: v1
+      kind: HTTPRoute
+      name: element-web
+      namespace: matrix
+    patch: |
+      $patch: delete
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: element-web
+        namespace: matrix
+  - target:
+      group: gateway.networking.k8s.io
+      version: v1
+      kind: HTTPRoute
+      name: matrix-authentication-service
+      namespace: matrix
+    patch: |
+      $patch: delete
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: matrix-authentication-service
+        namespace: matrix
+  - target:
+      group: gateway.networking.k8s.io
+      version: v1
+      kind: HTTPRoute
+      name: synapse
+      namespace: matrix
+    patch: |
+      - op: replace
+        path: /spec/rules
+        value:
+          - matches:
+              - path: {type: PathPrefix, value: /_matrix}
+              - path: {type: PathPrefix, value: /_synapse}
+            backendRefs:
+              - name: ess-synapse
+                port: 8008

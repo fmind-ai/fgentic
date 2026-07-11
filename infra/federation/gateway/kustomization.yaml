@@ -1,0 +1,42 @@
+# Homeserver A needs only HTTP redirect, apex delegation, and the Synapse HTTPS listener.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: gateway.networking.k8s.io
+      version: v1
+      kind: Gateway
+      name: fgentic-gateway
+      namespace: gateway
+    patch: |
+      - op: replace
+        path: /spec/listeners
+        value:
+          - name: http
+            protocol: HTTP
+            port: 80
+            allowedRoutes:
+              namespaces:
+                from: All
+          - name: https-wellknown
+            protocol: HTTPS
+            port: 443
+            hostname: ${server_name}
+            tls:
+              mode: Terminate
+              certificateRefs:
+                - name: matrix-tls
+            allowedRoutes:
+              namespaces:
+                from: All
+          - name: https-matrix
+            protocol: HTTPS
+            port: 443
+            hostname: matrix.${server_name}
+            tls:
+              mode: Terminate
+              certificateRefs:
+                - name: matrix-tls
+            allowedRoutes:
+              namespaces:
+                from: All

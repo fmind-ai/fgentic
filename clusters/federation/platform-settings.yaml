@@ -1,0 +1,15 @@
+# Cluster-local settings for the two-homeserver federation lab. The lifecycle installer must
+# override federation_gateway_ip with the reachable k3d Gateway address before reconciliation.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-settings
+  namespace: flux-system
+data:
+  server_name: org-a.fgentic.localhost
+  federation_partner_server_name: org-b.fgentic.localhost
+  # RFC 5737 placeholder: valid for offline rendering, deliberately unreachable at runtime.
+  federation_gateway_ip: 192.0.2.1
+  cluster_issuer: local-ca
+  acme_email: unused@fgentic.localhost
+  ingress_ip_name: unused-federation

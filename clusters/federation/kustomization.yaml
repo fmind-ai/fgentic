@@ -1,0 +1,10 @@
+# Disposable two-homeserver federation overlay. It keeps only the controllers, Gateway,
+# CloudNativePG, and two Synapse releases needed to exercise Matrix federation.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+  - platform-settings.yaml
+  - secrets.yaml
+components:
+  - ../../infra/federation/cluster

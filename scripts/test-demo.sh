@@ -83,6 +83,13 @@ rg --fixed-strings 'data: [DONE]' "${WORK_DIR}/server.py" >/dev/null
 
 rg --fixed-strings 'mcp-agent-callers' "${ROOT_DIR}/scripts/demo.sh" >/dev/null
 rg --fixed-strings 'platform-helper-mcp-credential' "${ROOT_DIR}/scripts/demo.sh" >/dev/null
+rg --regexp 'SOURCE_BASE_IMAGE="[^" ]+@sha256:[0-9a-f]{64}"' \
+	"${ROOT_DIR}/scripts/demo.sh" >/dev/null
+rg --regexp 'SOURCE_GIT_PACKAGES="git=[^ ]+ git-daemon=[^ ]+ busybox-extras=[^"]+"' \
+	"${ROOT_DIR}/scripts/demo.sh" >/dev/null
+rg --fixed-strings 'git-http-backend' "${ROOT_DIR}/scripts/demo.sh" >/dev/null
+rg --fixed-strings 'http://fgentic-demo-source.flux-system.svc.cluster.local:8080/cgi-bin/git/repo.git' \
+	"${ROOT_DIR}/scripts/demo.sh" >/dev/null
 rg --fixed-strings '#lobby:fgentic.localhost' "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
 rg --fixed-strings '/api/admin/v1/users' "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
 
