@@ -76,6 +76,9 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].env[?(@.name == "AGENTS_RELOAD_INTERVAL")].value
           value: 5s
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "AGENT_CARD_REFRESH_INTERVAL")].value
+          value: 5m
       - notExists:
           path: spec.template.metadata.annotations["checksum/agents"]
   - it: reads the A2A workload credential from its dedicated secret

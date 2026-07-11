@@ -5,15 +5,24 @@ package main
 
 import (
 	"context"
+	"crypto"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/asn1"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
 	"log/slog"
+	"math/big"
 	"net/http"
 	"os"
 	"os/signal"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -23,13 +32,22 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
+	"github.com/gowebpki/jcs"
+
+	"github.com/fmind/matrix-a2a-bridge/internal/a2aclient"
 )
 
 const (
-	agentPath    = "/api/a2a/kagent/integration-agent"
-	replyText    = "integration reply"
-	minLoadDelay = 2 * time.Second
-	maxLoadDelay = 5 * time.Second
+	localAgentPath          = "/api/a2a/kagent/integration-agent"
+	remoteAgentPath         = "/api/a2a/remote-agent"
+	localReplyText          = "integration reply"
+	remoteReplyText         = "remote integration reply"
+	remoteAgentName         = "Fgentic signed remote integration stub"
+	remoteAgentOrganization = "Fgentic integration"
+	remoteKeyID             = "integration-p256-v1"
+	integrationTokenBudget  = 4096
+	minLoadDelay            = 2 * time.Second
+	maxLoadDelay            = 5 * time.Second
 )
 
 var loadMarkerPattern = regexp.MustCompile(`\bload room=(\d{2}) seq=(\d{2})\b`)
@@ -40,24 +58,62 @@ type requestRecord struct {
 }
 
 type statsSnapshot struct {
-	Active         int             `json:"active"`
-	DelayMillis    int64           `json:"delay_millis"`
-	MaxActive      int             `json:"max_active"`
-	TotalStarted   int             `json:"total_started"`
-	TotalCompleted int             `json:"total_completed"`
-	Starts         []requestRecord `json:"starts"`
-	Completions    []requestRecord `json:"completions"`
+	Active             int             `json:"active"`
+	CardTampered       bool            `json:"card_tampered"`
+	DelayMillis        int64           `json:"delay_millis"`
+	MaxActive          int             `json:"max_active"`
+	RemoteCardRequests int             `json:"remote_card_requests"`
+	RemoteRequests     int             `json:"remote_requests"`
+	TokenBudgetValid   bool            `json:"token_budget_valid"`
+	TotalRequests      int             `json:"total_requests"`
+	TotalStarted       int             `json:"total_started"`
+	TotalCompleted     int             `json:"total_completed"`
+	Starts             []requestRecord `json:"starts"`
+	Completions        []requestRecord `json:"completions"`
 }
 
 type statsRecorder struct {
-	mu             sync.Mutex
-	delay          time.Duration
-	active         int
-	maxActive      int
-	totalStarted   int
-	totalCompleted int
-	starts         []requestRecord
-	completions    []requestRecord
+	mu                 sync.Mutex
+	delay              time.Duration
+	active             int
+	maxActive          int
+	totalRequests      int
+	remoteRequests     int
+	remoteCardRequests int
+	cardTampered       bool
+	tokenBudgetValid   bool
+	totalStarted       int
+	totalCompleted     int
+	starts             []requestRecord
+	completions        []requestRecord
+}
+
+func (r *statsRecorder) request(remote bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.totalRequests++
+	if remote {
+		r.remoteRequests++
+	}
+}
+
+func (r *statsRecorder) remoteCard() bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.remoteCardRequests++
+	return r.cardTampered
+}
+
+func (r *statsRecorder) tamperCard() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cardTampered = true
+}
+
+func (r *statsRecorder) markTokenBudgetValid() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.tokenBudgetValid = true
 }
 
 func (r *statsRecorder) start(record requestRecord) {
@@ -85,26 +141,41 @@ func (r *statsRecorder) snapshot() statsSnapshot {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return statsSnapshot{
-		Active:         r.active,
-		DelayMillis:    r.delay.Milliseconds(),
-		MaxActive:      r.maxActive,
-		TotalStarted:   r.totalStarted,
-		TotalCompleted: r.totalCompleted,
-		Starts:         append([]requestRecord(nil), r.starts...),
-		Completions:    append([]requestRecord(nil), r.completions...),
+		Active:             r.active,
+		CardTampered:       r.cardTampered,
+		DelayMillis:        r.delay.Milliseconds(),
+		MaxActive:          r.maxActive,
+		RemoteCardRequests: r.remoteCardRequests,
+		RemoteRequests:     r.remoteRequests,
+		TokenBudgetValid:   r.tokenBudgetValid,
+		TotalRequests:      r.totalRequests,
+		TotalStarted:       r.totalStarted,
+		TotalCompleted:     r.totalCompleted,
+		Starts:             append([]requestRecord(nil), r.starts...),
+		Completions:        append([]requestRecord(nil), r.completions...),
 	}
 }
 
 type executor struct {
-	delay time.Duration
-	stats *statsRecorder
+	delay  time.Duration
+	remote bool
+	reply  string
+	stats  *statsRecorder
 }
 
 func (e executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 	return func(yield func(a2a.Event, error) bool) {
+		e.stats.request(e.remote)
+		if e.remote {
+			if !validTokenBudgetContract(execCtx) {
+				yield(nil, fmt.Errorf("remote request did not carry the configured token-budget contract"))
+				return
+			}
+			e.stats.markTokenBudgetValid()
+		}
 		record, loadRequest := parseLoadMarker(messageText(execCtx.Message))
 		if !loadRequest {
-			yield(a2a.NewMessageForTask(a2a.MessageRoleAgent, execCtx, a2a.NewTextPart(replyText)), nil)
+			yield(a2a.NewMessageForTask(a2a.MessageRoleAgent, execCtx, a2a.NewTextPart(e.reply)), nil)
 			return
 		}
 
@@ -118,6 +189,26 @@ func (e executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) 
 		reply := fmt.Sprintf("load reply room=%02d seq=%02d", record.Room, record.Sequence)
 		yield(a2a.NewMessageForTask(a2a.MessageRoleAgent, execCtx, a2a.NewTextPart(reply)), nil)
 	}
+}
+
+func validTokenBudgetContract(execCtx *a2asrv.ExecutorContext) bool {
+	if execCtx == nil || execCtx.Message == nil {
+		return false
+	}
+	if !slices.Contains(execCtx.Message.Extensions, a2aclient.TokenBudgetExtensionURI) {
+		return false
+	}
+	extensionMetadata, ok := execCtx.Message.Metadata[a2aclient.TokenBudgetExtensionURI].(map[string]any)
+	if !ok {
+		return false
+	}
+	// JSON numbers decode into float64 at the A2A wire boundary.
+	maxTokens, ok := extensionMetadata["maxTokens"].(float64)
+	if !ok || maxTokens != integrationTokenBudget {
+		return false
+	}
+	extensions, ok := execCtx.ServiceParams.Get(a2a.SvcParamExtensions)
+	return ok && slices.Contains(extensions, a2aclient.TokenBudgetExtensionURI)
 }
 
 func (executor) Cancel(context.Context, *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
@@ -140,21 +231,58 @@ func run() error {
 	}
 	stats := &statsRecorder{delay: delay}
 
-	handler := a2asrv.NewHandler(executor{delay: delay, stats: stats}, a2asrv.WithTaskStore(taskstore.NewInMemory(nil)))
-	card := &a2a.AgentCard{
+	localHandler := a2asrv.NewHandler(
+		executor{delay: delay, reply: localReplyText, stats: stats},
+		a2asrv.WithTaskStore(taskstore.NewInMemory(nil)),
+	)
+	localCard := &a2a.AgentCard{
 		Name:                "Fgentic bridge integration stub",
 		Description:         "Deterministic A2A endpoint for the Matrix appservice wire test",
 		Version:             "integration",
-		SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(baseURL+agentPath, a2a.TransportProtocolJSONRPC)},
+		SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(baseURL+localAgentPath, a2a.TransportProtocolJSONRPC)},
 		DefaultInputModes:   []string{"text/plain"},
 		DefaultOutputModes:  []string{"text/plain"},
 		Capabilities:        a2a.AgentCapabilities{},
 		Skills:              []a2a.AgentSkill{},
 	}
+	remoteCard, err := signedRemoteAgentCard(baseURL)
+	if err != nil {
+		return fmt.Errorf("create signed remote AgentCard: %w", err)
+	}
+	validRemoteCard, err := json.Marshal(remoteCard)
+	if err != nil {
+		return fmt.Errorf("encode signed remote AgentCard: %w", err)
+	}
+	tamperedCard := *remoteCard
+	tamperedCard.Name += " (tampered after signing)"
+	tamperedRemoteCard, err := json.Marshal(&tamperedCard)
+	if err != nil {
+		return fmt.Errorf("encode tampered remote AgentCard: %w", err)
+	}
+	remoteHandler := a2asrv.NewHandler(
+		executor{delay: delay, remote: true, reply: remoteReplyText, stats: stats},
+		a2asrv.WithTaskStore(taskstore.NewInMemory(nil)),
+		a2asrv.WithCapabilityChecks(&remoteCard.Capabilities),
+	)
 
 	mux := http.NewServeMux()
-	mux.Handle(agentPath+a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(card))
-	mux.Handle(agentPath, a2asrv.NewJSONRPCHandler(handler))
+	mux.Handle(localAgentPath+a2asrv.WellKnownAgentCardPath, a2asrv.NewStaticAgentCardHandler(localCard))
+	mux.Handle(localAgentPath, a2asrv.NewJSONRPCHandler(localHandler))
+	mux.HandleFunc("GET "+remoteAgentPath+a2asrv.WellKnownAgentCardPath, func(w http.ResponseWriter, _ *http.Request) {
+		cardJSON := validRemoteCard
+		if stats.remoteCard() {
+			cardJSON = tamperedRemoteCard
+		}
+		w.Header().Set("Content-Type", "application/json")
+		if _, err := w.Write(cardJSON); err != nil {
+			slog.Warn("write remote AgentCard", "err", err)
+		}
+	})
+	mux.Handle(remoteAgentPath, a2asrv.NewJSONRPCHandler(remoteHandler))
+	mux.HandleFunc("POST /control/tamper", func(w http.ResponseWriter, _ *http.Request) {
+		stats.tamperCard()
+		w.WriteHeader(http.StatusNoContent)
+	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -178,7 +306,13 @@ func run() error {
 
 	errCh := make(chan error, 1)
 	go func() {
-		slog.Info("A2A integration stub started", "listen", addr, "agent_path", agentPath, "load_delay", delay)
+		slog.Info(
+			"A2A integration stub started",
+			"listen", addr,
+			"local_agent_path", localAgentPath,
+			"remote_agent_path", remoteAgentPath,
+			"load_delay", delay,
+		)
 		errCh <- server.ListenAndServe()
 	}()
 
@@ -196,6 +330,102 @@ func run() error {
 		}
 		return nil
 	}
+}
+
+func signedRemoteAgentCard(baseURL string) (*a2a.AgentCard, error) {
+	card := &a2a.AgentCard{
+		Name:        remoteAgentName,
+		Description: "Deterministic signed remote endpoint for the Matrix appservice trust test",
+		Provider: &a2a.AgentProvider{
+			Org: remoteAgentOrganization,
+			URL: baseURL,
+		},
+		Version:             "integration",
+		SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(baseURL+remoteAgentPath, a2a.TransportProtocolJSONRPC)},
+		DefaultInputModes:   []string{"text/plain"},
+		DefaultOutputModes:  []string{"text/plain"},
+		Capabilities: a2a.AgentCapabilities{
+			Extensions: []a2a.AgentExtension{{URI: a2aclient.TokenBudgetExtensionURI, Required: true}},
+		},
+		Skills: []a2a.AgentSkill{{
+			ID:          "echo",
+			Name:        "Echo delegated text",
+			Description: "Returns a deterministic response for the remote delegation contract test",
+			Tags:        []string{"integration", "text"},
+		}},
+	}
+	return signAgentCard(card)
+}
+
+func signAgentCard(card *a2a.AgentCard) (*a2a.AgentCard, error) {
+	unsigned := *card
+	unsigned.Signatures = nil
+	encoded, err := json.Marshal(&unsigned)
+	if err != nil {
+		return nil, fmt.Errorf("encode unsigned AgentCard: %w", err)
+	}
+	canonical, err := jcs.Transform(encoded)
+	if err != nil {
+		return nil, fmt.Errorf("canonicalize unsigned AgentCard: %w", err)
+	}
+
+	protectedJSON := []byte(`{"alg":"ES256","kid":"` + remoteKeyID + `","typ":"JOSE"}`)
+	protected := base64.RawURLEncoding.EncodeToString(protectedJSON)
+	payload := base64.RawURLEncoding.EncodeToString(canonical)
+	digest := sha256.Sum256([]byte(protected + "." + payload))
+	privateKey := fixturePrivateKey()
+	der, err := privateKey.Sign(rand.Reader, digest[:], crypto.SHA256)
+	if err != nil {
+		return nil, fmt.Errorf("sign AgentCard: %w", err)
+	}
+	signature, err := joseSignature(der)
+	if err != nil {
+		return nil, err
+	}
+
+	signed := *card
+	signed.Signatures = []a2a.AgentCardSignature{{
+		Protected: protected,
+		Signature: base64.RawURLEncoding.EncodeToString(signature),
+	}}
+	return &signed, nil
+}
+
+func fixturePrivateKey() *ecdsa.PrivateKey {
+	// Scalar 1 is intentionally public and test-only. It fixes the P-256 identity; signatures
+	// still use secure runtime randomness and are verified by behavior rather than golden bytes.
+	curve := elliptic.P256()
+	params := curve.Params()
+	return &ecdsa.PrivateKey{
+		PublicKey: ecdsa.PublicKey{
+			Curve: curve,
+			X:     new(big.Int).Set(params.Gx),
+			Y:     new(big.Int).Set(params.Gy),
+		},
+		D: big.NewInt(1),
+	}
+}
+
+func joseSignature(der []byte) ([]byte, error) {
+	var decoded struct {
+		R *big.Int
+		S *big.Int
+	}
+	rest, err := asn1.Unmarshal(der, &decoded)
+	if err != nil {
+		return nil, fmt.Errorf("decode ECDSA signature: %w", err)
+	}
+	if len(rest) != 0 || decoded.R == nil || decoded.S == nil {
+		return nil, fmt.Errorf("decode ECDSA signature: malformed value")
+	}
+	const coordinateBytes = 32
+	if decoded.R.BitLen() > coordinateBytes*8 || decoded.S.BitLen() > coordinateBytes*8 {
+		return nil, fmt.Errorf("decode ECDSA signature: coordinate exceeds P-256 width")
+	}
+	raw := make([]byte, coordinateBytes*2)
+	decoded.R.FillBytes(raw[:coordinateBytes])
+	decoded.S.FillBytes(raw[coordinateBytes:])
+	return raw, nil
 }
 
 func loadDelay() (time.Duration, error) {

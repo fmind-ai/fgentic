@@ -30,6 +30,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.AgentsReloadInterval != 5*time.Second {
 		t.Errorf("AgentsReloadInterval = %s, want 5s", cfg.AgentsReloadInterval)
 	}
+	if cfg.AgentCardRefreshInterval != 5*time.Minute {
+		t.Errorf("AgentCardRefreshInterval = %s, want 5m", cfg.AgentCardRefreshInterval)
+	}
 	if cfg.AgentsPath != "/etc/matrix-a2a-bridge/agents/agents.yaml" {
 		t.Errorf("AgentsPath = %q", cfg.AgentsPath)
 	}
@@ -51,6 +54,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("SHUTDOWN_TIMEOUT", "15s")
 	t.Setenv("GHOST_PREFIX", "bot-")
 	t.Setenv("AGENTS_RELOAD_INTERVAL", "2s")
+	t.Setenv("AGENT_CARD_REFRESH_INTERVAL", "30s")
 	t.Setenv("ROOM_QUEUE_CAPACITY", "12")
 	t.Setenv("GLOBAL_QUEUE_CAPACITY", "64")
 	t.Setenv("RATE_LIMIT_BUCKET_CAPACITY", "128")
@@ -79,6 +83,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.AgentsReloadInterval != 2*time.Second {
 		t.Errorf("AgentsReloadInterval = %s, want 2s", cfg.AgentsReloadInterval)
+	}
+	if cfg.AgentCardRefreshInterval != 30*time.Second {
+		t.Errorf("AgentCardRefreshInterval = %s, want 30s", cfg.AgentCardRefreshInterval)
 	}
 	if cfg.RoomQueueCapacity != 12 || cfg.GlobalQueueCapacity != 64 {
 		t.Errorf("queue capacities = (%d, %d), want (12, 64)", cfg.RoomQueueCapacity, cfg.GlobalQueueCapacity)
@@ -120,6 +127,13 @@ func TestValidateRejectsNonPositiveAgentsReloadInterval(t *testing.T) {
 	t.Setenv("AGENTS_RELOAD_INTERVAL", "0s")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error for non-positive AGENTS_RELOAD_INTERVAL, got nil")
+	}
+}
+
+func TestValidateRejectsNonPositiveAgentCardRefreshInterval(t *testing.T) {
+	t.Setenv("AGENT_CARD_REFRESH_INTERVAL", "0s")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for non-positive AGENT_CARD_REFRESH_INTERVAL, got nil")
 	}
 }
 

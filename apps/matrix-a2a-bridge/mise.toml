@@ -92,7 +92,7 @@ depends = ["format:go", "format:dprint"]
 
 [tasks."format:go"]
 description = "Format Go sources and imports (goimports + gofumpt)"
-run = ["go tool goimports -w .", "go tool gofumpt -w ."]
+run = ["go tool goimports -local github.com/fmind/matrix-a2a-bridge -w .", "go tool gofumpt -w ."]
 
 [tasks."format:dprint"]
 description = "Format JSON, Markdown, TOML, YAML with dprint"

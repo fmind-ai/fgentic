@@ -2,6 +2,7 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"regexp"
@@ -67,9 +68,10 @@ type targetResolution struct {
 }
 
 type a2aClient interface {
-	Call(ctx context.Context, agentPath, text, contextID string) (a2aclient.Result, error)
-	PollTask(ctx context.Context, agentPath, taskID string) (a2aclient.Result, error)
-	ResolveAgentCard(ctx context.Context, agentPath string) (*a2a.AgentCard, error)
+	Call(ctx context.Context, target a2aclient.Target, text, contextID string) (a2aclient.Result, error)
+	PollTask(ctx context.Context, target a2aclient.Target, taskID string) (a2aclient.Result, error)
+	ResolveAgentCard(ctx context.Context, target a2aclient.Target) (*a2a.AgentCard, error)
+	IsReady(target a2aclient.Target) bool
 }
 
 type pollWaitFunc func(context.Context, time.Duration) error
@@ -161,11 +163,11 @@ func waitForPoll(ctx context.Context, delay time.Duration) error {
 	}
 }
 
-// Start binds the bridge to the process lifetime context under which delegations run.
-func (b *Bridge) Start(ctx context.Context) {
+// Start binds the bridge to the process lifetime context under which delegations run. Remote
+// targets are verified synchronously so readiness can never expose an untrusted destination.
+func (b *Bridge) Start(ctx context.Context) error {
 	b.runCtx = ctx
 	watchCtx, watchCancel := context.WithCancel(ctx)
-	b.watchCancel = watchCancel
 	if b.profileWriter != nil {
 		prepareCtx, cancel := context.WithTimeout(ctx, b.cfg.RequestTimeout)
 		if err := b.profileWriter.Prepare(prepareCtx); err != nil {
@@ -173,9 +175,14 @@ func (b *Bridge) Start(ctx context.Context) {
 		}
 		cancel()
 	}
-	b.syncProfiles(ctx, b.agents.Entries())
+	if err := b.syncProfilesChecked(ctx, b.agents.Entries(), false); err != nil {
+		watchCancel()
+		return fmt.Errorf("verify configured remote agents: %w", err)
+	}
+	b.watchCancel = watchCancel
 	b.watchWG.Add(1)
 	go b.watchAgents(watchCtx)
+	return nil
 }
 
 // Stop waits for in-flight delegations to finish (graceful shutdown).
@@ -366,7 +373,7 @@ func (b *Bridge) dispatchResolvedTarget(
 ) {
 	currentSender, ref, ok := b.agents.SnapshotSenderTarget(evt.Sender, localpart)
 	sender := revalidateSender(queuedSender, currentSender)
-	if !ok || ref.Path() != boundRef.Path() {
+	if !ok || !ref.SameTarget(boundRef) {
 		b.refuseQueuedTarget(evt, boundRef, localpart, sender, dedupVerdict, "agent_mapping_changed")
 		return
 	}
@@ -376,6 +383,10 @@ func (b *Bridge) dispatchResolvedTarget(
 			return
 		}
 		b.refuseQueuedTarget(evt, ref, localpart, sender, dedupVerdict, "sender_policy_rejected")
+		return
+	}
+	if ref.Target().IsRemote() && (b.client == nil || !b.client.IsReady(ref.Target())) {
+		b.refuseUntrustedTarget(evt, ref, localpart, sender, dedupVerdict)
 		return
 	}
 	b.dispatchWithDedupVerdict(ctx, evt, ref, localpart, prompt, sender, dedupVerdict)
@@ -412,6 +423,29 @@ func (b *Bridge) refuseQueuedTarget(
 		terminalReason:   reason,
 		dedupVerdict:     dedupVerdict,
 		rateLimitVerdict: rateLimitVerdictNotChecked,
+	})
+}
+
+func (b *Bridge) refuseUntrustedTarget(
+	evt *event.Event,
+	ref *AgentRef,
+	localpart string,
+	sender senderIdentity,
+	dedupVerdict auditDedupVerdict,
+) {
+	delegationsTotal.WithLabelValues(localpart, outcomeDenied).Inc()
+	b.log.Warn(
+		"refusing delegation to quarantined remote agent",
+		"ghost", localpart,
+		"agent", ref.Path(),
+	)
+	b.logDelegationAudit(evt, ref, localpart, sender, delegationAuditResult{
+		outcome:          outcomeDenied,
+		terminalStage:    "agent_card",
+		terminalReason:   "agent_card_untrusted",
+		dedupVerdict:     dedupVerdict,
+		rateLimitVerdict: rateLimitVerdictNotChecked,
+		a2aAttempted:     false,
 	})
 }
 
@@ -515,14 +549,29 @@ func (b *Bridge) dispatchWithDedupVerdict(
 	audit.a2aUserID = evt.Sender.String()
 	audit.contextID = contextID
 
-	callCtx, cancel := context.WithTimeout(a2aclient.WithUser(ctx, evt.Sender.String()), b.cfg.RequestTimeout)
+	a2aCtx := a2aclient.WithUser(ctx, evt.Sender.String())
+	cancelDelegation := func() {}
+	if ref.Timeout() > 0 {
+		a2aCtx, cancelDelegation = context.WithTimeout(a2aCtx, ref.Timeout())
+	}
+	defer cancelDelegation()
+	callCtx, cancel := context.WithTimeout(a2aCtx, b.cfg.RequestTimeout)
 	callStarted := time.Now()
 	span.AddEvent("a2a.message.send")
-	res, err := b.client.Call(callCtx, ref.Path(), provenancePrompt(evt, prompt), contextID)
+	res, err := b.client.Call(callCtx, ref.Target(), provenancePrompt(evt, prompt), contextID)
 	cancel()
 	a2aLatency.WithLabelValues(localpart).Observe(time.Since(callStarted).Seconds())
 	if err != nil {
 		span.RecordError(err)
+		if errors.Is(err, a2aclient.ErrRemoteTargetUntrusted) {
+			delegationsTotal.WithLabelValues(localpart, outcomeDenied).Inc()
+			b.log.Warn("refusing delegation after remote agent trust changed", "agent", ref.Path(), "room", evt.RoomID)
+			audit.outcome = outcomeDenied
+			audit.terminalStage = "agent_card"
+			audit.terminalReason = "agent_card_untrusted"
+			audit.a2aAttempted = false
+			return
+		}
 		delegationsTotal.WithLabelValues(localpart, outcomeError).Inc()
 		b.log.Error("a2a call failed", "agent", ref.Path(), "room", evt.RoomID, "err", err)
 		// Deliberately generic: internal endpoints/errors must not leak into rooms (SPEC §6).
@@ -541,7 +590,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 	}
 
 	if !res.Terminal {
-		terminalAudit := b.awaitTask(ctx, intent, evt, ref, localpart, res)
+		terminalAudit := b.awaitTask(ctx, a2aCtx, intent, evt, ref, localpart, res)
 		terminalAudit.contextID = orDefault(terminalAudit.contextID, contextID)
 		terminalAudit.dedupVerdict = audit.dedupVerdict
 		terminalAudit.rateLimitVerdict = audit.rateLimitVerdict
@@ -630,7 +679,15 @@ func (b *Bridge) allowNotice(sender senderIdentity, roomID id.RoomID, scope stri
 // awaitTask handles a long-running task (SPEC §6): post a working placeholder, poll tasks/get
 // with backoff until the task is terminal or TaskTimeout elapses, then edit the placeholder
 // into the final answer (Matrix edits are the open-standard substitute for streaming).
-func (b *Bridge) awaitTask(ctx context.Context, intent *appservice.IntentAPI, evt *event.Event, ref *AgentRef, localpart string, res a2aclient.Result) delegationAuditResult {
+func (b *Bridge) awaitTask(
+	ctx context.Context,
+	a2aCtx context.Context,
+	intent *appservice.IntentAPI,
+	evt *event.Event,
+	ref *AgentRef,
+	localpart string,
+	res a2aclient.Result,
+) delegationAuditResult {
 	placeholder := b.postReply(ctx, intent, evt, orDefault(res.Text, workingText))
 	audit := delegationAuditResult{
 		outcome:          outcomeError,
@@ -645,10 +702,10 @@ func (b *Bridge) awaitTask(ctx context.Context, intent *appservice.IntentAPI, ev
 		replyEventID:     placeholder,
 	}
 
-	pollCtx, cancel := context.WithTimeout(a2aclient.WithUser(ctx, evt.Sender.String()), b.cfg.TaskTimeout)
+	pollCtx, cancel := context.WithTimeout(a2aCtx, b.cfg.TaskTimeout)
 	defer cancel()
 
-	delay, errors := b.pollInitial, 0
+	delay, pollErrors := b.pollInitial, 0
 	for {
 		if err := b.pollWait(pollCtx, delay); err != nil {
 			trace.SpanFromContext(ctx).RecordError(err)
@@ -656,7 +713,7 @@ func (b *Bridge) awaitTask(ctx context.Context, intent *appservice.IntentAPI, ev
 			audit.outcome = outcomeTimeout
 			audit.terminalReason = "task_timeout"
 			b.editReply(ctx, intent, evt.RoomID, placeholder,
-				fmt.Sprintf("⚠️ agent %q did not finish within %s.", localpart, b.cfg.TaskTimeout))
+				fmt.Sprintf("⚠️ agent %q did not finish within %s.", localpart, agentRequestTimeout(ref, b.cfg.TaskTimeout)))
 			return audit
 		}
 		if delay *= 2; delay > b.pollMax {
@@ -664,10 +721,20 @@ func (b *Bridge) awaitTask(ctx context.Context, intent *appservice.IntentAPI, ev
 		}
 
 		trace.SpanFromContext(ctx).AddEvent("a2a.task.poll")
-		polled, err := b.client.PollTask(pollCtx, ref.Path(), res.TaskID)
+		polled, err := b.client.PollTask(pollCtx, ref.Target(), res.TaskID)
 		if err != nil {
 			trace.SpanFromContext(ctx).RecordError(err)
-			if errors++; errors < pollErrorBudget {
+			if errors.Is(err, a2aclient.ErrRemoteTargetUntrusted) {
+				delegationsTotal.WithLabelValues(localpart, outcomeDenied).Inc()
+				audit.outcome = outcomeDenied
+				audit.terminalStage = "agent_card"
+				audit.terminalReason = "agent_card_untrusted"
+				b.log.Warn("stopping task polling after remote agent trust changed", "task", res.TaskID, "agent", ref.Path())
+				b.editReply(ctx, intent, evt.RoomID, placeholder,
+					fmt.Sprintf("⚠️ lost trust in agent %q while waiting for its task — see the bridge logs.", localpart))
+				return audit
+			}
+			if pollErrors++; pollErrors < pollErrorBudget {
 				b.log.Warn("tasks/get failed, retrying", "task", res.TaskID, "err", err)
 				continue
 			}
@@ -679,7 +746,7 @@ func (b *Bridge) awaitTask(ctx context.Context, intent *appservice.IntentAPI, ev
 				fmt.Sprintf("⚠️ lost track of agent %q's task — see the bridge logs.", localpart))
 			return audit
 		}
-		errors = 0
+		pollErrors = 0
 		if polled.Terminal {
 			audit.terminalStage = "task_result"
 			audit.contextID = orDefault(polled.ContextID, res.ContextID)

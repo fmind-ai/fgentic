@@ -14,17 +14,21 @@ import (
 	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/appservice"
 	"maunium.net/go/mautrix/id"
+
+	"github.com/fmind/matrix-a2a-bridge/internal/a2aclient"
 )
 
 const (
-	agentProfileField     = "dev.fgentic.agent"
-	maxProfileNameRunes   = 128
-	maxDescriptionRunes   = 512
-	maxProfileSkillCount  = 20
-	maxProfileSkillRunes  = 128
-	profileStatusLive     = profileStatus("live")
-	profileStatusCached   = profileStatus("cached")
-	profileStatusFallback = profileStatus("fallback")
+	agentProfileField        = "dev.fgentic.agent"
+	maxProfileNameRunes      = 128
+	maxDescriptionRunes      = 512
+	maxProfileSkillCount     = 20
+	maxProfileSkillRunes     = 128
+	profileStatusLive        = profileStatus("live")
+	profileStatusCached      = profileStatus("cached")
+	profileStatusFallback    = profileStatus("fallback")
+	profileStatusRejected    = profileStatus("rejected")
+	profileStatusUnavailable = profileStatus("unavailable")
 )
 
 type profileStatus string
@@ -35,6 +39,7 @@ type agentProfile struct {
 	Skills      []string
 	AvatarURL   id.ContentURI
 	AgentPath   string
+	MappingID   string
 	Status      profileStatus
 }
 
@@ -57,7 +62,7 @@ func (s *profileStore) prepare(entries []AgentEntry) {
 	next := make(map[string]agentProfile, len(entries))
 	for _, entry := range entries {
 		current, ok := s.byGhost[entry.Ghost]
-		if ok && current.AgentPath == entry.Ref.Path() && current.Status != profileStatusFallback {
+		if ok && current.MappingID == entry.Ref.MappingID() && current.Status != profileStatusFallback {
 			current.AvatarURL = entry.Ref.Avatar()
 			next[entry.Ghost] = current
 			continue
@@ -87,7 +92,8 @@ func (s *profileStore) failedRefresh(entry AgentEntry) agentProfile {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	profile, ok := s.byGhost[entry.Ghost]
-	if ok && profile.AgentPath == entry.Ref.Path() && profile.Status != profileStatusFallback {
+	if ok && profile.MappingID == entry.Ref.MappingID() && profile.Status != profileStatusFallback &&
+		profile.Status != profileStatusRejected && profile.Status != profileStatusUnavailable {
 		profile.Status = profileStatusCached
 		profile.AvatarURL = entry.Ref.Avatar()
 		s.byGhost[entry.Ghost] = profile
@@ -98,12 +104,34 @@ func (s *profileStore) failedRefresh(entry AgentEntry) agentProfile {
 	return profile
 }
 
+// rejectedRefresh removes previously published card metadata after a cryptographic trust
+// failure. Keeping a remote target quarantined while showing its last-known card as available
+// would make the directory disagree with the actual dispatch boundary.
+func (s *profileStore) rejectedRefresh(entry AgentEntry) agentProfile {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	profile := fallbackProfile(entry.Ref)
+	profile.Status = profileStatusRejected
+	s.byGhost[entry.Ghost] = profile
+	return profile
+}
+
+func (s *profileStore) unavailableRefresh(entry AgentEntry) agentProfile {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	profile := fallbackProfile(entry.Ref)
+	profile.Status = profileStatusUnavailable
+	s.byGhost[entry.Ghost] = profile
+	return profile
+}
+
 func fallbackProfile(ref *AgentRef) agentProfile {
 	return agentProfile{
 		DisplayName: humanizeAgentName(ref.Name),
 		Description: normalizeProfileText(ref.Description, maxDescriptionRunes),
 		AvatarURL:   ref.Avatar(),
 		AgentPath:   ref.Path(),
+		MappingID:   ref.MappingID(),
 		Status:      profileStatusFallback,
 	}
 }
@@ -209,13 +237,21 @@ func (w *matrixProfileWriter) Apply(ctx context.Context, ghost id.UserID, profil
 }
 
 func (b *Bridge) syncProfiles(ctx context.Context, entries []AgentEntry) {
-	if b.client == nil {
-		return
-	}
+	_ = b.syncProfilesChecked(ctx, entries, false)
+}
+
+// syncProfilesChecked refreshes cards in parallel and returns only remote-target failures.
+// Local AgentCards are presentation metadata and retain their historical best-effort behavior;
+// remote cards are an authorization boundary and are therefore surfaced to startup/reload.
+func (b *Bridge) syncProfilesChecked(ctx context.Context, entries []AgentEntry, remoteOnly bool) error {
 	parallelism := max(1, b.cfg.Concurrency)
 	sem := make(chan struct{}, parallelism)
+	errs := make(chan error, len(entries))
 	var wg sync.WaitGroup
 	for _, entry := range entries {
+		if remoteOnly && !entry.Ref.Target().IsRemote() {
+			continue
+		}
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -223,28 +259,96 @@ func (b *Bridge) syncProfiles(ctx context.Context, entries []AgentEntry) {
 			case sem <- struct{}{}:
 				defer func() { <-sem }()
 			case <-ctx.Done():
+				if entry.Ref.Target().IsRemote() {
+					errs <- fmt.Errorf("refresh remote AgentCard for %s: %w", entry.Ghost, ctx.Err())
+				}
 				return
 			}
-			b.syncProfile(ctx, entry)
+			if err := b.syncProfile(ctx, entry); err != nil {
+				errs <- err
+			}
 		}()
 	}
 	wg.Wait()
+	close(errs)
+	var failures []error
+	for err := range errs {
+		failures = append(failures, err)
+	}
+	return errors.Join(failures...)
 }
 
-func (b *Bridge) syncProfile(ctx context.Context, entry AgentEntry) {
-	cardCtx, cancel := context.WithTimeout(ctx, b.cfg.RequestTimeout)
-	card, err := b.client.ResolveAgentCard(cardCtx, entry.Ref.Path())
-	cancel()
-	if err != nil {
-		profile := b.profiles.failedRefresh(entry)
-		b.log.Warn("agent card refresh failed; retaining last-known profile",
-			"ghost", entry.Ghost, "agent", entry.Ref.Path(), "profile_status", profile.Status, "err", err)
-		b.applyGhostProfileWithTimeout(ctx, entry.Ghost, profile)
-		return
+func (b *Bridge) syncProfile(ctx context.Context, entry AgentEntry) error {
+	target := entry.Ref.Target()
+	if b.client == nil {
+		if target.IsRemote() {
+			return fmt.Errorf("verify remote AgentCard for %s: A2A client is unavailable", entry.Ghost)
+		}
+		return nil
 	}
+	cardCtx, cancel := context.WithTimeout(ctx, agentRequestTimeout(entry.Ref, b.cfg.RequestTimeout))
+	card, err := b.client.ResolveAgentCard(cardCtx, target)
+	cancel()
+	if err == nil && card == nil {
+		err = errors.New("agent card resolver returned an empty card")
+	}
+	if err == nil && target.IsRemote() && !b.client.IsReady(target) {
+		err = fmt.Errorf("remote card resolver did not install a verified client: %w", a2aclient.ErrRemoteTargetUntrusted)
+	}
+	if err != nil {
+		previous, _ := b.profiles.get(entry.Ghost)
+		untrusted := target.IsRemote() && errors.Is(err, a2aclient.ErrRemoteTargetUntrusted)
+		unavailable := target.IsRemote() && !b.client.IsReady(target)
+		profile := agentProfile{}
+		switch {
+		case untrusted:
+			profile = b.profiles.rejectedRefresh(entry)
+			if previous.Status != profileStatusRejected {
+				b.logAgentCardAudit(entry, "rejected", "agent_card_untrusted")
+			}
+			b.log.Error("remote agent card rejected; target quarantined",
+				"ghost", entry.Ghost, "agent", entry.Ref.Path(), "profile_status", profile.Status, "err", err)
+		case unavailable:
+			profile = b.profiles.unavailableRefresh(entry)
+			b.log.Error("remote agent card unavailable; target has no verified client",
+				"ghost", entry.Ghost, "agent", entry.Ref.Path(), "profile_status", profile.Status, "err", err)
+		default:
+			profile = b.profiles.failedRefresh(entry)
+			b.log.Warn("agent card refresh failed; retaining last-known profile",
+				"ghost", entry.Ghost, "agent", entry.Ref.Path(), "profile_status", profile.Status, "err", err)
+		}
+		b.applyGhostProfileWithTimeout(ctx, entry.Ghost, profile)
+		if target.IsRemote() {
+			return fmt.Errorf("refresh remote AgentCard for %s: %w", entry.Ghost, err)
+		}
+		return nil
+	}
+	previous, _ := b.profiles.get(entry.Ghost)
 	profile := profileFromCard(entry.Ref, card)
 	b.profiles.set(entry.Ghost, profile)
 	b.applyGhostProfileWithTimeout(ctx, entry.Ghost, profile)
+	if target.IsRemote() && previous.Status != profileStatusLive {
+		b.logAgentCardAudit(entry, "accepted", "agent_card_verified")
+	}
+	return nil
+}
+
+func agentRequestTimeout(ref *AgentRef, global time.Duration) time.Duration {
+	if remote := ref.Timeout(); remote > 0 && remote < global {
+		return remote
+	}
+	return global
+}
+
+func (b *Bridge) logAgentCardAudit(entry AgentEntry, outcome, reason string) {
+	b.auditLog.Info(
+		"remote agent card audit",
+		"audit_schema", "fgentic.agent_card.v1",
+		"ghost", entry.Ghost,
+		"agent_target", entry.Ref.Path(),
+		"outcome", outcome,
+		"reason", reason,
+	)
 }
 
 func (b *Bridge) applyGhostProfileWithTimeout(ctx context.Context, ghost string, profile agentProfile) {
@@ -275,6 +379,9 @@ func (b *Bridge) reloadAgents(ctx context.Context) (bool, error) {
 		return false, nil
 	}
 	entries := next.Entries()
+	if err := b.preflightRemoteAgents(ctx, entries); err != nil {
+		return false, err
+	}
 	b.agentConfigMu.Lock()
 	b.agents.Replace(next)
 	b.profiles.prepare(entries)
@@ -284,18 +391,56 @@ func (b *Bridge) reloadAgents(ctx context.Context) (bool, error) {
 	return true, nil
 }
 
+func (b *Bridge) preflightRemoteAgents(ctx context.Context, entries []AgentEntry) error {
+	if b.client == nil {
+		for _, entry := range entries {
+			if entry.Ref.Target().IsRemote() {
+				return fmt.Errorf("verify remote AgentCard for %s: A2A client is unavailable", entry.Ghost)
+			}
+		}
+		return nil
+	}
+	var failures []error
+	for _, entry := range entries {
+		target := entry.Ref.Target()
+		if !target.IsRemote() {
+			continue
+		}
+		cardCtx, cancel := context.WithTimeout(ctx, agentRequestTimeout(entry.Ref, b.cfg.RequestTimeout))
+		card, err := b.client.ResolveAgentCard(cardCtx, target)
+		cancel()
+		if err == nil && card == nil {
+			err = errors.New("agent card resolver returned an empty card")
+		}
+		if err == nil && !b.client.IsReady(target) {
+			err = fmt.Errorf("remote card resolver did not install a verified client: %w", a2aclient.ErrRemoteTargetUntrusted)
+		}
+		if err != nil {
+			if errors.Is(err, a2aclient.ErrRemoteTargetUntrusted) {
+				b.logAgentCardAudit(entry, "rejected", "agent_card_untrusted")
+			}
+			failures = append(failures, fmt.Errorf("verify remote AgentCard for %s: %w", entry.Ghost, err))
+		}
+	}
+	return errors.Join(failures...)
+}
+
 func (b *Bridge) watchAgents(ctx context.Context) {
 	defer b.watchWG.Done()
-	ticker := time.NewTicker(b.cfg.AgentsReloadInterval)
-	defer ticker.Stop()
+	agentsTicker := time.NewTicker(b.cfg.AgentsReloadInterval)
+	defer agentsTicker.Stop()
+	cardTicker := time.NewTicker(b.cfg.AgentCardRefreshInterval)
+	defer cardTicker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-agentsTicker.C:
 			if _, err := b.reloadAgents(ctx); err != nil {
 				b.log.Error("reload agent routing map; keeping last-known config", "err", err)
 			}
+		case <-cardTicker.C:
+			_ = b.syncProfilesChecked(ctx, b.agents.Entries(), true)
 		}
 	}
 }

@@ -98,6 +98,8 @@ spec:
               value: /etc/matrix-a2a-bridge/agents/agents.yaml
             - name: AGENTS_RELOAD_INTERVAL
               value: {{ .Values.config.agentsReloadInterval | quote }}
+            - name: AGENT_CARD_REFRESH_INTERVAL
+              value: {{ .Values.config.agentCardRefreshInterval | quote }}
             {{- if .Values.config.otelEndpoint }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.config.otelEndpoint | quote }}

@@ -9,10 +9,11 @@ bridgedOrigins:
   telegram:
     - "@telegram_*:fgentic.fmind.ai"
 
-# Ghost -> kagent agent routing map, and the bridge's authorization allowlist: only ghosts
-# listed here can be invoked. Key = the agent ghost local-part (@agent-k8s -> "agent-k8s");
-# value = the kagent Agent's namespace + name. The A2A endpoint the bridge dials is
-# <A2A_BASE_URL>/api/a2a/<namespace>/<name>, with the AgentCard at .../.well-known/agent-card.json.
+# Ghost -> A2A agent routing map, and the bridge's authorization allowlist: only ghosts listed
+# here can be invoked. Key = the agent ghost local-part (@agent-k8s -> "agent-k8s"). A local
+# value uses the kagent Agent's namespace + name, resolving to
+# <A2A_BASE_URL>/api/a2a/<namespace>/<name>. A remote value instead uses an exact url plus the
+# signed-card trust, timeout, and token-budget fields shown in the commented example below.
 #
 # Sender policy (SPEC §4 F6) — per agent, optional:
 #   allowedServers: extra homeservers whose users may invoke the agent (the bridge's own
@@ -40,3 +41,28 @@ agents:
     name: scribe
     description: Summarizes pasted or quoted room discussion without tools.
     allowedSenders: ["@alice:fgentic.fmind.ai"]
+
+  # Remote agents are opt-in. `url` is the exact canonical JSONRPC or HTTP+JSON endpoint without
+  # a trailing slash; the signed AgentCard lives at
+  # <url>/.well-known/agent-card.json. The bridge accepts only ES256 cards whose protected JWS
+  # key ID, name, provider organization, and P-256 public JWK match this pin. `tokenBudget` is a
+  # positive partner-enforced maximum-token scalar sent through the
+  # https://fgentic.fmind.ai/a2a/extensions/token-budget/v1 extension on message/send.
+  # It is not bridge-observed or hard local model-token accounting. The target timeout is an
+  # additional whole-delegation ceiling combined with the global request/task timeouts.
+  # agent-partner-reviewer:
+  #   url: https://agents.partner.example/a2a/reviewer
+  #   timeout: 30s
+  #   tokenBudget: 4096
+  #   cardIdentity:
+  #     name: Partner reviewer
+  #     organization: Partner Example
+  #     keyID: partner-reviewer-2026-07
+  #     publicKey:
+  #       kty: EC
+  #       crv: P-256
+  #       x: <base64url-x-coordinate>
+  #       y: <base64url-y-coordinate>
+  #   description: Reviews documents through the partner's governed A2A endpoint.
+  #   allowedServers: [partner.example]
+  #   allowedSenders: ["@alice:fgentic.fmind.ai"]

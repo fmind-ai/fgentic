@@ -33,6 +33,7 @@ config:
   listenPort: 29331
   metricsPort: 9090 # Prometheus /metrics side port (SPEC §9.3)
   agentsReloadInterval: 5s # poll the projected ConfigMap for routing/profile changes
+  agentCardRefreshInterval: 5m # independently revalidate every signed remote AgentCard
   # Standard OTLP/HTTP endpoint. Empty keeps tracing disabled for standalone installs.
   otelEndpoint: ""
 
@@ -64,9 +65,13 @@ a2aAuthentication:
 # audit values; patterns use one trailing localpart '*' and an exact homeserver.
 bridgedOrigins: {}
 
-# The ghost -> kagent agent routing map (also the invocation allowlist). Rendered into a ConfigMap.
+# The ghost -> A2A agent routing map (also the invocation allowlist). Rendered into a ConfigMap.
 # `description` is only a startup/card-outage fallback; live profiles and `!agents` prefer the
-# current AgentCard. Optional avatarURL values must be existing mxc:// URIs.
+# current AgentCard. Optional avatarURL values must be existing mxc:// URIs. Local targets use
+# `namespace` + `name`. Remote targets instead use `url`, a positive whole-delegation `timeout`
+# and partner-enforced `tokenBudget` extension value, plus a pinned ES256 `cardIdentity` (`name`,
+# `organization`, `keyID`, and public P-256 JWK). The bridge does not observe model token usage.
+# Signed-card trust is checked before any remote A2A invocation; no remote target is enabled by default.
 agents:
   agent-platform-helper:
     namespace: kagent

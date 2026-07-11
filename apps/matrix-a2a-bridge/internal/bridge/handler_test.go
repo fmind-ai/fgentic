@@ -131,9 +131,10 @@ agents:
 		ServerName: ownServer, GhostPrefix: "agent-", Concurrency: 1,
 		RoomQueueCapacity: 32, GlobalQueueCapacity: 256,
 		SenderRatePerMinute: 60, SenderRateBurst: 10, RoomRatePerMinute: 60, RoomRateBurst: 10,
-		RateLimitBucketCapacity: testRateLimitBucketCapacity,
-		RequestTimeout:          time.Second,
-		AgentsReloadInterval:    time.Hour,
+		RateLimitBucketCapacity:  testRateLimitBucketCapacity,
+		RequestTimeout:           time.Second,
+		AgentsReloadInterval:     time.Hour,
+		AgentCardRefreshInterval: time.Hour,
 	}
 	as := &appservice.AppService{Registration: &appservice.Registration{SenderLocalpart: "a2a-bridge"}}
 	return New(cfg, as, agents, nil, state.NewMemory(), slog.Default())
@@ -254,6 +255,22 @@ func TestResolveTargets(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+func TestRemoteMappingNeverResolvesForeignHomeserverMention(t *testing.T) {
+	agents, err := LoadAgents(writeTemp(t, validRemoteAgentsYAML))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	b := testBridge(t)
+	b.agents = agents
+	foreign := id.NewUserID("agent-remote", "partner.example")
+	evt, msg := msgEvent(id.NewUserID("alice", ownServer), foreign.String(), foreign)
+
+	resolved := b.resolveTargets(evt, msg)
+	if len(resolved.allowed) != 0 || len(resolved.deniedBridged) != 0 {
+		t.Fatalf("foreign remote mention resolved locally: %+v", resolved)
 	}
 }
 
@@ -1173,34 +1190,35 @@ type scriptedPoll struct {
 }
 
 type scriptedA2AClient struct {
-	callResult a2aclient.Result
-	callErr    error
-	callText   string
-	callCount  int
-	card       *a2a.AgentCard
-	cardErr    error
-	cardPaths  []string
-	polls      []scriptedPoll
-	pollPaths  []string
-	pollTasks  []string
+	callResult  a2aclient.Result
+	callErr     error
+	callText    string
+	callCount   int
+	card        *a2a.AgentCard
+	cardErr     error
+	cardPaths   []string
+	polls       []scriptedPoll
+	pollPaths   []string
+	pollTasks   []string
+	remoteReady bool
 }
 
-func (c *scriptedA2AClient) ResolveAgentCard(_ context.Context, agentPath string) (*a2a.AgentCard, error) {
-	c.cardPaths = append(c.cardPaths, agentPath)
+func (c *scriptedA2AClient) ResolveAgentCard(_ context.Context, target a2aclient.Target) (*a2a.AgentCard, error) {
+	c.cardPaths = append(c.cardPaths, target.String())
 	if c.card == nil && c.cardErr == nil {
 		return nil, errors.New("unexpected agent card resolution")
 	}
 	return c.card, c.cardErr
 }
 
-func (c *scriptedA2AClient) Call(_ context.Context, _ string, text, _ string) (a2aclient.Result, error) {
+func (c *scriptedA2AClient) Call(_ context.Context, _ a2aclient.Target, text, _ string) (a2aclient.Result, error) {
 	c.callCount++
 	c.callText = text
 	return c.callResult, c.callErr
 }
 
-func (c *scriptedA2AClient) PollTask(_ context.Context, agentPath, taskID string) (a2aclient.Result, error) {
-	c.pollPaths = append(c.pollPaths, agentPath)
+func (c *scriptedA2AClient) PollTask(_ context.Context, target a2aclient.Target, taskID string) (a2aclient.Result, error) {
+	c.pollPaths = append(c.pollPaths, target.String())
 	c.pollTasks = append(c.pollTasks, taskID)
 	if len(c.polls) == 0 {
 		return a2aclient.Result{}, errors.New("unexpected tasks/get")
@@ -1208,6 +1226,10 @@ func (c *scriptedA2AClient) PollTask(_ context.Context, agentPath, taskID string
 	next := c.polls[0]
 	c.polls = c.polls[1:]
 	return next.result, next.err
+}
+
+func (c *scriptedA2AClient) IsReady(target a2aclient.Target) bool {
+	return !target.IsRemote() || c.remoteReady
 }
 
 type matrixRecorder struct {
@@ -1412,7 +1434,7 @@ func TestAwaitTaskPollsWithCappedBackoffAndEmptyReplyFallback(t *testing.T) {
 		return nil
 	}
 
-	audit := b.awaitTask(t.Context(), intent, evt, ref, "agent-k8s", a2aclient.Result{
+	audit := b.awaitTask(t.Context(), t.Context(), intent, evt, ref, "agent-k8s", a2aclient.Result{
 		Text:   "preparing",
 		TaskID: "task-1",
 	})
@@ -1435,7 +1457,7 @@ func TestAwaitTaskPollsWithCappedBackoffAndEmptyReplyFallback(t *testing.T) {
 	if events[0].Body != "preparing" {
 		t.Fatalf("placeholder body = %q, want preparing", events[0].Body)
 	}
-	assertEdit(t, events[1], "$reply-1", emptyReplyText)
+	assertEdit(t, events[1], emptyReplyText)
 	if audit.outcome != outcomeOK || audit.terminalStage != "task_result" || audit.taskID != "task-1" {
 		t.Fatalf("long-task audit = %+v, want completed task_result for task-1", audit)
 	}
@@ -1469,7 +1491,11 @@ func TestAwaitTaskRetriesTransientRealWireFailureWithCappedBackoff(t *testing.T)
 		}
 	})
 	client := newWireA2AClient(t, executor, store)
-	working, err := client.Call(t.Context(), wireContractAgent, "long task", "")
+	target, err := a2aclient.NewLocalTarget(wireContractAgent)
+	if err != nil {
+		t.Fatalf("NewLocalTarget: %v", err)
+	}
+	working, err := client.Call(t.Context(), target, "long task", "")
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -1500,7 +1526,7 @@ func TestAwaitTaskRetriesTransientRealWireFailureWithCappedBackoff(t *testing.T)
 		return nil
 	}
 
-	audit := b.awaitTask(t.Context(), intent, evt, ref, "agent-k8s", working)
+	audit := b.awaitTask(t.Context(), t.Context(), intent, evt, ref, "agent-k8s", working)
 
 	if want := []time.Duration{5 * time.Second, 8 * time.Second, 8 * time.Second}; !slices.Equal(waits, want) {
 		t.Fatalf("poll waits = %v, want %v", waits, want)
@@ -1509,7 +1535,7 @@ func TestAwaitTaskRetriesTransientRealWireFailureWithCappedBackoff(t *testing.T)
 	if len(events) != 2 {
 		t.Fatalf("Matrix events = %d, want placeholder and edit", len(events))
 	}
-	assertEdit(t, events[1], "$reply-1", "finished over the wire")
+	assertEdit(t, events[1], "finished over the wire")
 	if audit.outcome != outcomeOK || audit.terminalStage != "task_result" || audit.taskID != working.TaskID {
 		t.Fatalf("long-task audit = %+v, want completed task_result for %s", audit, working.TaskID)
 	}
@@ -1524,7 +1550,7 @@ func TestAwaitTaskTimeoutIsDeterministic(t *testing.T) {
 		return ctx.Err()
 	}
 
-	audit := b.awaitTask(t.Context(), intent, evt, ref, "agent-k8s", a2aclient.Result{TaskID: "task-timeout"})
+	audit := b.awaitTask(t.Context(), t.Context(), intent, evt, ref, "agent-k8s", a2aclient.Result{TaskID: "task-timeout"})
 
 	if len(client.pollTasks) != 0 {
 		t.Fatalf("PollTask calls = %d, want none after timeout", len(client.pollTasks))
@@ -1536,16 +1562,197 @@ func TestAwaitTaskTimeoutIsDeterministic(t *testing.T) {
 	if events[0].Body != workingText {
 		t.Fatalf("placeholder body = %q, want %q", events[0].Body, workingText)
 	}
-	assertEdit(t, events[1], "$reply-1", `⚠️ agent "agent-k8s" did not finish within 0s.`)
+	assertEdit(t, events[1], `⚠️ agent "agent-k8s" did not finish within 0s.`)
 	if audit.outcome != outcomeTimeout || audit.terminalStage != "task_poll" || audit.taskID != "task-timeout" {
 		t.Fatalf("timeout audit = %+v, want timeout task_poll for task-timeout", audit)
 	}
 }
 
-func assertEdit(t *testing.T, content event.MessageEventContent, target id.EventID, want string) {
+func TestDispatchRefusesQuarantinedRemoteBeforeAdmission(t *testing.T) {
+	agents, err := LoadAgents(writeTemp(t, validRemoteAgentsYAML))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	client := &scriptedA2AClient{remoteReady: false}
+	b := testBridge(t)
+	b.agents = agents
+	b.client = client
+	b.profiles = newProfileStore(agents.Entries())
+	var output strings.Builder
+	setBridgeLogOutput(b, &output)
+
+	evt, _ := msgEvent(id.NewUserID("alice", ownServer), "@agent-remote inspect the pod")
+	evt.ID = "$remote-untrusted"
+	ref, ok := agents.Lookup("agent-remote")
+	if !ok {
+		t.Fatal("agent-remote fixture missing")
+	}
+	sender := agents.IdentifySender(evt.Sender)
+	b.dispatchResolvedTarget(
+		t.Context(), evt, "agent-remote", "inspect the pod", ref, sender, dedupVerdictAccepted,
+	)
+
+	if client.callCount != 0 {
+		t.Fatalf("A2A calls = %d, want zero", client.callCount)
+	}
+	audits := auditRecords(t, output.String())
+	if len(audits) != 1 {
+		t.Fatalf("delegation audits = %d, want one", len(audits))
+	}
+	audit := audits[0]
+	if audit["outcome"] != outcomeDenied || audit["terminal_stage"] != "agent_card" ||
+		audit["terminal_reason"] != "agent_card_untrusted" || audit["a2a_attempted"] != false ||
+		audit["rate_limit_verdict"] != string(rateLimitVerdictNotChecked) {
+		t.Fatalf("remote refusal audit = %#v", audit)
+	}
+}
+
+func TestDispatchClassifiesTrustRevocationAtTransportBoundary(t *testing.T) {
+	client := &scriptedA2AClient{
+		callErr:     fmt.Errorf("remote transport refused request: %w", a2aclient.ErrRemoteTargetUntrusted),
+		remoteReady: true,
+	}
+	b, _, evt, _, recorder := pollingHarness(t, client)
+	agents, err := LoadAgents(writeTemp(t, validRemoteAgentsYAML))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	b.agents = agents
+	b.profiles = newProfileStore(agents.Entries())
+	ref, ok := agents.Lookup("agent-remote")
+	if !ok {
+		t.Fatal("agent-remote fixture missing")
+	}
+	evt.ID = "$remote-trust-race"
+	evt.Sender = id.NewUserID("alice", ownServer)
+	intent := b.as.Intent(id.NewUserID("agent-remote", ownServer))
+	intent.Registered = true
+	if err := b.as.StateStore.SetMembership(t.Context(), evt.RoomID, intent.UserID, event.MembershipJoin); err != nil {
+		t.Fatalf("SetMembership: %v", err)
+	}
+	var output strings.Builder
+	setBridgeLogOutput(b, &output)
+
+	b.dispatchWithDedupVerdict(
+		t.Context(), evt, ref, "agent-remote", "inspect the pod",
+		agents.IdentifySender(evt.Sender), dedupVerdictAccepted,
+	)
+
+	if events := recorder.snapshot(); len(events) != 0 {
+		t.Fatalf("Matrix events after transport trust refusal = %#v, want none", events)
+	}
+	audits := auditRecords(t, output.String())
+	if len(audits) != 1 {
+		t.Fatalf("delegation audits = %d, want one", len(audits))
+	}
+	audit := audits[0]
+	if audit["outcome"] != outcomeDenied || audit["terminal_stage"] != "agent_card" ||
+		audit["terminal_reason"] != "agent_card_untrusted" || audit["a2a_attempted"] != false ||
+		audit["rate_limit_verdict"] != string(rateLimitVerdictAllowed) {
+		t.Fatalf("transport trust refusal audit = %#v", audit)
+	}
+}
+
+func TestAwaitTaskStopsImmediatelyWhenRemoteTrustIsRevoked(t *testing.T) {
+	client := &scriptedA2AClient{polls: []scriptedPoll{
+		{err: fmt.Errorf("remote transport refused request: %w", a2aclient.ErrRemoteTargetUntrusted)},
+		{result: a2aclient.Result{TaskID: "task-remote", Terminal: true, Text: "must not be observed"}},
+	}}
+	b, intent, evt, _, recorder := pollingHarness(t, client)
+	agents, err := LoadAgents(writeTemp(t, validRemoteAgentsYAML))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	b.agents = agents
+	b.profiles = newProfileStore(agents.Entries())
+	ref, ok := agents.Lookup("agent-remote")
+	if !ok {
+		t.Fatal("agent-remote fixture missing")
+	}
+	b.pollWait = func(context.Context, time.Duration) error { return nil }
+
+	audit := b.awaitTask(t.Context(), t.Context(), intent, evt, ref, "agent-remote", a2aclient.Result{
+		TaskID: "task-remote",
+	})
+
+	if len(client.pollTasks) != 1 {
+		t.Fatalf("PollTask calls = %d, want one", len(client.pollTasks))
+	}
+	events := recorder.snapshot()
+	if len(events) != 2 {
+		t.Fatalf("Matrix events = %d, want placeholder and trust-refusal edit", len(events))
+	}
+	assertEdit(t, events[1], `⚠️ lost trust in agent "agent-remote" while waiting for its task — see the bridge logs.`)
+	if audit.outcome != outcomeDenied || audit.terminalStage != "agent_card" ||
+		audit.terminalReason != "agent_card_untrusted" || !audit.a2aAttempted ||
+		audit.rateLimitVerdict != rateLimitVerdictAllowed {
+		t.Fatalf("task trust refusal audit = %+v", audit)
+	}
+}
+
+type deadlineA2AClient struct {
+	remaining time.Duration
+}
+
+func (c *deadlineA2AClient) Call(ctx context.Context, _ a2aclient.Target, _, _ string) (a2aclient.Result, error) {
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		return a2aclient.Result{}, errors.New("A2A call has no deadline")
+	}
+	c.remaining = time.Until(deadline)
+	<-ctx.Done()
+	return a2aclient.Result{}, ctx.Err()
+}
+
+func (*deadlineA2AClient) PollTask(context.Context, a2aclient.Target, string) (a2aclient.Result, error) {
+	return a2aclient.Result{}, errors.New("unexpected A2A task poll")
+}
+
+func (*deadlineA2AClient) ResolveAgentCard(context.Context, a2aclient.Target) (*a2a.AgentCard, error) {
+	return nil, errors.New("unexpected AgentCard resolution")
+}
+
+func (*deadlineA2AClient) IsReady(a2aclient.Target) bool { return true }
+
+func TestRemoteTimeoutBoundsDelegationWithoutCancellingMatrixNotice(t *testing.T) {
+	client := &deadlineA2AClient{}
+	b, _, evt, _, recorder := pollingHarness(t, client)
+	agents, err := LoadAgents(writeTemp(t, strings.Replace(validRemoteAgentsYAML, "timeout: 12s", "timeout: 10ms", 1)))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	b.agents = agents
+	b.profiles = newProfileStore(agents.Entries())
+	ref, ok := agents.Lookup("agent-remote")
+	if !ok {
+		t.Fatal("agent-remote fixture missing")
+	}
+	evt.ID = "$remote-timeout"
+	evt.Sender = id.NewUserID("alice", ownServer)
+	intent := b.as.Intent(id.NewUserID("agent-remote", ownServer))
+	intent.Registered = true
+	if err := b.as.StateStore.SetMembership(t.Context(), evt.RoomID, intent.UserID, event.MembershipJoin); err != nil {
+		t.Fatalf("SetMembership: %v", err)
+	}
+
+	b.dispatchWithDedupVerdict(
+		t.Context(), evt, ref, "agent-remote", "inspect the pod",
+		agents.IdentifySender(evt.Sender), dedupVerdictAccepted,
+	)
+
+	if client.remaining <= 0 || client.remaining > 25*time.Millisecond {
+		t.Fatalf("A2A deadline remaining = %s, want remote 10ms ceiling", client.remaining)
+	}
+	events := recorder.snapshot()
+	if len(events) != 1 || !strings.Contains(events[0].Body, "could not reach agent") {
+		t.Fatalf("Matrix events after remote timeout = %#v, want one failure notice", events)
+	}
+}
+
+func assertEdit(t *testing.T, content event.MessageEventContent, want string) {
 	t.Helper()
-	if content.RelatesTo == nil || content.RelatesTo.GetReplaceID() != target {
-		t.Fatalf("edit target = %v, want %q", content.RelatesTo, target)
+	if content.RelatesTo == nil || content.RelatesTo.GetReplaceID() != "$reply-1" {
+		t.Fatalf("edit target = %v, want $reply-1", content.RelatesTo)
 	}
 	if content.NewContent == nil || content.NewContent.Body != want {
 		t.Fatalf("edit content = %+v, want body %q", content.NewContent, want)

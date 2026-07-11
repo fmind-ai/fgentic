@@ -16,6 +16,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	sdk "github.com/a2aproject/a2a-go/v2/a2aclient"
 	"github.com/a2aproject/a2a-go/v2/a2aclient/agentcard"
+	"github.com/a2aproject/a2a-go/v2/a2aext"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 )
@@ -36,6 +37,26 @@ func WithUser(ctx context.Context, userID string) context.Context {
 type userTransport struct {
 	base   http.RoundTripper
 	apiKey string
+}
+
+// generationTransport holds the cache read lock through the HTTP handoff. A quarantine or
+// verified-card replacement therefore completes only after older requests have crossed the
+// transport boundary, and a client copied before that state change cannot start afterwards.
+type generationTransport struct {
+	base       http.RoundTripper
+	client     *Client
+	targetID   string
+	generation uint64
+}
+
+func (t *generationTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	t.client.mu.RLock()
+	defer t.client.mu.RUnlock()
+	cached := t.client.cache[t.targetID]
+	if !cached.ready || cached.client == nil || cached.generation != t.generation {
+		return nil, fmt.Errorf("remote transport trust generation changed: %w", ErrRemoteTargetUntrusted)
+	}
+	return t.base.RoundTrip(req)
 }
 
 func (t *userTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -68,42 +89,58 @@ type Result struct {
 	Failed    bool
 }
 
-// Client dials A2A agents under a common base URL (the agentgateway proxy, or kagent directly).
-// SDK clients are resolved once per agent path and cached.
+// Client dials local A2A agents under a common base URL and remote agents at their exact,
+// operator-configured URL. Separate transports prevent the local gateway credential from ever
+// crossing an organization boundary.
 type Client struct {
-	baseURL    string
-	log        *slog.Logger
-	httpClient *http.Client
-	resolver   *agentcard.Resolver
+	baseURL          string
+	log              *slog.Logger
+	localHTTPClient  *http.Client
+	remoteHTTPClient *http.Client
+	localResolver    *agentcard.Resolver
 
-	mu    sync.Mutex
-	cache map[string]*sdk.Client
+	mu           sync.RWMutex
+	cache        map[string]cachedTarget
+	refreshLocks sync.Map
 }
 
 // New returns a Client that resolves agents relative to baseURL (e.g. the agentgateway proxy).
 // apiKey is the bridge workload credential enforced by the A2A route; it may be empty only when
 // directly dialing an unsecured development fixture or kagent endpoint.
 func New(baseURL, apiKey string, log *slog.Logger) *Client {
-	httpClient := &http.Client{Transport: &userTransport{base: http.DefaultTransport, apiKey: apiKey}}
+	localHTTPClient := &http.Client{Transport: &userTransport{base: http.DefaultTransport, apiKey: apiKey}}
+	remoteHTTPClient := &http.Client{
+		Transport: &userTransport{base: http.DefaultTransport},
+		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {
+			return http.ErrUseLastResponse
+		},
+	}
 	return &Client{
-		baseURL:    strings.TrimRight(baseURL, "/"),
-		log:        log,
-		httpClient: httpClient,
-		resolver:   agentcard.NewResolver(httpClient),
-		cache:      make(map[string]*sdk.Client),
+		baseURL:          strings.TrimRight(baseURL, "/"),
+		log:              log,
+		localHTTPClient:  localHTTPClient,
+		remoteHTTPClient: remoteHTTPClient,
+		localResolver:    agentcard.NewResolver(localHTTPClient),
+		cache:            make(map[string]cachedTarget),
 	}
 }
 
-// Call delegates text to the agent served under agentPath (e.g. "/api/a2a/kagent/k8s-agent")
-// via A2A message/send. A non-empty contextID threads the conversation. ReturnImmediately keeps
+// Call delegates text to target via A2A message/send. A non-empty contextID threads the
+// conversation. ReturnImmediately keeps
 // long-running agents from holding the bridge request open: a non-terminal Task is returned as
 // soon as it exists and the bridge follows it with tasks/get polling.
-func (c *Client) Call(ctx context.Context, agentPath, text, contextID string) (Result, error) {
-	client, err := c.clientFor(ctx, agentPath)
+func (c *Client) Call(ctx context.Context, target Target, text, contextID string) (Result, error) {
+	client, err := c.clientFor(ctx, target)
 	if err != nil {
 		return Result{}, err
 	}
 	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(text))
+	if target.IsRemote() {
+		msg.Extensions = []string{TokenBudgetExtensionURI}
+		msg.Metadata = map[string]any{
+			TokenBudgetExtensionURI: map[string]any{"maxTokens": target.TokenBudget()},
+		}
+	}
 	if contextID != "" {
 		msg.ContextID = contextID // thread the room's conversation so the agent keeps context
 	}
@@ -112,30 +149,36 @@ func (c *Client) Call(ctx context.Context, agentPath, text, contextID string) (R
 		Config:  &a2a.SendMessageConfig{ReturnImmediately: true},
 	})
 	if err != nil {
-		return Result{}, fmt.Errorf("a2a message/send to %s: %w", agentPath, err)
+		return Result{}, fmt.Errorf("a2a message/send to %s: %w", target.String(), err)
 	}
 	return toResult(res), nil
 }
 
 // PollTask fetches the current state of a task previously returned by Call (tasks/get).
-func (c *Client) PollTask(ctx context.Context, agentPath string, taskID string) (Result, error) {
-	client, err := c.clientFor(ctx, agentPath)
+func (c *Client) PollTask(ctx context.Context, target Target, taskID string) (Result, error) {
+	client, err := c.clientFor(ctx, target)
 	if err != nil {
 		return Result{}, err
 	}
 	task, err := client.GetTask(ctx, &a2a.GetTaskRequest{ID: a2a.TaskID(taskID)})
 	if err != nil {
-		return Result{}, fmt.Errorf("a2a tasks/get %s from %s: %w", taskID, agentPath, err)
+		return Result{}, fmt.Errorf("a2a tasks/get %s from %s: %w", taskID, target.String(), err)
 	}
 	return taskResult(task), nil
 }
 
-// ResolveAgentCard fetches the current public AgentCard for agentPath through the configured
-// A2A base URL. Unlike clientFor, this deliberately bypasses the SDK-client cache so profile
-// synchronization observes metadata changes on a config reload.
-func (c *Client) ResolveAgentCard(ctx context.Context, agentPath string) (*a2a.AgentCard, error) {
-	cardPath := strings.TrimRight(agentPath, "/") + "/.well-known/agent-card.json"
-	card, err := c.resolver.Resolve(ctx, c.baseURL, agentcard.WithPath(cardPath))
+// ResolveAgentCard fetches the current public AgentCard for target. Local targets deliberately
+// bypass the SDK-client cache. Remote cards are installed only after their pinned identity,
+// endpoint, extension contract, and detached JWS signature have all been verified.
+func (c *Client) ResolveAgentCard(ctx context.Context, target Target) (*a2a.AgentCard, error) {
+	if !target.valid() {
+		return nil, fmt.Errorf("resolve agent card: invalid target")
+	}
+	if target.IsRemote() {
+		return c.resolveRemoteAgentCard(ctx, target)
+	}
+	cardPath := strings.TrimRight(target.String(), "/") + "/.well-known/agent-card.json"
+	card, err := c.localResolver.Resolve(ctx, c.baseURL, agentcard.WithPath(cardPath))
 	if err != nil {
 		return nil, fmt.Errorf("resolve agent card %s%s: %w", c.baseURL, cardPath, err)
 	}
@@ -145,37 +188,81 @@ func (c *Client) ResolveAgentCard(ctx context.Context, agentPath string) (*a2a.A
 	return card, nil
 }
 
-// clientFor resolves (and caches) an SDK client for a given agent path by fetching its AgentCard.
+// IsReady reports whether target can be called without doing network trust discovery. Local
+// targets are resolved lazily on first use; a remote target is ready only while a verified card
+// and SDK client are atomically installed.
+func (c *Client) IsReady(target Target) bool {
+	if !target.valid() {
+		return false
+	}
+	if !target.IsRemote() {
+		return true
+	}
+	c.mu.RLock()
+	cached := c.cache[target.ID()]
+	c.mu.RUnlock()
+	return cached.ready && cached.client != nil
+}
+
+// clientFor resolves (and caches) an SDK client for a target by fetching its AgentCard.
 // Routing baseURL + card path keeps clients pointing through agentgateway when it rewrites the
 // card's advertised URL (a no-op when talking to kagent directly).
-func (c *Client) clientFor(ctx context.Context, agentPath string) (*sdk.Client, error) {
-	key := agentPath
-	c.mu.Lock()
-	cached := c.cache[key]
-	c.mu.Unlock()
-	if cached != nil {
-		return cached, nil
+func (c *Client) clientFor(ctx context.Context, target Target) (*sdk.Client, error) {
+	if !target.valid() {
+		return nil, fmt.Errorf("build a2a client: invalid target")
 	}
 
-	card, err := c.ResolveAgentCard(ctx, agentPath)
+	c.mu.RLock()
+	cached := c.cache[target.ID()]
+	c.mu.RUnlock()
+	if cached.ready && cached.client != nil {
+		return cached.client, nil
+	}
+	if target.IsRemote() {
+		return nil, fmt.Errorf("call remote target %s: %w", target.String(), ErrRemoteTargetUntrusted)
+	}
+
+	card, err := c.ResolveAgentCard(ctx, target)
 	if err != nil {
 		return nil, err
 	}
-	// The user-stamping HTTP client is registered for both wire flavors kagent may advertise.
-	client, err := sdk.NewFromCard(
-		ctx, card,
-		sdk.WithJSONRPCTransport(c.httpClient),
-		sdk.WithRESTTransport(c.httpClient),
-	)
+	client, err := buildSDKClient(ctx, card, c.localHTTPClient, false)
 	if err != nil {
-		return nil, fmt.Errorf("build a2a client for %s: %w", agentPath, err)
+		return nil, fmt.Errorf("build a2a client for %s: %w", target.String(), err)
 	}
 
 	c.mu.Lock()
-	c.cache[key] = client
+	if existing := c.cache[target.ID()]; existing.ready && existing.client != nil {
+		client = existing.client
+	} else {
+		c.cache[target.ID()] = cachedTarget{client: client, card: card, ready: true}
+	}
 	c.mu.Unlock()
-	c.log.Info("resolved a2a agent", "path", agentPath, "card_name", card.Name)
+	c.log.Info("resolved a2a agent", "target", target.String(), "card_name", card.Name)
 	return client, nil
+}
+
+func (c *Client) remoteSDKHTTPClient(targetID string, generation uint64) *http.Client {
+	return &http.Client{
+		Transport: &generationTransport{
+			base:       c.remoteHTTPClient.Transport,
+			client:     c,
+			targetID:   targetID,
+			generation: generation,
+		},
+		CheckRedirect: c.remoteHTTPClient.CheckRedirect,
+	}
+}
+
+func buildSDKClient(ctx context.Context, card *a2a.AgentCard, httpClient *http.Client, activateBudget bool) (*sdk.Client, error) {
+	options := []sdk.FactoryOption{
+		sdk.WithJSONRPCTransport(httpClient),
+		sdk.WithRESTTransport(httpClient),
+	}
+	if activateBudget {
+		options = append(options, sdk.WithCallInterceptors(a2aext.NewActivator(TokenBudgetExtensionURI)))
+	}
+	return sdk.NewFromCard(ctx, card, options...)
 }
 
 // toResult maps a SendMessageResult (a *a2a.Message or *a2a.Task sum type) to a Result.

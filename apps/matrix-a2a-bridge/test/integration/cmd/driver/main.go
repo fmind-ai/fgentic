@@ -17,16 +17,18 @@ import (
 )
 
 const (
-	defaultMatrixURL  = "http://synapse:8008"
-	defaultBridgeURL  = "http://bridge:29331"
-	defaultMetricsURL = "http://bridge:9090/metrics"
-	defaultStubURL    = "http://a2a-stub:8080"
-	defaultServer     = "integration.test"
-	defaultHSToken    = "integration-homeserver-token"
-	username          = "integration-user"
-	password          = "integration-password"
-	ghostLocalpart    = "agent-integration"
-	replyText         = "integration reply"
+	defaultMatrixURL     = "http://synapse:8008"
+	defaultBridgeURL     = "http://bridge:29331"
+	defaultMetricsURL    = "http://bridge:9090/metrics"
+	defaultStubURL       = "http://a2a-stub:8080"
+	defaultServer        = "integration.test"
+	defaultHSToken       = "integration-homeserver-token"
+	username             = "integration-user"
+	password             = "integration-password"
+	ghostLocalpart       = "agent-integration"
+	remoteGhostLocalpart = "agent-remote"
+	replyText            = "integration reply"
+	remoteReplyText      = "remote integration reply"
 )
 
 type fixture struct {
@@ -128,7 +130,7 @@ func (f fixture) runBasic(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := f.waitForReplyCount(ctx, sess.AccessToken, roomID, ghost, eventID, 1); err != nil {
+	if err := f.waitForReplyCount(ctx, sess.AccessToken, roomID, ghost, eventID, replyText, 1); err != nil {
 		return err
 	}
 
@@ -137,12 +139,87 @@ func (f fixture) runBasic(ctx context.Context) error {
 	}
 	quietDeadline := time.Now().Add(4 * time.Second)
 	for time.Now().Before(quietDeadline) {
-		if err := f.assertReplyCount(ctx, sess.AccessToken, roomID, ghost, eventID, 1); err != nil {
+		if err := f.assertReplyCount(ctx, sess.AccessToken, roomID, ghost, eventID, replyText, 1); err != nil {
 			return fmt.Errorf("deduplication after transaction replay: %w", err)
 		}
 		if err := wait(ctx, 250*time.Millisecond); err != nil {
 			return err
 		}
+	}
+
+	remoteGhost := "@" + remoteGhostLocalpart + ":" + f.server
+	if err := f.invite(ctx, sess.AccessToken, roomID, remoteGhost); err != nil {
+		return err
+	}
+	if err := f.waitForJoin(ctx, sess.AccessToken, roomID, remoteGhost); err != nil {
+		return err
+	}
+	remoteContent := messageContent{
+		Body:     remoteGhost + " prove the signed remote A2A path",
+		Mentions: mentions{UserIDs: []string{remoteGhost}},
+		MsgType:  "m.text",
+	}
+	remoteEventID, err := f.sendMessageTxn(
+		ctx,
+		sess.AccessToken,
+		roomID,
+		"integration-remote-valid",
+		remoteContent,
+	)
+	if err != nil {
+		return err
+	}
+	if err := f.waitForReplyCount(
+		ctx,
+		sess.AccessToken,
+		roomID,
+		remoteGhost,
+		remoteEventID,
+		remoteReplyText,
+		1,
+	); err != nil {
+		return fmt.Errorf("signed remote round trip: %w", err)
+	}
+
+	beforeTamper, err := f.fetchStubStats(ctx)
+	if err != nil {
+		return err
+	}
+	if beforeTamper.RemoteRequests < 1 {
+		return fmt.Errorf("signed remote round trip made %d A2A requests, want at least 1", beforeTamper.RemoteRequests)
+	}
+	if !beforeTamper.TokenBudgetValid {
+		return fmt.Errorf("signed remote round trip did not validate the configured token-budget extension")
+	}
+	if err := f.tamperRemoteCard(ctx); err != nil {
+		return err
+	}
+	tamperedBaseline, err := f.fetchStubStats(ctx)
+	if err != nil {
+		return err
+	}
+	afterRefresh, err := f.waitForTamperedCardRefresh(ctx, tamperedBaseline.RemoteCardRequests)
+	if err != nil {
+		return err
+	}
+
+	tamperedContent := messageContent{
+		Body:     remoteGhost + " this must fail closed after card tampering",
+		Mentions: mentions{UserIDs: []string{remoteGhost}},
+		MsgType:  "m.text",
+	}
+	tamperedEventID, err := f.sendMessageTxn(
+		ctx,
+		sess.AccessToken,
+		roomID,
+		"integration-remote-tampered",
+		tamperedContent,
+	)
+	if err != nil {
+		return err
+	}
+	if err := f.assertNoRemoteDispatch(ctx, afterRefresh.RemoteRequests, 4*time.Second); err != nil {
+		return fmt.Errorf("tampered remote AgentCard: %w", err)
 	}
 
 	slog.Info(
@@ -151,6 +228,10 @@ func (f fixture) runBasic(ctx context.Context) error {
 		"mention_event_id", eventID,
 		"reply", replyText,
 		"deduplicated_replay", true,
+		"remote_mention_event_id", remoteEventID,
+		"remote_reply", remoteReplyText,
+		"tampered_mention_event_id", tamperedEventID,
+		"tampered_card_rejected_before_a2a", true,
 	)
 	return nil
 }
@@ -314,9 +395,13 @@ func (f fixture) replayEvent(
 	return nil
 }
 
-func (f fixture) waitForReplyCount(ctx context.Context, token, roomID, ghost, eventID string, want int) error {
+func (f fixture) waitForReplyCount(
+	ctx context.Context,
+	token, roomID, ghost, eventID, body string,
+	want int,
+) error {
 	for {
-		count, err := f.replyCount(ctx, token, roomID, ghost, eventID)
+		count, err := f.replyCount(ctx, token, roomID, ghost, eventID, body)
 		if err == nil && count == want {
 			return nil
 		}
@@ -335,8 +420,12 @@ func (f fixture) waitForReplyCount(ctx context.Context, token, roomID, ghost, ev
 	}
 }
 
-func (f fixture) assertReplyCount(ctx context.Context, token, roomID, ghost, eventID string, want int) error {
-	count, err := f.replyCount(ctx, token, roomID, ghost, eventID)
+func (f fixture) assertReplyCount(
+	ctx context.Context,
+	token, roomID, ghost, eventID, body string,
+	want int,
+) error {
+	count, err := f.replyCount(ctx, token, roomID, ghost, eventID, body)
 	if err != nil {
 		return err
 	}
@@ -346,7 +435,7 @@ func (f fixture) assertReplyCount(ctx context.Context, token, roomID, ghost, eve
 	return nil
 }
 
-func (f fixture) replyCount(ctx context.Context, token, roomID, ghost, eventID string) (int, error) {
+func (f fixture) replyCount(ctx context.Context, token, roomID, ghost, eventID, body string) (int, error) {
 	events, err := f.roomMessages(ctx, token, roomID)
 	if err != nil {
 		return 0, err
@@ -360,11 +449,59 @@ func (f fixture) replyCount(ctx context.Context, token, roomID, ghost, eventID s
 		if err := json.Unmarshal(event.Content, &content); err != nil {
 			return 0, fmt.Errorf("decode Matrix message %s: %w", event.EventID, err)
 		}
-		if content.MsgType == "m.notice" && content.Body == replyText && content.RelatesTo.InReplyTo.EventID == eventID {
+		if content.MsgType == "m.notice" && content.Body == body && content.RelatesTo.InReplyTo.EventID == eventID {
 			count++
 		}
 	}
 	return count, nil
+}
+
+func (f fixture) tamperRemoteCard(ctx context.Context) error {
+	status, body, err := f.request(ctx, http.MethodPost, f.stubURL+"/control/tamper", "", nil)
+	if err != nil {
+		return fmt.Errorf("tamper remote AgentCard: %w", err)
+	}
+	if status != http.StatusNoContent {
+		return fmt.Errorf("tamper remote AgentCard: status %d: %s", status, body)
+	}
+	return nil
+}
+
+func (f fixture) waitForTamperedCardRefresh(ctx context.Context, previousRequests int) (stubStats, error) {
+	for {
+		stats, statsErr := f.fetchStubStats(ctx)
+		// Refreshes are synchronous. Seeing the next cycle fetch a second tampered card proves
+		// the bridge completed verification and quarantined the first one.
+		if statsErr == nil && stats.CardTampered && stats.RemoteCardRequests >= previousRequests+2 {
+			return stats, nil
+		}
+		if waitErr := wait(ctx, 100*time.Millisecond); waitErr != nil {
+			if statsErr != nil {
+				return stubStats{}, errors.Join(
+					fmt.Errorf("last A2A stub stats query: %w", statsErr),
+					fmt.Errorf("wait for tampered AgentCard refresh: %w", waitErr),
+				)
+			}
+			return stubStats{}, fmt.Errorf("wait for tampered AgentCard refresh: %w", waitErr)
+		}
+	}
+}
+
+func (f fixture) assertNoRemoteDispatch(ctx context.Context, expected int, duration time.Duration) error {
+	deadline := time.Now().Add(duration)
+	for time.Now().Before(deadline) {
+		stats, err := f.fetchStubStats(ctx)
+		if err != nil {
+			return err
+		}
+		if stats.RemoteRequests != expected {
+			return fmt.Errorf("remote A2A requests = %d, want unchanged at %d", stats.RemoteRequests, expected)
+		}
+		if err := wait(ctx, 100*time.Millisecond); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (f fixture) roomMessages(ctx context.Context, token, roomID string) ([]matrixEvent, error) {

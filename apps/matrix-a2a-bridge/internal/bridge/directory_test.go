@@ -157,6 +157,31 @@ func TestAgentDirectoryReportsNoVisibleMappings(t *testing.T) {
 	}
 }
 
+func TestAgentDirectoryHidesRemoteTargetWhenVerifiedFreshnessExpires(t *testing.T) {
+	agents, err := LoadAgents(writeTemp(t, validRemoteAgentsYAML))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	client := &scriptedA2AClient{remoteReady: false}
+	b := testBridge(t)
+	b.agents = agents
+	b.client = client
+	b.profiles = newProfileStore(agents.Entries())
+	ref, _ := agents.Lookup("agent-remote")
+	profile := fallbackProfile(ref)
+	profile.Status = profileStatusLive
+	b.profiles.set("agent-remote", profile)
+	sender := id.NewUserID("alice", ownServer)
+
+	if body := b.agentDirectoryText(sender); strings.Contains(body, "@agent-remote:") {
+		t.Fatalf("directory advertised unready remote target: %s", body)
+	}
+	client.remoteReady = true
+	if body := b.agentDirectoryText(sender); !strings.Contains(body, "@agent-remote:"+ownServer) {
+		t.Fatalf("directory omitted ready remote target: %s", body)
+	}
+}
+
 func TestAgentDirectoryForBridgedSenderListsOnlyExplicitMappings(t *testing.T) {
 	b := testBridge(t)
 	body := b.agentDirectoryText(id.NewUserID("slack_U123", ownServer))

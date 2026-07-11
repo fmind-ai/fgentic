@@ -11,8 +11,8 @@ import (
 
 // A2AClient is the existing bridge client surface needed by the harness.
 type A2AClient interface {
-	Call(context.Context, string, string, string) (a2aclient.Result, error)
-	PollTask(context.Context, string, string) (a2aclient.Result, error)
+	Call(context.Context, a2aclient.Target, string, string) (a2aclient.Result, error)
+	PollTask(context.Context, a2aclient.Target, string) (a2aclient.Result, error)
 }
 
 // RunConfig defines one approved profile run and its local safety bounds.
@@ -127,8 +127,11 @@ func (r *Runner) stableSnapshot(ctx context.Context, quietWindow time.Duration) 
 }
 
 func (r *Runner) callScenario(ctx context.Context, scenario Scenario, pollInterval time.Duration) (string, error) {
-	agentPath := "/api/a2a/kagent/" + string(scenario.Agent)
-	result, err := r.a2a.Call(ctx, agentPath, scenario.Prompt, "")
+	target, err := a2aclient.NewLocalTarget("/api/a2a/kagent/" + string(scenario.Agent))
+	if err != nil {
+		return "", fmt.Errorf("build local A2A target: %w", err)
+	}
+	result, err := r.a2a.Call(ctx, target, scenario.Prompt, "")
 	if err != nil {
 		return "", err
 	}
@@ -143,7 +146,7 @@ func (r *Runner) callScenario(ctx context.Context, scenario Scenario, pollInterv
 			return "", ctx.Err()
 		case <-timer.C:
 		}
-		result, err = r.a2a.PollTask(ctx, agentPath, result.TaskID)
+		result, err = r.a2a.PollTask(ctx, target, result.TaskID)
 		if err != nil {
 			return "", err
 		}

@@ -96,6 +96,15 @@ func contractServer(
 	return New(server.URL, "contract-api-key", slog.Default())
 }
 
+func contractTarget(t *testing.T) Target {
+	t.Helper()
+	target, err := NewLocalTarget(contractAgentPath)
+	if err != nil {
+		t.Fatalf("NewLocalTarget: %v", err)
+	}
+	return target
+}
+
 func TestResolveAgentCardUsesGatewayCredentialAndBypassesClientCache(t *testing.T) {
 	recorder := &contractRecorder{}
 	client := contractServer(t, executorFunc(func(context.Context, *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
@@ -103,7 +112,7 @@ func TestResolveAgentCardUsesGatewayCredentialAndBypassesClientCache(t *testing.
 	}), taskstore.NewInMemory(nil), recorder)
 
 	for range 2 {
-		card, err := client.ResolveAgentCard(t.Context(), contractAgentPath)
+		card, err := client.ResolveAgentCard(t.Context(), contractTarget(t))
 		if err != nil {
 			t.Fatalf("ResolveAgentCard: %v", err)
 		}
@@ -135,14 +144,14 @@ func TestClientContract_MessageContextAttributionAndWireVersion(t *testing.T) {
 	client := contractServer(t, executor, taskstore.NewInMemory(nil), recorder)
 	ctx := WithUser(t.Context(), "@alice:fgentic.example")
 
-	first, err := client.Call(ctx, contractAgentPath, "first prompt", "")
+	first, err := client.Call(ctx, contractTarget(t), "first prompt", "")
 	if err != nil {
 		t.Fatalf("first Call: %v", err)
 	}
 	if !first.Terminal || first.Text != "ack" || first.ContextID == "" {
 		t.Fatalf("first Call result = %+v, want terminal ack with a context ID", first)
 	}
-	second, err := client.Call(ctx, contractAgentPath, "second prompt", first.ContextID)
+	second, err := client.Call(ctx, contractTarget(t), "second prompt", first.ContextID)
 	if err != nil {
 		t.Fatalf("second Call: %v", err)
 	}
@@ -200,7 +209,7 @@ func TestClientContract_TerminalTask(t *testing.T) {
 	})
 	client := contractServer(t, executor, taskstore.NewInMemory(nil), recorder)
 
-	result, err := client.Call(t.Context(), contractAgentPath, "run task", "")
+	result, err := client.Call(t.Context(), contractTarget(t), "run task", "")
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -232,7 +241,7 @@ func TestClientContract_WorkingTaskCanBePolledToCompletion(t *testing.T) {
 	})
 	client := contractServer(t, executor, store, recorder)
 
-	working, err := client.Call(t.Context(), contractAgentPath, "long task", "")
+	working, err := client.Call(t.Context(), contractTarget(t), "long task", "")
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -244,7 +253,7 @@ func TestClientContract_WorkingTaskCanBePolledToCompletion(t *testing.T) {
 
 	var result Result
 	for range 100 {
-		result, err = client.PollTask(t.Context(), contractAgentPath, working.TaskID)
+		result, err = client.PollTask(t.Context(), contractTarget(t), working.TaskID)
 		if err != nil {
 			t.Fatalf("PollTask: %v", err)
 		}
@@ -266,7 +275,7 @@ func TestClientContract_ExecutorErrorIsContextualized(t *testing.T) {
 	})
 	client := contractServer(t, executor, taskstore.NewInMemory(nil), recorder)
 
-	_, err := client.Call(t.Context(), contractAgentPath, "fail", "")
+	_, err := client.Call(t.Context(), contractTarget(t), "fail", "")
 	if err == nil {
 		t.Fatal("Call succeeded, want protocol error")
 	}
@@ -284,7 +293,7 @@ func TestClientContract_EmptyMessageCrossesWire(t *testing.T) {
 	})
 	client := contractServer(t, executor, taskstore.NewInMemory(nil), recorder)
 
-	result, err := client.Call(t.Context(), contractAgentPath, "return no content", "")
+	result, err := client.Call(t.Context(), contractTarget(t), "return no content", "")
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -309,7 +318,7 @@ func TestClientContract_CallHonorsDeadline(t *testing.T) {
 	defer cancel()
 	callDone := make(chan error, 1)
 	go func() {
-		_, err := client.Call(ctx, contractAgentPath, "wait forever", "")
+		_, err := client.Call(ctx, contractTarget(t), "wait forever", "")
 		callDone <- err
 	}()
 
