@@ -5,9 +5,26 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"maunium.net/go/mautrix/id"
 )
+
+const validRemoteAgentsYAML = `agents:
+  agent-remote:
+    url: https://partner.example/a2a
+    timeout: 12s
+    tokenBudget: 8192
+    cardIdentity:
+      name: Partner Helper
+      organization: Partner Corp
+      keyID: partner-2026
+      publicKey:
+        kty: EC
+        crv: P-256
+        x: axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY
+        y: T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU
+`
 
 func writeTemp(t *testing.T, content string) string {
 	t.Helper()
@@ -38,6 +55,15 @@ func TestLoadAgents(t *testing.T) {
 	if ref.Path() != "/api/a2a/kagent/k8s-agent" {
 		t.Errorf("Path() = %q", ref.Path())
 	}
+	if ref.Target().IsRemote() {
+		t.Error("local Target().IsRemote() = true")
+	}
+	if ref.Timeout() != 0 {
+		t.Errorf("local Timeout() = %s, want zero", ref.Timeout())
+	}
+	if ref.MappingID() == "" {
+		t.Error("MappingID() is empty")
+	}
 	if ref.Description != "Diagnoses cluster health during startup outages." {
 		t.Errorf("Description = %q", ref.Description)
 	}
@@ -67,7 +93,7 @@ func TestLoadAgentsRejectsInvalidConfig(t *testing.T) {
 		{
 			name:    "null agent",
 			content: "agents:\n  agent-x: null\n",
-			want:    "both namespace and name are required",
+			want:    "target configuration must not be null",
 		},
 		{name: "malformed YAML", content: "agents: [\n", want: "parse agents file"},
 		{
@@ -80,6 +106,96 @@ func TestLoadAgentsRejectsInvalidConfig(t *testing.T) {
 `,
 			want: "avatarURL must be an mxc:// URI",
 		},
+		{
+			name:    "invalid ghost localpart",
+			content: "agents:\n  Agent-X: {namespace: kagent, name: x}\n",
+			want:    "ghost must be a valid Matrix user localpart",
+		},
+		{
+			name: "both target forms",
+			content: strings.Replace(
+				validRemoteAgentsYAML,
+				"    url: https://partner.example/a2a",
+				"    namespace: kagent\n    name: helper\n    url: https://partner.example/a2a",
+				1,
+			),
+			want: "exactly one target form is required",
+		},
+		{
+			name: "explicit empty url is still a second target form",
+			content: `agents:
+  agent-x:
+    namespace: kagent
+    name: x
+    url: ""
+`,
+			want: "exactly one target form is required",
+		},
+		{
+			name: "local target with remote policy",
+			content: `agents:
+  agent-x:
+    namespace: kagent
+    name: x
+    timeout: 2s
+`,
+			want: "only valid for a url target",
+		},
+		{
+			name:    "remote target without timeout",
+			content: strings.Replace(validRemoteAgentsYAML, "    timeout: 12s\n", "", 1),
+			want:    "timeout must be positive",
+		},
+		{
+			name:    "remote target with zero timeout",
+			content: strings.Replace(validRemoteAgentsYAML, "timeout: 12s", "timeout: 0s", 1),
+			want:    "timeout must be positive",
+		},
+		{
+			name:    "remote target without token budget",
+			content: strings.Replace(validRemoteAgentsYAML, "    tokenBudget: 8192\n", "", 1),
+			want:    "tokenBudget must be positive",
+		},
+		{
+			name:    "remote target with zero token budget",
+			content: strings.Replace(validRemoteAgentsYAML, "tokenBudget: 8192", "tokenBudget: 0", 1),
+			want:    "tokenBudget must be positive",
+		},
+		{
+			name:    "remote target without card identity",
+			content: strings.Split(validRemoteAgentsYAML, "    cardIdentity:")[0],
+			want:    "cardIdentity is required",
+		},
+		{
+			name:    "external cleartext URL",
+			content: strings.Replace(validRemoteAgentsYAML, "https://partner.example", "http://partner.example", 1),
+			want:    "must use HTTPS",
+		},
+		{
+			name:    "noncanonical trailing slash URL",
+			content: strings.Replace(validRemoteAgentsYAML, "https://partner.example/a2a", "https://partner.example/a2a/", 1),
+			want:    "must be canonical without a trailing slash",
+		},
+		{
+			name:    "identity with surrounding whitespace",
+			content: strings.Replace(validRemoteAgentsYAML, "name: Partner Helper", "name: ' Partner Helper'", 1),
+			want:    "without surrounding whitespace",
+		},
+		{
+			name:    "non-P256 key",
+			content: strings.Replace(validRemoteAgentsYAML, "crv: P-256", "crv: P-384", 1),
+			want:    "must be an EC P-256 key",
+		},
+		{
+			name:    "invalid P256 point",
+			content: strings.Replace(validRemoteAgentsYAML, "axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", 1),
+			want:    "coordinates are not on P-256",
+		},
+		{
+			name:    "unknown field",
+			content: strings.Replace(validRemoteAgentsYAML, "    timeout: 12s", "    requestTimeout: 12s", 1),
+			want:    "field requestTimeout not found",
+		},
 	}
 
 	for _, tt := range tests {
@@ -87,6 +203,108 @@ func TestLoadAgentsRejectsInvalidConfig(t *testing.T) {
 			_, err := LoadAgents(writeTemp(t, tt.content))
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("LoadAgents() error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestLoadAgentsRemoteTarget(t *testing.T) {
+	agents, err := LoadAgents(writeTemp(t, validRemoteAgentsYAML))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	ref, ok := agents.Lookup("agent-remote")
+	if !ok {
+		t.Fatal("agent-remote not found")
+	}
+	if !ref.Target().IsRemote() {
+		t.Error("Target().IsRemote() = false")
+	}
+	if got := ref.Target().String(); got != "https://partner.example/a2a" {
+		t.Errorf("Target().String() = %q", got)
+	}
+	if got := ref.Target().TokenBudget(); got != 8192 {
+		t.Errorf("Target().TokenBudget() = %d", got)
+	}
+	if got := ref.Timeout(); got != 12*time.Second {
+		t.Errorf("Timeout() = %s", got)
+	}
+	if ref.Name != "Partner Helper" {
+		t.Errorf("fallback Name = %q", ref.Name)
+	}
+	if ref.MappingID() == "" {
+		t.Error("MappingID() is empty")
+	}
+}
+
+func TestRemoteURLTransportPolicy(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{name: "public HTTPS", url: "https://partner.example/a2a", want: true},
+		{name: "IPv4 loopback", url: "http://127.0.0.1:8080/a2a", want: true},
+		{name: "IPv6 loopback", url: "http://[::1]:8080/a2a", want: true},
+		{name: "localhost subdomain", url: "http://fixture.localhost:8080/a2a", want: true},
+		{name: "single-label service", url: "http://a2a-stub:8080/a2a", want: true},
+		{name: "service namespace", url: "http://a2a-stub.default.svc:8080/a2a", want: true},
+		{name: "cluster-local service", url: "http://a2a-stub.default.svc.cluster.local:8080/a2a", want: true},
+		{name: "public cleartext", url: "http://partner.example/a2a"},
+		{name: "localhost lookalike", url: "http://localhost.evil.example/a2a"},
+		{name: "svc lookalike", url: "http://a2a-stub.default.svc.evil/a2a"},
+		{name: "missing authority", url: "https:///a2a"},
+		{name: "credentials", url: "https://user:secret@partner.example/a2a"},
+		{name: "query", url: "https://partner.example/a2a?tenant=other"},
+		{name: "non-HTTP scheme", url: "ftp://a2a-stub/a2a"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateRemoteURL(tt.url)
+			if (err == nil) != tt.want {
+				t.Fatalf("validateRemoteURL(%q) error = %v, want valid=%v", tt.url, err, tt.want)
+			}
+		})
+	}
+}
+
+func TestAgentRefSameTargetBindsTrustAndOperationalPolicy(t *testing.T) {
+	load := func(t *testing.T, content string) *AgentRef {
+		t.Helper()
+		agents, err := LoadAgents(writeTemp(t, content))
+		if err != nil {
+			t.Fatalf("LoadAgents: %v", err)
+		}
+		ref, ok := agents.Lookup("agent-remote")
+		if !ok {
+			t.Fatal("agent-remote not found")
+		}
+		return ref
+	}
+
+	baseline := load(t, validRemoteAgentsYAML)
+	sameTarget := load(t, strings.Replace(
+		validRemoteAgentsYAML,
+		"    url: https://partner.example/a2a/",
+		"    url: https://partner.example/a2a/\n    description: Updated profile fallback",
+		1,
+	))
+	changedSigner := load(t, strings.Replace(validRemoteAgentsYAML, "partner-2026", "partner-2027", 1))
+	changedBudget := load(t, strings.Replace(validRemoteAgentsYAML, "tokenBudget: 8192", "tokenBudget: 4096", 1))
+	changedTimeout := load(t, strings.Replace(validRemoteAgentsYAML, "timeout: 12s", "timeout: 13s", 1))
+
+	if !baseline.SameTarget(sameTarget) {
+		t.Error("identical target is not equal")
+	}
+	for name, changed := range map[string]*AgentRef{
+		"signer": changedSigner, "budget": changedBudget, "timeout": changedTimeout,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if baseline.SameTarget(changed) {
+				t.Errorf("SameTarget() = true after %s change", name)
+			}
+			if baseline.MappingID() == changed.MappingID() {
+				t.Errorf("MappingID() unchanged after %s change", name)
 			}
 		})
 	}

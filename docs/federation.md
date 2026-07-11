@@ -29,7 +29,11 @@ Synapse 1.155.0 calls the drop callback once before staging an inbound PDU and m
 
 ### 8.3 Cross-org delegation plane
 
-When org B's agents should be _invoked_ (not just conversed with): expose selected A2A endpoints through agentgateway on a dedicated Gateway listener with **JWT (OIDC federation between orgs) or mTLS** per A2A v1.0 security schemes, Signed AgentCard published at the well-known path, per-consumer token quotas. The bridge's agents map gains a `url:` variant (today it can only address kagent `namespace/name`) so remote signed agents become mentionable ghosts too.
+When org B's agents should be _invoked_ (not just conversed with), expose selected A2A endpoints through agentgateway on a dedicated Gateway listener with **JWT (OIDC federation between orgs) or mTLS** per A2A v1.0 security schemes, a Signed AgentCard published at the well-known path, and per-consumer quotas. Signed cards prove the declared agent identity; they do not replace transport authorization or authenticate the natural person behind a Matrix MXID.
+
+The outbound bridge half is implemented. An `agents.yaml` entry chooses exactly one local kagent `namespace`/`name` target or one remote target with an exact `url`, positive request `timeout`, scalar `tokenBudget`, and pinned `cardIdentity` (name, provider organization, protected key ID, and ES256 P-256 public JWK). The remote timeout is an additional whole-delegation ceiling combined with the bridge's global request/task timeouts. The token budget is partner-enforced extension metadata, not bridge-observed model-token accounting. The bridge fetches `<url>/.well-known/agent-card.json`, verifies the A2A v1.0 detached JWS over the JCS-canonical card under that public JWK, requires the configured identity, exact JSONRPC or HTTP+JSON interface, and token-budget extension, and revalidates it independently every five minutes. It never forwards the local agentgateway `A2A_API_KEY` to a remote URL. Unsigned, mismatched, or tampered cards quarantine the target before limiter admission or A2A dispatch with bounded `agent_card_untrusted` evidence. The provider-free kind fixture proves one valid remote mention round trip and the post-refresh tamper refusal.
+
+No production remote is configured by default. The complementary inbound listener, partner credential issuance/rotation, and real cross-organization transport-authentication proof remain separate deployment work; the local signed fixture deliberately makes no provider or external-network connection.
 
 ### 8.4 E2EE revisit (supersedes ADR 0008's scope)
 

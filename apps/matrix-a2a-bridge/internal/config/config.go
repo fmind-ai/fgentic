@@ -30,6 +30,10 @@ type Config struct {
 	RegistrationPath     string        `env:"REGISTRATION_PATH" envDefault:"/etc/matrix-a2a-bridge/registration.yaml"`
 	AgentsPath           string        `env:"AGENTS_PATH" envDefault:"/etc/matrix-a2a-bridge/agents/agents.yaml"`
 	AgentsReloadInterval time.Duration `env:"AGENTS_RELOAD_INTERVAL" envDefault:"5s"`
+	// AgentCardRefreshInterval controls independent revalidation of remote, signed AgentCards.
+	// It is deliberately slower than projected-config polling: remote trust refreshes perform
+	// network I/O and use HTTP validators, while agents.yaml reloads are local file reads.
+	AgentCardRefreshInterval time.Duration `env:"AGENT_CARD_REFRESH_INTERVAL" envDefault:"5m"`
 
 	// A2ABaseURL is the base the bridge dials for A2A. By default it routes THROUGH agentgateway
 	// (unified LLM/MCP/A2A telemetry + the model-credential chokepoint on the agent's own egress).
@@ -112,6 +116,9 @@ func (c Config) validate() error {
 	}
 	if c.AgentsReloadInterval <= 0 {
 		return fmt.Errorf("AGENTS_RELOAD_INTERVAL must be positive")
+	}
+	if c.AgentCardRefreshInterval <= 0 {
+		return fmt.Errorf("AGENT_CARD_REFRESH_INTERVAL must be positive")
 	}
 	if c.RequestTimeout <= 0 {
 		return fmt.Errorf("REQUEST_TIMEOUT must be positive")

@@ -24,6 +24,19 @@ data:
       agent-integration:
         namespace: kagent
         name: integration-agent
+      agent-remote:
+        url: http://a2a-stub:8080/api/a2a/remote-agent
+        timeout: 5s
+        tokenBudget: 4096
+        cardIdentity:
+          name: Fgentic signed remote integration stub
+          organization: Fgentic integration
+          keyID: integration-p256-v1
+          publicKey:
+            kty: EC
+            crv: P-256
+            x: axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY
+            y: T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU
 ---
 apiVersion: v1
 kind: ConfigMap

@@ -49,13 +49,17 @@ type stubRequestRecord struct {
 }
 
 type stubStats struct {
-	Active         int                 `json:"active"`
-	DelayMillis    int64               `json:"delay_millis"`
-	MaxActive      int                 `json:"max_active"`
-	TotalStarted   int                 `json:"total_started"`
-	TotalCompleted int                 `json:"total_completed"`
-	Starts         []stubRequestRecord `json:"starts"`
-	Completions    []stubRequestRecord `json:"completions"`
+	Active             int                 `json:"active"`
+	CardTampered       bool                `json:"card_tampered"`
+	DelayMillis        int64               `json:"delay_millis"`
+	MaxActive          int                 `json:"max_active"`
+	RemoteCardRequests int                 `json:"remote_card_requests"`
+	RemoteRequests     int                 `json:"remote_requests"`
+	TokenBudgetValid   bool                `json:"token_budget_valid"`
+	TotalStarted       int                 `json:"total_started"`
+	TotalCompleted     int                 `json:"total_completed"`
+	Starts             []stubRequestRecord `json:"starts"`
+	Completions        []stubRequestRecord `json:"completions"`
 }
 
 type bridgeMetrics struct {

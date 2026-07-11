@@ -8,6 +8,7 @@ go 1.25.0
 require (
 	github.com/a2aproject/a2a-go/v2 v2.3.1
 	github.com/caarlos0/env/v11 v11.3.1
+	github.com/gowebpki/jcs v1.0.1
 	gopkg.in/yaml.v3 v3.0.1
 	maunium.net/go/mautrix v0.28.1
 )

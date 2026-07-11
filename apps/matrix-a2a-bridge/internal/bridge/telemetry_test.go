@@ -20,17 +20,21 @@ type tracingA2AClient struct {
 	callContext trace.SpanContext
 }
 
-func (c *tracingA2AClient) Call(ctx context.Context, _, _, _ string) (a2aclient.Result, error) {
+func (c *tracingA2AClient) Call(ctx context.Context, _ a2aclient.Target, _, _ string) (a2aclient.Result, error) {
 	c.callContext = trace.SpanContextFromContext(ctx)
 	return a2aclient.Result{Text: "traced reply", Terminal: true}, nil
 }
 
-func (*tracingA2AClient) PollTask(context.Context, string, string) (a2aclient.Result, error) {
+func (*tracingA2AClient) PollTask(context.Context, a2aclient.Target, string) (a2aclient.Result, error) {
 	return a2aclient.Result{}, fmt.Errorf("unexpected task poll")
 }
 
-func (*tracingA2AClient) ResolveAgentCard(context.Context, string) (*a2a.AgentCard, error) {
+func (*tracingA2AClient) ResolveAgentCard(context.Context, a2aclient.Target) (*a2a.AgentCard, error) {
 	return nil, fmt.Errorf("unexpected AgentCard resolution")
+}
+
+func (*tracingA2AClient) IsReady(target a2aclient.Target) bool {
+	return !target.IsRemote()
 }
 
 func TestDispatchEmitsContentFreeDelegationSpan(t *testing.T) {

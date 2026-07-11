@@ -55,9 +55,15 @@ func (b *Bridge) agentDirectoryText(sender id.UserID) string {
 		if !entry.Ref.AllowsSender(identity, b.cfg.ServerName) {
 			continue
 		}
+		if entry.Ref.Target().IsRemote() && (b.client == nil || !b.client.IsReady(entry.Ref.Target())) {
+			continue
+		}
 		profile, ok := b.profiles.get(entry.Ghost)
 		if !ok {
 			profile = fallbackProfile(entry.Ref)
+		}
+		if profile.Status == profileStatusRejected || profile.Status == profileStatusUnavailable {
+			continue
 		}
 		description := profile.Description
 		if description == "" {
@@ -90,6 +96,10 @@ func profileStatusText(status profileStatus) string {
 		return "AgentCard live"
 	case profileStatusCached:
 		return "AgentCard cached (refresh failed)"
+	case profileStatusRejected:
+		return "AgentCard rejected"
+	case profileStatusUnavailable:
+		return "AgentCard unavailable"
 	default:
 		return "AgentCard unavailable (configured fallback)"
 	}

@@ -7,21 +7,21 @@ Human in a Matrix room:  "@agent-platform-helper why is the bridge pod not ready
    │  Synapse pushes the event to the bridge (it owns the @agent-* ghost namespace)
    ▼
    bridge:  detect @mention → map @agent-platform-helper → kagent/platform-helper
-            A2A message/send (non-streaming) to <A2A_BASE_URL>/api/a2a/kagent/platform-helper
-            (routed through agentgateway → kagent; the agent's LLM egress also goes through agentgateway)
+            or map a remote ghost → an exact URL with a pinned signed AgentCard identity
+            A2A message/send (non-streaming) to the validated endpoint
    ◀  reply text
    ▼  post as @agent-platform-helper, as a reply to the original message
 Human sees the answer in Element.
 ```
 
-At startup, and after every valid `agents.yaml` change, the bridge also fetches each mapped AgentCard through the same authenticated agentgateway path. The card's human-readable name becomes the ghost's Matrix display name; its description and skills back the local `!agents` directory. If a refresh fails, the bridge keeps the last-known card profile and reports its cached status instead of replacing it with stale or empty data.
+At startup, and after every valid `agents.yaml` change, the bridge also fetches each mapped AgentCard. Local kagent cards use the authenticated agentgateway path. Remote cards are fetched directly from `<url>/.well-known/agent-card.json` and are trusted only when their A2A v1.0 ES256 signature and pinned identity match. The card's human-readable name becomes the ghost's Matrix display name; its description and skills back the local `!agents` directory. Local profile refresh failures retain the last-known profile. A remote card that becomes unsigned, mismatched, or tampered disables invocation until a later refresh validates it again.
 
 ## How it works
 
 1. The bridge registers an **exclusive appservice namespace** `@agent-.*:fgentic.fmind.ai` plus the `@a2a-bridge` bot. Every kagent agent thus appears as a first-class room member.
 1. At startup it resolves every mapped AgentCard and synchronizes the ghost's standard Matrix display name plus an optional configured `mxc://` avatar. Matrix v1.16 homeservers also receive a namespaced profile field containing the description and skills. The projected agent ConfigMap is polled and valid routing, policy, and profile changes reload without a pod restart; malformed updates leave the last-known configuration active.
 1. On each `m.room.message`, it reads the typed `m.mentions` field (MSC3952) — with a plaintext-body fallback — to find which agent(s) were addressed.
-1. It maps the ghost (`agent-platform-helper`) to a kagent agent `(namespace, name)` via `agents.yaml` — the **authorization allowlist**: only mapped ghosts are invokable, only allowed senders/homeservers may invoke them (federated look-alikes are rejected), and per-sender/per-room token buckets guard LLM spend. Configured `bridgedOrigins` classify only anchored full-MXID namespaces; Slack, Telegram, and future bridged senders are denied until the target agent's `allowedSenders` explicitly matches them. Terminal audits expose only bounded `sender_origin_kind`/`sender_origin_network` attribution in addition to the existing Matrix identifiers.
+1. It maps the ghost (`agent-platform-helper`) to either a local kagent `(namespace, name)` or a pinned remote A2A `url` via `agents.yaml` — the **authorization allowlist**: only mapped ghosts are invokable, only allowed senders/homeservers may invoke them (federated look-alikes are rejected), and per-sender/per-room token buckets guard LLM spend. Remote targets add a request timeout, partner-enforced token-budget metadata, and expected signed-card identity. Configured `bridgedOrigins` classify only anchored full-MXID namespaces; Slack, Telegram, and future bridged senders are denied until the target agent's `allowedSenders` explicitly matches them. Terminal audits expose only bounded `sender_origin_kind`/`sender_origin_network` attribution in addition to the existing Matrix identifiers.
 1. An in-room `!agents` command replies locally as `@a2a-bridge` with only the mappings the sender may invoke: full ghost MXID, AgentCard description, and live/cached/fallback status. It uses the same sender and room admission controls as delegation but never calls A2A or an LLM.
 1. It enqueues the delegation (per-room FIFO, bounded global concurrency — the appservice transaction push is never blocked) and calls the agent over A2A `message/send`, threading a per-`(room, agent)` `contextId` for multi-turn conversations. Long-running tasks are polled via `tasks/get`, with the placeholder reply edited (`m.replace`) into the final answer.
 1. It extracts the reply text from the returned `Task | Message` and posts it back **as the ghost user** (`m.notice`, so other bots ignore it), as a reply to the original message.
@@ -57,6 +57,7 @@ The model-evaluation task port-forwards the local agentgateway, runs 10 fixed A2
 | `REGISTRATION_PATH`                            | `/etc/matrix-a2a-bridge/registration.yaml`                             | Appservice registration (as_token/hs_token).                                                        |
 | `AGENTS_PATH`                                  | `/etc/matrix-a2a-bridge/agents/agents.yaml`                            | Bridged-origin namespaces, ghost → agent routing, profile fallback, and allowlist map.              |
 | `AGENTS_RELOAD_INTERVAL`                       | `5s`                                                                   | Poll interval for atomic `agents.yaml` reloads.                                                     |
+| `AGENT_CARD_REFRESH_INTERVAL`                  | `5m`                                                                   | Independent revalidation interval for signed remote AgentCards.                                     |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`                  | _(empty)_                                                              | Standard OTLP/HTTP endpoint; tracing is disabled when unset.                                        |
 | `DATABASE_URL`                                 | _(empty)_                                                              | Postgres URL for persistent state (empty = in-memory, dev only).                                    |
 | `REQUEST_TIMEOUT`                              | `60s`                                                                  | Transport deadline on a single A2A message/send.                                                    |
@@ -74,6 +75,33 @@ The model-evaluation task port-forwards the local agentgateway, runs 10 fixed A2
 Queue overflow emits a content-free `queue_full` audit and metric but no Matrix response or A2A request. This deliberate silent rejection prevents overload handling from amplifying an event flood; operators should alert on the bounded outcome.
 
 On termination, the bridge-owned appservice server stops new intake and force-closes any transaction connection that exceeds its five-second grace, preventing a late successful acknowledgement. The synchronous Matrix event processor then drains before the delegation timer starts. If its five-second grace expires, delegation contexts are canceled to unblock handlers, but the process still waits for the same barrier instead of discarding acknowledged events. The chart allows 45 seconds total; after the 25-second delegation grace, queued targets receive a terminal `shutdown` audit and running calls observe context cancellation.
+
+## Remote A2A targets
+
+Remote targets are explicit and fail closed; the default chart enables none. Configure exactly one target form per ghost:
+
+```yaml
+agents:
+  agent-partner-reviewer:
+    url: https://agents.partner.example/a2a/reviewer
+    timeout: 30s
+    tokenBudget: 4096
+    cardIdentity:
+      name: Partner reviewer
+      organization: Partner Example
+      keyID: partner-reviewer-2026-07
+      publicKey:
+        kty: EC
+        crv: P-256
+        x: <base64url-x-coordinate>
+        y: <base64url-y-coordinate>
+    allowedSenders:
+      - "@alice:fgentic.fmind.ai"
+```
+
+`url` is the exact, canonical A2A JSONRPC or HTTP+JSON endpoint, without a trailing slash; it is not a discovery root. Its public AgentCard must be available at `<url>/.well-known/agent-card.json`, advertise that exact binding with no unpinned tenant, include `https://fgentic.fmind.ai/a2a/extensions/token-budget/v1`, require no other unsupported extension, and carry an A2A v1.0 detached JWS over the JCS-canonical card. The bridge accepts only `ES256`: the signature must verify under the configured P-256 public JWK, while the protected `kid`, card name, provider organization, and endpoint URL must match their pins. `timeout` is an additional whole-delegation ceiling combined with the global `REQUEST_TIMEOUT` and `TASK_TIMEOUT`. The positive scalar `tokenBudget` is sent as `{maxTokens: …}` extension metadata and activated with `A2A-Extensions`; it is a partner-enforced request contract, not bridge-observed or hard local model-token accounting.
+
+The bridge normally verifies the card before the delegation worker registers the ghost or admits a limiter token, revalidates it every `AGENT_CARD_REFRESH_INTERVAL`, and checks the verified generation again at the actual HTTP boundary. The independent Matrix membership-invite handler may still register a mapped ghost without invoking it. An unsigned, invalid, or identity-mismatched card before initial dispatch produces a bounded `agent_card_untrusted` audit with `a2a_attempted=false`; no invocation reaches the endpoint. If trust changes after an earlier request created a task, the bridge stops polling that task. The current remote transport deliberately sends neither the local `A2A_API_KEY` nor a separate mTLS/OIDC credential; credentialed partner listeners are follow-up work. A Signed AgentCard authenticates the declared agent identity, not the Matrix sender or transport by itself.
 
 ## Discovering agents in a room
 

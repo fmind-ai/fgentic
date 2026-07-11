@@ -104,7 +104,9 @@ func run(cfg config.Config, log *slog.Logger) error {
 
 	client := a2aclient.New(cfg.A2ABaseURL, cfg.A2AAPIKey, log)
 	br := bridge.New(cfg, as, agents, client, store, log)
-	br.Start(runtimeCtx)
+	if err := br.Start(runtimeCtx); err != nil {
+		return fmt.Errorf("start bridge: %w", err)
+	}
 
 	ep := newEventProcessor(as, br.HandleMessage, br.HandleMembership)
 	ep.Start(runtimeCtx)

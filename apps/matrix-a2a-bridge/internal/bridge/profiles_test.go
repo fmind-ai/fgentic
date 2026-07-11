@@ -74,26 +74,40 @@ type cardSequenceClient struct {
 	mu        sync.Mutex
 	responses []cardResponse
 	paths     []string
+	ready     bool
 }
 
-func (c *cardSequenceClient) ResolveAgentCard(_ context.Context, agentPath string) (*a2a.AgentCard, error) {
+func (c *cardSequenceClient) ResolveAgentCard(_ context.Context, target a2aclient.Target) (*a2a.AgentCard, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.paths = append(c.paths, agentPath)
+	c.paths = append(c.paths, target.String())
 	if len(c.responses) == 0 {
 		return nil, errors.New("unexpected agent card resolution")
 	}
 	response := c.responses[0]
 	c.responses = c.responses[1:]
+	if target.IsRemote() {
+		if response.err == nil {
+			c.ready = true
+		} else if errors.Is(response.err, a2aclient.ErrRemoteTargetUntrusted) {
+			c.ready = false
+		}
+	}
 	return response.card, response.err
 }
 
-func (*cardSequenceClient) Call(context.Context, string, string, string) (a2aclient.Result, error) {
+func (*cardSequenceClient) Call(context.Context, a2aclient.Target, string, string) (a2aclient.Result, error) {
 	return a2aclient.Result{}, errors.New("unexpected A2A delegation")
 }
 
-func (*cardSequenceClient) PollTask(context.Context, string, string) (a2aclient.Result, error) {
+func (*cardSequenceClient) PollTask(context.Context, a2aclient.Target, string) (a2aclient.Result, error) {
 	return a2aclient.Result{}, errors.New("unexpected A2A task poll")
+}
+
+func (c *cardSequenceClient) IsReady(target a2aclient.Target) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return !target.IsRemote() || c.ready
 }
 
 type profileWrite struct {
@@ -147,7 +161,8 @@ func TestReloadAgentsRetainsLastKnownProfileAndConfig(t *testing.T) {
 	writer := &recordingProfileWriter{}
 	cfg := config.Config{
 		ServerName: ownServer, GhostPrefix: "agent-", Concurrency: 1,
-		AgentsPath: agentsPath, AgentsReloadInterval: time.Hour, RequestTimeout: time.Second,
+		AgentsPath: agentsPath, AgentsReloadInterval: time.Hour,
+		AgentCardRefreshInterval: time.Hour, RequestTimeout: time.Second,
 		SenderRatePerMinute: 60, SenderRateBurst: 10, RoomRatePerMinute: 60, RoomRateBurst: 10,
 		RateLimitBucketCapacity: testRateLimitBucketCapacity,
 	}
@@ -239,7 +254,8 @@ func TestStartWatchesAgentConfigAndRefreshesProfiles(t *testing.T) {
 	writer := &recordingProfileWriter{}
 	cfg := config.Config{
 		ServerName: ownServer, GhostPrefix: "agent-", Concurrency: 1,
-		AgentsPath: agentsPath, AgentsReloadInterval: 5 * time.Millisecond, RequestTimeout: time.Second,
+		AgentsPath: agentsPath, AgentsReloadInterval: 5 * time.Millisecond,
+		AgentCardRefreshInterval: time.Hour, RequestTimeout: time.Second,
 		SenderRatePerMinute: 60, SenderRateBurst: 10, RoomRatePerMinute: 60, RoomRateBurst: 10,
 		RateLimitBucketCapacity: testRateLimitBucketCapacity,
 	}
@@ -248,7 +264,9 @@ func TestStartWatchesAgentConfigAndRefreshesProfiles(t *testing.T) {
 	b.profileWriter = writer
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	b.Start(ctx)
+	if err := b.Start(ctx); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
 
 	writeAgentsFile(t, agentsPath, `agents:
   agent-k8s:
@@ -286,6 +304,132 @@ func TestStartWatchesAgentConfigAndRefreshesProfiles(t *testing.T) {
 	if writes := writer.snapshot(); len(writes) != 2 || writes[1].profile.Description != "Reloaded live purpose" {
 		t.Fatalf("profile writes = %+v", writes)
 	}
+}
+
+func TestRemoteCardTrustFailureQuarantinesAndRemovesDirectoryEntry(t *testing.T) {
+	agents, err := LoadAgents(writeTemp(t, validRemoteAgentsYAML))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	client := &cardSequenceClient{responses: []cardResponse{
+		{card: &a2a.AgentCard{Name: "Verified Partner", Description: "Signed purpose"}},
+		{err: fmt.Errorf("tampered fixture: %w", a2aclient.ErrRemoteTargetUntrusted)},
+		{err: errors.New("network unavailable after quarantine")},
+	}}
+	cfg := config.Config{
+		ServerName: ownServer, GhostPrefix: "agent-", Concurrency: 1,
+		RequestTimeout: time.Second, AgentsReloadInterval: time.Hour,
+		AgentCardRefreshInterval: time.Hour,
+		SenderRatePerMinute:      60, SenderRateBurst: 10, RoomRatePerMinute: 60, RoomRateBurst: 10,
+		RateLimitBucketCapacity: testRateLimitBucketCapacity,
+	}
+	as := &appservice.AppService{Registration: &appservice.Registration{SenderLocalpart: "a2a-bridge"}}
+	b := New(cfg, as, agents, client, state.NewMemory(), slog.Default())
+	b.profileWriter = nil
+
+	if err := b.syncProfilesChecked(t.Context(), agents.Entries(), true); err != nil {
+		t.Fatalf("initial remote sync: %v", err)
+	}
+	profile, _ := b.profiles.get("agent-remote")
+	if profile.Status != profileStatusLive || profile.Description != "Signed purpose" {
+		t.Fatalf("verified profile = %+v", profile)
+	}
+	if err := b.syncProfilesChecked(t.Context(), agents.Entries(), true); !errors.Is(err, a2aclient.ErrRemoteTargetUntrusted) {
+		t.Fatalf("tampered remote sync error = %v", err)
+	}
+	profile, _ = b.profiles.get("agent-remote")
+	if profile.Status != profileStatusRejected || profile.Description == "Signed purpose" || client.IsReady(profileTarget(t, agents, "agent-remote")) {
+		t.Fatalf("quarantined profile = %+v, ready=%v", profile, client.ready)
+	}
+	if directory := b.agentDirectoryText(id.NewUserID("alice", ownServer)); strings.Contains(directory, "@agent-remote:") {
+		t.Fatalf("directory advertises rejected target: %s", directory)
+	}
+	if err := b.syncProfilesChecked(t.Context(), agents.Entries(), true); err == nil {
+		t.Fatal("post-quarantine network failure unexpectedly succeeded")
+	}
+	profile, _ = b.profiles.get("agent-remote")
+	if profile.Status != profileStatusUnavailable {
+		t.Fatalf("post-quarantine profile status = %q, want unavailable", profile.Status)
+	}
+	if directory := b.agentDirectoryText(id.NewUserID("alice", ownServer)); strings.Contains(directory, "@agent-remote:") {
+		t.Fatalf("directory advertises unavailable target: %s", directory)
+	}
+}
+
+func TestStartFailsClosedForUnverifiedRemoteTarget(t *testing.T) {
+	agents, err := LoadAgents(writeTemp(t, validRemoteAgentsYAML))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	client := &cardSequenceClient{responses: []cardResponse{{
+		err: fmt.Errorf("unsigned fixture: %w", a2aclient.ErrRemoteTargetUntrusted),
+	}}}
+	cfg := config.Config{
+		ServerName: ownServer, GhostPrefix: "agent-", Concurrency: 1,
+		RequestTimeout: time.Second, AgentsReloadInterval: time.Hour,
+		AgentCardRefreshInterval: time.Hour,
+		SenderRatePerMinute:      60, SenderRateBurst: 10, RoomRatePerMinute: 60, RoomRateBurst: 10,
+		RateLimitBucketCapacity: testRateLimitBucketCapacity,
+	}
+	as := &appservice.AppService{Registration: &appservice.Registration{SenderLocalpart: "a2a-bridge"}}
+	b := New(cfg, as, agents, client, state.NewMemory(), slog.Default())
+	b.profileWriter = nil
+
+	if err := b.Start(t.Context()); !errors.Is(err, a2aclient.ErrRemoteTargetUntrusted) {
+		t.Fatalf("Start() error = %v, want remote trust failure", err)
+	}
+	profile, _ := b.profiles.get("agent-remote")
+	if profile.Status != profileStatusRejected {
+		t.Fatalf("startup profile status = %q, want rejected", profile.Status)
+	}
+	b.Stop()
+}
+
+func TestReloadRejectsRemotePreflightErrorEvenWithOldReadyCache(t *testing.T) {
+	agentsPath := writeTemp(t, `agents:
+  agent-local:
+    namespace: kagent
+    name: local-agent
+`)
+	agents, err := LoadAgents(agentsPath)
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	client := &cardSequenceClient{
+		ready:     true,
+		responses: []cardResponse{{err: errors.New("remote card network failure")}},
+	}
+	cfg := config.Config{
+		ServerName: ownServer, GhostPrefix: "agent-", Concurrency: 1,
+		AgentsPath: agentsPath, RequestTimeout: time.Second,
+		AgentsReloadInterval: time.Hour, AgentCardRefreshInterval: time.Hour,
+		SenderRatePerMinute: 60, SenderRateBurst: 10, RoomRatePerMinute: 60, RoomRateBurst: 10,
+		RateLimitBucketCapacity: testRateLimitBucketCapacity,
+	}
+	as := &appservice.AppService{Registration: &appservice.Registration{SenderLocalpart: "a2a-bridge"}}
+	b := New(cfg, as, agents, client, state.NewMemory(), slog.Default())
+	b.profileWriter = nil
+	writeAgentsFile(t, agentsPath, validRemoteAgentsYAML)
+
+	reloaded, err := b.reloadAgents(t.Context())
+	if err == nil || reloaded {
+		t.Fatalf("reloadAgents() = (%v, %v), want (false, error)", reloaded, err)
+	}
+	if _, ok := b.agents.Lookup("agent-local"); !ok {
+		t.Fatal("failed remote preflight replaced the last-known local mapping")
+	}
+	if _, ok := b.agents.Lookup("agent-remote"); ok {
+		t.Fatal("failed remote candidate became routable")
+	}
+}
+
+func profileTarget(t *testing.T, agents *AgentMap, ghost string) a2aclient.Target {
+	t.Helper()
+	ref, ok := agents.Lookup(ghost)
+	if !ok {
+		t.Fatalf("agent %s missing", ghost)
+	}
+	return ref.Target()
 }
 
 func writeAgentsFile(t *testing.T, path, content string) {

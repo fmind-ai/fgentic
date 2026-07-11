@@ -50,6 +50,7 @@ spec:
       tag: sha-6bc5efefae9520529268da4ca7399e3abefd53d2@sha256:a9452fa9f2ca88aed89864500d12065dbacaa25b932ff3e83dbd248a10f8f948 # CI overwrites with sha-<git>@sha256:<digest>
     config:
       serverName: ${server_name}
+      agentCardRefreshInterval: 5m
       otelEndpoint: http://otel-collector.monitoring.svc.cluster.local:4318
     bridgedOrigins: {}
     agents:

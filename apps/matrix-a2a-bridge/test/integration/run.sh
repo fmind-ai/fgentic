@@ -84,4 +84,31 @@ kubectl apply --filename "${SCRIPT_DIR}/${DRIVER_MANIFEST}"
 kubectl --namespace "${NAMESPACE}" wait --for=condition=complete "job/${DRIVER_JOB_NAME}" --timeout="${DRIVER_WAIT_TIMEOUT}"
 kubectl --namespace "${NAMESPACE}" logs "job/${DRIVER_JOB_NAME}"
 
+if [[ "${SCENARIO}" == "integration" ]]; then
+  echo "==> Verifying fail-closed remote AgentCard audit"
+  readonly untrusted_audits="$(
+    kubectl --namespace "${NAMESPACE}" logs deployment/bridge --all-containers | jq -Rsc '
+    [
+      split("\n")[]
+      | fromjson?
+      | select(
+          .log_stream == "audit"
+          and .msg == "delegation audit"
+          and .ghost == "agent-remote"
+          and .outcome == "denied"
+          and .terminal_stage == "agent_card"
+          and .terminal_reason == "agent_card_untrusted"
+          and .rate_limit_verdict == "not_checked"
+          and .a2a_attempted == false
+        )
+    ]
+    | length
+    '
+  )"
+  if [[ "${untrusted_audits}" != "1" ]]; then
+    echo "Error: expected one content-free agent_card_untrusted audit, got ${untrusted_audits}" >&2
+    exit 1
+  fi
+fi
+
 echo "==> Bridge ${SCENARIO} scenario passed in $((SECONDS - STARTED_AT))s"
