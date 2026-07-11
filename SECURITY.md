@@ -1,0 +1,21 @@
+# Security Policy
+
+## Reporting a vulnerability
+
+**Do not report security vulnerabilities through public GitHub issues, discussions, or pull requests.**
+
+Report privately via [GitHub private vulnerability reporting](https://github.com/fmind-ai/fgentic/security/advisories/new). If that is unavailable, email the maintainer listed in [MAINTAINERS.md](MAINTAINERS.md) via their GitHub profile.
+
+You can expect an acknowledgment within 7 days and a remediation plan or triage outcome within 30 days. Coordinated disclosure is appreciated; we will credit reporters unless they prefer otherwise.
+
+## Scope
+
+1. The `matrix-a2a-bridge` Go application and its Helm chart.
+1. The platform manifests in `infra/` and `clusters/` (NetworkPolicies, gateway routes, secrets handling) — misconfigurations that break a documented security control are in scope.
+1. The CI/CD supply chain (image signing, digest pinning).
+
+Vulnerabilities in upstream components (Synapse, MAS, Element, kagent, agentgateway, CloudNativePG, Traefik, …) should go to their respective projects; we track and apply upstream fixes (see, e.g., issue [#39](https://github.com/fmind-ai/fgentic/issues/39)).
+
+## Security model
+
+The threat model and trust boundaries are documented in [SPEC.md §7](SPEC.md) (and, as it lands, `docs/security/`). Known, deliberately-accepted limits — prompt injection, unauthenticated kagent behind NetworkPolicies, unencrypted agent rooms, org-level federation identity — are stated there rather than hidden; reports that materially change those assessments are very welcome.

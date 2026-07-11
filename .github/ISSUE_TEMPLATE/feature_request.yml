@@ -1,0 +1,33 @@
+name: Feature request
+description: Propose a capability or improvement
+labels: ["kind/feature"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What can't you do today? Who needs it (operator, end user, agent developer, partner org)?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What you'd like to happen. If it touches a settled decision (SPEC D1–D16, ADRs), say which and why it should be revisited.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Including "do nothing" — why isn't the current behavior enough?
+  - type: dropdown
+    id: fit
+    attributes:
+      label: Principles check
+      description: Does this stay within open standards, sovereignty (no proprietary SaaS in the critical path), and bounded LLM cost?
+      options:
+        - "Yes"
+        - "Not sure — flagged in the proposal"
+    validations:
+      required: true
