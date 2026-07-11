@@ -1,0 +1,12 @@
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: tracing-uncovered
+  namespace: caller
+spec:
+  frontend:
+    tracing:
+      backendRef:
+        name: collector
+        namespace: monitoring
+        port: 4317

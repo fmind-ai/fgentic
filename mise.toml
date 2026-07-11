@@ -1,6 +1,6 @@
 # Root task vocabulary for the Fgentic platform (infra + orchestration).
 # The Go bridge under apps/matrix-a2a-bridge is self-contained and carries its OWN mise.toml;
-# this root delegates the app-scoped tasks to it (format:app, check:app, test, build) so
+# this root delegates the app-scoped tasks to it (format:app, check:app, test:app, build) so
 # `mise run <task>` at the repo root drives the whole monorepo. mise is the single source of
 # truth for WHAT each check does; lefthook (git hooks) and GitHub Actions only decide WHEN.
 
@@ -9,18 +9,26 @@ run_auto_install = false # fail fast in hooks/CI on a missing tool (never silent
 
 # Pinned infra toolchain (reproducible local + CI). The app pins its own Go toolchain separately.
 [tools]
+age = "latest"
 dprint = "latest"
 flux2 = "latest"
 gitleaks = "latest"
+git-cliff = "latest"
 lefthook = "latest"
+promtool = "latest"
 actionlint = "latest"
 kubeconform = "latest"
 trivy = "latest"
 terraform = "latest"
 helm = "latest"
 jq = "latest"
+xh = "0.26.1"
+"github:helm-unittest/helm-unittest" = { version = "1.1.1", rename_exe = "helm-unittest" }
+kind = "0.32.0"
+k3d = "5.9.0"
+kubectl = "1.35.0"
+python = "3.14.6"
 sops = "latest"
-xh = "latest"
 yq = "latest"
 
 # --- Aggregate vocabulary (install / format / check / test / build / watch) ---
@@ -59,8 +67,22 @@ depends = [
   "check:format",
   "check:terraform",
   "check:manifests",
+  "check:charts",
+  "check:overlays",
   "check:scan",
   "check:leaks",
+  "check:prometheus",
+  "check:dashboards",
+  "check:reference-grants",
+  "check:a2a-authorization",
+  "check:mcp-governance",
+  "check:audit-attribution",
+  "check:secret-rotation",
+  "check:supply-chain",
+  "check:agent-zoo",
+  "check:demo",
+  "check:smoke-workflow",
+  "check:mautrix-bridges",
   "check:workflows",
   "check:app",
 ]
@@ -87,15 +109,101 @@ alias = "cm"
 description = "Schema-validate the Helm chart render + raw manifests (kubeconform)"
 run = "bash scripts/kubeconform.sh"
 
+[tasks."check:charts"]
+description = "Unit-test bridge Helm chart conditionals and security-critical values"
+run = "helm-unittest apps/matrix-a2a-bridge/chart"
+
+[tasks."check:overlays"]
+description = "Flux-build and schema-validate the local and GCP cluster overlays"
+run = "bash scripts/check-flux-overlays.sh"
+
 [tasks."check:scan"]
 alias = "cn"
-description = "Scan IaC/manifests/Dockerfiles for misconfigurations (trivy config)"
-run = "trivy config --config trivy.yaml ." # pin the repo config (a user-level trivy.yaml would otherwise win)
+description = "Fail on HIGH/CRITICAL IaC, manifest, and Dockerfile misconfigurations"
+run = """
+# Non-runnable placeholders let Trivy render the generic required-value bridge chart instead of
+# skipping it. Exact deployable values remain covered by check/test:mautrix-bridges.
+trivy config --config trivy.yaml --exit-code 1 \
+  --tf-vars infra/terraform/terraform.tfvars.example \
+  --helm-set-string image.repository=scan.invalid/mautrix \
+  --helm-set-string image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 \
+  --helm-set-string secret.name=scan-fixture \
+  --helm-set-string config.content=scan-fixture \
+  .
+"""
 
 [tasks."check:leaks"]
 alias = "cs"
 description = "Audit git history for leaked secrets (gitleaks); --staged auto-appends for pre-commit"
 run = "gitleaks git --log-opts=\"--max-count=100\" --verbose"
+
+[tasks."check:prometheus"]
+description = "Validate and unit-test Prometheus recording and alert rules"
+run = "bash scripts/test-prometheus-rules.sh"
+
+[tasks."check:dashboards"]
+description = "Validate declarative Grafana dashboard provisioning, panels, and PromQL contracts"
+run = "bash scripts/test-grafana-dashboards.sh"
+
+[tasks."check:reference-grants"]
+description = "Audit cross-namespace Gateway API backends and their ReferenceGrants"
+run = "bash scripts/check-reference-grants.sh && bash scripts/test-reference-grants.sh"
+
+[tasks."check:a2a-authorization"]
+description = "Validate the fail-closed A2A API-key and CEL authorization contract"
+run = "bash scripts/test-a2a-authorization.sh"
+
+[tasks."check:mcp-governance"]
+description = "Validate the fail-closed per-agent MCP route, tool allowlist, and audit contract"
+run = "bash scripts/test-mcp-governance.sh"
+
+[tasks."check:audit-attribution"]
+description = "Test the content-free attribution evidence collector with offline fixtures"
+run = "bash scripts/test-audit-attribution.sh"
+
+[tasks."check:secret-rotation"]
+description = "Test selective SOPS rotation and cross-consumer invariants with offline fixtures"
+run = "bash scripts/test-rotate-secrets.sh"
+
+[tasks."check:supply-chain"]
+description = "Validate signed OCI bootstrap/active invariants and CD attestation controls"
+run = "bash scripts/check-supply-chain.sh"
+
+[tasks."check:agent-zoo"]
+description = "Render and test the sample agents, tool RBAC, bridge mappings, and welcome copy"
+run = "bash scripts/test-agent-zoo.sh"
+
+[tasks."check:demo"]
+description = "Validate the credential-free demo overlay, lifecycle script, and embedded model"
+run = "bash scripts/test-demo.sh"
+
+[tasks."check:smoke-workflow"]
+description = "Validate nightly demo, policy conformance, diagnostics, and issue tracking"
+run = "bash scripts/test-smoke-workflow.sh"
+
+[tasks."check:mautrix-bridges"]
+description = "Render and validate optional mautrix runtimes, privacy defaults, secrets, and composable Flux layers"
+run = "bash scripts/test-mautrix-bridges.sh"
+
+[tasks."test:network-policies"]
+description = "Probe allow and deny paths on the active reconciled cluster"
+run = "bash scripts/test-network-policies.sh"
+
+[tasks."test:network-policies:kind"]
+description = "Run policy conformance and its deletion guard in an isolated kind cluster"
+run = "bash scripts/test-network-policies-kind.sh"
+
+[tasks."test:a2a-authorization"]
+description = "Exercise unauthorized and authorized requests against the pinned agentgateway runtime"
+run = "bash scripts/test-a2a-authorization.sh --runtime"
+
+[tasks."test:mcp-governance"]
+description = "Exercise MCP authentication, tool filtering, backend routing, and content-free audit records"
+run = "bash scripts/test-mcp-governance.sh --runtime"
+
+[tasks."test:mautrix-bridges"]
+description = "Validate exact pinned mautrix images without contacting external networks"
+run = "bash scripts/test-mautrix-bridges.sh --runtime"
 
 [tasks."check:workflows"]
 alias = "cw"
@@ -107,15 +215,34 @@ description = "Run the application's static checks (delegates to apps/matrix-a2a
 dir = "apps/matrix-a2a-bridge"
 run = "mise run check"
 
-[tasks.test]
-alias = "t"
+[tasks."test:app"]
 description = "Run the application test suite (delegates to apps/matrix-a2a-bridge)"
 dir = "apps/matrix-a2a-bridge"
 run = "mise run test"
 
+[tasks.test]
+alias = "t"
+description = "Run deterministic application and pinned external-bridge runtime tests"
+depends = ["test:app", "test:mautrix-bridges"]
+
+[tasks."test:integration"]
+description = "Run the bridge's kind-based Matrix appservice integration test"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run test:integration"
+
 [tasks."test:tracing"]
 description = "Render the tracing stack and prove an OTLP span reaches Jaeger locally"
 run = "bash scripts/test-tracing.sh"
+
+[tasks."test:load"]
+description = "Run the bridge dispatcher load regression scenario"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run test:load"
+
+[tasks."eval:models"]
+description = "Evaluate the three sample agents against an approved local model profile"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run eval:models"
 
 [tasks.build]
 alias = "b"
@@ -141,6 +268,14 @@ k3d cluster create --config k3d-config.yaml
 [tasks."cluster:down"]
 description = "Delete the local k3d cluster"
 run = "k3d cluster delete fgentic"
+
+[tasks."demo:up"]
+description = "Install and seed the small evaluation profile without GitHub credentials"
+run = "bash scripts/demo.sh up"
+
+[tasks."demo:down"]
+description = "Delete only the ephemeral fgentic-demo evaluation cluster"
+run = "bash scripts/demo.sh down"
 
 [tasks."bridge:load"]
 description = "Build the bridge image and side-load it into the local k3d cluster (matrix-a2a-bridge:local)"

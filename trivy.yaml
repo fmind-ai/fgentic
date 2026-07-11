@@ -10,8 +10,10 @@ scan:
     - secret
     - vuln
   # Flux's generated component manifests are upstream-owned (its controllers legitimately
-  # manage cluster Secrets — KSV-0041 et al.); scanning them only flags Flux itself.
+  # manage cluster Secrets — KSV-0041 et al.); scanning them only flags Flux itself. Agent scratch
+  # is git-ignored and may contain source checkouts used for version verification, not deliverables.
   skip-dirs:
+    - .agents/tmp
     - clusters/local/flux-system
     - clusters/gcp/flux-system
 vulnerability:

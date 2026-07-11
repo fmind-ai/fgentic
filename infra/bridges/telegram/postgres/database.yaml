@@ -1,0 +1,13 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: telegrambridge
+  namespace: postgres
+spec:
+  cluster:
+    name: platform-pg
+  name: telegrambridge
+  owner: telegrambridge
+  encoding: UTF8
+  # Removing the optional component must not erase provider sessions/history implicitly.
+  databaseReclaimPolicy: retain

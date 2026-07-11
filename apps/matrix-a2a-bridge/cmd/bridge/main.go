@@ -14,6 +14,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -33,7 +34,10 @@ import (
 	"github.com/fmind/matrix-a2a-bridge/internal/config"
 	"github.com/fmind/matrix-a2a-bridge/internal/matrixapp"
 	"github.com/fmind/matrix-a2a-bridge/internal/state"
+	"github.com/fmind/matrix-a2a-bridge/internal/telemetry"
 )
+
+const appserviceShutdownTimeout = 5 * time.Second
 
 func main() {
 	genReg := flag.Bool("generate-registration", false,
@@ -65,10 +69,23 @@ func main() {
 // run wires the appservice, the persistent state, the agent routing map, and the A2A client
 // together, starts the HTTP transaction server + event loop, and blocks until signalled.
 func run(cfg config.Config, log *slog.Logger) error {
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
+	signalCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stopSignals()
+	runtimeCtx, cancelRuntime := context.WithCancel(context.Background())
+	defer cancelRuntime()
+	shutdownTelemetry, err := telemetry.Setup(runtimeCtx)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := shutdownTelemetry(shutdownCtx); err != nil {
+			log.Error("shutdown telemetry", "err", err)
+		}
+	}()
 
-	store, stateStore, closeDB, err := openState(ctx, cfg, log)
+	store, stateStore, closeDB, err := openState(runtimeCtx, cfg, log)
 	if err != nil {
 		return err
 	}
@@ -85,15 +102,12 @@ func run(cfg config.Config, log *slog.Logger) error {
 	}
 	log.Info("loaded agent routing map", "agents", agents.Names())
 
-	client := a2aclient.New(cfg.A2ABaseURL, log)
+	client := a2aclient.New(cfg.A2ABaseURL, cfg.A2AAPIKey, log)
 	br := bridge.New(cfg, as, agents, client, store, log)
-	br.Start(ctx)
+	br.Start(runtimeCtx)
 
-	ep := appservice.NewEventProcessor(as)
-	ep.On(event.EventMessage, br.HandleMessage)
-	// Invites to the bot/ghosts must be accepted for Synapse to deliver room traffic at all.
-	ep.On(event.StateMember, br.HandleMembership)
-	ep.Start(ctx)
+	ep := newEventProcessor(as, br.HandleMessage, br.HandleMembership)
+	ep.Start(runtimeCtx)
 
 	// Prometheus metrics on a side port (docs/observability.md §9.3), never on the appservice listener.
 	metricsMux := http.NewServeMux()
@@ -109,22 +123,223 @@ func run(cfg config.Config, log *slog.Logger) error {
 		}
 	}()
 
-	// as.Start() runs the blocking HTTP server that receives homeserver AS transactions.
+	appserviceSrv := &http.Server{
+		Addr:              net.JoinHostPort(cfg.ListenHost, fmt.Sprintf("%d", cfg.ListenPort)),
+		Handler:           as.Router,
+		ReadHeaderTimeout: 5 * time.Second,
+	}
+	appserviceErr := serveHTTPServer(appserviceSrv)
+
+	// The bridge-owned HTTP server receives homeserver AS transactions. Owning the server is
+	// necessary so a timed-out graceful shutdown can force-close transaction connections before
+	// the event-processor barrier is inserted.
 	// Ready gates mautrix's /_matrix/mau/ready (the Deployment readiness probe): everything is
 	// wired at this point — flip it before serving so the pod is routable.
 	as.Ready = true
-	go as.Start()
 	log.Info("matrix-a2a-bridge started",
 		"listen", cfg.ListenHost, "port", cfg.ListenPort,
 		"homeserver", cfg.HomeserverURL, "server_name", cfg.ServerName,
 		"a2a_base_url", cfg.A2ABaseURL, "persistent_state", cfg.DatabaseURL != "")
 
-	<-ctx.Done()
-	log.Info("shutdown signal received, stopping")
+	var exitErr error
+	appserviceDone := false
+	select {
+	case <-signalCtx.Done():
+	case err := <-appserviceErr:
+		appserviceDone = true
+		if err == nil {
+			err = errors.New("appservice HTTP server stopped unexpectedly")
+		}
+		exitErr = fmt.Errorf("serve appservice HTTP: %w", err)
+		log.Error("appservice HTTP server stopped", "err", err)
+	}
+	log.Info("stopping matrix-a2a-bridge")
 	_ = metricsSrv.Close()
-	as.Stop()
-	br.Stop() // drain in-flight delegations before releasing the database
-	return nil
+	as.Ready = false
+	if !appserviceDone {
+		forced, shutdownErr := shutdownHTTPServer(appserviceSrv, appserviceShutdownTimeout)
+		if forced {
+			// Close severs every active transaction connection, so a handler that later reaches
+			// its response cannot successfully ACK events produced after the barrier.
+			log.Warn("appservice HTTP graceful shutdown failed; force-closed active connections")
+		}
+		if shutdownErr != nil {
+			exitErr = errors.Join(exitErr, fmt.Errorf("shutdown appservice HTTP: %w", shutdownErr))
+		}
+		if err := <-appserviceErr; err != nil {
+			exitErr = errors.Join(exitErr, fmt.Errorf("serve appservice HTTP during shutdown: %w", err))
+		}
+	}
+	drainedWithinGrace, err := drainEventProcessor(ep, cancelRuntime, 5*time.Second)
+	if err != nil {
+		log.Error("drain Matrix event processor", "err", err)
+	}
+	if !drainedWithinGrace {
+		log.Warn("Matrix event drain grace exceeded; cancelled delegations while waiting for acknowledged events")
+	}
+	ep.Stop()
+	if !drainBridge(br, cancelRuntime, cfg.ShutdownTimeout) {
+		log.Warn(
+			"bridge drain deadline exceeded; cancelled remaining delegations",
+			"timeout", cfg.ShutdownTimeout,
+		)
+	}
+	cancelRuntime()
+	return exitErr
+}
+
+type eventProcessorDrainer interface {
+	Drain(context.Context) error
+}
+
+// drainEventProcessor never abandons the barrier: acknowledged Matrix events must finish
+// classification before the processor stops. The grace only controls when delegation work is
+// cancelled to unblock a slow handler; it does not bound or duplicate the Drain operation.
+func drainEventProcessor(
+	drainer eventProcessorDrainer,
+	cancelRuntime context.CancelFunc,
+	grace time.Duration,
+) (withinGrace bool, err error) {
+	done := make(chan error, 1)
+	go func() {
+		done <- drainer.Drain(context.Background())
+	}()
+
+	timer := time.NewTimer(grace)
+	defer timer.Stop()
+	select {
+	case err := <-done:
+		return true, err
+	case <-timer.C:
+		cancelRuntime()
+		return false, <-done
+	}
+}
+
+func serveHTTPServer(server *http.Server) <-chan error {
+	done := make(chan error, 1)
+	go func() {
+		err := server.ListenAndServe()
+		if errors.Is(err, http.ErrServerClosed) {
+			err = nil
+		}
+		done <- err
+	}()
+	return done
+}
+
+// shutdownHTTPServer stops new intake and waits for accepted handlers. On any Shutdown failure,
+// Close prevents a still-running transaction from successfully ACKing before main inserts the
+// event-channel barrier; the homeserver will retry such a transaction on the replacement pod.
+type httpShutdownServer interface {
+	Shutdown(context.Context) error
+	Close() error
+}
+
+func shutdownHTTPServer(server httpShutdownServer, timeout time.Duration) (forced bool, err error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	shutdownErr := server.Shutdown(ctx)
+	if shutdownErr == nil {
+		return false, nil
+	}
+	closeErr := server.Close()
+	if errors.Is(closeErr, http.ErrServerClosed) {
+		closeErr = nil
+	}
+	if errors.Is(shutdownErr, context.DeadlineExceeded) || errors.Is(shutdownErr, context.Canceled) {
+		if closeErr != nil {
+			return true, fmt.Errorf("force close after graceful shutdown timeout: %w", closeErr)
+		}
+		return true, nil
+	}
+	return true, errors.Join(
+		fmt.Errorf("graceful shutdown: %w", shutdownErr),
+		closeErr,
+	)
+}
+
+type bridgeStopper interface {
+	Stop()
+}
+
+// drainBridge gives accepted work a bounded grace period with its runtime context still live.
+// On expiry it cancels running work and lets the dispatcher emit drop callbacks for queued work,
+// then waits for all callbacks and terminal audits before process resources are released.
+func drainBridge(stopper bridgeStopper, cancelRuntime context.CancelFunc, timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		stopper.Stop()
+		close(done)
+	}()
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		cancelRuntime()
+		<-done
+		return false
+	}
+}
+
+var shutdownBarrierEventType = event.Type{
+	Type:  "com.fgentic.matrix_a2a_bridge.shutdown_barrier",
+	Class: event.MessageEventType,
+}
+
+type drainingEventProcessor struct {
+	*appservice.EventProcessor
+	as      *appservice.AppService
+	barrier *event.Event
+	drained chan struct{}
+}
+
+// Drain places an identity-checked sentinel behind all events produced before the bridge-owned
+// HTTP server finished shutdown. Synchronous handler mode makes observing it proof that those
+// earlier events have finished classification and enqueueing.
+func (ep *drainingEventProcessor) Drain(ctx context.Context) error {
+	select {
+	case ep.as.Events <- ep.barrier:
+	case <-ctx.Done():
+		return fmt.Errorf("enqueue shutdown barrier: %w", ctx.Err())
+	}
+	select {
+	case <-ep.drained:
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("wait for shutdown barrier: %w", ctx.Err())
+	}
+}
+
+func newEventProcessor(
+	as *appservice.AppService,
+	messageHandler, membershipHandler appservice.EventHandler,
+) *drainingEventProcessor {
+	ep := appservice.NewEventProcessor(as)
+	// The bridge handlers only classify/enqueue ordinary messages. Running them synchronously
+	// preserves the homeserver's event order before jobs enter the per-room FIFO dispatcher;
+	// mautrix's default one-goroutine-per-event mode can race two events from the same room.
+	ep.ExecMode = appservice.Sync
+	ep.On(event.EventMessage, messageHandler)
+	// Invites to the bot/ghosts must be accepted for Synapse to deliver room traffic at all.
+	ep.On(event.StateMember, membershipHandler)
+	barrier := &event.Event{Type: shutdownBarrierEventType}
+	drained := make(chan struct{})
+	ep.On(shutdownBarrierEventType, func(_ context.Context, evt *event.Event) {
+		// A remote event can copy the type string, but never this in-process pointer.
+		if evt == barrier {
+			close(drained)
+		}
+	})
+	return &drainingEventProcessor{
+		EventProcessor: ep,
+		as:             as,
+		barrier:        barrier,
+		drained:        drained,
+	}
 }
 
 // openState builds the bridge's state layer. With DATABASE_URL set, one shared Postgres pool

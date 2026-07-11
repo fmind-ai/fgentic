@@ -1,0 +1,69 @@
+suite: agent routing config
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: renders anchored bridged-origin MXID namespaces
+    set:
+      bridgedOrigins:
+        slack:
+          - "@slack_*:fgentic.fmind.ai"
+        telegram:
+          - "@telegram_*:fgentic.fmind.ai"
+    asserts:
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "bridgedOrigins:\\n\\s+slack:\\n\\s+- '@slack_\\*:fgentic\\.fmind\\.ai'"
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "telegram:\\n\\s+- '@telegram_\\*:fgentic\\.fmind\\.ai'"
+  - it: preserves per-agent sender policy fields
+    set:
+      agents:
+        agent-locked:
+          namespace: kagent
+          name: locked
+          description: Restricted test agent.
+          avatarURL: mxc://fgentic.fmind.ai/locked-avatar
+          allowedServers:
+            - partner.example
+          allowedSenders:
+            - "@ops-*:partner.example"
+    asserts:
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "allowedServers:\\n\\s+- partner.example"
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "allowedSenders:\\n\\s+- '@ops-\\*:partner.example'"
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "description: Restricted test agent\\."
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "avatarURL: mxc://fgentic.fmind.ai/locked-avatar"
+      - matchRegex:
+          path: data["welcome.txt"]
+          pattern: "@agent-locked:fgentic.fmind.ai — Restricted test agent\\."
+  - it: renders the three least-privilege demo agents and Alice-only allowlists
+    asserts:
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "agent-platform-helper:\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+description: .*\\n\\s+name: platform-helper"
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "agent-docs-qa:\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+description: .*\\n\\s+name: docs-qa"
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "agent-scribe:\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+description: .*\\n\\s+name: scribe"
+      - matchRegex:
+          path: data["welcome.txt"]
+          pattern: "@agent-platform-helper:fgentic.fmind.ai"
+      - matchRegex:
+          path: data["welcome.txt"]
+          pattern: "@agent-docs-qa:fgentic.fmind.ai"
+      - matchRegex:
+          path: data["welcome.txt"]
+          pattern: "@agent-scribe:fgentic.fmind.ai"
+      - matchRegex:
+          path: data["welcome.txt"]
+          pattern: "Send !agents in this room"

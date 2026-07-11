@@ -1,0 +1,69 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended"],
+  "dependencyDashboard": true,
+  "enabledManagers": ["custom.regex", "dockerfile", "flux", "github-actions", "gomod", "helm-values"],
+  "labels": ["area/ci"],
+  "prConcurrentLimit": 10,
+  "prHourlyLimit": 2,
+  "flux": {
+    "managerFilePatterns": ["/^infra/.+\\.ya?ml$/", "/^apps/.+/deploy/.+\\.ya?ml$/"],
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track the experimental Gateway API CRD bundle used by the bootstrap runbooks",
+      "managerFilePatterns": ["/^README\\.md$/", "/^\\.agents/skills/matrix-agents/SKILL\\.md$/"],
+      "matchStrings": [
+        "github\\.com/kubernetes-sigs/gateway-api/releases/download/(?<currentValue>v\\d+\\.\\d+\\.\\d+)/experimental-install\\.yaml",
+      ],
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "kubernetes-sigs/gateway-api",
+      "versioningTemplate": "semver",
+    },
+  ],
+  "packageRules": [
+    {
+      "description": "Require CI-backed human review unless a narrower rule explicitly opts in",
+      "matchPackageNames": ["*"],
+      "automerge": false,
+    },
+    {
+      "description": "Leave the bridge image digest to the CD workflow",
+      "matchDatasources": ["docker"],
+      "matchFileNames": ["apps/matrix-a2a-bridge/deploy/helmrelease.yaml"],
+      "enabled": false,
+    },
+    {
+      "description": "Automerge patch-only GitHub Actions updates after CI succeeds",
+      "matchManagers": ["github-actions"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true,
+      "automergeType": "pr",
+      "groupName": "patch-level development tooling",
+    },
+    {
+      "description": "Automerge patch-only Go tool updates after CI succeeds",
+      "matchManagers": ["gomod"],
+      "matchDepTypes": ["tool"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true,
+      "automergeType": "pr",
+      "groupName": "patch-level development tooling",
+    },
+    {
+      "description": "Keep the Gateway API, Traefik, agentgateway, and kagent pins under human review",
+      "matchDepNames": [
+        "kubernetes-sigs/gateway-api",
+        "/(^|\\/)(traefik|agentgateway(-crds)?|kagent(-crds)?)$/",
+      ],
+      "groupName": "coupled Gateway API stack",
+      "groupSlug": "coupled-gateway-api-stack",
+      "addLabels": ["needs-human"],
+      "automerge": false,
+      "prBodyNotes": [
+        "Gateway API, Traefik, agentgateway, and kagent have wire/CRD compatibility constraints; validate and upgrade them together.",
+      ],
+    },
+  ],
+}

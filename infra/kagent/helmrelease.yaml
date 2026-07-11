@@ -25,7 +25,9 @@ spec:
         name: kagent
         namespace: flux-system
   # Model egress THROUGH agentgateway (OpenAI baseUrl -> single credential chokepoint); shared
-  # Postgres (no bundled DB); built-in k8s + helm agents enabled and exposed over A2A.
+  # Postgres (no bundled DB). The upstream generic agents are disabled in favor of the smaller
+  # declarative zoo in this directory. Its shared Kubernetes tool server is both application-
+  # layer read-only and namespaced by RBAC; Secrets remain excluded.
   values:
     providers:
       default: openAI
@@ -51,14 +53,47 @@ spec:
         - name: kagent-db
           mountPath: /var/run/secrets/kagent
           readOnly: true
+    # kagent 0.9.11 rewrites every internal RemoteMCPServer URL in generated agent
+    # configuration to this proxy while preserving the MCP path and carrying the
+    # original Service hostname in x-kagent-host. The controller still discovers
+    # tools directly; only managed agent pods are forced through agentgateway.
+    proxy:
+      url: http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080
+    otel:
+      tracing:
+        enabled: true
+        exporter:
+          otlp:
+            endpoint: http://otel-collector.monitoring.svc.cluster.local:4317
+            protocol: grpc
+            timeout: 15000
+            insecure: true
     rbac:
       namespaces:
         - kagent
         - default
-    # Only the agents the platform maps to Matrix ghosts; every enabled agent runs a pod and can
-    # spend LLM budget (SPEC D7). Enable more deliberately, together with a bridge ghost mapping.
-    k8s-agent: { enabled: true }
-    helm-agent: { enabled: true }
+    kagent-tools:
+      tools:
+        enabledTools:
+          - k8s
+        args:
+          - --read-only
+      rbac:
+        readOnly: true
+        allowSecrets: false
+        # Exactly the core namespaces installed by the evaluation profile (issue #22). The
+        # upstream chart requires its own install namespace to be present in this list.
+        namespaces:
+          - agentgateway-system
+          - bridge
+          - gateway
+          - kagent
+          - matrix
+          - postgres
+    # Every enabled agent runs a pod and can spend LLM budget (D7). Keep the broad upstream
+    # agents off; infra/kagent/agent-zoo.yaml exposes only the three mapped demo agents.
+    k8s-agent: { enabled: false }
+    helm-agent: { enabled: false }
     kgateway-agent: { enabled: false }
     istio-agent: { enabled: false }
     promql-agent: { enabled: false }

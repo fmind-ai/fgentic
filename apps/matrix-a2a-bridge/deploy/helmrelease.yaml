@@ -1,7 +1,30 @@
-# The Matrix<->A2A bridge, deployed from its in-repo Helm chart, pinned by CI to the signed
-# image digest. Ordering (matrix/agentgateway/kagent first) is enforced by the `bridge` Flux
-# Kustomization's dependsOn (clusters/base/apps.yaml); its registration and database
-# Secrets come from platform-secrets.
+# Bootstrap source for the signed OCI chart. It stays suspended until the first successful CD
+# publication verifies that both GHCR packages are public, then CD pins the chart digest, enables
+# this source, and atomically switches the HelmRelease below to chartRef. Flux accepts only a
+# keyless signature from this repository's CD workflow; an unsigned replacement is never exposed
+# to helm-controller.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: matrix-a2a-bridge-chart
+  namespace: flux-system
+spec:
+  interval: 30m
+  suspend: true
+  url: oci://ghcr.io/fmind-ai/charts/matrix-a2a-bridge
+  layerSelector:
+    mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
+    operation: copy
+  verify:
+    provider: cosign
+    matchOIDCIdentity:
+      - issuer: ^https://token.actions.githubusercontent.com$
+        subject: ^https://github\.com/fmind-ai/fgentic/\.github/workflows/cd\.yml@refs/heads/main$
+---
+# The Matrix<->A2A bridge initially deploys from its in-repo Helm chart. The first successful CD
+# publication switches it to the digest-pinned OCIRepository above. Ordering
+# (matrix/agentgateway/kagent first) is enforced by the `bridge` Flux Kustomization's dependsOn
+# (clusters/base/apps.yaml); registration and database Secrets come from platform-secrets.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
@@ -18,14 +41,27 @@ spec:
         name: flux-system
         namespace: flux-system
   # Only the image and per-cluster settings are overridden here; the chart's values.yaml supplies
-  # the rest (agents routing map, NetworkPolicy, security context). CI rewrites the tag to an
-  # immutable digest; the local overlay (clusters/local) swaps the image for the side-loaded one.
+  # the rest (agent targets/descriptions, NetworkPolicy, security context). Sender MXIDs belong
+  # here because Flux postBuild substitutes this manifest, not the chart's default values file.
+  # CI rewrites the tag to an immutable digest; the local overlay swaps in the side-loaded image.
   values:
     image:
       repository: ghcr.io/fmind-ai/matrix-a2a-bridge
       tag: sha-6bc5efefae9520529268da4ca7399e3abefd53d2@sha256:a9452fa9f2ca88aed89864500d12065dbacaa25b932ff3e83dbd248a10f8f948 # CI overwrites with sha-<git>@sha256:<digest>
     config:
       serverName: ${server_name}
+      otelEndpoint: http://otel-collector.monitoring.svc.cluster.local:4318
+    bridgedOrigins: {}
+    agents:
+      agent-platform-helper:
+        allowedSenders:
+          - "@alice:${server_name}"
+      agent-docs-qa:
+        allowedSenders:
+          - "@alice:${server_name}"
+      agent-scribe:
+        allowedSenders:
+          - "@alice:${server_name}"
     metrics:
       podMonitor:
         enabled: true # the observability layer provides the CRDs

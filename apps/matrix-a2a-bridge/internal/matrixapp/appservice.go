@@ -4,11 +4,11 @@ package matrixapp
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"regexp"
 
-	"github.com/rs/zerolog"
 	"maunium.net/go/mautrix/appservice"
 
 	"github.com/fmind/matrix-a2a-bridge/internal/config"
@@ -35,9 +35,16 @@ func New(cfg config.Config, stateStore appservice.StateStore) (*appservice.AppSe
 	if stateStore != nil {
 		as.StateStore = stateStore
 	}
-	// mautrix logs via zerolog; keep it JSON on stdout to sit alongside our slog output.
-	as.Log = zerolog.New(os.Stdout).With().Timestamp().Logger()
+	configureMautrixLogger(as, os.Stdout)
 	return as, nil
+}
+
+// configureMautrixLogger keeps the library's JSON logs alongside the bridge's slog output
+// without making the library's concrete logging implementation a direct dependency.
+func configureMautrixLogger(as *appservice.AppService, output io.Writer) {
+	// Mautrix's exposed logger uses level 0 for debug. The untyped value avoids importing its
+	// implementation package solely to name that constant.
+	as.Log = as.Log.Output(output).Level(0).With().Timestamp().Logger()
 }
 
 // GenerateRegistration writes a fresh appservice registration.yaml (id, generated tokens, and the

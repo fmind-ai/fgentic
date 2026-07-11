@@ -1,0 +1,7 @@
+# Mistral La Plateforme profile selected by platform-settings.data.llm_provider=mistral.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - llm-backend.yaml
+components:
+  - ../../base

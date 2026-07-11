@@ -4,7 +4,7 @@ Thanks for considering a contribution — human or AI agent, the rules are the s
 
 ## Where to start
 
-1. The backlog is the set of [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones) (M0–M11), each with a `kind/epic` tracker issue listing its issues in sweep order.
+1. The backlog is the set of [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones) (M0–M12), each with a `kind/epic` tracker issue listing its issues in sweep order.
 1. Issues labeled **`agent-ready`** are groomed with tasks and acceptance criteria — pick one up as-is. Issues labeled **`needs-human`** wait on a maintainer decision, account, approval, or spend — you can prepare the work, but flag the blocking part.
 1. Issues labeled **`good first issue`** are the friendliest entry points.
 1. For anything not covered by an issue, open one first — especially before changing a settled design (decisions D1–D16 in [docs/design-decisions.md](docs/design-decisions.md) and the ADRs in [docs/adr/](docs/adr/) are revisited by proposing a new ADR, not by a drive-by PR).
@@ -18,13 +18,23 @@ Thanks for considering a contribution — human or AI agent, the rules are the s
 1. **Commits:** [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `refactor:`, `chore:`, …) with **DCO sign-off** (`git commit -s`). No CLA. No AI-attribution trailers.
 1. **Pull requests:** one concern per PR; fill the PR template (What / Why / How / Test plan); link the issue with closing keywords (`Fixes #N`). PRs are squash-merged.
 
+`mise run check` includes Helm unit tests for the bridge chart, strict offline `flux build kustomization` renders for both `clusters/local` and `clusters/gcp`, and kubeconform validation of those renders. A chart conditional, overlay patch, or unresolved post-build variable therefore fails before Flux sees it. The empty `clusters/gcp/flux-system` Kustomization is an offline-validation placeholder; the spend-gated GKE bootstrap replaces it with the generated Flux controllers and sync manifests.
+
 ## Licensing
 
 Contributions are accepted under **Apache-2.0** with DCO sign-off. Never add an AGPL dependency to the bridge (mautrix/go is MPL-2.0 — keep the `NOTICE` files current); see [docs/licensing.md](docs/licensing.md) for the full licensing map.
 
 ## Releases
 
-Releases are semver, tagged `v*`, with a git-cliff changelog and a GitHub Release; the bridge image and chart release together. Maintainers cut releases (see [GOVERNANCE.md](GOVERNANCE.md)).
+Releases use SemVer, `v`-prefixed annotated tags, the repository's git-cliff configuration, and a GitHub Release. Before `v1.0.0`, breaking changes bump the minor version while features and fixes bump the patch version; from `v1.0.0`, breaking changes bump major, features bump minor, and fixes bump patch. The bridge image and Helm chart always carry the same version and release together.
+
+Maintainers cut releases from a clean, up-to-date `main` (see [GOVERNANCE.md](GOVERNANCE.md)):
+
+1. Compute the version with `mise exec -- git-cliff --bumped-version` and verify it matches the intended compatibility change.
+1. Generate `CHANGELOG.md` with `mise exec -- git-cliff --bump -o CHANGELOG.md`, update the chart's `version` and `appVersion` to the same version, and commit those files as `chore(release): vX.Y.Z`.
+1. Create an annotated `vX.Y.Z` tag, push the release commit and tag, then publish a GitHub Release from `mise exec -- git-cliff --latest --strip all` output.
+
+Published tags are immutable. If a release step fails, fix the cause and cut a new version; never move or replace an existing tag.
 
 ## Security
 

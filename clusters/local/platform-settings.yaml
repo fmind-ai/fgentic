@@ -20,7 +20,18 @@ data:
   gcp_project: fgentic-ai
   pg_backups_bucket: unused-local
   ingress_ip_name: unused-local
-  # The model agentgateway fronts (single credential/telemetry chokepoint for every agent).
+  # Selects infra/agentgateway/providers/profiles/<llm_provider>; switching to an installed
+  # profile needs only these settings plus that profile's per-cluster SOPS Secret.
+  llm_provider: vertex
   # Vertex AI OpenAI-compatible endpoint requires <publisher>/<model>.
   llm_model: google/gemini-2.5-flash
   vertex_region: europe-west1
+  # Provider-specific connection settings. They remain inert unless their profile is selected.
+  # Eligible OpenAI projects can use eu.api.openai.com for European processing (see docs/models.md).
+  openai_host: api.openai.com
+  # Azure resource name only (not the endpoint URL); replace before selecting azure-openai.
+  azure_openai_resource: not-configured
+  # Alert when aggregate model-token consumption exceeds this count over 15 minutes.
+  llm_usage_budget_15m: "100000"
+  # Local development keeps MAS password login as a recovery/demo path alongside Keycloak SSO.
+  mas_local_login_enabled: "true"

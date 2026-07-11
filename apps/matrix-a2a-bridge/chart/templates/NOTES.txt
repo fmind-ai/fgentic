@@ -7,7 +7,13 @@ Checklist:
      must exist AND the SAME registration must be loaded by the homeserver (ESS/Synapse app_service config).
   2. The homeserver ({{ .Values.config.homeserverURL }}) must be able to reach this service on port
      {{ .Values.config.listenPort }} (NetworkPolicy admits the {{ join ", " .Values.networkPolicy.fromNamespaces }} namespace).
-  3. Invite a ghost into a room and @mention it, e.g.:  "@agent-k8s:{{ .Values.config.serverName }} why is pod X crashing?"
+  3. Invite @a2a-bridge:{{ .Values.config.serverName }} (or a mapped ghost) into an unencrypted
+     agent room. Send "!agents" to list only the agents your identity may invoke, then @mention
+     a full ghost MXID, e.g.:
+     "@agent-platform-helper:{{ .Values.config.serverName }} why is the bridge pod not ready?"
+
+Demo welcome message:
+  kubectl -n {{ .Release.Namespace }} get configmap {{ include "matrix-a2a-bridge.fullname" . }}-agents -o jsonpath='{.data.welcome\.txt}'
 
 Health:  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "matrix-a2a-bridge.fullname" . }} {{ .Values.config.listenPort }}
          curl localhost:{{ .Values.config.listenPort }}/_matrix/mau/live

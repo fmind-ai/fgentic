@@ -10,9 +10,9 @@ The agentic AI landscape is consolidating around closed, tenant-anchored platfor
 - **[agentgateway](https://agentgateway.dev)** (Agentic AI Foundation) — the AI-native data plane: one governed chokepoint for all LLM/MCP/A2A traffic, where the only model credential lives.
 - **A small Go bridge** — [`matrix-a2a-bridge`](apps/matrix-a2a-bridge/) — the novel glue that turns an `@mention` into an A2A call and posts the reply back. (As far as we can find, the first Matrix↔A2A appservice bridge.)
 
-Because Matrix is a bridged protocol, the same rooms can also connect to **Slack, WhatsApp, Signal, Telegram** and more — "chat with my agents" becomes "chat with my agents _and_ anyone, on any network."
+Fgentic ships opt-in, digest-pinned GitOps units for **Slack** and **Telegram** on top of Matrix's upstream bridge ecosystem. They are disabled by default and require provider-owner, policy, and live bidirectional acceptance; rendered manifests are not a compatibility claim. Signal and WhatsApp remain evaluated candidates, while Microsoft Teams is explicitly [coexistence under review](docs/adr/0011-teams-coexistence-not-bridge.md), not a promised Teams↔Matrix bridge.
 
-> **New here?** The specification lives under [docs/](docs/), split by topic: [architecture & vision](docs/architecture.md), [design decisions D1–D16](docs/design-decisions.md), [bridge behavior](docs/bridge.md), [security model](docs/security.md), [federation design](docs/federation.md), [observability](docs/observability.md), [licensing strategy](docs/licensing.md), [roadmap history](docs/roadmap.md) — plus the [ADRs](docs/adr/). The executable roadmap is the set of [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones).
+> **New here?** The specification lives under [docs/](docs/), split by topic: [architecture & vision](docs/architecture.md), [design decisions D1–D16](docs/design-decisions.md), [identity and SSO](docs/identity.md), [model provider profiles](docs/models.md), [bridge behavior](docs/bridge.md), [external-network interop](docs/interop.md), [security model](docs/security.md), [federation design](docs/federation.md), [observability](docs/observability.md), [licensing strategy](docs/licensing.md), [roadmap history](docs/roadmap.md) — plus the [ADRs](docs/adr/). The executable roadmap is the set of [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones).
 
 ---
 
@@ -50,12 +50,15 @@ Data-flow details and async/long-task behavior: [docs/bridge.md](docs/bridge.md)
 | The bridge (the glue)      | `matrix-a2a-bridge` (Go, `mautrix/go` appservice + `a2a-go`)                                                | `bridge`              |
 | AI data plane / governance | agentgateway (LLM + A2A routing, credential chokepoint)                                                     | `agentgateway-system` |
 | Agents                     | kagent (Agent CRDs served as A2A on `:8083`)                                                                | `kagent`              |
-| Shared state               | CloudNativePG (databases: `synapse`, `mas`, `bridge`, `kagent`)                                             | `postgres`            |
+| Optional network interop   | Digest-pinned mautrix Slack/Telegram appservices; disabled until selected and accepted                      | `bridges`             |
+| Optional reference IdP     | Keycloak 26.7 via the KeycloakX chart                                                                       | `keycloak`            |
+| Optional self-hosted model | vLLM CPU + pinned Qwen2.5-0.5B demo model                                                                   | `models`              |
+| Shared state               | CloudNativePG: one database per core service and per enabled external bridge                                | `postgres`            |
 | Web ingress + TLS          | Gateway API (Traefik) + cert-manager (Let's Encrypt)                                                        | `gateway`             |
 | Observability              | kube-prometheus-stack: Prometheus · Grafana · Alertmanager ([docs/observability.md](docs/observability.md)) | `monitoring`          |
 | Delivery                   | Flux v2 pull-based GitOps                                                                                   | `flux-system`         |
 
-Reference deployment: `fgentic.fmind.ai` (Element at `chat.`, Synapse at `matrix.`, MAS at `auth.`; user IDs `@name:fgentic.fmind.ai` via apex `.well-known` delegation).
+Reference deployment: `fgentic.fmind.ai` (Element at `chat.`, Synapse at `matrix.`, MAS at `auth.`, optional Keycloak IdP at `id.`; user IDs `@name:fgentic.fmind.ai` via apex `.well-known` delegation).
 
 ## Key decisions (the short version — details in [docs/design-decisions.md](docs/design-decisions.md))
 
@@ -68,36 +71,41 @@ Reference deployment: `fgentic.fmind.ai` (Element at `chat.`, Synapse at `matrix
 
 **Live end-to-end on the local reference cluster.** A Matrix `@mention` in Element produces a real LLM-backed agent reply — through the bridge, agentgateway (no agent ever holds a model key), and kagent, with conversation threading, rate limits, sanitized failure replies, and Prometheus/Grafana observability (bridge delegation metrics + gateway GenAI token metering + the LLM spend alert). Every layer reconciles from this repository via Flux; the same manifests drive the GKE reference profile (`clusters/gcp`). The adversarial-review fixes (D1–D15) are all implemented and unit-tested ([docs/design-decisions.md](docs/design-decisions.md)).
 
-**The roadmap lives on [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones)** (M0–M11, each with an epic tracker issue), sequenced sovereignty-first: hygiene → sovereign model profiles → enterprise SSO → one-command evaluation install → test harness → traces & audit → security hardening → interop bridges (Slack first) → **federation preview (the thesis)** → production reference → community → the sovereignty kit (reference architecture + compliance + exit strategy). Issues labeled `agent-ready` are groomed for autonomous coding agents; `needs-human` marks decisions, approvals, or spend ([docs/roadmap.md](docs/roadmap.md)).
+**The roadmap lives on [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones)** (M0–M12, each with an epic tracker issue), sequenced sovereignty-first: hygiene → sovereign model profiles → enterprise SSO → one-command evaluation install → test harness → traces & audit → security hardening → interop bridges (Slack first) → **federation preview (the thesis)** → production reference → community → the sovereignty kit (reference architecture + compliance + exit strategy) → in-room collaboration and governance UX. Issues labeled `agent-ready` are groomed for autonomous coding agents; `needs-human` marks decisions, approvals, or spend ([docs/roadmap.md](docs/roadmap.md)).
 
-## Quickstart (local, k3d)
+## Evaluate in 15 minutes
 
-Prerequisites: Docker, [k3d](https://k3d.io/), `kubectl`, [flux](https://fluxcd.io/), [mise](https://mise.jdx.dev/), [sops](https://github.com/getsops/sops) + an age key (`age-keygen`; recipient in [.sops.yaml](.sops.yaml)).
+Prerequisites: Docker, Git, and [mise](https://mise.jdx.dev/). The default is deliberately free and deterministic: it exercises Matrix → bridge → agentgateway → kagent with an in-cluster OpenAI-compatible response stub. It proves the integration path, not model quality.
 
 ```bash
-mise install                          # git hooks + pinned toolchain
-mise run cluster:up                   # k3d cluster on loopback 80/443 (*.fgentic.localhost)
-kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/experimental-install.yaml
-scripts/gen-secrets.sh fgentic.localhost local   # SOPS secret set -> commit + push
-kubectl create ns flux-system && kubectl -n flux-system create secret generic sops-age   --from-file=age.agekey="$HOME/.config/sops/age/keys.txt"
-scripts/local-ca.sh                   # local TLS CA (ESS bakes https URLs)
-scripts/local-adc.sh <gcp-project>    # Vertex AI credentials for agentgateway (or swap the provider)
-flux bootstrap github --owner=<you> --repository=fgentic --path=clusters/local
-mise run bridge:load                  # build + side-load the bridge image
+mise install
+mise run demo:up
 ```
 
-Flux reconciles the whole platform. Then open `https://chat.fgentic.localhost` (Element Web), sign in (create a user with `mas-cli manage register-user` in the MAS pod), create a room, invite `@agent-assistant:fgentic.localhost`, and `@mention` it. Grafana lives at `https://grafana.fgentic.localhost`. Full runbook: [matrix-agents](.agents/skills/matrix-agents/SKILL.md).
+The final output is the Element URL, `@alice:fgentic.localhost`, its generated password, and the seeded `#lobby:fgentic.localhost` room. The mapped ghosts are already members and the welcome mention has received a reply. The command does not mutate the checkout, commit, push, or need a GitHub account; its random credentials live only in the `fgentic-demo` cluster. Set `FGENTIC_DEMO_CACHE_DIR` to a persistent directory to reuse BuildKit layers across repeated installs. Remove only that evaluation cluster with `mise run demo:down`.
 
-## Production (Kubernetes, any provider)
+Choose the model boundary before using non-demo data:
 
-Production reconciles itself from git via **Flux v2** (`clusters/<cluster>/` overlays over `clusters/base/` are the entrypoints). An optional GKE reference cluster lives in [`infra/terraform/`](infra/terraform/); the workloads are plain Kubernetes and run on any conformant cluster. Hardening and production profile: [docs/architecture.md](docs/architecture.md) + [docs/security.md](docs/security.md).
+| Choice                        | Sovereignty and cost boundary                                                                                   |
+| ----------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `demo` (default)              | Deterministic cluster-only stub; no model credential, prompt egress, or token charge; not a real language model |
+| `vllm`                        | Real self-hosted model; strongest sovereignty, but roughly 2.7 GB of downloads and 4–6 GiB RAM                  |
+| `mistral`                     | EU-hosted API path; prompts leave the cluster and the selected account is billed                                |
+| `vertex`/`anthropic`/`openai` | Hyperscaler API path; residency and billing depend on the selected account/profile                              |
+| `azure-openai`                | Azure deployment boundary; region/data-zone selection and billing remain account controls                       |
+
+For example, `FGENTIC_LLM_PROVIDER=vllm mise run demo:up` selects the real credential-free self-hosted profile. API profiles require the matching key, `FGENTIC_LLM_MODEL`, and `FGENTIC_ALLOW_PAID_PROVIDER=yes`; see the complete [provider contract](docs/models.md). Do not use evaluation credentials or the deterministic stub in production.
+
+## Production
+
+Production is a separate GitOps path: SOPS-encrypted secrets, a reviewed git source, the full observability and SSO layers, and Flux reconciliation. Follow the self-contained [production installation](docs/production.md), then the [security](docs/security.md), [identity](docs/identity.md), and [operator](.agents/skills/matrix-agents/SKILL.md) runbooks. Enable an external network only through the [opt-in interop contract](docs/interop.md); the [Slack provider walkthrough](docs/interop-slack.md) is separate because it requires a workspace owner and live evidence.
 
 ## Repository layout
 
 ```text
 apps/matrix-a2a-bridge/  # the Go bridge (mautrix/go appservice + a2a-go client) + its deploy/ Flux unit
-infra/{terraform,flux,gateway,postgres,matrix,agentgateway,kagent,bridges,secrets}
-clusters/               # Flux entrypoints: base/ DAG + local/ (k3d) and gcp/ (GKE) overlays
+infra/{terraform,flux,gateway,postgres,matrix,keycloak,agentgateway,models,kagent,bridges,secrets}
+clusters/               # Flux entrypoints: base/ DAG + demo/, local/ (k3d), and gcp/ (GKE) overlays
 docs/                    # the specification split by topic (architecture, decisions, security, federation, …) + docs/adr/
 .github/                 # CI (mise gates) + CD (signed, digest-pinned bridge image) + issue/PR templates
 .agents/                 # AGENTS.md + operator runbooks

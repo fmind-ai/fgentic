@@ -1,0 +1,19 @@
+# kagent's global proxy preserves the RemoteMCPServer path, so /mcp is the complete governed tool
+# surface. No public Gateway references this route.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: kagent-tools-mcp
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+    - name: agentgateway-proxy
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /mcp
+      backendRefs:
+        - name: kagent-tools
+          group: agentgateway.dev
+          kind: AgentgatewayBackend

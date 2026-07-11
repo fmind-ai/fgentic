@@ -67,6 +67,45 @@ spec:
         password:
           secret: pg-mas
           secretKey: password
+      # ESS 26.6.2 merges ordered MAS fragments. The upstream provider itself is kept in the
+      # SOPS-backed Secret because it contains the Keycloak client secret; only non-secret policy
+      # is inline. A required, IdP-managed localpart makes first-login provisioning deterministic,
+      # while `on_conflict: fail` prevents an upstream identity from taking over an existing MXID.
+      additional:
+        00-login-policy:
+          config: |
+            passwords:
+              enabled: ${mas_local_login_enabled}
+            policy:
+              data:
+                # Demo bootstrap authority only. Alice must still authenticate interactively and
+                # request the short-lived admin scopes; no administrator token is stored.
+                admin_users:
+                  - alice
+            # Stable public client for the interactive bootstrap script. Static configuration
+            # makes repeated runs idempotent; `none` means there is no client credential to leak.
+            # The device flow still requires the designated human to authenticate and consent.
+            clients:
+              - client_id: 01KX8B4Z9W6Y2Q3R5T7V0C1D8F
+                client_auth_method: none
+                client_name: Fgentic bootstrap
+        10-upstream-oidc:
+          configSecret: mas-upstream-oidc
+          configSecretKey: provider.yaml
+      # A loaded one-node k3d cluster can take longer than the chart's 40-second startup budget to
+      # compile MAS policy and warm Postgres. Keep failures visible without creating a restart loop.
+      startupProbe:
+        failureThreshold: 18
+        periodSeconds: 10
+        timeoutSeconds: 3
+      livenessProbe:
+        failureThreshold: 6
+        periodSeconds: 10
+        timeoutSeconds: 3
+      readinessProbe:
+        failureThreshold: 6
+        periodSeconds: 10
+        timeoutSeconds: 3
 
     elementWeb:
       ingress:

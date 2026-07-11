@@ -1,0 +1,6 @@
+# Bootstrap placeholder for offline overlay validation. `flux bootstrap github --path=clusters/gcp`
+# adds gotk-components.yaml and gotk-sync.yaml here and updates this resource list before the GKE
+# reference is applied.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: []

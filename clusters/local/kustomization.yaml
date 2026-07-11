@@ -8,6 +8,8 @@ resources:
   - ../base
   - platform-settings.yaml
   - secrets.yaml
+components:
+  - ../base/provider-selection
 patches:
   # No object store locally: strip the CNPG GCS backup config (WAL archiving + ScheduledBackup +
   # the Workload Identity service-account binding). Postgres itself is unchanged.
@@ -57,25 +59,25 @@ patches:
                   repository: matrix-a2a-bridge
                   tag: local
                   pullPolicy: Never
-  # Local Vertex AI auth: ambient credentials do not exist on k3d — point the LLM backend at the
-  # ADC JSON Secret created by scripts/local-adc.sh (kept out of git).
+  # Local Vertex AI auth: ambient credentials do not exist on k3d — point only the Vertex profile
+  # at the ADC JSON Secret created by scripts/local-adc.sh (kept out of git). Other selected
+  # profiles have distinct backend names and therefore do not receive this provider-specific patch.
   - patch: |
       apiVersion: kustomize.toolkit.fluxcd.io/v1
       kind: Kustomization
       metadata:
-        name: agentgateway
+        name: agentgateway-provider
         namespace: flux-system
       spec:
         patches:
-          - patch: |
-              apiVersion: agentgateway.dev/v1alpha1
+          - target:
+              group: agentgateway.dev
+              version: v1alpha1
               kind: AgentgatewayBackend
-              metadata:
-                name: llm
-                namespace: agentgateway-system
-              spec:
-                policies:
-                  auth:
-                    gcp:
-                      secretRef:
-                        name: gcp-adc
+              name: llm-vertex
+              namespace: agentgateway-system
+            patch: |
+              - op: add
+                path: /spec/policies/auth/gcp/secretRef
+                value:
+                  name: gcp-adc

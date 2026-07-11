@@ -9,3 +9,5 @@ resources:
   - ../base
   - platform-settings.yaml
   - secrets.yaml
+components:
+  - ../base/provider-selection

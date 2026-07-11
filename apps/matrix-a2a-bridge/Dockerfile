@@ -9,7 +9,7 @@ COPY . .
 RUN go build -trimpath -ldflags="-s -w" -o /out/bridge ./cmd/bridge
 
 FROM gcr.io/distroless/static-debian12:nonroot
-LABEL org.opencontainers.image.source="https://github.com/fmind/fgentic"
+LABEL org.opencontainers.image.source="https://github.com/fmind-ai/fgentic"
 LABEL org.opencontainers.image.title="matrix-a2a-bridge"
 LABEL org.opencontainers.image.description="Matrix Application Service that delegates @mentions to AI agents over A2A"
 LABEL org.opencontainers.image.licenses="Apache-2.0"

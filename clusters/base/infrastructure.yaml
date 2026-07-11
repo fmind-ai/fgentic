@@ -71,6 +71,13 @@ spec:
   sourceRef:
     kind: GitRepository
     name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true
 ---
 # Platform operators: cert-manager, Traefik, CNPG operator, agentgateway + kagent control planes.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
@@ -130,6 +137,9 @@ spec:
   interval: 30m
   retryInterval: 2m
   path: ./infra/postgres
+  # Optional per-service database components append one role + Database without replacing this
+  # canonical layer. Multiple external bridges therefore compose in the same cluster overlay.
+  components: []
   prune: true
   wait: true # gate dependents on the CNPG Cluster actually being healthy
   timeout: 10m
@@ -137,6 +147,35 @@ spec:
     - name: controllers
     - name: platform-secrets
     - name: observability # CNPG's PodMonitor needs the CRD
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true
+---
+# Sovereign reference IdP. It remains an independently replaceable Flux layer; MAS reads the
+# provider contract from a SOPS Secret so Entra/generic OIDC can replace it without editing ESS.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: keycloak
+  namespace: flux-system
+spec:
+  interval: 30m
+  retryInterval: 2m
+  path: ./infra/keycloak
+  prune: true
+  wait: true
+  timeout: 10m
+  dependsOn:
+    - name: gateway
+    - name: postgres
+    - name: platform-secrets
   sourceRef:
     kind: GitRepository
     name: flux-system
@@ -158,6 +197,9 @@ spec:
   interval: 30m
   retryInterval: 2m
   path: ./infra/matrix
+  # Optional appservices append their ESS registration entry as Kustomize components. Keeping the
+  # base list explicit and empty makes Slack + Telegram selection additive rather than last-wins.
+  components: []
   prune: true
   wait: true # ESS is the platform's core — dependents (the bridge) need it actually up
   timeout: 20m
@@ -175,8 +217,8 @@ spec:
         name: platform-settings-overrides
         optional: true
 ---
-# agentgateway control plane + data plane (LLM egress + A2A route to kagent). Depends on the
-# CRDs chart (controllers) and platform-secrets (the model credential).
+# Common agentgateway control plane + data plane (Gateway and A2A route). Keeping this stable lets
+# provider changes prune only the selected LLM backend and route. Depends on the CRDs chart.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -191,6 +233,35 @@ spec:
   timeout: 10m
   dependsOn:
     - name: controllers
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true
+---
+# Selected agentgateway LLM provider. The final path segment is replaced from
+# platform-settings.data.llm_provider by each cluster overlay. Reusing this Kustomization name
+# makes Flux prune the previous provider inventory when that setting changes.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: agentgateway-provider
+  namespace: flux-system
+spec:
+  interval: 30m
+  retryInterval: 2m
+  path: ./infra/agentgateway/providers/profiles/vertex
+  prune: true
+  wait: true
+  # Self-hosted profiles may need to fetch a pinned model before their HelmRelease is Ready.
+  timeout: 45m
+  dependsOn:
+    - name: agentgateway
     - name: platform-secrets
   sourceRef:
     kind: GitRepository
@@ -219,7 +290,7 @@ spec:
   timeout: 10m
   dependsOn:
     - name: controllers
-    - name: agentgateway
+    - name: agentgateway-provider
     - name: postgres
     - name: platform-secrets
   sourceRef:

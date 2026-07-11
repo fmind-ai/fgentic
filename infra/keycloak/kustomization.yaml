@@ -1,0 +1,9 @@
+# Sovereign reference IdP. MAS consumes its SOPS-backed OIDC client, while keeping the Flux layer
+# independently replaceable so an external Entra/generic provider does not change ESS manifests.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - helmrelease.yaml
+  - httproute.yaml
+  - networkpolicy.yaml
+  - realm-config.yaml

@@ -1,0 +1,214 @@
+name: Nightly smoke
+on:
+  schedule:
+    - cron: "41 3 * * *" # Nightly at 03:41 UTC; avoid common top-of-hour load.
+  workflow_dispatch:
+    inputs:
+      fault_injection:
+        description: Deliberately break the demo to verify failure detection and reporting
+        required: false
+        default: none
+        type: choice
+        options:
+          - none
+          - bad-model-image
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  demo:
+    name: Small-profile mention to reply
+    runs-on: ubuntu-latest
+    timeout-minutes: 19
+    env:
+      FGENTIC_DEMO_CLUSTER: fgentic-demo-smoke
+      FGENTIC_DEMO_CACHE_DIR: ${{ github.workspace }}/.agents/tmp/demo-buildkit-cache
+      SMOKE_DIAGNOSTICS_DIR: ${{ github.workspace }}/.agents/tmp/demo-diagnostics
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Install mise toolchain
+        uses: jdx/mise-action@v4
+      - name: Configure Docker Buildx
+        uses: docker/setup-buildx-action@v4
+      - name: Restore demo image cache
+        uses: actions/cache@v6
+        with:
+          path: ${{ github.workspace }}/.agents/tmp/demo-buildkit-cache
+          key: fgentic-demo-buildkit-${{ runner.os }}-${{ github.sha }}
+          restore-keys: |
+            fgentic-demo-buildkit-${{ runner.os }}-
+      - name: Inject an invalid demo model image
+        if: inputs.fault_injection == 'bad-model-image'
+        env:
+          BAD_MODEL_IMAGE: python:3.14-slim@sha256:0000000000000000000000000000000000000000000000000000000000000000
+        run: |
+          yq --inplace '
+            (select(.kind == "Deployment" and .metadata.name == "demo-llm") |
+              .spec.template.spec.containers[] | select(.name == "server") | .image) =
+              strenv(BAD_MODEL_IMAGE)
+          ' infra/models/demo/server.yaml
+          test "$(yq -r '
+            select(.kind == "Deployment" and .metadata.name == "demo-llm") |
+              .spec.template.spec.containers[] | select(.name == "server") | .image
+          ' infra/models/demo/server.yaml)" = "${BAD_MODEL_IMAGE}"
+      - name: Install and exercise the small profile
+        id: demo_up
+        continue-on-error: true
+        env:
+          # Leave time for diagnostics and teardown when the injected image never becomes ready.
+          FGENTIC_DEMO_TIMEOUT: ${{ inputs.fault_injection == 'bad-model-image' && '5m' || '14m' }}
+        run: mise run demo:up
+      - name: Collect failed demo diagnostics
+        if: always() && steps.demo_up.outcome != 'success'
+        run: bash scripts/collect-smoke-diagnostics.sh demo-up
+      - name: Tear down the demo
+        id: demo_down
+        if: always()
+        continue-on-error: true
+        run: mise run demo:down
+      - name: Collect failed teardown diagnostics
+        if: always() && steps.demo_down.outcome != 'success'
+        run: bash scripts/collect-smoke-diagnostics.sh demo-down
+      - name: Enforce demo result
+        if: always()
+        run: |
+          if [[ "${{ steps.demo_up.outcome }}" != "success" \
+            || "${{ steps.demo_down.outcome }}" != "success" ]]; then
+            echo "demo:up=${{ steps.demo_up.outcome }} demo:down=${{ steps.demo_down.outcome }}" >&2
+            exit 1
+          fi
+      - name: Preserve demo diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: demo-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ github.workspace }}/.agents/tmp/demo-diagnostics
+          if-no-files-found: warn
+          retention-days: 14
+
+  policy:
+    name: Authorization, traces, and NetworkPolicy conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 19
+    env:
+      NETWORK_POLICY_DIAGNOSTICS_DIR: ${{ github.workspace }}/.agents/tmp/policy-diagnostics
+      KIND_CLUSTER_NAME: fgentic-smoke-policy
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+      - name: Install mise toolchain
+        uses: jdx/mise-action@v4
+      - name: Verify A2A authorization boundary
+        id: a2a
+        continue-on-error: true
+        run: mise run test:a2a-authorization
+      - name: Verify governed MCP boundary
+        id: mcp
+        continue-on-error: true
+        run: mise run test:mcp-governance
+      - name: Verify the OTLP trace backend
+        id: tracing
+        continue-on-error: true
+        run: mise run test:tracing
+      - name: Run NetworkPolicy conformance and mutation guard
+        id: network
+        continue-on-error: true
+        run: mise run test:network-policies:kind
+      - name: Record policy results
+        if: always()
+        run: |
+          mkdir -p "${NETWORK_POLICY_DIAGNOSTICS_DIR}"
+          cat >"${NETWORK_POLICY_DIAGNOSTICS_DIR}/workflow-results.txt" <<EOF
+          a2a=${{ steps.a2a.outcome }}
+          mcp=${{ steps.mcp.outcome }}
+          tracing=${{ steps.tracing.outcome }}
+          network=${{ steps.network.outcome }}
+          EOF
+      - name: Enforce policy result
+        if: always()
+        run: |
+          if [[ "${{ steps.a2a.outcome }}" != "success" \
+            || "${{ steps.mcp.outcome }}" != "success" \
+            || "${{ steps.tracing.outcome }}" != "success" \
+            || "${{ steps.network.outcome }}" != "success" ]]; then
+            cat "${NETWORK_POLICY_DIAGNOSTICS_DIR}/workflow-results.txt" >&2
+            exit 1
+          fi
+      - name: Preserve policy diagnostics
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: policy-diagnostics-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ github.workspace }}/.agents/tmp/policy-diagnostics
+          if-no-files-found: warn
+          retention-days: 14
+
+  report:
+    name: Maintain failure tracker
+    if: always()
+    needs:
+      - demo
+      - policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      issues: write
+    env:
+      DEMO_RESULT: ${{ needs.demo.result }}
+      POLICY_RESULT: ${{ needs.policy.result }}
+      FAULT_INJECTION: ${{ inputs.fault_injection }}
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      TRACKING_TITLE: "[automation] Nightly small-profile smoke is failing"
+    steps:
+      - name: Open, refresh, or resolve the failure tracker
+        env:
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          issue_number="$(gh issue list --repo "${GITHUB_REPOSITORY}" --state all --limit 1000 \
+            --json number,title \
+            --jq 'map(select(.title == "[automation] Nightly small-profile smoke is failing")) | sort_by(.number) | first | .number // empty')"
+          fault_injection="${FAULT_INJECTION:-none}"
+
+          if [[ "${DEMO_RESULT}" != "success" || "${POLICY_RESULT}" != "success" ]]; then
+            report_file="${RUNNER_TEMP}/smoke-failure.md"
+            cat >"${report_file}" <<EOF
+          <!-- fgentic-nightly-smoke -->
+          The platform smoke test failed.
+
+          - Run: ${RUN_URL}
+          - Demo: ${DEMO_RESULT}
+          - Policy conformance: ${POLICY_RESULT}
+          - Fault injection: ${fault_injection}
+
+          Download the run's diagnostic artifacts for pod logs, pod descriptions, events, and
+          NetworkPolicy conformance output.
+          EOF
+            if [[ -z "${issue_number}" ]]; then
+              gh issue create --repo "${GITHUB_REPOSITORY}" --title "${TRACKING_TITLE}" \
+                --label area/ci --label bug --body-file "${report_file}"
+            else
+              if [[ "$(gh issue view "${issue_number}" --repo "${GITHUB_REPOSITORY}" \
+                --json state --jq .state)" == "CLOSED" ]]; then
+                gh issue reopen "${issue_number}" --repo "${GITHUB_REPOSITORY}"
+              fi
+              gh issue comment "${issue_number}" --repo "${GITHUB_REPOSITORY}" \
+                --body-file "${report_file}"
+            fi
+            exit 0
+          fi
+
+          if [[ -n "${issue_number}" ]] && \
+            [[ "$(gh issue view "${issue_number}" --repo "${GITHUB_REPOSITORY}" \
+              --json state --jq .state)" == "OPEN" ]]; then
+            recovery_file="${RUNNER_TEMP}/smoke-recovery.md"
+            cat >"${recovery_file}" <<EOF
+          Recovered in ${RUN_URL}. Both the small-profile demo and policy conformance passed.
+          EOF
+            gh issue comment "${issue_number}" --repo "${GITHUB_REPOSITORY}" \
+              --body-file "${recovery_file}"
+            gh issue close "${issue_number}" --repo "${GITHUB_REPOSITORY}"
+          fi

@@ -1,7 +1,7 @@
 # The shared web Gateway — identical for every environment; only ${server_name} and
 # ${cluster_issuer} come from platform-settings (letsencrypt-prod on GCP, local-ca on k3d).
 # cert-manager watches the annotation and provisions the single multi-SAN `matrix-tls` Secret
-# (SANs: apex + chat/matrix/auth). ACME HTTP-01 cannot issue wildcards, so listeners are
+# (SANs: apex + chat/matrix/auth/id/grafana). ACME HTTP-01 cannot issue wildcards, so listeners are
 # per-host; every HTTPS listener references the one `matrix-tls` secret, so cert-manager issues
 # a single certificate covering all of them.
 apiVersion: gateway.networking.k8s.io/v1
@@ -61,6 +61,18 @@ spec:
       protocol: HTTPS
       port: 443
       hostname: auth.${server_name}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: matrix-tls
+      allowedRoutes:
+        namespaces:
+          from: All
+    # Optional reference IdP (Keycloak).
+    - name: https-id
+      protocol: HTTPS
+      port: 443
+      hostname: id.${server_name}
       tls:
         mode: Terminate
         certificateRefs:

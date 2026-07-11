@@ -1,0 +1,22 @@
+# Mistral's Kubernetes API surface in agentgateway v1.3.1 is the OpenAI-compatible provider:
+# host, port, and path are siblings of `openai` in the pinned CRD. A host override disables the
+# provider's connector defaults, so TLS must be restored explicitly with system trust + pinned SNI.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: llm-mistral
+  namespace: agentgateway-system
+spec:
+  ai:
+    provider:
+      openai:
+        model: ${llm_model}
+      host: api.mistral.ai
+      port: 443
+      path: /v1/chat/completions
+  policies:
+    auth:
+      secretRef:
+        name: mistral-secret
+    tls:
+      sni: api.mistral.ai

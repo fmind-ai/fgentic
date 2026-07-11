@@ -9,6 +9,12 @@ metadata:
 spec:
   interval: 30m
   path: ./apps/matrix-a2a-bridge/deploy
+  # Optional external-network units append their own bridged-origin components here. Keeping
+  # one Flux field owner makes new network profiles composable without editing the app manifest.
+  components: []
+  # Target clusters append live provider identities here. An explicit empty list makes
+  # `/spec/patches/-` safe without placing any provider grant in canonical app values.
+  patches: []
   prune: true
   dependsOn:
     - name: platform-secrets # registration + database Secrets

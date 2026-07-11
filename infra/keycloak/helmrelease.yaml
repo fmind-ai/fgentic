@@ -1,0 +1,121 @@
+# KeycloakX 7.2.2 is Apache-2.0, actively maintained, and deploys the official upstream image.
+# The chart defaults to Keycloak 26.6.4; override it with 26.7.0, the current stable release with
+# the July 2026 security fixes. The official Operator is closer to upstream but adds cluster-wide
+# CRDs and an operator lifecycle for one optional instance; Bitnami's public Keycloak artifacts no
+# longer provide maintained, version-pinned production images.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: keycloak
+  namespace: keycloak
+spec:
+  interval: 30m
+  timeout: 10m
+  install:
+    remediation:
+      retries: -1
+  upgrade:
+    remediation:
+      retries: -1
+  releaseName: keycloak
+  chart:
+    spec:
+      chart: keycloakx
+      version: "7.2.2"
+      sourceRef:
+        kind: HelmRepository
+        name: codecentric
+        namespace: flux-system
+  values:
+    fullnameOverride: keycloak
+    nameOverride: keycloak
+    replicas: 1
+
+    image:
+      repository: quay.io/keycloak/keycloak
+      tag: "26.7.0"
+      pullPolicy: IfNotPresent
+
+    # The official image starts through kc.sh. Startup import is idempotent: Keycloak imports the
+    # realm only when it does not exist, preserving runtime state on later pod restarts.
+    command:
+      - /opt/keycloak/bin/kc.sh
+      - start
+      - --import-realm
+
+    serviceAccount:
+      create: true
+      automountServiceAccountToken: false
+    rbac:
+      create: false
+    enableServiceLinks: false
+
+    podSecurityContext:
+      fsGroup: 1000
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop:
+          - ALL
+      runAsGroup: 1000
+      runAsNonRoot: true
+      runAsUser: 1000
+
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+
+    database:
+      vendor: postgres
+      hostname: platform-pg-rw.postgres.svc.cluster.local
+      port: 5432
+      database: keycloak
+      username: keycloak
+      existingSecret: pg-keycloak
+      existingSecretKey: password
+
+    proxy:
+      enabled: true
+      mode: xforwarded
+      http:
+        enabled: true
+    http:
+      relativePath: "/"
+      internalPort: http-internal
+      internalScheme: HTTP
+    metrics:
+      enabled: true
+    health:
+      enabled: true
+    service:
+      type: ClusterIP
+      httpPort: 80
+      httpsPort: null
+
+    extraEnv: |
+      - name: KC_HOSTNAME
+        value: https://id.${server_name}
+      # CNPG rejects plaintext database sessions; the leading '?' is required by Keycloak's
+      # db-url-properties option for PostgreSQL JDBC query parameters.
+      - name: KC_DB_URL_PROPERTIES
+        value: "?sslmode=require"
+      - name: KC_DB_POOL_MAX_SIZE
+        value: "20"
+    extraEnvFrom: |
+      - secretRef:
+          name: keycloak-credentials
+
+    extraVolumes: |
+      - name: realm
+        configMap:
+          name: keycloak-realm
+    extraVolumeMounts: |
+      - name: realm
+        mountPath: /opt/keycloak/data/import
+        readOnly: true

@@ -4,7 +4,7 @@ Status: Accepted
 
 ## Context
 
-Three stateful tenants need durable Postgres: **Synapse** (homeserver), **MAS** (auth), and the **bridge** (the mautrix StateStore, so ghost registrations survive restarts — [ADR 0005](0005-matrix-a2a-bridge-appservice.md)). The project principle is "**bridging infra, not embedded databases**": shared infrastructure exposed to independent apps without coupling them.
+Five core stateful tenants need durable Postgres: **Synapse** (homeserver), **MAS** (auth), the **bridge** (the mautrix StateStore, so ghost registrations survive restarts — [ADR 0005](0005-matrix-a2a-bridge-appservice.md)), **kagent**, and the optional **Keycloak** reference IdP. Every enabled external-network bridge adds another stateful tenant. The project principle is "**bridging infra, not embedded databases**": shared infrastructure exposed to independent apps without coupling them.
 
 Alternatives considered and rejected:
 
@@ -19,13 +19,17 @@ Run **one shared CloudNativePG cluster** (`platform-pg`, ns `postgres`) that exp
 1. **`synapse`** — created with **`C` collation** (Synapse's hard requirement).
 1. **`mas`** — the Matrix Authentication Service store.
 1. **`bridge`** — the mautrix StateStore.
+1. **`kagent`** — agent and session persistence.
+1. **`keycloak`** — the optional reference IdP's realm, client, user, and session state.
 
-TLS is enforced end-to-end (`sslmode=require`). A single operator owns backups, connection policy, and failover for all stateful tenants; role passwords are SOPS-encrypted secrets decrypted in-cluster by Flux.
+Opt-in Kustomize components append one role/database without replacing the canonical Postgres layer. The shipped references use **`slackbridge`** and **`telegrambridge`**; their password Secrets do not exist in a normal core bootstrap.
+
+TLS and the database/role pairing are enforced at connection admission. `pg_hba` contains one `hostssl <database> <role> … scram-sha-256` rule per tenant, then rejects every other TLS or plaintext connection. Optional network components prepend only their own pair and remove it during the `NOLOGIN` offboard phase. This compensates for PostgreSQL's default `CONNECT` grant to `PUBLIC` instead of relying on schema ownership after a cross-database login has already succeeded. A single operator owns backups, connection policy, and failover for all stateful tenants; role passwords are SOPS-encrypted secrets decrypted in-cluster by Flux.
 
 ## Consequences
 
 1. One operator, one backup policy, one connection posture — the shared-infra pattern demonstrated concretely.
 1. `C` collation is set per-database, so Synapse's requirement is satisfied without forcing it on `mas`/`bridge`.
-1. Scoped roles keep tenants isolated (no cross-database access), so a compromised `bridge` role cannot read Synapse's tables.
-1. **Future interop bridges each want their own database** — mautrix officially requires a dedicated DB per bridge, so the external-network phase adds one CloudNativePG database per bridge (`telegram`, `slack`, …) rather than sharing `bridge`.
+1. Scoped roles plus exact HBA pairs reject cross-database logins, so a compromised `bridge` credential cannot connect to Synapse's database or read its tables through the supported network path.
+1. **Interop bridges each have their own database** — mautrix requires unrelated programs to avoid sharing a database, so Slack and Telegram compose `slackbridge` and `telegrambridge` into this cluster rather than sharing `bridge` or each other.
 1. The pattern mirrors the sibling `dev.fmind` bridging-infra principle, adapted from schema-per-service to database-per-service precisely because of Synapse's collation constraint.

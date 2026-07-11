@@ -1,3 +1,14 @@
+# Bridged-origin policy is derived only from configured, anchored full-MXID namespaces. The
+# network label is bounded audit attribution; it must be a lowercase DNS-style label. Patterns
+# use one trailing '*' in the localpart and an exact homeserver. Display names and bare
+# localparts are never identity evidence. A matching bridged sender remains denied unless the
+# target agent's allowedSenders explicitly matches its full MXID.
+bridgedOrigins:
+  slack:
+    - "@slack_*:fgentic.fmind.ai"
+  telegram:
+    - "@telegram_*:fgentic.fmind.ai"
+
 # Ghost -> kagent agent routing map, and the bridge's authorization allowlist: only ghosts
 # listed here can be invoked. Key = the agent ghost local-part (@agent-k8s -> "agent-k8s");
 # value = the kagent Agent's namespace + name. The A2A endpoint the bridge dials is
@@ -6,16 +17,26 @@
 # Sender policy (SPEC §4 F6) — per agent, optional:
 #   allowedServers: extra homeservers whose users may invoke the agent (the bridge's own
 #                   server is always allowed; federated senders are deny-by-default).
-#   allowedSenders: '*' globs over full user IDs; empty = anyone on an allowed server.
+#   allowedSenders: '*' globs over full user IDs; empty = native Matrix users on an allowed
+#                   server, but never a sender matching bridgedOrigins.
+#   description: startup fallback while the AgentCard is unavailable.
+#   avatarURL: optional existing mxc:// URI; HTTP(S) icons are not uploaded implicitly.
 agents:
-  agent-assistant:
+  agent-platform-helper:
     namespace: kagent
-    name: platform-assistant
-    # allowedServers: [partner.example]
-    # allowedSenders: ["@ops-*:partner.example", "@admin:fgentic.fmind.ai"]
-  agent-k8s:
+    name: platform-helper
+    description: Read-only diagnostics for the evaluation profile's Kubernetes namespaces.
+    # avatarURL: mxc://fgentic.fmind.ai/media-id
+    # To admit one immutable Slack puppet deliberately, add
+    # "@slack_t0123456789-u0123456789:fgentic.fmind.ai" to this list.
+    allowedSenders: ["@alice:fgentic.fmind.ai"]
+  agent-docs-qa:
     namespace: kagent
-    name: k8s-agent
-  agent-helm:
+    name: docs-qa
+    description: Answers architecture and operations questions from local Fgentic documentation.
+    allowedSenders: ["@alice:fgentic.fmind.ai"]
+  agent-scribe:
     namespace: kagent
-    name: helm-agent
+    name: scribe
+    description: Summarizes pasted or quoted room discussion without tools.
+    allowedSenders: ["@alice:fgentic.fmind.ai"]

@@ -1,8 +1,9 @@
 # Local k3d cluster for Fgentic. Binds loopback 80/443 to the Traefik/Gateway LoadBalancer so
 # Element Web + Synapse + MAS are reachable at their canonical https://*.fgentic.localhost URLs
-# (ESS bakes https public URLs into its config — a port suffix would break MAS/Element). Flannel
-# CNI does not enforce NetworkPolicy locally (that is a GKE Dataplane-V2 concern) — manifests
-# stay identical; the policy is simply inert on k3d.
+# (ESS bakes https public URLs into its config — a port suffix would break MAS/Element). K3s does
+# run its embedded kube-router NetworkPolicy controller, but this constrained rootless/userns host
+# aborts the generated iptables-restore with a netlink "Message too large" error. Treat local
+# policies as intent-only and run security conformance on a known enforcing cluster.
 apiVersion: k3d.io/v1alpha5
 kind: Simple
 metadata:
