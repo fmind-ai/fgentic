@@ -1,6 +1,13 @@
 # AGENTS.md (Project) — Fgentic
 
-An open-standard, **federated** AI-agent collaboration platform: humans and AI agents share **Matrix** rooms, `@mention` to delegate tasks over **A2A** to **kagent** agents, governed by **agentgateway**, stitched by a small **Go bridge** — with Matrix federation as the path to cross-organization agent collaboration (the project's thesis: the open alternative to closed, tenant-anchored agent platforms). Kubernetes-native, Flux GitOps. Read [SPEC.md](../SPEC.md) first — the binding specification and plan (design decisions D1–D15 with evidence, security model §7, federation design §8, licensing + homeserver strategy §10, roadmap §13); [PLAN.md](../PLAN.md) is the original research record. Where they disagree, SPEC.md wins. Status: **Phases 0–3 + observability live on the local k3d cluster** (`fgentic.localhost`): @mention → bridge → agentgateway (Vertex AI Gemini) → kagent → in-room reply, with threading, rate limits, TLS via a local CA, and Prometheus/Grafana metrics. Next: GKE reference deployment (`clusters/gcp` — Terraform bootstrap + APIs applied; cluster creation gated on explicit approval), then §9 traces, then federation (Phase 6).
+An open-standard, **sovereignty-first** AI-agent collaboration platform: humans and AI agents share **Matrix** rooms, `@mention` to delegate tasks over **A2A** to **kagent** agents, governed by **agentgateway**, stitched by a small **Go bridge** — self-hosted end-to-end with a per-cluster choice of model backend (SPEC D16), and Matrix federation as the differentiating destination for cross-organization agent collaboration (the open alternative to closed, tenant-anchored agent platforms). Kubernetes-native, Flux GitOps. Read [SPEC.md](../SPEC.md) first — the binding specification and plan (design decisions D1–D16 with evidence, security model §7, federation design §8, licensing + homeserver strategy §10, roadmap §13); [PLAN.md](../PLAN.md) is the original research record. Where they disagree, SPEC.md wins. Status: **Phases 0–3 + observability live on the local k3d cluster** (`fgentic.localhost`): @mention → bridge → agentgateway (reference: Vertex AI Gemini) → kagent → in-room reply, with threading, rate limits, TLS via a local CA, and Prometheus/Grafana metrics. GKE reference (`clusters/gcp`): Terraform bootstrap + APIs applied; cluster creation gated on explicit approval (issue #59).
+
+## Roadmap & issue conventions (for coding agents)
+
+- The executable roadmap is **GitHub milestones M0–M11** (sequenced sovereignty-first; SPEC §13 has the map). Each milestone has an `kind/epic` tracker issue with sweep order and definition of done — start there, work top-to-bottom.
+- Labels: `agent-ready` = groomed, pick up as-is; `needs-human` = blocked on a maintainer decision/approval/account/spend — do the preparable parts, then hand off explicitly. `area/*` scopes the subsystem; `kind/*` the work type.
+- Per issue: follow its Tasks + Acceptance criteria literally; run `mise run check` + `mise run test` warning-free before claiming done; tick the epic checklist via the issue's closing keywords (`Fixes #N` in the PR).
+- Do not start M8 (federation) items before their epic says the lab topology exists; never merge anything that assumes a single homeserver forever (SPEC §13's standing rule).
 
 ## Layout
 
@@ -21,6 +28,7 @@ An open-standard, **federated** AI-agent collaboration platform: humans and AI a
 - `docs/adr/` — Architecture Decision Records.
 - `.agents/skills/matrix-agents/` — operator runbooks (bootstrap, add-agent, add-bridge, DNS/TLS).
 - `mise.toml` — root task vocabulary + pinned toolchain. `SPEC.md` (the spec + plan) / `PLAN.md` (original research) / `README.md` (humans).
+- Community meta: `CONTRIBUTING.md` (workflow, labels, DCO), `GOVERNANCE.md`, `MAINTAINERS.md`, `SECURITY.md` (private vulnerability reporting — never file security bugs as public issues), `ADOPTERS.md`, `.github/ISSUE_TEMPLATE/` + PR template.
 
 ## Platform protocols (how agents participate at runtime)
 

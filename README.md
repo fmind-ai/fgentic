@@ -1,8 +1,8 @@
-# Fgentic — Federated Agentic Collaboration Platform
+# Fgentic — Sovereign Agentic Collaboration Platform
 
-**Humans and AI agents in the same chat rooms. `@mention` an agent to delegate a task. It replies. Organizations federate, so agents collaborate across company boundaries. All on open standards, all self-hosted, all on Kubernetes.**
+**Humans and AI agents in the same chat rooms. `@mention` an agent to delegate a task. It replies. Self-hosted, out of the box, on open standards — you choose where your prompts go, and organizations can ultimately federate so agents collaborate across company boundaries.**
 
-The agentic AI landscape is consolidating around closed, tenant-anchored platforms. **Fgentic** is the open counter-proposal: a reference platform an enterprise can self-host and **federate** — built exclusively from open protocols and genuinely open-source components, with every layer swappable and no proprietary SaaS in the critical path. It stitches together five open pieces:
+The agentic AI landscape is consolidating around closed, tenant-anchored platforms — Slack, Teams, and Google Chat all ship @mentionable agents, every one anchored to a vendor's tenant. **Fgentic** is the open counter-proposal: a **sovereign** platform an enterprise can self-host end-to-end — built exclusively from open protocols and genuinely open-source components, with every layer swappable, a per-cluster choice of model backend (self-hosted included), no proprietary SaaS in the critical path, and **federation** as the destination. It stitches together five open pieces:
 
 - **[Matrix](https://matrix.org)** — the collaboration fabric and UI (self-hosted **Synapse** + **Matrix Authentication Service**, with **Element** Web/X as clients). Matrix federation is the only cross-organization messaging federation proven in production at scale (Germany's healthcare system, NATO, Sweden's public sector).
 - **[A2A](https://a2a-protocol.org)** (Agent2Agent, a Linux Foundation protocol, spec v1.0) — how tasks are delegated to agents, within and across organizations.
@@ -18,9 +18,10 @@ Because Matrix is a bridged protocol, the same rooms can also connect to **Slack
 
 ## Core principles
 
+1. **Sovereignty first.** Self-hosted on any conformant Kubernetes; the model backend is a per-cluster choice ranked by sovereignty — self-hosted vLLM (prompts never leave the cluster) > EU API (Mistral) > hyperscalers (Vertex/Anthropic/OpenAI) — and every layer has a documented exit ([SPEC.md D16](SPEC.md)).
 1. **Open standards only.** Matrix, A2A, MCP, OIDC, Kubernetes, Gateway API. Every component is replaceable; the protocols are the platform.
 1. **No strings attached.** No paywalls or feature-gated open-core in the critical path — and where an upstream component has caveats (ESS Community's Pro-gated HA, the AGPL Matrix/observability components), we say so openly and document Apache-2.0-licensed alternatives ([SPEC.md §10](SPEC.md)).
-1. **Federation is the point.** One org is the on-ramp; the destination is companies collaborating agent-to-agent across boundaries — Matrix federation for the shared-room collaboration plane, A2A (Signed AgentCards, mTLS/OIDC) for the direct delegation plane.
+1. **Federation is the destination.** One sovereign org is the on-ramp; the endgame is companies collaborating agent-to-agent across boundaries — Matrix federation for the shared-room collaboration plane, A2A (Signed AgentCards, mTLS/OIDC) for the direct delegation plane ([SPEC.md §8](SPEC.md), milestone M8).
 1. **Governed by construction.** All agent LLM egress flows through agentgateway (single credential, unified telemetry, token budgets); every agent invocation is attributable to a Matrix identity.
 1. **GitOps everything.** Flux v2 reconciles the entire platform from this repository; secrets are SOPS-encrypted; nothing is applied by hand.
 
@@ -63,9 +64,11 @@ Reference deployment: `fgentic.fmind.ai` (Element at `chat.`, Synapse at `matrix
 1. **Federation honesty.** Matrix federation gives _organization-level_ cryptographic identity (a partner's server vouches for its users), full room replication to every participating server, and best-effort cross-server redaction. We design for that reality — closed federation, room v12, server ACLs, per-agent sender allowlists, policy-as-code borders, and A2A v1.0 Signed AgentCards for per-agent identity — instead of overclaiming ([SPEC.md §8](SPEC.md)).
 1. **Cost is a first-class failure mode.** Every mention is an LLM invocation, so the bridge rate-limits per sender and per room, and agentgateway meters tokens and spend — the closest prior-art project died of exactly this.
 
-## Project status
+## Project status & roadmap
 
-**Live end-to-end on the local reference cluster.** A Matrix `@mention` in Element produces a real Gemini-backed agent reply — through the bridge, agentgateway (Vertex AI, no agent ever holds a model key), and kagent, with conversation threading, rate limits, sanitized failure replies, and Prometheus/Grafana observability (bridge delegation metrics + gateway GenAI token metering + the LLM spend alert). Every layer reconciles from this repository via Flux; the same manifests drive the GKE reference profile (`clusters/gcp`), which deploys next ([SPEC.md §13](SPEC.md)). The adversarial-review fixes (D1–D15) are all implemented and unit-tested ([SPEC.md §4](SPEC.md)).
+**Live end-to-end on the local reference cluster.** A Matrix `@mention` in Element produces a real LLM-backed agent reply — through the bridge, agentgateway (no agent ever holds a model key), and kagent, with conversation threading, rate limits, sanitized failure replies, and Prometheus/Grafana observability (bridge delegation metrics + gateway GenAI token metering + the LLM spend alert). Every layer reconciles from this repository via Flux; the same manifests drive the GKE reference profile (`clusters/gcp`). The adversarial-review fixes (D1–D15) are all implemented and unit-tested ([SPEC.md §4](SPEC.md)).
+
+**The roadmap lives on [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones)** (M0–M11, each with an epic tracker issue), sequenced sovereignty-first: hygiene → sovereign model profiles → enterprise SSO → one-command evaluation install → test harness → traces & audit → security hardening → interop bridges (Slack first) → **federation preview (the thesis)** → production reference → community → the sovereignty kit (reference architecture + compliance + exit strategy). Issues labeled `agent-ready` are groomed for autonomous coding agents; `needs-human` marks decisions, approvals, or spend ([SPEC.md §13](SPEC.md)).
 
 ## Quickstart (local, k3d)
 
@@ -96,18 +99,23 @@ apps/matrix-a2a-bridge/  # the Go bridge (mautrix/go appservice + a2a-go client)
 infra/{terraform,flux,gateway,postgres,matrix,agentgateway,kagent,bridges,secrets}
 clusters/               # Flux entrypoints: base/ DAG + local/ (k3d) and gcp/ (GKE) overlays
 docs/adr/                # Architecture Decision Records
-.github/workflows/       # CI (mise gates) + CD (signed, digest-pinned bridge image)
+.github/                 # CI (mise gates) + CD (signed, digest-pinned bridge image) + issue/PR templates
 .agents/                 # AGENTS.md + operator runbooks
 SPEC.md                  # the binding technical specification (decisions, security, federation, roadmap)
 PLAN.md                  # the original architecture + research record
+CONTRIBUTING.md          # how to contribute (workflow, labels, DCO) — with GOVERNANCE, SECURITY, MAINTAINERS, ADOPTERS
 ```
 
 ## Contributing
 
-1. Start with [SPEC.md](SPEC.md) — the roadmap (§13) is the backlog; design decisions (§4) and ADRs in [docs/adr/](docs/adr/) capture what is settled (propose a new ADR to revisit one).
+Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow (issues, labels, DCO sign-off) and [GOVERNANCE.md](GOVERNANCE.md) for how the project is run. The short version:
+
+1. Start with [SPEC.md](SPEC.md) — the [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones) are the backlog; design decisions (§4) and ADRs in [docs/adr/](docs/adr/) capture what is settled (propose a new ADR to revisit one).
 1. `mise run check` and `mise run test` must pass warning-free; git hooks (lefthook) enforce the same tasks locally that CI runs.
 1. Conventions live in [.agents/AGENTS.md](.agents/AGENTS.md) (they bind human and AI contributors alike): Go, type-safe, small composable units, no tech debt, Conventional Commits, DCO sign-off.
 1. Never commit plaintext secrets — SOPS-encrypted `*.sops.yaml` only (gitleaks runs pre-commit).
+
+Security reports go through [SECURITY.md](SECURITY.md), not public issues. Deployments and pilots: add yourself to [ADOPTERS.md](ADOPTERS.md).
 
 ## Standards & building blocks
 
