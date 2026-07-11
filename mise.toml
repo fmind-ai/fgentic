@@ -82,6 +82,7 @@ depends = [
   "check:supply-chain",
   "check:agent-zoo",
   "check:demo",
+  "check:federation",
   "check:smoke-workflow",
   "check:mautrix-bridges",
   "check:workflows",
@@ -177,6 +178,10 @@ run = "bash scripts/test-agent-zoo.sh"
 [tasks."check:demo"]
 description = "Validate the credential-free demo overlay, lifecycle script, and embedded model"
 run = "bash scripts/test-demo.sh"
+
+[tasks."check:federation"]
+description = "Validate the offline two-homeserver federation topology, trust, and lifecycle contracts"
+run = "bash scripts/test-federation.sh"
 
 [tasks."check:smoke-workflow"]
 description = "Validate nightly demo, policy conformance, diagnostics, and issue tracking"
@@ -277,6 +282,14 @@ run = "bash scripts/demo.sh up"
 [tasks."demo:down"]
 description = "Delete only the ephemeral fgentic-demo evaluation cluster"
 run = "bash scripts/demo.sh down"
+
+[tasks."fed:up"]
+description = "Reconcile and prove the provider-free two-homeserver federation lab"
+run = "bash scripts/federation.sh up"
+
+[tasks."fed:down"]
+description = "Delete only the owned fgentic-fed federation cluster"
+run = "bash scripts/federation.sh down"
 
 [tasks."bridge:load"]
 description = "Build the bridge image and side-load it into the local k3d cluster (matrix-a2a-bridge:local)"

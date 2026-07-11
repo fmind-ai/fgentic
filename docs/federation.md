@@ -22,3 +22,33 @@ When org B's agents should be _invoked_ (not just conversed with): expose select
 ### 8.4 E2EE revisit (supersedes ADR 0008's scope)
 
 For federated rooms, "unencrypted" means the partner's server operators read everything, forever. Options, in order of preference: (a) keep federated agent rooms plaintext but **scoped** — dedicated per-project rooms, no sensitive-room federation, contractual controls (ship this first; it is what TI-Messenger-style deployments do in practice); (b) adopt appservice E2EE (mautrix crypto) later if demanded — acknowledged as officially "not recommended" and config-heavy. Document (a) as ADR 0008-bis when Phase 6 starts.
+
+### 8.5 Disposable two-homeserver federation lab
+
+`mise run fed:up` is the executable M8 baseline: two independently named Matrix homeservers in the separately owned `fgentic-fed` k3d cluster. The lab deliberately uses one Kubernetes control plane. That still exercises Matrix discovery, TLS, server signing, event replication, and federation authorization while keeping cross-cluster routing out of the first acceptance boundary. It does **not** claim infrastructure or failure-domain isolation; use two clusters when testing independent networks, control planes, or disaster recovery.
+
+| Organization | Matrix server name        | Namespace  | Synapse database |
+| ------------ | ------------------------- | ---------- | ---------------- |
+| A            | `org-a.fgentic.localhost` | `matrix`   | `synapse`        |
+| B            | `org-b.fgentic.localhost` | `matrix-b` | `synapse_b`      |
+
+Both homeservers are Synapse-only ESS Community releases. They share one CloudNativePG cluster but have separate roles, databases, credentials, and namespace-local credential copies. Each server owns its apex `/.well-known/matrix/server` delegation and local-CA certificate; the public lab CA is mounted as outbound federation trust. No MAS, IdP, Matrix-to-A2A appservice, agent runtime, model endpoint, or provider account is part of this lab.
+
+Federation is closed in both directions: each Synapse `federation_domain_whitelist` contains exactly the two lab server names. The lab disables public signing-key notaries with `trusted_key_servers: []`, so each server retrieves its partner's signing key directly. That direct-lookup choice is a local-lab exception, not the final trust policy; [issue #52](https://github.com/fmind-ai/fgentic/issues/52) owns the hardened room and federation policy layer.
+
+Run the proof from a clean workstation with Docker, Git, and mise:
+
+```bash
+mise install
+mise run fed:up
+```
+
+The command creates or reuses only the owned `fgentic-fed` cluster, reconciles the federation profile, provisions Alice on A and Bob on B, creates a federated room, and requires a message from each user to arrive through the other homeserver before it succeeds. It leaves the cluster running so the homeservers, room, and reconciliation state can be inspected. No provider connection or paid service is used.
+
+Remove the lab when inspection is complete:
+
+```bash
+mise run fed:down
+```
+
+Teardown is ownership-guarded and removes only the disposable federation cluster and its locally built images. The normal local, demo, and production profiles are separate and remain untouched.

@@ -5,9 +5,13 @@ set -euo pipefail
 
 readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly DEFAULT_CLUSTER_NAME="fgentic-demo"
-readonly SERVER_NAME="fgentic.localhost"
+readonly DEMO_SERVER_NAME="fgentic.localhost"
+readonly FEDERATION_CLUSTER_NAME="fgentic-fed"
+readonly FEDERATION_SERVER_NAME="org-a.fgentic.localhost"
+readonly FEDERATION_LOOPBACK="127.0.0.2"
 readonly MAS_ADMIN_CLIENT_ID="01KX8D3M0AD3M0ADM1NC13NT01"
-readonly PYTHON_IMAGE="python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1"
+readonly SOURCE_BASE_IMAGE="alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40"
+readonly SOURCE_GIT_PACKAGES="git=2.52.0-r0 git-daemon=2.52.0-r0 busybox-extras=1.37.0-r30"
 
 usage() {
 	cat <<'EOF'
@@ -53,7 +57,7 @@ cluster_exists() {
 
 cluster_owned_by_demo() {
 	[ "$(docker inspect --format '{{index .Config.Labels "dev.fgentic.demo"}}' \
-		"k3d-${CLUSTER_NAME}-server-0" 2>/dev/null || true)" = "true" ]
+		"k3d-${CLUSTER_NAME}-server-0" 2>/dev/null || true)" = "${OWNER_LABEL}" ]
 }
 
 configure_provider() {
@@ -146,7 +150,12 @@ snapshot_source() {
       .data.openai_host = strenv(OPENAI_HOST) |
       .data.azure_openai_resource = strenv(AZURE_OPENAI_RESOURCE) |
       .data.demo_bridge_tag = strenv(BRIDGE_TAG)
-    ' "${SNAPSHOT_DIR}/clusters/demo/platform-settings.yaml"
+    ' "${SNAPSHOT_DIR}/${OVERLAY_PATH}/platform-settings.yaml"
+	if [ "${PROFILE}" = "federation" ]; then
+		FED_GATEWAY_IP="${FEDERATION_GATEWAY_IP}" yq --inplace \
+			'.data.federation_gateway_ip = strenv(FED_GATEWAY_IP)' \
+			"${SNAPSHOT_DIR}/${OVERLAY_PATH}/platform-settings.yaml"
+	fi
 
 	git -C "${SNAPSHOT_DIR}" init --quiet --initial-branch main
 	git -C "${SNAPSHOT_DIR}" add --all
@@ -161,17 +170,24 @@ snapshot_source() {
 
 build_and_load_images() {
 	cat >"${SOURCE_CONTEXT}/Dockerfile" <<EOF
-FROM ${PYTHON_IMAGE}
+FROM ${SOURCE_BASE_IMAGE}
+RUN apk add --no-cache ${SOURCE_GIT_PACKAGES}
+RUN mkdir -p /www/cgi-bin && ln -s /usr/libexec/git-core/git-http-backend /www/cgi-bin/git
 COPY --chown=65532:65532 repo.git /srv/repo.git
+ENV GIT_PROJECT_ROOT=/srv GIT_HTTP_EXPORT_ALL=1
 USER 65532:65532
 EXPOSE 8080
-ENTRYPOINT ["python3", "-B", "-m", "http.server", "8080", "--directory", "/srv"]
+ENTRYPOINT ["httpd", "-f", "-v", "-p", "8080", "-h", "/www"]
 EOF
 
 	build_image "${SOURCE_IMAGE}" "${SOURCE_CONTEXT}/Dockerfile" "${SOURCE_CONTEXT}" source
-	build_image "${BRIDGE_IMAGE}" "${ROOT_DIR}/apps/matrix-a2a-bridge/Dockerfile" \
-		"${ROOT_DIR}/apps/matrix-a2a-bridge" bridge
-	k3d image import --cluster "${CLUSTER_NAME}" "${SOURCE_IMAGE}" "${BRIDGE_IMAGE}" >/dev/null
+	local images=("${SOURCE_IMAGE}")
+	if [ "${PROFILE}" = "demo" ]; then
+		build_image "${BRIDGE_IMAGE}" "${ROOT_DIR}/apps/matrix-a2a-bridge/Dockerfile" \
+			"${ROOT_DIR}/apps/matrix-a2a-bridge" bridge
+		images+=("${BRIDGE_IMAGE}")
+	fi
+	k3d image import --cluster "${CLUSTER_NAME}" "${images[@]}" >/dev/null
 }
 
 build_image() {
@@ -233,7 +249,7 @@ spec:
           ports:
             - {name: http, containerPort: 8080}
           readinessProbe:
-            httpGet: {path: /repo.git/HEAD, port: http}
+            tcpSocket: {port: http}
             periodSeconds: 2
           securityContext:
             allowPrivilegeEscalation: false
@@ -282,13 +298,13 @@ metadata:
   namespace: flux-system
 spec:
   interval: 1m
-  url: http://fgentic-demo-source.flux-system.svc.cluster.local:8080/repo.git
+  url: http://fgentic-demo-source.flux-system.svc.cluster.local:8080/cgi-bin/git/repo.git
   ref:
     branch: main
 EOF
+	flux reconcile source git flux-system --timeout=2m >/dev/null
 	kubectl --namespace flux-system wait gitrepository/flux-system \
 		--for=condition=ready --timeout=2m
-	flux reconcile source git flux-system --timeout=2m >/dev/null
 }
 
 timeout_seconds() {
@@ -376,6 +392,11 @@ apply_secret() {
 }
 
 create_ephemeral_secrets() {
+	if [ "${PROFILE}" = "federation" ]; then
+		create_federation_secrets
+		return
+	fi
+
 	if ! kubectl --namespace flux-system get secret fgentic-demo-bootstrap >/dev/null 2>&1; then
 		apply_secret flux-system fgentic-demo-bootstrap \
 			--from-literal=pg-synapse="$(random_hex 24)" \
@@ -478,6 +499,38 @@ EOF
 	fi
 }
 
+create_federation_secrets() {
+	local ca_cert="${FGENTIC_CA_DIR:-${HOME}/.local/share/fgentic/local-ca}/ca.crt"
+	[ -r "${ca_cert}" ] || die "local CA certificate not found: ${ca_cert}"
+	if ! kubectl --namespace flux-system get secret fgentic-demo-bootstrap >/dev/null 2>&1; then
+		apply_secret flux-system fgentic-demo-bootstrap \
+			--from-literal=pg-synapse="$(random_hex 24)" \
+			--from-literal=pg-synapse-b="$(random_hex 24)" \
+			--from-literal=alice-password="$(random_hex 24)" \
+			--from-literal=bob-password="$(random_hex 24)"
+	fi
+
+	local pg_synapse pg_synapse_b namespace
+	pg_synapse="$(bootstrap_secret_value pg-synapse)"
+	pg_synapse_b="$(bootstrap_secret_value pg-synapse-b)"
+	apply_secret postgres pg-synapse --type=kubernetes.io/basic-auth \
+		--from-literal=username=synapse --from-literal=password="${pg_synapse}"
+	apply_secret matrix pg-synapse --type=kubernetes.io/basic-auth \
+		--from-literal=username=synapse --from-literal=password="${pg_synapse}"
+	apply_secret postgres pg-synapse-b --type=kubernetes.io/basic-auth \
+		--from-literal=username=synapse_b --from-literal=password="${pg_synapse_b}"
+	apply_secret matrix-b pg-synapse-b --type=kubernetes.io/basic-auth \
+		--from-literal=username=synapse_b --from-literal=password="${pg_synapse_b}"
+
+	# Only the public root is mirrored into the homeserver namespaces. The CA key remains in
+	# cert-manager, and both runtime and config-check pods mount this ConfigMap read-only.
+	for namespace in matrix matrix-b; do
+		kubectl --namespace "${namespace}" create configmap fgentic-local-ca \
+			--from-file="ca.crt=${ca_cert}" --dry-run=client --output=yaml |
+			kubectl apply --filename - >/dev/null
+	done
+}
+
 demo_up() {
 	for command in base64 curl docker git jq k3d kubectl flux yq openssl tar; do
 		require_command "${command}"
@@ -487,7 +540,18 @@ demo_up() {
 		docker buildx version >/dev/null 2>&1 ||
 			die "FGENTIC_DEMO_CACHE_DIR requires Docker buildx"
 	fi
-	configure_provider
+	if [ "${PROFILE}" = "demo" ]; then
+		configure_provider
+	else
+		LLM_PROVIDER="demo"
+		LLM_MODEL="unused-federation-profile"
+		GCP_PROJECT="not-configured"
+		VERTEX_REGION="europe-west1"
+		OPENAI_HOST="api.openai.com"
+		AZURE_OPENAI_RESOURCE="not-configured"
+		MODEL_SECRET_NAME=""
+		MODEL_SECRET_VALUE=""
+	fi
 
 	WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo.XXXXXX")"
 	KUBECONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/fgentic-demo-kubeconfig.XXXXXX")"
@@ -497,11 +561,23 @@ demo_up() {
 	trap cleanup EXIT INT TERM
 
 	if ! cluster_exists; then
-		CLUSTER_NAME="${CLUSTER_NAME}" yq '.metadata.name = strenv(CLUSTER_NAME)' \
-			"${ROOT_DIR}/infra/k3d-config.yaml" \
-			>"${WORK_DIR}/k3d-config.yaml"
+		if [ "${PROFILE}" = "federation" ]; then
+			CLUSTER_NAME="${CLUSTER_NAME}" FED_LOOPBACK="${FEDERATION_LOOPBACK}" yq '
+          .metadata.name = strenv(CLUSTER_NAME) |
+          .ports[0].port = (strenv(FED_LOOPBACK) + ":80:80") |
+          .ports[1].port = (strenv(FED_LOOPBACK) + ":443:443") |
+          .options.k3s.extraArgs += [{
+            "arg": "--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<1Gi,imagefs.available<1Gi,nodefs.inodesFree<5%,imagefs.inodesFree<5%",
+            "nodeFilters": ["server:*"]
+          }]
+        ' "${ROOT_DIR}/infra/k3d-config.yaml" >"${WORK_DIR}/k3d-config.yaml"
+		else
+			CLUSTER_NAME="${CLUSTER_NAME}" yq '.metadata.name = strenv(CLUSTER_NAME)' \
+				"${ROOT_DIR}/infra/k3d-config.yaml" \
+				>"${WORK_DIR}/k3d-config.yaml"
+		fi
 		k3d cluster create --config "${WORK_DIR}/k3d-config.yaml" \
-			--runtime-label 'dev.fgentic.demo=true@server:*' \
+			--runtime-label "dev.fgentic.demo=${OWNER_LABEL}@server:*" \
 			--kubeconfig-update-default=false --kubeconfig-switch-context=false
 	else
 		cluster_owned_by_demo ||
@@ -510,23 +586,36 @@ demo_up() {
 	fi
 	k3d kubeconfig get "${CLUSTER_NAME}" >"${KUBECONFIG_FILE}"
 	export KUBECONFIG="${KUBECONFIG_FILE}"
+	if [ "${PROFILE}" = "federation" ]; then
+		FEDERATION_GATEWAY_IP="$(docker inspect "k3d-${CLUSTER_NAME}-serverlb" |
+			jq -er --arg network "k3d-${CLUSTER_NAME}" \
+			'.[0].NetworkSettings.Networks[$network].IPAddress')"
+	fi
 
 	snapshot_source
 	build_and_load_images
 	flux install >/dev/null
 	kubectl --namespace flux-system rollout status deployment/source-controller --timeout=2m
-	kubectl apply --server-side --filename \
-		https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/experimental-install.yaml \
-		>/dev/null
+	if ! kubectl get customresourcedefinition \
+		gateways.gateway.networking.k8s.io httproutes.gateway.networking.k8s.io \
+		>/dev/null 2>&1; then
+		kubectl apply --server-side --filename \
+			https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/experimental-install.yaml \
+			>/dev/null
+	fi
 	kubectl apply --kustomize "${SNAPSHOT_DIR}/infra/namespaces" >/dev/null
+	if [ "${PROFILE}" = "federation" ]; then
+		kubectl apply --filename \
+			"${SNAPSHOT_DIR}/infra/federation/namespaces/namespace.yaml" >/dev/null
+	fi
 	"${ROOT_DIR}/scripts/local-ca.sh"
 	create_ephemeral_secrets
 	apply_source_server
-	kubectl apply --kustomize "${SNAPSHOT_DIR}/clusters/demo" >/dev/null
+	kubectl apply --kustomize "${SNAPSHOT_DIR}/${OVERLAY_PATH}" >/dev/null
 
-	echo "Reconciling the small evaluation profile (timeout ${DEMO_TIMEOUT})..."
+	echo "Reconciling the ${PROFILE} evaluation profile (timeout ${DEMO_TIMEOUT})..."
 	wait_for_platform
-	"${ROOT_DIR}/scripts/seed-demo.sh"
+	"${ROOT_DIR}/${SEED_SCRIPT}"
 }
 
 demo_down() {
@@ -553,16 +642,38 @@ if (($# != 1)); then
 	exit 2
 fi
 
-CLUSTER_NAME="${FGENTIC_DEMO_CLUSTER:-${DEFAULT_CLUSTER_NAME}}"
+PROFILE="${FGENTIC_DEMO_PROFILE:-demo}"
+case "${PROFILE}" in
+demo)
+	CLUSTER_NAME="${FGENTIC_DEMO_CLUSTER:-${DEFAULT_CLUSTER_NAME}}"
+	SERVER_NAME="${DEMO_SERVER_NAME}"
+	OVERLAY_PATH="clusters/demo"
+	SEED_SCRIPT="scripts/seed-demo.sh"
+	OWNER_LABEL="true"
+	;;
+federation)
+	CLUSTER_NAME="${FGENTIC_DEMO_CLUSTER:-${FEDERATION_CLUSTER_NAME}}"
+	SERVER_NAME="${FEDERATION_SERVER_NAME}"
+	OVERLAY_PATH="clusters/federation"
+	SEED_SCRIPT="scripts/seed-federation.sh"
+	OWNER_LABEL="federation"
+	;;
+*) die "unsupported internal evaluation profile: ${PROFILE}" ;;
+esac
 DEMO_TIMEOUT="${FGENTIC_DEMO_TIMEOUT:-15m}"
+FEDERATION_GATEWAY_IP=""
 BRIDGE_TAG="demo-${RANDOM}-$$"
 SOURCE_IMAGE="fgentic-demo-source-${CLUSTER_NAME}:${BRIDGE_TAG}"
 BRIDGE_IMAGE="matrix-a2a-bridge:${BRIDGE_TAG}"
 [[ "${CLUSTER_NAME}" =~ ^[a-z0-9][a-z0-9-]{0,47}$ ]] || die "invalid FGENTIC_DEMO_CLUSTER"
-case "${CLUSTER_NAME}" in
-fgentic-demo | fgentic-demo-*) ;;
-*) die "FGENTIC_DEMO_CLUSTER must be fgentic-demo or start with fgentic-demo-" ;;
-esac
+if [ "${PROFILE}" = "demo" ]; then
+	case "${CLUSTER_NAME}" in
+	fgentic-demo | fgentic-demo-*) ;;
+	*) die "FGENTIC_DEMO_CLUSTER must be fgentic-demo or start with fgentic-demo-" ;;
+	esac
+elif [ "${CLUSTER_NAME}" != "${FEDERATION_CLUSTER_NAME}" ]; then
+	die "the federation profile cluster must be ${FEDERATION_CLUSTER_NAME}"
+fi
 [[ "${DEMO_TIMEOUT}" =~ ^[1-9][0-9]*[smh]$ ]] || die "invalid FGENTIC_DEMO_TIMEOUT"
 
 case "$1" in

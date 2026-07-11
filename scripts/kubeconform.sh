@@ -23,6 +23,14 @@ while IFS='=' read -r key value; do
   export "${key}=${value}"
 done <<< "${settings_env}"
 
+# Federation-only manifests introduce two overlay-scoped substitutions that intentionally do not
+# belong in production settings. Export their unreachable fixture values for the raw schema pass;
+# the effective org-a/org-b releases are rendered separately below through the recursive overlay.
+for key in federation_partner_server_name federation_gateway_ip; do
+  value="$(yq -er ".data.${key}" clusters/federation/platform-settings.yaml)"
+  export "${key}=${value}"
+done
+
 echo "==> Rendering + validating the pinned vLLM profile chart"
 VLLM_RELEASE=infra/models/vllm/helmrelease.yaml
 VLLM_REPOSITORY="$(yq -er 'select(.kind == "HelmRepository" and .metadata.name == "vllm") | .spec.url' infra/flux/sources.yaml)"
@@ -89,6 +97,27 @@ yq -e '.spec.values' "${ESS_RELEASE}" \
     --values - \
   | sed -e '/^Pulled: /d' -e '/^Digest: /d' \
   | "${KUBECONFORM[@]}"
+
+echo "==> Rendering + validating both federation-lab ESS releases"
+federation_render="$(flux build kustomization cluster-overlay-validation \
+  --path clusters/federation \
+  --kustomization-file scripts/testdata/flux-build-kustomization.yaml \
+  --dry-run \
+  --in-memory-build \
+  --strict-substitute \
+  --recursive \
+  --local-sources GitRepository/flux-system/flux-system=.)"
+for homeserver in 'matrix matrix-stack' 'matrix-b matrix-stack-b'; do
+  read -r namespace release <<< "${homeserver}"
+  yq -e "select(.kind == \"HelmRelease\" and .metadata.namespace == \"${namespace}\" and
+    .metadata.name == \"${release}\") | .spec.values" <<< "${federation_render}" \
+    | helm template ess "${ESS_REPOSITORY}" \
+      --version "${ESS_VERSION}" \
+      --namespace "${namespace}" \
+      --values - \
+    | sed -e '/^Pulled: /d' -e '/^Digest: /d' \
+    | "${KUBECONFORM[@]}"
+done
 
 echo "==> Rendering + validating pinned KeycloakX chart"
 keycloak_chart_version="$(yq -er '.spec.chart.spec.version' infra/keycloak/helmrelease.yaml)"
