@@ -8,7 +8,7 @@ metadata:
 
 # Fgentic Runbook
 
-An open-standard AI-agent collaboration platform: humans + agents share Matrix rooms and `@mention` to delegate over A2A. Layers: Matrix (ESS: Synapse + MAS + Element), the `matrix-a2a-bridge` (Go appservice), agentgateway (governed egress), kagent (agents). CD is Flux v2 pull-based; secrets are SOPS-age. See [PLAN.md](../../../PLAN.md).
+An open-standard AI-agent collaboration platform: humans + agents share Matrix rooms and `@mention` to delegate over A2A. Layers: Matrix (ESS: Synapse + MAS + Element), the `matrix-a2a-bridge` (Go appservice), agentgateway (governed egress), kagent (agents). CD is Flux v2 pull-based; secrets are SOPS-age. See [docs/architecture.md](../../../docs/architecture.md).
 
 ## Golden rules
 

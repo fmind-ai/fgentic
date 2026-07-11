@@ -5,7 +5,7 @@
 //
 // It owns the @agent-* ghost-user namespace on the homeserver, so every kagent agent appears
 // as a first-class room member (@agent-k8s:fgentic.fmind.ai, ...). See the package READMEs and the
-// repo PLAN.md / SPEC.md for the full design.
+// repo docs/ for the full design.
 package main
 
 import (
@@ -95,7 +95,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 	ep.On(event.StateMember, br.HandleMembership)
 	ep.Start(ctx)
 
-	// Prometheus metrics on a side port (SPEC §9.3), never on the appservice listener.
+	// Prometheus metrics on a side port (docs/observability.md §9.3), never on the appservice listener.
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("/metrics", promhttp.Handler())
 	metricsSrv := &http.Server{
@@ -128,7 +128,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 }
 
 // openState builds the bridge's state layer. With DATABASE_URL set, one shared Postgres pool
-// backs both the mautrix SQL StateStore and the bridge's own tables (SPEC §5); without it,
+// backs both the mautrix SQL StateStore and the bridge's own tables (docs/bridge.md §5); without it,
 // everything is in-memory (dev only — restarts lose threading and dedup).
 func openState(ctx context.Context, cfg config.Config, log *slog.Logger) (state.Store, appservice.StateStore, func(), error) {
 	if cfg.DatabaseURL == "" {

@@ -12,16 +12,16 @@ The agentic AI landscape is consolidating around closed, tenant-anchored platfor
 
 Because Matrix is a bridged protocol, the same rooms can also connect to **Slack, WhatsApp, Signal, Telegram** and more — "chat with my agents" becomes "chat with my agents _and_ anyone, on any network."
 
-> **New here?** [SPEC.md](SPEC.md) is the binding technical specification and plan — architecture, design decisions with evidence, security model, federation design, roadmap. [PLAN.md](PLAN.md) is the original research record. Read SPEC for the _what and how_, PLAN for the _origin story_.
+> **New here?** The specification lives under [docs/](docs/), split by topic: [architecture & vision](docs/architecture.md), [design decisions D1–D16](docs/design-decisions.md), [bridge behavior](docs/bridge.md), [security model](docs/security.md), [federation design](docs/federation.md), [observability](docs/observability.md), [licensing strategy](docs/licensing.md), [roadmap history](docs/roadmap.md) — plus the [ADRs](docs/adr/). The executable roadmap is the set of [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones).
 
 ---
 
 ## Core principles
 
-1. **Sovereignty first.** Self-hosted on any conformant Kubernetes; the model backend is a per-cluster choice ranked by sovereignty — self-hosted vLLM (prompts never leave the cluster) > EU API (Mistral) > hyperscalers (Vertex/Anthropic/OpenAI) — and every layer has a documented exit ([SPEC.md D16](SPEC.md)).
+1. **Sovereignty first.** Self-hosted on any conformant Kubernetes; the model backend is a per-cluster choice ranked by sovereignty — self-hosted vLLM (prompts never leave the cluster) > EU API (Mistral) > hyperscalers (Vertex/Anthropic/OpenAI) — and every layer has a documented exit ([docs/design-decisions.md](docs/design-decisions.md)).
 1. **Open standards only.** Matrix, A2A, MCP, OIDC, Kubernetes, Gateway API. Every component is replaceable; the protocols are the platform.
-1. **No strings attached.** No paywalls or feature-gated open-core in the critical path — and where an upstream component has caveats (ESS Community's Pro-gated HA, the AGPL Matrix/observability components), we say so openly and document Apache-2.0-licensed alternatives ([SPEC.md §10](SPEC.md)).
-1. **Federation is the destination.** One sovereign org is the on-ramp; the endgame is companies collaborating agent-to-agent across boundaries — Matrix federation for the shared-room collaboration plane, A2A (Signed AgentCards, mTLS/OIDC) for the direct delegation plane ([SPEC.md §8](SPEC.md), milestone M8).
+1. **No strings attached.** No paywalls or feature-gated open-core in the critical path — and where an upstream component has caveats (ESS Community's Pro-gated HA, the AGPL Matrix/observability components), we say so openly and document Apache-2.0-licensed alternatives ([docs/licensing.md](docs/licensing.md)).
+1. **Federation is the destination.** One sovereign org is the on-ramp; the endgame is companies collaborating agent-to-agent across boundaries — Matrix federation for the shared-room collaboration plane, A2A (Signed AgentCards, mTLS/OIDC) for the direct delegation plane ([docs/federation.md](docs/federation.md), milestone M8).
 1. **Governed by construction.** All agent LLM egress flows through agentgateway (single credential, unified telemetry, token budgets); every agent invocation is attributable to a Matrix identity.
 1. **GitOps everything.** Flux v2 reconciles the entire platform from this repository; secrets are SOPS-encrypted; nothing is applied by hand.
 
@@ -40,35 +40,35 @@ Human in Element:  "@agent-k8s why is pod payments-7c9 crashing?"
 Human in Element:  "@agent-k8s: The container is OOMKilled — memory limit 128Mi …"
 ```
 
-Full step-by-step flow: [PLAN.md §3.1](PLAN.md#31-the-mention--a2a--reply-data-flow-step-by-step). Async/long-task behavior: [SPEC.md §6](SPEC.md).
+Data-flow details and async/long-task behavior: [docs/bridge.md](docs/bridge.md); the layer map: [docs/architecture.md](docs/architecture.md).
 
 ## Architecture at a glance
 
-| Layer                      | Component                                                                                   | Namespace             |
-| -------------------------- | ------------------------------------------------------------------------------------------- | --------------------- |
-| UI + collaboration fabric  | Element Web/X · Synapse · MAS (via [ESS Community](https://github.com/element-hq/ess-helm)) | `matrix`              |
-| The bridge (the glue)      | `matrix-a2a-bridge` (Go, `mautrix/go` appservice + `a2a-go`)                                | `bridge`              |
-| AI data plane / governance | agentgateway (LLM + A2A routing, credential chokepoint)                                     | `agentgateway-system` |
-| Agents                     | kagent (Agent CRDs served as A2A on `:8083`)                                                | `kagent`              |
-| Shared state               | CloudNativePG (databases: `synapse`, `mas`, `bridge`, `kagent`)                             | `postgres`            |
-| Web ingress + TLS          | Gateway API (Traefik) + cert-manager (Let's Encrypt)                                        | `gateway`             |
-| Observability              | kube-prometheus-stack: Prometheus · Grafana · Alertmanager ([SPEC.md §9](SPEC.md))          | `monitoring`          |
-| Delivery                   | Flux v2 pull-based GitOps                                                                   | `flux-system`         |
+| Layer                      | Component                                                                                                   | Namespace             |
+| -------------------------- | ----------------------------------------------------------------------------------------------------------- | --------------------- |
+| UI + collaboration fabric  | Element Web/X · Synapse · MAS (via [ESS Community](https://github.com/element-hq/ess-helm))                 | `matrix`              |
+| The bridge (the glue)      | `matrix-a2a-bridge` (Go, `mautrix/go` appservice + `a2a-go`)                                                | `bridge`              |
+| AI data plane / governance | agentgateway (LLM + A2A routing, credential chokepoint)                                                     | `agentgateway-system` |
+| Agents                     | kagent (Agent CRDs served as A2A on `:8083`)                                                                | `kagent`              |
+| Shared state               | CloudNativePG (databases: `synapse`, `mas`, `bridge`, `kagent`)                                             | `postgres`            |
+| Web ingress + TLS          | Gateway API (Traefik) + cert-manager (Let's Encrypt)                                                        | `gateway`             |
+| Observability              | kube-prometheus-stack: Prometheus · Grafana · Alertmanager ([docs/observability.md](docs/observability.md)) | `monitoring`          |
+| Delivery                   | Flux v2 pull-based GitOps                                                                                   | `flux-system`         |
 
 Reference deployment: `fgentic.fmind.ai` (Element at `chat.`, Synapse at `matrix.`, MAS at `auth.`; user IDs `@name:fgentic.fmind.ai` via apex `.well-known` delegation).
 
-## Key decisions (the short version — details in SPEC.md)
+## Key decisions (the short version — details in [docs/design-decisions.md](docs/design-decisions.md))
 
-1. **Homeserver: Synapse + MAS + Element via ESS Community, deliberately.** We evaluated the whole 2026 homeserver landscape (Tuwunel, continuwuity, Conduit, chart-less Synapse, Palpo) and stayed: ESS wins on everything this platform lives on — appservice API maturity, modern auth (MAS) + Element X, federation policy hooks, and PostgreSQL. ESS Community is AGPL and open-core (Element gates HA, LDAP, and its federation border gateway behind ESS Pro) — we say that openly, keep a documented **Apache-2.0 fallback profile** (Tuwunel/continuwuity) for AGPL-averse deployments, and define concrete triggers for ever switching ([SPEC.md §10.3](SPEC.md)).
+1. **Homeserver: Synapse + MAS + Element via ESS Community, deliberately.** We evaluated the whole 2026 homeserver landscape (Tuwunel, continuwuity, Conduit, chart-less Synapse, Palpo) and stayed: ESS wins on everything this platform lives on — appservice API maturity, modern auth (MAS) + Element X, federation policy hooks, and PostgreSQL. ESS Community is AGPL and open-core (Element gates HA, LDAP, and its federation border gateway behind ESS Pro) — we say that openly, keep a documented **Apache-2.0 fallback profile** (Tuwunel/continuwuity) for AGPL-averse deployments, and define concrete triggers for ever switching ([docs/licensing.md](docs/licensing.md)).
 1. **License: Apache-2.0, DCO, no CLA.** Patent grant, foundation-donation fit (CNCF/AAIF), coherence with A2A/MCP/kagent/agentgateway. The bridge embeds `mautrix/go` (MPL-2.0) — attribution ships in [NOTICE](NOTICE).
-1. **Federation honesty.** Matrix federation gives _organization-level_ cryptographic identity (a partner's server vouches for its users), full room replication to every participating server, and best-effort cross-server redaction. We design for that reality — closed federation, room v12, server ACLs, per-agent sender allowlists, policy-as-code borders, and A2A v1.0 Signed AgentCards for per-agent identity — instead of overclaiming ([SPEC.md §8](SPEC.md)).
+1. **Federation honesty.** Matrix federation gives _organization-level_ cryptographic identity (a partner's server vouches for its users), full room replication to every participating server, and best-effort cross-server redaction. We design for that reality — closed federation, room v12, server ACLs, per-agent sender allowlists, policy-as-code borders, and A2A v1.0 Signed AgentCards for per-agent identity — instead of overclaiming ([docs/federation.md](docs/federation.md)).
 1. **Cost is a first-class failure mode.** Every mention is an LLM invocation, so the bridge rate-limits per sender and per room, and agentgateway meters tokens and spend — the closest prior-art project died of exactly this.
 
 ## Project status & roadmap
 
-**Live end-to-end on the local reference cluster.** A Matrix `@mention` in Element produces a real LLM-backed agent reply — through the bridge, agentgateway (no agent ever holds a model key), and kagent, with conversation threading, rate limits, sanitized failure replies, and Prometheus/Grafana observability (bridge delegation metrics + gateway GenAI token metering + the LLM spend alert). Every layer reconciles from this repository via Flux; the same manifests drive the GKE reference profile (`clusters/gcp`). The adversarial-review fixes (D1–D15) are all implemented and unit-tested ([SPEC.md §4](SPEC.md)).
+**Live end-to-end on the local reference cluster.** A Matrix `@mention` in Element produces a real LLM-backed agent reply — through the bridge, agentgateway (no agent ever holds a model key), and kagent, with conversation threading, rate limits, sanitized failure replies, and Prometheus/Grafana observability (bridge delegation metrics + gateway GenAI token metering + the LLM spend alert). Every layer reconciles from this repository via Flux; the same manifests drive the GKE reference profile (`clusters/gcp`). The adversarial-review fixes (D1–D15) are all implemented and unit-tested ([docs/design-decisions.md](docs/design-decisions.md)).
 
-**The roadmap lives on [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones)** (M0–M11, each with an epic tracker issue), sequenced sovereignty-first: hygiene → sovereign model profiles → enterprise SSO → one-command evaluation install → test harness → traces & audit → security hardening → interop bridges (Slack first) → **federation preview (the thesis)** → production reference → community → the sovereignty kit (reference architecture + compliance + exit strategy). Issues labeled `agent-ready` are groomed for autonomous coding agents; `needs-human` marks decisions, approvals, or spend ([SPEC.md §13](SPEC.md)).
+**The roadmap lives on [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones)** (M0–M11, each with an epic tracker issue), sequenced sovereignty-first: hygiene → sovereign model profiles → enterprise SSO → one-command evaluation install → test harness → traces & audit → security hardening → interop bridges (Slack first) → **federation preview (the thesis)** → production reference → community → the sovereignty kit (reference architecture + compliance + exit strategy). Issues labeled `agent-ready` are groomed for autonomous coding agents; `needs-human` marks decisions, approvals, or spend ([docs/roadmap.md](docs/roadmap.md)).
 
 ## Quickstart (local, k3d)
 
@@ -90,7 +90,7 @@ Flux reconciles the whole platform. Then open `https://chat.fgentic.localhost` (
 
 ## Production (Kubernetes, any provider)
 
-Production reconciles itself from git via **Flux v2** (`clusters/<cluster>/` overlays over `clusters/base/` are the entrypoints). An optional GKE reference cluster lives in [`infra/terraform/`](infra/terraform/); the workloads are plain Kubernetes and run on any conformant cluster. Delivery model: [PLAN.md §6](PLAN.md); hardening and production profile: [SPEC.md](SPEC.md).
+Production reconciles itself from git via **Flux v2** (`clusters/<cluster>/` overlays over `clusters/base/` are the entrypoints). An optional GKE reference cluster lives in [`infra/terraform/`](infra/terraform/); the workloads are plain Kubernetes and run on any conformant cluster. Hardening and production profile: [docs/architecture.md](docs/architecture.md) + [docs/security.md](docs/security.md).
 
 ## Repository layout
 
@@ -98,11 +98,9 @@ Production reconciles itself from git via **Flux v2** (`clusters/<cluster>/` ove
 apps/matrix-a2a-bridge/  # the Go bridge (mautrix/go appservice + a2a-go client) + its deploy/ Flux unit
 infra/{terraform,flux,gateway,postgres,matrix,agentgateway,kagent,bridges,secrets}
 clusters/               # Flux entrypoints: base/ DAG + local/ (k3d) and gcp/ (GKE) overlays
-docs/adr/                # Architecture Decision Records
+docs/                    # the specification split by topic (architecture, decisions, security, federation, …) + docs/adr/
 .github/                 # CI (mise gates) + CD (signed, digest-pinned bridge image) + issue/PR templates
 .agents/                 # AGENTS.md + operator runbooks
-SPEC.md                  # the binding technical specification (decisions, security, federation, roadmap)
-PLAN.md                  # the original architecture + research record
 CONTRIBUTING.md          # how to contribute (workflow, labels, DCO) — with GOVERNANCE, SECURITY, MAINTAINERS, ADOPTERS
 ```
 
@@ -110,7 +108,7 @@ CONTRIBUTING.md          # how to contribute (workflow, labels, DCO) — with GO
 
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow (issues, labels, DCO sign-off) and [GOVERNANCE.md](GOVERNANCE.md) for how the project is run. The short version:
 
-1. Start with [SPEC.md](SPEC.md) — the [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones) are the backlog; design decisions (§4) and ADRs in [docs/adr/](docs/adr/) capture what is settled (propose a new ADR to revisit one).
+1. Start with [docs/](docs/) — the [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones) are the backlog; [design decisions](docs/design-decisions.md) and ADRs in [docs/adr/](docs/adr/) capture what is settled (propose a new ADR to revisit one).
 1. `mise run check` and `mise run test` must pass warning-free; git hooks (lefthook) enforce the same tasks locally that CI runs.
 1. Conventions live in [.agents/AGENTS.md](.agents/AGENTS.md) (they bind human and AI contributors alike): Go, type-safe, small composable units, no tech debt, Conventional Commits, DCO sign-off.
 1. Never commit plaintext secrets — SOPS-encrypted `*.sops.yaml` only (gitleaks runs pre-commit).
@@ -123,4 +121,4 @@ Matrix (spec.matrix.org) · A2A (a2a-protocol.org, Linux Foundation) · MCP (Age
 
 ## License
 
-[Apache-2.0](LICENSE) © Médéric Hurier (Fmind) — chosen for its explicit patent grant, foundation-donation requirements (CNCF/AAIF), and coherence with the A2A/MCP/kagent/agentgateway stack ([SPEC.md §10](SPEC.md)). The bridge embeds `mautrix/go` (MPL-2.0) — the third-party [NOTICE](NOTICE) ships with the binary image. Contributions use DCO sign-off.
+[Apache-2.0](LICENSE) © Médéric Hurier (Fmind) — chosen for its explicit patent grant, foundation-donation requirements (CNCF/AAIF), and coherence with the A2A/MCP/kagent/agentgateway stack ([docs/licensing.md](docs/licensing.md)). The bridge embeds `mautrix/go` (MPL-2.0) — the third-party [NOTICE](NOTICE) ships with the binary image. Contributions use DCO sign-off.

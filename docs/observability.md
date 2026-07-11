@@ -1,0 +1,8 @@
+# Observability Spec (formerly SPEC §9) — metrics live; traces next (§9.2)
+
+1. **Metrics:** kube-prometheus-stack (Prometheus + Alertmanager + Grafana). agentgateway ships ServiceMonitors + a Grafana dashboard (control plane and per-proxy GenAI metrics: `gen_ai_client_token_usage`, `gen_ai_client_cost`, TTFT/TPOT); kagent exposes authenticated controller `/metrics`; CNPG enables `monitoring.enablePodMonitor` (stub already commented in `cluster.yaml`, gated on the Prometheus Operator CRDs). License note: Grafana and Loki are AGPL-3.0 (fine to run unmodified, documented as swappable — VictoriaMetrics/VictoriaLogs are the Apache-2.0 alternates for AGPL-banning shops; Prometheus/OTel/Jaeger are Apache-2.0).
+1. **Traces:** OTel Collector; enable kagent `otel.tracing` (OTLP) and agentgateway OTLP export; **instrument the bridge** with OTel (span per delegation: Matrix event → A2A send → poll → reply post) propagating W3C `traceparent` so one trace covers mention → gateway → agent → LLM. Backend: Jaeger (Apache-2.0) over Tempo (AGPL) by default.
+1. **Bridge metrics:** Prometheus `/metrics` on a side port — delegations total/by agent, A2A latency histogram, queue depth, dedup hits, rate-limit rejections. Also structured audit logs (who invoked what, from which room/server).
+1. **Agent evaluation:** MLflow (Apache-2.0, LF) as the optional eval/experiment store, fed by OTel GenAI traces; deployed off by default (own namespace + DB) — it is analysis tooling, not a runtime dependency.
+1. **LLM cost:** agentgateway cost catalogs + `gen_ai_client_cost` are the budget dashboard — wire an Alertmanager rule on spend rate (the failure mode that killed the closest prior-art project).
+1. NetworkPolicies already admit the `monitoring` namespace everywhere (D14).

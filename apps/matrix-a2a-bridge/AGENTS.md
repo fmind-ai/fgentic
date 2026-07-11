@@ -1,6 +1,6 @@
 # AGENTS.md — matrix-a2a-bridge
 
-A Go **Matrix Application Service** that lets humans (and agents) `@mention` an AI agent in a Matrix room and delegates the task to that agent's **A2A** endpoint (`message/send`; `tasks/get` polling + `m.replace` edits for long tasks), posting the reply back as the agent's ghost user (`m.notice`). Built on `mautrix/go` (the Matrix side, MPL-2.0 — keep `NOTICE` current) + `a2a-go` v2 (the A2A side, pinned to kagent's version). One static binary, no CGO; state lives in Postgres via `DATABASE_URL` (mautrix StateStore + contexts + event dedup — in-memory fallback is dev-only). Behavior spec: repo `SPEC.md` §5–§6; design rationale: SPEC §4 (D3–D10).
+A Go **Matrix Application Service** that lets humans (and agents) `@mention` an AI agent in a Matrix room and delegates the task to that agent's **A2A** endpoint (`message/send`; `tasks/get` polling + `m.replace` edits for long tasks), posting the reply back as the agent's ghost user (`m.notice`). Built on `mautrix/go` (the Matrix side, MPL-2.0 — keep `NOTICE` current) + `a2a-go` v2 (the A2A side, pinned to kagent's version). One static binary, no CGO; state lives in Postgres via `DATABASE_URL` (mautrix StateStore + contexts + event dedup — in-memory fallback is dev-only). Behavior spec: repo `docs/bridge.md` §5–§6; design rationale: `docs/design-decisions.md` (D3–D10).
 
 ## Commands (mise)
 

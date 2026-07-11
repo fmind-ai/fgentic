@@ -10,7 +10,7 @@
 
 ## How
 
-<!-- Design notes worth a reviewer's attention; call out anything that touches SPEC decisions (D1–D16) or ADRs. -->
+<!-- Design notes worth a reviewer's attention; call out anything that touches design decisions ([docs/design-decisions.md](../docs/design-decisions.md) D1–D16) or ADRs. -->
 
 ## Test plan
 

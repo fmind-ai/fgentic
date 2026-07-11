@@ -64,4 +64,4 @@ REGISTRATION_PATH=./registration.yaml go run ./cmd/bridge -generate-registration
 #    (as a SOPS-encrypted Secret with key registration.yaml). Never commit real tokens.
 ```
 
-See [`registration.example.yaml`](registration.example.yaml) and [`agents.example.yaml`](agents.example.yaml). Rooms are unencrypted by design (the crypto package is intentionally not wired). Full architecture: [`../../PLAN.md`](../../PLAN.md).
+See [`registration.example.yaml`](registration.example.yaml) and [`agents.example.yaml`](agents.example.yaml). Rooms are unencrypted by design (the crypto package is intentionally not wired). Full architecture: [`../../docs/architecture.md`](../../docs/architecture.md).

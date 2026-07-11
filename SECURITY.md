@@ -18,4 +18,4 @@ Vulnerabilities in upstream components (Synapse, MAS, Element, kagent, agentgate
 
 ## Security model
 
-The threat model and trust boundaries are documented in [SPEC.md §7](SPEC.md) (and, as it lands, `docs/security/`). Known, deliberately-accepted limits — prompt injection, unauthenticated kagent behind NetworkPolicies, unencrypted agent rooms, org-level federation identity — are stated there rather than hidden; reports that materially change those assessments are very welcome.
+The threat model and trust boundaries are documented in [docs/security.md](docs/security.md) (and, as it lands, `docs/security/`). Known, deliberately-accepted limits — prompt injection, unauthenticated kagent behind NetworkPolicies, unencrypted agent rooms, org-level federation identity — are stated there rather than hidden; reports that materially change those assessments are very welcome.

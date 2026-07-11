@@ -1,6 +1,6 @@
 # The Matrix layer, deployed as Element Server Suite (ESS) Community — the `matrix-stack` chart
 # bundles Synapse (homeserver) + Matrix Authentication Service (MAS, OIDC) + Element Web + the
-# well-known delegation, all maintained by Element. See ADR 0003 and SPEC.md §10.2 (open-core
+# well-known delegation, all maintained by Element. See ADR 0003 and docs/licensing.md §10.2 (open-core
 # caveats + the Apache-2.0 homeserver alternatives).
 #
 # Values are validated against the 26.6.2 chart schema (`helm show values`): external Postgres
@@ -84,7 +84,7 @@ spec:
       # Serves /.well-known/matrix/{client,server} at the serverName apex (no host key in its
       # ingress schema — the apex IS the serverName). We ALSO force-disable room encryption for
       # the whole server here so agent rooms stay plaintext (ADR 0008; revisit for federation —
-      # SPEC §8.4) — the bridge is not E2EE-aware. `additional.*` entries are JSON strings.
+      # docs/federation.md §8.4) — the bridge is not E2EE-aware. `additional.*` entries are JSON strings.
       enabled: true
       ingress:
         tlsEnabled: false

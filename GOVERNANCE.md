@@ -1,12 +1,12 @@
 # Governance
 
-Fgentic aims for vendor-neutral, open governance compatible with a future foundation home (CNCF Sandbox first, AAIF when adoption warrants — see SPEC §1). Until the community grows, governance is deliberately simple and honest about its current shape.
+Fgentic aims for vendor-neutral, open governance compatible with a future foundation home (CNCF Sandbox first, AAIF when adoption warrants — see [docs/architecture.md](docs/architecture.md)). Until the community grows, governance is deliberately simple and honest about its current shape.
 
 ## Current model: maintainer-led
 
-1. The project is led by its maintainers, listed in [MAINTAINERS.md](MAINTAINERS.md). While there is a single maintainer, that maintainer decides; decisions of record land in [docs/adr/](docs/adr/) or SPEC.md, never in private channels.
+1. The project is led by its maintainers, listed in [MAINTAINERS.md](MAINTAINERS.md). While there is a single maintainer, that maintainer decides; decisions of record land in [docs/adr/](docs/adr/) or the topic specs under [docs/](docs/), never in private channels.
 1. All decisions, roadmaps, and discussions are public: GitHub issues, milestones, ADRs, and Discussions. There is no private decision path except security reports ([SECURITY.md](SECURITY.md)).
-1. Settled design decisions (SPEC §4 D1–D16, ADRs) are revisited by proposing a new ADR with evidence — not relitigated per-PR.
+1. Settled design decisions ([docs/design-decisions.md](docs/design-decisions.md) D1–D16, ADRs) are revisited by proposing a new ADR with evidence — not relitigated per-PR.
 
 ## Contributor ladder
 

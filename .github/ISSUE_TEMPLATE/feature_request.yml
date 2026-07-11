@@ -13,7 +13,7 @@ body:
     id: proposal
     attributes:
       label: Proposal
-      description: What you'd like to happen. If it touches a settled decision (SPEC D1–D16, ADRs), say which and why it should be revisited.
+      description: What you'd like to happen. If it touches a settled decision (docs/design-decisions.md D1–D16, ADRs), say which and why it should be revisited.
     validations:
       required: true
   - type: textarea

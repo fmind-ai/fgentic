@@ -1,13 +1,13 @@
 # Contributing to Fgentic
 
-Thanks for considering a contribution — human or AI agent, the rules are the same. Start with [SPEC.md](SPEC.md) (the binding specification) and [.agents/AGENTS.md](.agents/AGENTS.md) (conventions that bind all contributors).
+Thanks for considering a contribution — human or AI agent, the rules are the same. Start with [docs/](docs/) (the specification, split by topic: architecture, design decisions, security, federation, licensing) and [.agents/AGENTS.md](.agents/AGENTS.md) (conventions that bind all contributors).
 
 ## Where to start
 
 1. The backlog is the set of [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones) (M0–M11), each with a `kind/epic` tracker issue listing its issues in sweep order.
 1. Issues labeled **`agent-ready`** are groomed with tasks and acceptance criteria — pick one up as-is. Issues labeled **`needs-human`** wait on a maintainer decision, account, approval, or spend — you can prepare the work, but flag the blocking part.
 1. Issues labeled **`good first issue`** are the friendliest entry points.
-1. For anything not covered by an issue, open one first — especially before changing a settled design (decisions D1–D16 in SPEC §4 and the ADRs in [docs/adr/](docs/adr/) are revisited by proposing a new ADR, not by a drive-by PR).
+1. For anything not covered by an issue, open one first — especially before changing a settled design (decisions D1–D16 in [docs/design-decisions.md](docs/design-decisions.md) and the ADRs in [docs/adr/](docs/adr/) are revisited by proposing a new ADR, not by a drive-by PR).
 
 ## Development workflow
 
@@ -20,7 +20,7 @@ Thanks for considering a contribution — human or AI agent, the rules are the s
 
 ## Licensing
 
-Contributions are accepted under **Apache-2.0** with DCO sign-off. Never add an AGPL dependency to the bridge (mautrix/go is MPL-2.0 — keep the `NOTICE` files current); see SPEC §10 for the full licensing map.
+Contributions are accepted under **Apache-2.0** with DCO sign-off. Never add an AGPL dependency to the bridge (mautrix/go is MPL-2.0 — keep the `NOTICE` files current); see [docs/licensing.md](docs/licensing.md) for the full licensing map.
 
 ## Releases
 
