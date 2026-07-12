@@ -45,7 +45,12 @@ type Gateway struct {
 	metrics    *metrics
 	log        *slog.Logger
 	now        func() time.Time
+	border     *Border // federation policy border; nil disables enforcement (local-only dev/tests)
 }
+
+// UseBorder installs the federation policy border. When set, every inbound activity must pass
+// signature verification, actor-key binding, and the allowlist before any A2A delegation.
+func (g *Gateway) UseBorder(b *Border) { g.border = b }
 
 // New builds a Gateway. baseURL is the public scheme+host every actor URL is built from; serverName
 // is the acct: handle domain. reg (a prometheus.Registerer) receives the gateway's counters.
@@ -183,6 +188,20 @@ func (g *Gateway) handleInbox(w http.ResponseWriter, r *http.Request) {
 		g.metrics.rejected.WithLabelValues("inbox_empty_content").Inc()
 		http.Error(w, "note has no content", http.StatusBadRequest)
 		return
+	}
+
+	// Federation policy border: an inbound activity must carry a valid signature from the claimed
+	// actor's key, and that actor must be on the git-reloadable allowlist — enforced BEFORE any
+	// A2A call so an unsigned or off-allowlist remote never reaches an agent (docs/fediverse.md §3).
+	if g.border != nil {
+		decision := g.border.Authorize(r.Context(), r, body, string(actorIRI))
+		if !decision.Allowed {
+			g.metrics.rejected.WithLabelValues("border_" + decision.Reason).Inc()
+			// Content-free evidence: reason + policy digest, never the actor URI or note content.
+			g.log.Warn("federation border denied inbound", "ghost", ghost, "reason", decision.Reason, "policy", decision.Digest)
+			http.Error(w, "forbidden", http.StatusForbidden)
+			return
+		}
 	}
 
 	// Only delegate when the note actually names this agent. A no-op accept (202) keeps a stray

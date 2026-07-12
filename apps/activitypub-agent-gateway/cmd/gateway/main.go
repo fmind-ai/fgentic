@@ -22,6 +22,8 @@ import (
 	"github.com/fmind/activitypub-agent-gateway/internal/a2a"
 	"github.com/fmind/activitypub-agent-gateway/internal/apgateway"
 	"github.com/fmind/activitypub-agent-gateway/internal/config"
+	"github.com/fmind/activitypub-agent-gateway/internal/httpsig"
+	"github.com/fmind/activitypub-agent-gateway/internal/policy"
 )
 
 func main() {
@@ -47,7 +49,6 @@ func run() error {
 	}
 	delegator := a2a.New(cfg.A2ABaseURL, cfg.A2AAPIKey, cfg.RequestTimeout, cfg.TaskTimeout, log)
 
-	registry.Ghosts() // touch to fail fast if empty (LoadRegistry already guarantees non-empty)
 	reg := prometheus.NewRegistry()
 	gateway, err := apgateway.New(cfg.PublicBaseURL(), cfg.ServerName, registry, delegator, reg, log)
 	if err != nil {
@@ -56,6 +57,21 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+
+	// The federation policy border. When a policy is configured, every inbound activity must pass
+	// signature verification and the allowlist before any delegation; the policy hot-reloads from
+	// its mounted file without a pod restart. An empty POLICY_PATH disables the border and is valid
+	// only for local-only dev where no untrusted actor can reach the inbox (docs/fediverse.md §3).
+	if cfg.PolicyPath != "" {
+		store := policy.NewStore(cfg.PolicyPath, log)
+		go store.Watch(ctx, cfg.PolicyReloadInterval)
+		keyClient := &http.Client{Timeout: cfg.RequestTimeout}
+		verifier := httpsig.NewVerifier(httpsig.NewHTTPKeyResolver(keyClient), cfg.SignatureMaxSkew)
+		gateway.UseBorder(apgateway.NewBorder(verifier, store, log))
+		log.Info("federation policy border enabled", "policy", cfg.PolicyPath, "healthy", store.Healthy())
+	} else {
+		log.Warn("federation policy border DISABLED (POLICY_PATH empty) — local-only dev posture")
+	}
 
 	apServer := &http.Server{
 		Addr:              net.JoinHostPort(cfg.ListenHost, strconv.Itoa(cfg.ListenPort)),

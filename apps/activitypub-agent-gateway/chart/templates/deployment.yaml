@@ -73,11 +73,25 @@ spec:
               value: {{ .Values.config.metricsPort | quote }}
             - name: AGENTS_PATH
               value: /etc/activitypub-agent-gateway/agents/agents.yaml
+            {{- if .Values.policy.enabled }}
+            - name: POLICY_PATH
+              value: /etc/activitypub-agent-gateway/policy/policy.json
+            - name: POLICY_RELOAD_INTERVAL
+              value: {{ .Values.policy.reloadInterval | quote }}
+            - name: SIGNATURE_MAX_SKEW
+              value: {{ .Values.policy.signatureMaxSkew | quote }}
+            {{- end }}
           volumeMounts:
             - name: agents
               # Mount the whole projected ConfigMap directory (atomic symlink swap on update).
               mountPath: /etc/activitypub-agent-gateway/agents
               readOnly: true
+            {{- if .Values.policy.enabled }}
+            - name: policy
+              # Whole-directory mount so the projected policy.json hot-reloads without a restart.
+              mountPath: /etc/activitypub-agent-gateway/policy
+              readOnly: true
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /healthz
@@ -98,6 +112,11 @@ spec:
         - name: agents
           configMap:
             name: {{ include "activitypub-agent-gateway.fullname" . }}-agents
+        {{- if .Values.policy.enabled }}
+        - name: policy
+          configMap:
+            name: {{ .Values.policy.configMapName }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

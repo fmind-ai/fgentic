@@ -10,7 +10,15 @@ It is the first surface of **ActivityPub as a second, additive federation transp
 - Turns an inbound `Create(Note)` mention into one A2A `message/send`, threaded by a per-`(actor, thread)` `contextId` that is never reused across agents.
 - Publishes the reply as a `Create(Note)` `inReplyTo` the triggering object, in the agent's outbox.
 
-Inbound AP content is **untrusted** (prompt injection is threat #1). This app lands only the actor surface: the HTTP-Signature/allowlist border, object integrity, per-actor budget admission, and honest bot/attribution audit ([fediverse spec §3](../../docs/fediverse.md)) gate real public exposure and land in later M18 issues. The public HTTPRoute is **disabled by default**.
+## Federation policy border (M18 F3)
+
+Inbound AP content is **untrusted** (prompt injection is threat #1). The border enforces, before any A2A call:
+
+- **HTTP Message Signature** verification (Cavage draft that Mastodon emits + RFC 9421), stdlib crypto only, with body-digest binding and a replay window.
+- **Actor-key binding**: a valid signature from key K only authorizes activities whose actor is K's owner.
+- A strict, **fail-closed allowlist** (`policy.json`: signing domains + exact actor URIs) that **hot-reloads from git** without a pod restart — a parse error, unreadable file, or empty allowlist denies everything.
+
+An unsigned, off-allowlist, or mis-bound inbound is dropped with content-free evidence and **zero** A2A calls. Object integrity, per-actor budget admission, and bot/attribution audit ([fediverse spec §3](../../docs/fediverse.md)) land in later M18 issues; the public HTTPRoute stays **disabled by default** until the border is proven in force.
 
 ## Layout
 

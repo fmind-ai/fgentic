@@ -13,8 +13,10 @@ This is the second federation transport ([standing rule](../../docs/fediverse.md
 - `cmd/gateway/main.go` — wires config → registry → a2a client → gateway; runs a public AP HTTP server and a private `/metrics` server; graceful shutdown.
 - `internal/config` — `Config`, env-parsed via `caarlos0/env`, validated up front (fail fast).
 - `internal/a2a` — thin `a2a-go` wrapper. **Local kagent targets only**; the asserted AP actor is forwarded as `X-User-Id`, the workload credential as a separate bearer. Remote/pinned A2A + Signed AgentCard trust is a different boundary landed elsewhere.
-- `internal/apgateway` — the AP surface: `Registry` (agents.yaml loader), Service `actor`, `webfinger` JRD, `store` (in-memory outbox), `gateway` (routes + inbox→A2A→outbox), `metrics` (aggregate governance counters, never model tokens).
-- `chart/` — Helm chart (ClusterIP by default; the single exact public `HTTPRoute` is **gated off**). `deploy/` — Namespace + HelmRelease Flux unit; **opt-in**, not yet in the reconciled DAG.
+- `internal/httpsig` — inbound HTTP Message Signature verification (Cavage draft + RFC 9421) using only stdlib crypto (RSA PKCS1v15, RSA-PSS, Ed25519); body-digest binding + replay window; `HTTPKeyResolver` fetches the signer's key.
+- `internal/policy` — the strict, fail-closed federation allowlist (`policy.json`) with a hot-reload `Store` (poll + atomic swap; invalid/unreadable ⇒ deny all).
+- `internal/apgateway` — the AP surface: `Registry` (agents.yaml loader), Service `actor`, `webfinger` JRD, `store` (in-memory outbox), `border` (signature + actor-key binding + allowlist), `gateway` (routes + inbox→border→A2A→outbox), `metrics` (aggregate governance counters, never model tokens).
+- `chart/` — Helm chart (ClusterIP by default; the single exact public `HTTPRoute` is **gated off**; optional policy mount). `component/` — namespace-neutral Kustomize Component projecting the mutable `policy.json` ConfigMap. `deploy/` — Namespace + HelmRelease + Component Flux unit; **opt-in**, not yet in the reconciled DAG.
 
 ## Conventions (match the bridge)
 

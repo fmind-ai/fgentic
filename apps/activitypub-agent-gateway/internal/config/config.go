@@ -49,6 +49,15 @@ type Config struct {
 	A2ABaseURL string `env:"A2A_BASE_URL" envDefault:"http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080"`
 	A2AAPIKey  string `env:"A2A_API_KEY"`
 
+	// PolicyPath is the mounted, git-reloadable federation-border allowlist (policy.json). When
+	// empty the border is DISABLED — valid only for local-only dev where no untrusted actor can
+	// reach the inbox; any public exposure requires a policy. PolicyReloadInterval is how often the
+	// projected file is polled for a hot-swap without a pod restart (docs/fediverse.md §3).
+	PolicyPath           string        `env:"POLICY_PATH"`
+	PolicyReloadInterval time.Duration `env:"POLICY_RELOAD_INTERVAL" envDefault:"5s"`
+	// SignatureMaxSkew bounds how far an inbound signature timestamp may drift from now (replay).
+	SignatureMaxSkew time.Duration `env:"SIGNATURE_MAX_SKEW" envDefault:"12h"`
+
 	// RequestTimeout bounds one synchronous A2A message/send transport round trip. TaskTimeout
 	// bounds the whole delegation when the agent returns a long-running Task polled via tasks/get.
 	RequestTimeout time.Duration `env:"REQUEST_TIMEOUT" envDefault:"60s"`
@@ -116,6 +125,12 @@ func (c Config) validate() error {
 	}
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("SHUTDOWN_TIMEOUT must be positive")
+	}
+	if c.PolicyReloadInterval <= 0 {
+		return fmt.Errorf("POLICY_RELOAD_INTERVAL must be positive")
+	}
+	if c.SignatureMaxSkew <= 0 {
+		return fmt.Errorf("SIGNATURE_MAX_SKEW must be positive")
 	}
 	if _, err := c.SlogLevel(); err != nil {
 		return err
