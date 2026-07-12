@@ -97,6 +97,9 @@ func New(baseURL, serverName string, registry *Registry, delegator Delegator, re
 func (g *Gateway) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /.well-known/webfinger", g.handleWebFinger)
+	mux.HandleFunc("GET /.well-known/nodeinfo", g.handleNodeInfoDiscovery)
+	mux.HandleFunc("GET /nodeinfo/2.1", g.handleNodeInfo)
+	mux.HandleFunc("GET /ap/instance", g.handleInstanceActor)
 	mux.HandleFunc("GET /ap/agents/{ghost}", g.handleActor)
 	mux.HandleFunc("POST /ap/agents/{ghost}/inbox", g.handleInbox)
 	mux.HandleFunc("GET /ap/agents/{ghost}/outbox", g.handleOutbox)
