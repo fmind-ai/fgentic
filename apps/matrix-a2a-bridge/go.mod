@@ -2,9 +2,6 @@ module github.com/fmind/matrix-a2a-bridge
 
 go 1.25.0
 
-// NOTE: this environment has no module cache; run `go mod tidy` once to resolve go.sum (and,
-// if a version below is stale, `go get maunium.net/go/mautrix@v0.28.1` /
-// `go get github.com/a2aproject/a2a-go/v2@latest`). The code targets the APIs in those packages.
 require (
 	github.com/a2aproject/a2a-go/v2 v2.3.1
 	github.com/caarlos0/env/v11 v11.3.1

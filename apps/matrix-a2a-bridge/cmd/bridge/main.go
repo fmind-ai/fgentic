@@ -50,7 +50,11 @@ func main() {
 		slog.New(slog.NewJSONHandler(os.Stderr, nil)).Error("load config", "err", err)
 		os.Exit(1)
 	}
-	log := newLogger(cfg)
+	log, err := newLogger(cfg)
+	if err != nil {
+		slog.New(slog.NewJSONHandler(os.Stderr, nil)).Error("configure logger", "err", err)
+		os.Exit(1)
+	}
 
 	if *genReg {
 		if err := matrixapp.GenerateRegistration(cfg, log); err != nil {
@@ -377,16 +381,21 @@ func openState(ctx context.Context, cfg config.Config, log *slog.Logger) (state.
 	return store, stateStore, closeDB, nil
 }
 
-// newLogger builds the structured logger from config (JSON by default, text on request).
-func newLogger(cfg config.Config) *slog.Logger {
-	level := slog.LevelInfo
-	_ = level.UnmarshalText([]byte(cfg.LogLevel))
+// newLogger builds the validated structured logger (JSON by default, text on request).
+func newLogger(cfg config.Config) (*slog.Logger, error) {
+	level, err := cfg.SlogLevel()
+	if err != nil {
+		return nil, err
+	}
 	opts := &slog.HandlerOptions{Level: level}
 	var handler slog.Handler
-	if cfg.LogFormat == "text" {
+	switch cfg.LogFormat {
+	case config.LogFormatText:
 		handler = slog.NewTextHandler(os.Stdout, opts)
-	} else {
+	case config.LogFormatJSON:
 		handler = slog.NewJSONHandler(os.Stdout, opts)
+	default:
+		return nil, fmt.Errorf("unsupported LOG_FORMAT %q", cfg.LogFormat)
 	}
-	return slog.New(handler)
+	return slog.New(handler), nil
 }
