@@ -30,8 +30,13 @@ func writeJRD(w http.ResponseWriter, doc jrd) {
 	_, _ = w.Write(data)
 }
 
-// a2aUser stamps the asserted AP actor onto the context so the A2A client forwards it as the
-// end-user identity (X-User-Id) for kagent session/audit attribution.
-func a2aUser(ctx context.Context, actor string) context.Context {
-	return a2a.WithUser(ctx, actor)
+// OriginKindActivityPub is the bounded origin kind stamped on every AP-transport delegation, the
+// parallel of the bridge's origin.kind for external-appservice senders (docs/audit.md).
+const OriginKindActivityPub = "activitypub"
+
+// a2aAttribution stamps the FULL asserted AP actor URI plus its bounded origin (kind=activitypub,
+// network=signing domain) onto the context so the A2A client forwards them. The actor URI is
+// authoritative and never shortened; origin is additive audit metadata (docs/audit.md).
+func a2aAttribution(ctx context.Context, actorURI, network string) context.Context {
+	return a2a.WithAttribution(ctx, actorURI, a2a.Origin{Kind: OriginKindActivityPub, Network: network})
 }

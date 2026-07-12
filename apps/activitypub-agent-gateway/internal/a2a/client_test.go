@@ -87,6 +87,53 @@ func TestCallReturnsReplyAndForwardsUser(t *testing.T) {
 	}
 }
 
+// captureRT records the request it receives so header injection can be asserted directly.
+type captureRT struct{ req *http.Request }
+
+func (c *captureRT) RoundTrip(req *http.Request) (*http.Response, error) {
+	c.req = req
+	return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody, Header: make(http.Header)}, nil
+}
+
+func TestAttributionHeaders(t *testing.T) {
+	cap := &captureRT{}
+	tr := &userTransport{base: cap, apiKey: "workload-key"}
+
+	const actor = "https://mastodon.example/users/bob"
+	ctx := WithAttribution(context.Background(), actor, Origin{Kind: "activitypub", Network: "mastodon.example"})
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, "http://gw/x", nil)
+	if _, err := tr.RoundTrip(req); err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	h := cap.req.Header
+	if got := h.Get("X-User-Id"); got != actor {
+		t.Errorf("X-User-Id = %q, want the full un-truncated actor URI", got)
+	}
+	if got := h.Get("X-Origin-Kind"); got != "activitypub" {
+		t.Errorf("X-Origin-Kind = %q", got)
+	}
+	if got := h.Get("X-Origin-Network"); got != "mastodon.example" {
+		t.Errorf("X-Origin-Network = %q", got)
+	}
+	if got := h.Get("Authorization"); got != "Bearer workload-key" {
+		t.Errorf("Authorization = %q", got)
+	}
+
+	// WithUser sets the identity but no origin headers.
+	cap2 := &captureRT{}
+	tr2 := &userTransport{base: cap2}
+	req2, _ := http.NewRequestWithContext(WithUser(context.Background(), actor), http.MethodPost, "http://gw/x", nil)
+	if _, err := tr2.RoundTrip(req2); err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	if cap2.req.Header.Get("X-User-Id") != actor {
+		t.Errorf("WithUser must still set X-User-Id")
+	}
+	if cap2.req.Header.Get("X-Origin-Kind") != "" {
+		t.Errorf("WithUser must not set an origin kind")
+	}
+}
+
 func TestCallRejectsEmptyTarget(t *testing.T) {
 	client, _ := testServer(t, executorFunc(func(context.Context, *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 		return func(func(a2a.Event, error) bool) {}
