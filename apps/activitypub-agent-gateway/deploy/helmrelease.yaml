@@ -26,7 +26,13 @@ spec:
       tag: "0.1.0" # CI overwrites with sha-<git>@sha256:<digest> once the image is published
     config:
       serverName: ${server_name}
-    # Public exposure is gated on the signed federation border (issue #211): keep this false.
+    # The federation policy border (issue #211) is ON: the ../component Component projects the
+    # fgentic-activitypub-policy ConfigMap this mounts and hot-reloads. Inbound activities must pass
+    # HTTP-Signature verification and the allowlist before any A2A call.
+    policy:
+      enabled: true
+    # Public exposure is gated on the border being proven in force (docs/fediverse.md §3): keep the
+    # route false until then, even though the border itself is now enabled.
     httpRoute:
       enabled: false
     metrics:

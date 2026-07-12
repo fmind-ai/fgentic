@@ -41,6 +41,18 @@ agents:
     name: docs-qa
     description: Answers architecture and operations questions from local Fgentic documentation.
 
+# The git-reloadable federation policy border (issue #211). When enabled, every inbound activity
+# must pass HTTP-Signature verification and this allowlist before any A2A call. The allowlist is a
+# ConfigMap projected by the namespace-neutral Component (component/) — mounted as a directory so
+# Kubernetes' atomic symlink swap hot-reloads it without a pod restart. DISABLED here so the chart
+# installs standalone; the deploy unit enables it. Never expose the gateway publicly with the
+# border off.
+policy:
+  enabled: false
+  configMapName: fgentic-activitypub-policy
+  reloadInterval: 5s # poll the projected policy.json for a hot-swap
+  signatureMaxSkew: 12h # reject inbound signatures whose timestamp drifts further than this
+
 service:
   type: ClusterIP
   port: 8480

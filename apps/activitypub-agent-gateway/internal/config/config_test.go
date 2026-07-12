@@ -44,6 +44,7 @@ func TestValidateRejectsBadInput(t *testing.T) {
 			ListenPort: 8480, MetricsPort: 9090,
 			RequestTimeout: time.Minute, TaskTimeout: 10 * time.Minute,
 			ShutdownTimeout: time.Second, LogLevel: "info", LogFormat: "json",
+			PolicyReloadInterval: 5 * time.Second, SignatureMaxSkew: 12 * time.Hour,
 		}
 	}
 	if err := base().validate(); err != nil {
@@ -63,6 +64,8 @@ func TestValidateRejectsBadInput(t *testing.T) {
 		"bad request":    func(c *Config) { c.RequestTimeout = 0 },
 		"task below req": func(c *Config) { c.TaskTimeout = time.Second },
 		"bad shutdown":   func(c *Config) { c.ShutdownTimeout = 0 },
+		"bad reload":     func(c *Config) { c.PolicyReloadInterval = 0 },
+		"bad skew":       func(c *Config) { c.SignatureMaxSkew = 0 },
 		"bad level":      func(c *Config) { c.LogLevel = "loud" },
 		"bad format":     func(c *Config) { c.LogFormat = "xml" },
 	}
