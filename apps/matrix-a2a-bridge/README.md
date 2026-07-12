@@ -43,6 +43,8 @@ mise run build:image       # distroless image
 
 The load task's scenario, assertions, and dated reference measurements are recorded in [`../../docs/performance.md`](../../docs/performance.md).
 
+The integration task is also the runtime-independence gate: its disposable kind cluster installs no kagent resources. A plain official-SDK A2A server runs in a separate restricted namespace behind a default-deny NetworkPolicy and in its own non-root distroless image, which contains no bridge binary. The bridge invokes it through a signed `url:` mapping and verifies the real Matrix reply, full sender attribution, token-budget activation, per-sender rate rejection, delegation metrics, and fail-closed card tampering.
+
 The model-evaluation task port-forwards the local agentgateway, runs 10 fixed A2A scenarios for each of `platform-helper`, `docs-qa`, and `scribe`, and writes private machine JSON plus a Markdown comparison to `../../.agents/tmp/model-eval/`. Set `A2A_API_KEY` when the local A2A route requires its workload credential. The task calls the configured model, so run it only after approving that provider access. See [`../../docs/models.md`](../../docs/models.md) for scoring, metric-attribution, pricing-catalog, and review rules.
 
 ## Configuration (environment)

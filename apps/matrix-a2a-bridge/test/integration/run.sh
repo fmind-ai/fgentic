@@ -4,7 +4,9 @@ set -euo pipefail
 
 readonly CLUSTER_NAME="${KIND_CLUSTER_NAME:-fgentic-bridge-integration}"
 readonly NAMESPACE=bridge-integration
+readonly PLAIN_AGENT_NAMESPACE=plain-agent
 readonly FIXTURE_IMAGE=matrix-a2a-bridge-integration:local
+readonly PLAIN_AGENT_IMAGE=plain-a2a-agent-integration:local
 readonly SCENARIO="${INTEGRATION_SCENARIO:-integration}"
 readonly FIXTURE_SETTINGS="${FIXTURE_SETTINGS:-}"
 readonly DRIVER_MANIFEST="${DRIVER_MANIFEST:-driver-job.yaml}"
@@ -22,9 +24,10 @@ export KUBECONFIG
 diagnose() {
   echo "==> Integration fixture diagnostics"
   kubectl --namespace "${NAMESPACE}" get all --output=wide || true
+  kubectl --namespace "${PLAIN_AGENT_NAMESPACE}" get all --output=wide || true
   kubectl --namespace "${NAMESPACE}" logs deployment/postgres --all-containers --tail=200 || true
   kubectl --namespace "${NAMESPACE}" logs deployment/synapse --all-containers --tail=200 || true
-  kubectl --namespace "${NAMESPACE}" logs deployment/a2a-stub --all-containers --tail=200 || true
+  kubectl --namespace "${PLAIN_AGENT_NAMESPACE}" logs deployment/plain-a2a-agent --all-containers --tail=200 || true
   kubectl --namespace "${NAMESPACE}" logs deployment/bridge --all-containers --tail=200 || true
   kubectl --namespace "${NAMESPACE}" logs "job/${DRIVER_JOB_NAME}" --all-containers --tail=200 || true
   kubectl --namespace "${NAMESPACE}" describe pods || true
@@ -53,6 +56,13 @@ docker info >/dev/null 2>&1 || {
 
 echo "==> Building bridge integration image"
 docker build --provenance=false --file "${SCRIPT_DIR}/Dockerfile" --tag "${FIXTURE_IMAGE}" "${APP_DIR}"
+echo "==> Building standalone plain A2A agent image"
+docker build --provenance=false --file "${SCRIPT_DIR}/plain-agent.Dockerfile" --tag "${PLAIN_AGENT_IMAGE}" "${APP_DIR}"
+if [[ "$(docker image inspect --format '{{json .Config.Entrypoint}}|{{.Config.User}}' "${PLAIN_AGENT_IMAGE}")" != \
+  '["/usr/local/bin/plain-a2a-agent"]|65532:65532' ]]; then
+  echo "Error: plain A2A image lost its single non-root runtime entrypoint" >&2
+  exit 1
+fi
 
 # A stale fixture cluster has no durable state and is safe to replace. The dedicated kubeconfig
 # keeps kind from changing the developer's current kubectl context (normally the shared k3d cluster).
@@ -64,7 +74,7 @@ kind create cluster \
   --config "${SCRIPT_DIR}/kind.yaml" \
   --wait 240s
 kubectl wait --for=condition=Ready nodes --all --timeout=60s
-kind load docker-image --name "${CLUSTER_NAME}" "${FIXTURE_IMAGE}"
+kind load docker-image --name "${CLUSTER_NAME}" "${FIXTURE_IMAGE}" "${PLAIN_AGENT_IMAGE}"
 
 echo "==> Starting Postgres and Synapse"
 kubectl apply --filename "${SCRIPT_DIR}/platform.yaml"
@@ -74,9 +84,25 @@ fi
 kubectl --namespace "${NAMESPACE}" rollout status deployment/postgres --timeout=180s
 kubectl --namespace "${NAMESPACE}" rollout status deployment/synapse --timeout=240s
 
-echo "==> Starting real bridge and SDK-backed A2A stub"
+if kubectl get namespace kagent >/dev/null 2>&1; then
+  echo "Error: runtime-independence fixture unexpectedly installed the kagent namespace" >&2
+  exit 1
+fi
+
+echo "==> Starting real bridge and standalone SDK-backed A2A agent"
 kubectl apply --filename "${SCRIPT_DIR}/workloads.yaml"
-kubectl --namespace "${NAMESPACE}" rollout status deployment/a2a-stub --timeout=60s
+if ! kubectl --namespace "${PLAIN_AGENT_NAMESPACE}" get networkpolicy plain-a2a-agent --output=json | jq -e \
+  --arg allowed_namespace "${NAMESPACE}" '
+    .spec.policyTypes == ["Ingress", "Egress"]
+    and (.spec.ingress | length == 1)
+    and (.spec.ingress[0].from | length == 1)
+    and .spec.ingress[0].from[0].namespaceSelector.matchLabels."kubernetes.io/metadata.name" == $allowed_namespace
+    and (.spec.egress | length == 0)
+  ' >/dev/null; then
+  echo "Error: plain A2A agent NetworkPolicy is not exact and default-deny" >&2
+  exit 1
+fi
+kubectl --namespace "${PLAIN_AGENT_NAMESPACE}" rollout status deployment/plain-a2a-agent --timeout=60s
 kubectl --namespace "${NAMESPACE}" rollout status deployment/bridge --timeout=90s
 
 echo "==> Running ${SCENARIO} scenario"
@@ -94,7 +120,7 @@ if [[ "${SCENARIO}" == "integration" ]]; then
       | select(
           .log_stream == "audit"
           and .msg == "delegation audit"
-          and .ghost == "agent-remote"
+          and .ghost == "agent-plain"
           and .outcome == "denied"
           and .terminal_stage == "agent_card"
           and .terminal_reason == "agent_card_untrusted"

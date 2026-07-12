@@ -4,6 +4,15 @@ metadata:
   name: bridge-integration
 ---
 apiVersion: v1
+kind: Namespace
+metadata:
+  name: plain-agent
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
 kind: ConfigMap
 metadata:
   name: postgres-init
@@ -24,13 +33,13 @@ data:
       agent-integration:
         namespace: kagent
         name: integration-agent
-      agent-remote:
-        url: http://a2a-stub:8080/api/a2a/remote-agent
+      agent-plain:
+        url: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080/api/a2a/remote-agent
         timeout: 5s
         tokenBudget: 4096
         cardIdentity:
-          name: Fgentic signed remote integration stub
-          organization: Fgentic integration
+          name: Fgentic plain a2a-go agent
+          organization: Fgentic runtime-independence fixture
           keyID: integration-p256-v1
           publicKey:
             kty: EC
@@ -46,10 +55,18 @@ metadata:
 data:
   a2aStubDelay: 0s
   concurrency: "2"
-  senderRatePerMinute: "60"
-  senderRateBurst: "10"
+  senderRatePerMinute: "0.01"
+  senderRateBurst: "1"
   roomRatePerMinute: "60"
   roomRateBurst: "10"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fixture-settings
+  namespace: plain-agent
+data:
+  a2aStubDelay: 0s
 ---
 apiVersion: v1
 kind: Secret

@@ -55,6 +55,7 @@ type stubStats struct {
 	MaxActive          int                 `json:"max_active"`
 	RemoteCardRequests int                 `json:"remote_card_requests"`
 	RemoteRequests     int                 `json:"remote_requests"`
+	RemoteUserID       string              `json:"remote_user_id"`
 	TokenBudgetValid   bool                `json:"token_budget_valid"`
 	TotalStarted       int                 `json:"total_started"`
 	TotalCompleted     int                 `json:"total_completed"`
