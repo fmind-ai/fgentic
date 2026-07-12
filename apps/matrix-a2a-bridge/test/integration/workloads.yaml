@@ -1,11 +1,11 @@
 apiVersion: v1
 kind: Service
 metadata:
-  name: a2a-stub
-  namespace: bridge-integration
+  name: plain-a2a-agent
+  namespace: plain-agent
 spec:
   selector:
-    app.kubernetes.io/name: a2a-stub
+    app.kubernetes.io/name: plain-a2a-agent
   ports:
     - name: http
       port: 8080
@@ -14,17 +14,17 @@ spec:
 apiVersion: apps/v1
 kind: Deployment
 metadata:
-  name: a2a-stub
-  namespace: bridge-integration
+  name: plain-a2a-agent
+  namespace: plain-agent
 spec:
   replicas: 1
   selector:
     matchLabels:
-      app.kubernetes.io/name: a2a-stub
+      app.kubernetes.io/name: plain-a2a-agent
   template:
     metadata:
       labels:
-        app.kubernetes.io/name: a2a-stub
+        app.kubernetes.io/name: plain-a2a-agent
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -34,11 +34,12 @@ spec:
         seccompProfile:
           type: RuntimeDefault
       containers:
-        - name: a2a-stub
-          image: matrix-a2a-bridge-integration:local
+        - name: plain-a2a-agent
+          image: plain-a2a-agent-integration:local
           imagePullPolicy: Never
-          command: [/usr/local/bin/a2a-stub]
           env:
+            - name: A2A_STUB_BASE_URL
+              value: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080
             - name: A2A_STUB_DELAY
               valueFrom:
                 configMapKeyRef:
@@ -73,6 +74,31 @@ spec:
             capabilities:
               drop: [ALL]
             readOnlyRootFilesystem: true
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: plain-a2a-agent
+  namespace: plain-agent
+spec:
+  # The bridge and assertion driver share one disposable namespace: the bridge uses A2A while
+  # the driver reads content-free stats and activates the tamper control. No other namespace is
+  # admitted, and the deterministic server needs no egress.
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: plain-a2a-agent
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: bridge-integration
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress: []
 ---
 apiVersion: v1
 kind: Service
@@ -127,7 +153,7 @@ spec:
             - name: AGENTS_PATH
               value: /agents/agents.yaml
             - name: A2A_BASE_URL
-              value: http://a2a-stub:8080
+              value: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080
             - name: AGENT_CARD_REFRESH_INTERVAL
               value: 1s
             - name: DATABASE_URL

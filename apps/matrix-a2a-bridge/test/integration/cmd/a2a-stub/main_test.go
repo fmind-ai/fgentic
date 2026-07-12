@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"math/big"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 	"time"
 
@@ -45,6 +47,27 @@ func TestStatsRecorderTracksConcurrencyAndOrder(t *testing.T) {
 	}
 	if len(stats.Completions) != 2 || stats.Completions[0] != first || stats.Completions[1] != second {
 		t.Fatalf("completion order = %+v", stats.Completions)
+	}
+}
+
+func TestRecordRemoteUserCapturesMatrixAttributionOnCallsOnly(t *testing.T) {
+	recorder := &statsRecorder{}
+	handler := recordRemoteUser(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}), recorder)
+
+	cardRequest := httptest.NewRequest(http.MethodGet, "/.well-known/agent-card.json", nil)
+	cardRequest.Header.Set("X-User-Id", "@card-fetch:integration.test")
+	handler.ServeHTTP(httptest.NewRecorder(), cardRequest)
+	if got := recorder.snapshot().RemoteUserID; got != "" {
+		t.Fatalf("AgentCard request attribution = %q, want empty", got)
+	}
+
+	callRequest := httptest.NewRequest(http.MethodPost, "/api/a2a/remote-agent", nil)
+	callRequest.Header.Set("X-User-Id", "@alice:integration.test")
+	handler.ServeHTTP(httptest.NewRecorder(), callRequest)
+	if got := recorder.snapshot().RemoteUserID; got != "@alice:integration.test" {
+		t.Fatalf("A2A request attribution = %q", got)
 	}
 }
 

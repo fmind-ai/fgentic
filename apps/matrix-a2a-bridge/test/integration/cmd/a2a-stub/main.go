@@ -1,6 +1,6 @@
-// Command a2a-stub serves the smallest real A2A endpoint needed by the kind integration test.
-// It uses the official A2A server SDK, so the bridge still exercises AgentCard discovery and
-// JSON-RPC message/send on the wire without bringing an LLM or kagent into the fixture.
+// Command a2a-stub serves a deterministic plain A2A agent for the kind integration test.
+// Its separately packaged runtime uses only the official A2A server SDK: no bridge binary,
+// agent framework, language model, or kagent resource exists in the fixture.
 package main
 
 import (
@@ -33,19 +33,18 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
 	"github.com/gowebpki/jcs"
-
-	"github.com/fmind/matrix-a2a-bridge/internal/a2aclient"
 )
 
 const (
 	localAgentPath          = "/api/a2a/kagent/integration-agent"
 	remoteAgentPath         = "/api/a2a/remote-agent"
 	localReplyText          = "integration reply"
-	remoteReplyText         = "remote integration reply"
-	remoteAgentName         = "Fgentic signed remote integration stub"
-	remoteAgentOrganization = "Fgentic integration"
+	remoteReplyText         = "plain A2A reply"
+	remoteAgentName         = "Fgentic plain a2a-go agent"
+	remoteAgentOrganization = "Fgentic runtime-independence fixture"
 	remoteKeyID             = "integration-p256-v1"
 	integrationTokenBudget  = 4096
+	tokenBudgetExtensionURI = "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1"
 	minLoadDelay            = 2 * time.Second
 	maxLoadDelay            = 5 * time.Second
 )
@@ -64,6 +63,7 @@ type statsSnapshot struct {
 	MaxActive          int             `json:"max_active"`
 	RemoteCardRequests int             `json:"remote_card_requests"`
 	RemoteRequests     int             `json:"remote_requests"`
+	RemoteUserID       string          `json:"remote_user_id"`
 	TokenBudgetValid   bool            `json:"token_budget_valid"`
 	TotalRequests      int             `json:"total_requests"`
 	TotalStarted       int             `json:"total_started"`
@@ -82,6 +82,7 @@ type statsRecorder struct {
 	remoteCardRequests int
 	cardTampered       bool
 	tokenBudgetValid   bool
+	remoteUserID       string
 	totalStarted       int
 	totalCompleted     int
 	starts             []requestRecord
@@ -116,6 +117,12 @@ func (r *statsRecorder) markTokenBudgetValid() {
 	r.tokenBudgetValid = true
 }
 
+func (r *statsRecorder) recordRemoteUser(userID string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.remoteUserID = userID
+}
+
 func (r *statsRecorder) start(record requestRecord) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -147,6 +154,7 @@ func (r *statsRecorder) snapshot() statsSnapshot {
 		MaxActive:          r.maxActive,
 		RemoteCardRequests: r.remoteCardRequests,
 		RemoteRequests:     r.remoteRequests,
+		RemoteUserID:       r.remoteUserID,
 		TokenBudgetValid:   r.tokenBudgetValid,
 		TotalRequests:      r.totalRequests,
 		TotalStarted:       r.totalStarted,
@@ -195,10 +203,10 @@ func validTokenBudgetContract(execCtx *a2asrv.ExecutorContext) bool {
 	if execCtx == nil || execCtx.Message == nil {
 		return false
 	}
-	if !slices.Contains(execCtx.Message.Extensions, a2aclient.TokenBudgetExtensionURI) {
+	if !slices.Contains(execCtx.Message.Extensions, tokenBudgetExtensionURI) {
 		return false
 	}
-	extensionMetadata, ok := execCtx.Message.Metadata[a2aclient.TokenBudgetExtensionURI].(map[string]any)
+	extensionMetadata, ok := execCtx.Message.Metadata[tokenBudgetExtensionURI].(map[string]any)
 	if !ok {
 		return false
 	}
@@ -208,11 +216,20 @@ func validTokenBudgetContract(execCtx *a2asrv.ExecutorContext) bool {
 		return false
 	}
 	extensions, ok := execCtx.ServiceParams.Get(a2a.SvcParamExtensions)
-	return ok && slices.Contains(extensions, a2aclient.TokenBudgetExtensionURI)
+	return ok && slices.Contains(extensions, tokenBudgetExtensionURI)
 }
 
 func (executor) Cancel(context.Context, *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 	return func(func(a2a.Event, error) bool) {}
+}
+
+func recordRemoteUser(next http.Handler, stats *statsRecorder) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodPost {
+			stats.recordRemoteUser(r.Header.Get("X-User-Id"))
+		}
+		next.ServeHTTP(w, r)
+	})
 }
 
 func main() {
@@ -278,7 +295,7 @@ func run() error {
 			slog.Warn("write remote AgentCard", "err", err)
 		}
 	})
-	mux.Handle(remoteAgentPath, a2asrv.NewJSONRPCHandler(remoteHandler))
+	mux.Handle(remoteAgentPath, recordRemoteUser(a2asrv.NewJSONRPCHandler(remoteHandler), stats))
 	mux.HandleFunc("POST /control/tamper", func(w http.ResponseWriter, _ *http.Request) {
 		stats.tamperCard()
 		w.WriteHeader(http.StatusNoContent)
@@ -345,7 +362,7 @@ func signedRemoteAgentCard(baseURL string) (*a2a.AgentCard, error) {
 		DefaultInputModes:   []string{"text/plain"},
 		DefaultOutputModes:  []string{"text/plain"},
 		Capabilities: a2a.AgentCapabilities{
-			Extensions: []a2a.AgentExtension{{URI: a2aclient.TokenBudgetExtensionURI, Required: true}},
+			Extensions: []a2a.AgentExtension{{URI: tokenBudgetExtensionURI, Required: true}},
 		},
 		Skills: []a2a.AgentSkill{{
 			ID:          "echo",

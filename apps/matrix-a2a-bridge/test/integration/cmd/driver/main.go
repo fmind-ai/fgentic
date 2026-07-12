@@ -12,6 +12,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -20,15 +21,16 @@ const (
 	defaultMatrixURL     = "http://synapse:8008"
 	defaultBridgeURL     = "http://bridge:29331"
 	defaultMetricsURL    = "http://bridge:9090/metrics"
-	defaultStubURL       = "http://a2a-stub:8080"
+	defaultStubURL       = "http://plain-a2a-agent.plain-agent.svc.cluster.local:8080"
 	defaultServer        = "integration.test"
 	defaultHSToken       = "integration-homeserver-token"
 	username             = "integration-user"
 	password             = "integration-password"
 	ghostLocalpart       = "agent-integration"
-	remoteGhostLocalpart = "agent-remote"
+	plainGhostLocalpart  = "agent-plain"
 	replyText            = "integration reply"
-	remoteReplyText      = "remote integration reply"
+	plainReplyText       = "plain A2A reply"
+	rateLimitedReplyText = "⚠️ rate limit reached — please retry in a moment."
 )
 
 type fixture struct {
@@ -147,24 +149,24 @@ func (f fixture) runBasic(ctx context.Context) error {
 		}
 	}
 
-	remoteGhost := "@" + remoteGhostLocalpart + ":" + f.server
-	if err := f.invite(ctx, sess.AccessToken, roomID, remoteGhost); err != nil {
+	plainGhost := "@" + plainGhostLocalpart + ":" + f.server
+	if err := f.invite(ctx, sess.AccessToken, roomID, plainGhost); err != nil {
 		return err
 	}
-	if err := f.waitForJoin(ctx, sess.AccessToken, roomID, remoteGhost); err != nil {
+	if err := f.waitForJoin(ctx, sess.AccessToken, roomID, plainGhost); err != nil {
 		return err
 	}
-	remoteContent := messageContent{
-		Body:     remoteGhost + " prove the signed remote A2A path",
-		Mentions: mentions{UserIDs: []string{remoteGhost}},
+	plainContent := messageContent{
+		Body:     plainGhost + " prove the framework-independent A2A path",
+		Mentions: mentions{UserIDs: []string{plainGhost}},
 		MsgType:  "m.text",
 	}
-	remoteEventID, err := f.sendMessageTxn(
+	plainEventID, err := f.sendMessageTxn(
 		ctx,
 		sess.AccessToken,
 		roomID,
-		"integration-remote-valid",
-		remoteContent,
+		"integration-plain-valid",
+		plainContent,
 	)
 	if err != nil {
 		return err
@@ -173,24 +175,64 @@ func (f fixture) runBasic(ctx context.Context) error {
 		ctx,
 		sess.AccessToken,
 		roomID,
-		remoteGhost,
-		remoteEventID,
-		remoteReplyText,
+		plainGhost,
+		plainEventID,
+		plainReplyText,
 		1,
 	); err != nil {
-		return fmt.Errorf("signed remote round trip: %w", err)
+		return fmt.Errorf("plain A2A round trip: %w", err)
 	}
 
-	beforeTamper, err := f.fetchStubStats(ctx)
+	afterPlain, err := f.fetchStubStats(ctx)
 	if err != nil {
 		return err
 	}
-	if beforeTamper.RemoteRequests < 1 {
-		return fmt.Errorf("signed remote round trip made %d A2A requests, want at least 1", beforeTamper.RemoteRequests)
+	if afterPlain.RemoteRequests < 1 {
+		return fmt.Errorf("plain A2A round trip made %d A2A requests, want at least 1", afterPlain.RemoteRequests)
 	}
-	if !beforeTamper.TokenBudgetValid {
-		return fmt.Errorf("signed remote round trip did not validate the configured token-budget extension")
+	if !afterPlain.TokenBudgetValid {
+		return fmt.Errorf("plain A2A round trip did not validate the configured token-budget extension")
 	}
+	if afterPlain.RemoteUserID != sess.UserID {
+		return fmt.Errorf("plain A2A attribution user = %q, want %q", afterPlain.RemoteUserID, sess.UserID)
+	}
+	if err := f.requireDelegationMetric(ctx, plainGhostLocalpart, "ok", 1); err != nil {
+		return err
+	}
+
+	rateContent := messageContent{
+		Body:     plainGhost + " this second invocation must stay inside the bridge budget",
+		Mentions: mentions{UserIDs: []string{plainGhost}},
+		MsgType:  "m.text",
+	}
+	rateEventID, err := f.sendMessageTxn(
+		ctx,
+		sess.AccessToken,
+		roomID,
+		"integration-plain-rate-limited",
+		rateContent,
+	)
+	if err != nil {
+		return err
+	}
+	if err := f.waitForReplyCount(
+		ctx,
+		sess.AccessToken,
+		roomID,
+		plainGhost,
+		rateEventID,
+		rateLimitedReplyText,
+		1,
+	); err != nil {
+		return fmt.Errorf("plain A2A rate-limit notice: %w", err)
+	}
+	if err := f.assertNoRemoteDispatch(ctx, afterPlain.RemoteRequests, time.Second); err != nil {
+		return fmt.Errorf("plain A2A bridge rate limit: %w", err)
+	}
+	if err := f.requireDelegationMetric(ctx, plainGhostLocalpart, "rate_limited", 1); err != nil {
+		return err
+	}
+
 	if err := f.tamperRemoteCard(ctx); err != nil {
 		return err
 	}
@@ -204,19 +246,20 @@ func (f fixture) runBasic(ctx context.Context) error {
 	}
 
 	tamperedContent := messageContent{
-		Body:     remoteGhost + " this must fail closed after card tampering",
-		Mentions: mentions{UserIDs: []string{remoteGhost}},
+		Body:     plainGhost + " this must fail closed after card tampering",
+		Mentions: mentions{UserIDs: []string{plainGhost}},
 		MsgType:  "m.text",
 	}
-	tamperedEventID, err := f.sendMessageTxn(
+	tamperedEventID := "$plain-tampered:integration.test"
+	if err := f.pushAppserviceEvent(
 		ctx,
-		sess.AccessToken,
+		"integration-plain-tampered",
 		roomID,
-		"integration-remote-tampered",
+		"@tamper-probe:integration.test",
+		tamperedEventID,
 		tamperedContent,
-	)
-	if err != nil {
-		return err
+	); err != nil {
+		return fmt.Errorf("inject tampered-card appservice event: %w", err)
 	}
 	if err := f.assertNoRemoteDispatch(ctx, afterRefresh.RemoteRequests, 4*time.Second); err != nil {
 		return fmt.Errorf("tampered remote AgentCard: %w", err)
@@ -228,8 +271,11 @@ func (f fixture) runBasic(ctx context.Context) error {
 		"mention_event_id", eventID,
 		"reply", replyText,
 		"deduplicated_replay", true,
-		"remote_mention_event_id", remoteEventID,
-		"remote_reply", remoteReplyText,
+		"plain_mention_event_id", plainEventID,
+		"plain_reply", plainReplyText,
+		"plain_sender_attributed", true,
+		"plain_rate_limit_event_id", rateEventID,
+		"plain_rate_limited_before_a2a", true,
 		"tampered_mention_event_id", tamperedEventID,
 		"tampered_card_rejected_before_a2a", true,
 	)
@@ -372,9 +418,17 @@ func (f fixture) replayEvent(
 	roomID, sender, eventID string,
 	content messageContent,
 ) error {
+	return f.pushAppserviceEvent(ctx, "integration-redelivery", roomID, sender, eventID, content)
+}
+
+func (f fixture) pushAppserviceEvent(
+	ctx context.Context,
+	transactionID, roomID, sender, eventID string,
+	content messageContent,
+) error {
 	encodedContent, err := json.Marshal(content)
 	if err != nil {
-		return fmt.Errorf("encode replayed Matrix event: %w", err)
+		return fmt.Errorf("encode Matrix appservice event: %w", err)
 	}
 	event := matrixEvent{
 		Content:        encodedContent,
@@ -384,13 +438,13 @@ func (f fixture) replayEvent(
 		Sender:         sender,
 		Type:           "m.room.message",
 	}
-	endpoint := f.bridgeURL + "/_matrix/app/v1/transactions/integration-redelivery"
+	endpoint := f.bridgeURL + "/_matrix/app/v1/transactions/" + url.PathEscape(transactionID)
 	status, body, err := f.request(ctx, http.MethodPut, endpoint, f.hsToken, map[string]any{"events": []matrixEvent{event}})
 	if err != nil {
-		return fmt.Errorf("replay appservice transaction: %w", err)
+		return fmt.Errorf("push appservice transaction: %w", err)
 	}
 	if status != http.StatusOK {
-		return fmt.Errorf("replay appservice transaction: status %d: %s", status, body)
+		return fmt.Errorf("push appservice transaction: status %d: %s", status, body)
 	}
 	return nil
 }
@@ -502,6 +556,32 @@ func (f fixture) assertNoRemoteDispatch(ctx context.Context, expected int, durat
 		}
 	}
 	return nil
+}
+
+func (f fixture) requireDelegationMetric(ctx context.Context, ghost, outcome string, want float64) error {
+	status, body, err := f.request(ctx, http.MethodGet, f.metricsURL, "", nil)
+	if err != nil {
+		return fmt.Errorf("read bridge delegation metrics: %w", err)
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("read bridge delegation metrics: status %d: %s", status, body)
+	}
+	series := fmt.Sprintf("fgentic_delegations_total{ghost=%q,outcome=%q}", ghost, outcome)
+	for _, line := range strings.Split(string(body), "\n") {
+		fields := strings.Fields(line)
+		if len(fields) != 2 || fields[0] != series {
+			continue
+		}
+		got, parseErr := strconv.ParseFloat(fields[1], 64)
+		if parseErr != nil {
+			return fmt.Errorf("parse bridge metric %s: %w", series, parseErr)
+		}
+		if got != want {
+			return fmt.Errorf("bridge metric %s = %v, want %v", series, got, want)
+		}
+		return nil
+	}
+	return fmt.Errorf("bridge metric %s is missing", series)
 }
 
 func (f fixture) roomMessages(ctx context.Context, token, roomID string) ([]matrixEvent, error) {

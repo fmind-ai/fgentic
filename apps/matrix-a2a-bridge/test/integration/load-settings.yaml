@@ -12,3 +12,11 @@ data:
   senderRateBurst: "200"
   roomRatePerMinute: "6000"
   roomRateBurst: "200"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fixture-settings
+  namespace: plain-agent
+data:
+  a2aStubDelay: 2s
