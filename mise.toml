@@ -102,6 +102,7 @@ depends = [
   "check:agent-zoo",
   "check:demo",
   "check:federation",
+  "check:federation-onboarding",
   "check:smoke-workflow",
   "check:mautrix-bridges",
   "check:workflows",
@@ -202,6 +203,10 @@ run = "bash scripts/test-demo.sh"
 [tasks."check:federation"]
 description = "Validate the offline federation topology, room policy, and denied control"
 run = "bash scripts/test-federation.sh"
+
+[tasks."check:federation-onboarding"]
+description = "Test the read-only partner federation preflight with offline fixtures"
+run = "bash scripts/test-fed-check.sh"
 
 [tasks."check:smoke-workflow"]
 description = "Validate nightly demo, policy conformance, diagnostics, and issue tracking"

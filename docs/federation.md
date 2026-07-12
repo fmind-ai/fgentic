@@ -2,6 +2,8 @@
 
 Design position: **Matrix federation for the collaboration plane (humans + agents in shared rooms), A2A for the delegation plane (direct org-to-org machine calls)** — they compose rather than compete, and Fgentic ships both:
 
+The production operator workflow is the bilateral [partner federation onboarding runbook](federation-onboarding.md). Its public preflight checks reachability and discovery only; allowlists, room policy, A2A authorization, and contractual controls require separate operator evidence.
+
 ### 8.1 What Matrix federation gives — stated honestly
 
 1. Identity is **org-level, not agent-level**: events are signed by the homeserver; org B can forge any `@user:org-b.com`, including its own agents. The honest claim is "cryptographically attributable to the partner organization". Per-agent identity is layered on with **A2A v1.0 Signed AgentCards** on the delegation plane.
