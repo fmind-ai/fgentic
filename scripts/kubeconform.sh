@@ -73,6 +73,24 @@ if [ -d apps/matrix-a2a-bridge/chart ]; then
   helm template matrix-a2a-bridge apps/matrix-a2a-bridge/chart | "${KUBECONFORM[@]}"
 fi
 
+echo "==> Rendering + validating apps/activitypub-agent-gateway/chart"
+# The ActivityPub gateway is an opt-in second federation transport (docs/adr/0014); it is not yet
+# wired into the reconciled cluster DAG, so — like the mautrix bridge profiles — its chart is
+# validated here directly. Render with the public route enabled so the gated HTTPRoute is checked.
+if [ -d apps/activitypub-agent-gateway/chart ]; then
+  helm template activitypub-agent-gateway apps/activitypub-agent-gateway/chart \
+    --namespace activitypub \
+    --set httpRoute.enabled=true \
+    --set metrics.podMonitor.enabled=true \
+    | "${KUBECONFORM[@]}"
+  # Schema-validate its self-contained deploy unit (Namespace + HelmRelease) through Flux envsubst.
+  while IFS= read -r manifest; do
+    flux envsubst --strict < "${manifest}"
+    echo "---"
+  done < <(find apps/activitypub-agent-gateway/deploy -type f -name '*.yaml' ! -name 'kustomization.yaml') \
+    | "${KUBECONFORM[@]}"
+fi
+
 echo "==> Rendering + validating optional mautrix bridge releases"
 for bridge_release in infra/bridges/*/helmrelease.yaml; do
   [ -f "${bridge_release}" ] || continue

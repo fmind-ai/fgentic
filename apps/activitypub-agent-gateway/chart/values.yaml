@@ -1,0 +1,104 @@
+replicaCount: 1 # in-memory outbox + context threading; the chart rejects higher values
+terminationGracePeriodSeconds: 45
+
+image:
+  repository: ghcr.io/fmind-ai/activitypub-agent-gateway
+  pullPolicy: IfNotPresent
+  tag: "" # set by CI to an immutable digest; defaults to .Chart.AppVersion
+
+# --- Gateway configuration (rendered into the Deployment env) ---
+config:
+  serverName: fgentic.fmind.ai # the acct: handle domain; overridden per cluster (${server_name})
+  publicScheme: https # scheme of every actor/inbox/outbox URL
+  publicHost: "" # externally-reachable host for actor IDs; empty defaults to serverName
+  # Route A2A THROUGH agentgateway by default (telemetry + the LLM-credential chokepoint on the
+  # agent's own egress). Point directly at kagent to skip the gateway hop:
+  #   http://kagent-controller.kagent.svc.cluster.local:8083
+  a2aBaseURL: http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080
+  ghostPrefix: agent-
+  requestTimeout: 60s # transport deadline for one A2A message/send
+  taskTimeout: 10m # overall deadline when polling a long-running task (tasks/get)
+  shutdownTimeout: 25s # HTTP drain on SIGTERM
+  logLevel: info
+  logFormat: json
+  listenPort: 8480 # public AP HTTP server (actor, WebFinger, inbox, outbox)
+  metricsPort: 9090 # Prometheus /metrics side port (never public)
+
+# Workload credential for the agentgateway A2A route. X-User-Id remains end-user (AP actor)
+# attribution; this independent key proves the caller is the gateway and is removed by the gateway.
+a2aAuthentication:
+  enabled: true
+  secretName: activitypub-agent-gateway-credential
+  key: token
+
+# The ghost -> A2A agent routing map (WHICH agents are exposed as AP actors and WHERE they route).
+# Rendered into a ConfigMap. `description` becomes the actor summary. Local kagent targets only:
+# inbound AP sender authorization is the signed-border/allowlist control landed by later
+# federation work (docs/fediverse.md §3), so no per-agent sender policy lives here yet.
+agents:
+  agent-docs-qa:
+    namespace: kagent
+    name: docs-qa
+    description: Answers architecture and operations questions from local Fgentic documentation.
+
+service:
+  type: ClusterIP
+  port: 8480
+
+serviceAccount:
+  create: true
+  automountServiceAccountToken: false
+
+# Default-deny ingress except from the Gateway (Traefik) namespace, which fronts the single exact
+# AP route, and monitoring (metrics scrapes). Egress is left open so the gateway can reach
+# agentgateway/kagent for A2A. Validate enforcement on a policy-enforcing CNI.
+networkPolicy:
+  enabled: true
+  fromNamespaces:
+    - traefik
+    - monitoring
+
+# One exact public HTTPRoute exposing ONLY the actor/WebFinger/inbox/outbox paths (mirrors the
+# fed-lab single-route exposure). DISABLED by default: public exposure is gated on the signed
+# federation border (docs/fediverse.md §3, issue #211). Enable it only once that border is in force.
+httpRoute:
+  enabled: false
+  hostname: "" # e.g. a2a.fgentic.fmind.ai; empty falls back to config.publicHost/serverName
+  parentRef:
+    name: external
+    namespace: gateway
+    sectionName: https
+
+# Prometheus scraping: the PodMonitor needs the monitoring.coreos.com CRDs (kube-prometheus-
+# stack) — enabled by the platform deploy values, off by default so the chart installs standalone.
+metrics:
+  podMonitor:
+    enabled: false
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532 # distroless:nonroot
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 48Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+revisionHistoryLimit: 3
+nodeSelector: {}
+tolerations: []
+affinity: {}

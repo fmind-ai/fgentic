@@ -1,0 +1,12 @@
+.git
+*.md
+*.go
+/cmd
+/internal
+/bin
+/tmp
+/deploy
+Dockerfile
+mise.toml
+go.mod
+go.sum

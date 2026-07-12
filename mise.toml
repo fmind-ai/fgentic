@@ -44,11 +44,15 @@ run = "lefthook install"
 
 [tasks."install:apps"]
 description = "Install all application toolchains and locked environments"
-depends = ["install:bridge", "install:policy"]
+depends = ["install:bridge", "install:gateway", "install:policy"]
 
 [tasks."install:bridge"]
 description = "Install the bridge toolchain"
 run = "mise --cd apps/matrix-a2a-bridge install"
+
+[tasks."install:gateway"]
+description = "Install the ActivityPub agent gateway toolchain"
+run = "mise --cd apps/activitypub-agent-gateway install"
 
 [tasks."install:policy"]
 description = "Install the Synapse policy toolchain and locked environment"
@@ -60,7 +64,7 @@ run = [
 [tasks.format]
 alias = "f"
 description = "Format everything (config/markup, Terraform, and applications)"
-depends = ["format:dprint", "format:terraform", "format:app", "format:policy"]
+depends = ["format:dprint", "format:terraform", "format:app", "format:gateway", "format:policy"]
 
 [tasks."format:dprint"]
 description = "Format JSON, Markdown, TOML, YAML at the repo root + infra/docs (dprint)"
@@ -73,6 +77,11 @@ run = "terraform fmt -recursive infra"
 [tasks."format:app"]
 description = "Format the application (delegates to apps/matrix-a2a-bridge)"
 dir = "apps/matrix-a2a-bridge"
+run = "mise run format"
+
+[tasks."format:gateway"]
+description = "Format the ActivityPub agent gateway"
+dir = "apps/activitypub-agent-gateway"
 run = "mise run format"
 
 [tasks."format:policy"]
@@ -107,6 +116,7 @@ depends = [
   "check:mautrix-bridges",
   "check:workflows",
   "check:app",
+  "check:gateway",
   "check:policy",
 ]
 
@@ -246,6 +256,11 @@ description = "Run the application's static checks (delegates to apps/matrix-a2a
 dir = "apps/matrix-a2a-bridge"
 run = "mise run check"
 
+[tasks."check:gateway"]
+description = "Run the ActivityPub agent gateway static checks"
+dir = "apps/activitypub-agent-gateway"
+run = "mise run check"
+
 [tasks."check:policy"]
 description = "Run the Synapse federation policy static checks"
 dir = "apps/synapse-federation-policy"
@@ -256,6 +271,11 @@ description = "Run the application test suite (delegates to apps/matrix-a2a-brid
 dir = "apps/matrix-a2a-bridge"
 run = "mise run test"
 
+[tasks."test:gateway"]
+description = "Run the ActivityPub agent gateway test suite"
+dir = "apps/activitypub-agent-gateway"
+run = "mise run test"
+
 [tasks."test:policy"]
 description = "Run the Synapse federation policy unit suite"
 dir = "apps/synapse-federation-policy"
@@ -264,7 +284,7 @@ run = "mise run test"
 [tasks.test]
 alias = "t"
 description = "Run deterministic application and pinned external-bridge runtime tests"
-depends = ["test:app", "test:policy", "test:mautrix-bridges"]
+depends = ["test:app", "test:gateway", "test:policy", "test:mautrix-bridges"]
 
 [tasks."test:integration"]
 description = "Run the bridge's kind-based Matrix appservice integration test"
@@ -288,11 +308,16 @@ run = "mise run eval:models"
 [tasks.build]
 alias = "b"
 description = "Build all application artifacts"
-depends = ["build:bridge", "build:policy"]
+depends = ["build:bridge", "build:gateway", "build:policy"]
 
 [tasks."build:bridge"]
 description = "Build the production bridge image"
 dir = "apps/matrix-a2a-bridge"
+run = "mise run build:image"
+
+[tasks."build:gateway"]
+description = "Build the production ActivityPub agent gateway image"
+dir = "apps/activitypub-agent-gateway"
 run = "mise run build:image"
 
 [tasks."build:policy"]

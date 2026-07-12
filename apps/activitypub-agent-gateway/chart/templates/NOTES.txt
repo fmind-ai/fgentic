@@ -1,0 +1,14 @@
+activitypub-agent-gateway {{ .Chart.AppVersion }} deployed as "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Actors served:{{ range $g, $r := .Values.agents }} @{{ $g }}:{{ $.Values.config.serverName }} ({{ $r.namespace }}/{{ $r.name }}){{ end }}
+
+Checklist:
+  1. This gateway is a SECOND federation transport (ActivityPub), self-contained and never bundled
+     into the mautrix bridge. It reaches kagent only through agentgateway ({{ .Values.config.a2aBaseURL }}).
+  2. Public exposure is GATED: httpRoute.enabled is {{ .Values.httpRoute.enabled }}. Keep it false
+     until the signed ActivityPub federation border (issue #211) is in force.
+  3. Resolve an agent by its fediverse handle:
+     curl -s "https://<public-host>/.well-known/webfinger?resource=acct:agent-docs-qa@{{ .Values.config.serverName }}"
+
+Health:  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "activitypub-agent-gateway.fullname" . }} {{ .Values.config.listenPort }}
+         curl localhost:{{ .Values.config.listenPort }}/healthz

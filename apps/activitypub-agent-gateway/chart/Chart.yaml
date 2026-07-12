@@ -1,0 +1,14 @@
+apiVersion: v2
+name: activitypub-agent-gateway
+description: ActivityPub Service actor per agent, delegating fediverse mentions to AI agents over A2A
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - activitypub
+  - fediverse
+  - a2a
+  - ai-agents
+home: https://github.com/fmind-ai/fgentic
+sources:
+  - https://github.com/fmind-ai/fgentic

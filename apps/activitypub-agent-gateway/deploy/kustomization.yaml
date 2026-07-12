@@ -1,0 +1,8 @@
+# Flux resource list for the ActivityPub agent gateway app. Reconciled by the (future) `activitypub`
+# Kustomization once the signed federation border gates exposure (docs/fediverse.md §3). The
+# Namespace is applied before the namespaced HelmRelease within this single Kustomization.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - helmrelease.yaml

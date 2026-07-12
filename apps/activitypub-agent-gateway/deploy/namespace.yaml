@@ -1,0 +1,10 @@
+# The AP gateway's own namespace (self-contained app deploy). Restricted PSS: the workload runs
+# non-root, read-only rootfs, no added capabilities.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: activitypub
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
