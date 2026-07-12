@@ -3,6 +3,8 @@
 # use one trailing '*' in the localpart and an exact homeserver. Display names and bare
 # localparts are never identity evidence. A matching bridged sender remains denied unless the
 # target agent's allowedSenders explicitly matches its full MXID.
+schemaVersion: 1
+
 bridgedOrigins:
   slack:
     - "@slack_*:fgentic.fmind.ai"

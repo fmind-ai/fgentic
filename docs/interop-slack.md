@@ -84,6 +84,7 @@ Append the exact identity through the target cluster's `bridge.spec.patches` lis
 After the cluster-scoped sender patch and the network component compose, the effective configuration will contain:
 
 ```yaml
+schemaVersion: 1
 bridgedOrigins:
   slack:
     - "@slack_*:${server_name}"

@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/url"
 	"os"
@@ -25,6 +26,8 @@ import (
 
 	"github.com/fmind/matrix-a2a-bridge/internal/a2aclient"
 )
+
+const agentsSchemaVersion = 1
 
 // AgentRef identifies one immutable local or remote A2A target and carries the per-agent sender
 // policy (SPEC §4 F6): which homeservers and which users may invoke it. The bridge's own server
@@ -358,10 +361,11 @@ func mappingID(target a2aclient.Target, timeout time.Duration) string {
 // It doubles as the authorization boundary: only mapped ghosts are invokable, and each mapping
 // carries its sender policy.
 type AgentMap struct {
-	mu             sync.RWMutex
-	byGhost        map[string]*AgentRef
-	bridgedOrigins []bridgedOriginRule
-	fingerprint    [sha256.Size]byte
+	mu                    sync.RWMutex
+	byGhost               map[string]*AgentRef
+	bridgedOrigins        []bridgedOriginRule
+	fingerprint           [sha256.Size]byte
+	implicitSchemaVersion bool
 }
 
 // AgentEntry is one immutable snapshot entry from an AgentMap.
@@ -372,6 +376,7 @@ type AgentEntry struct {
 
 // LoadAgents reads the ghost->agent routing map from a YAML file:
 //
+//	schemaVersion: 1
 //	bridgedOrigins:
 //	  slack: ["@slack_*:fgentic.fmind.ai"] # anchored full-MXID bridge namespaces
 //	agents:
@@ -388,6 +393,7 @@ func LoadAgents(path string) (*AgentMap, error) {
 		return nil, fmt.Errorf("read agents file %q: %w", path, err)
 	}
 	var doc struct {
+		SchemaVersion  yaml.Node               `yaml:"schemaVersion,omitempty"`
 		BridgedOrigins map[string][]string     `yaml:"bridgedOrigins,omitempty"`
 		Agents         map[string]*agentConfig `yaml:"agents"`
 	}
@@ -402,6 +408,22 @@ func LoadAgents(path string) (*AgentMap, error) {
 			err = fmt.Errorf("multiple YAML documents are not allowed")
 		}
 		return nil, fmt.Errorf("parse agents file %q: %w", path, err)
+	}
+	implicitSchemaVersion := doc.SchemaVersion.Kind == 0
+	var schemaVersion int
+	if !implicitSchemaVersion {
+		if doc.SchemaVersion.Tag != "!!int" {
+			return nil, fmt.Errorf("parse agents file %q: schemaVersion must be an integer", path)
+		}
+		if err := doc.SchemaVersion.Decode(&schemaVersion); err != nil {
+			return nil, fmt.Errorf("parse agents file %q: decode schemaVersion: %w", path, err)
+		}
+	}
+	if !implicitSchemaVersion && schemaVersion != agentsSchemaVersion {
+		return nil, fmt.Errorf(
+			"parse agents file %q: unsupported schemaVersion %d (supported: %d)",
+			path, schemaVersion, agentsSchemaVersion,
+		)
 	}
 	if len(doc.Agents) == 0 {
 		return nil, fmt.Errorf("agents file %q defines no agents under `agents:`", path)
@@ -419,10 +441,24 @@ func LoadAgents(path string) (*AgentMap, error) {
 		refs[ghost] = ref
 	}
 	return &AgentMap{
-		byGhost:        refs,
-		bridgedOrigins: origins,
-		fingerprint:    sha256.Sum256(data),
+		byGhost:               refs,
+		bridgedOrigins:        origins,
+		fingerprint:           sha256.Sum256(data),
+		implicitSchemaVersion: implicitSchemaVersion,
 	}, nil
+}
+
+// LogSchemaVersionWarning reports the temporary v1 compatibility path. New files must declare
+// schemaVersion explicitly so future major versions can remain fail-closed.
+func (am *AgentMap) LogSchemaVersionWarning(log *slog.Logger, path string) {
+	if am == nil || !am.implicitSchemaVersion {
+		return
+	}
+	log.Warn(
+		"agents config omits schemaVersion; defaulting to v1 is deprecated",
+		"path", path,
+		"schema_version", agentsSchemaVersion,
+	)
 }
 
 // IdentifySender classifies one validated event sender against configured, anchored full-MXID
@@ -508,10 +544,12 @@ func (am *AgentMap) Replace(other *AgentMap) {
 	byGhost := other.byGhost
 	bridgedOrigins := other.bridgedOrigins
 	fingerprint := other.fingerprint
+	implicitSchemaVersion := other.implicitSchemaVersion
 	other.mu.RUnlock()
 	am.mu.Lock()
 	am.byGhost = byGhost
 	am.bridgedOrigins = bridgedOrigins
 	am.fingerprint = fingerprint
+	am.implicitSchemaVersion = implicitSchemaVersion
 	am.mu.Unlock()
 }

@@ -9,6 +9,7 @@ data:
   # Description/avatar are fallback profile metadata. A successful AgentCard refresh replaces
   # the fallback in memory; the card remains the runtime source of truth.
   agents.yaml: |
+    schemaVersion: 1
     bridgedOrigins:
       {{- toYaml .Values.bridgedOrigins | nindent 6 }}
     agents:

@@ -127,6 +127,7 @@ The examples below change GitOps source and generate encrypted files; review the
    For Slack, the effective composed configuration will look like this after the cluster-scoped sender-policy patch:
 
    ```yaml
+   schemaVersion: 1
    bridgedOrigins:
      slack:
        - "@slack_*:${server_name}"

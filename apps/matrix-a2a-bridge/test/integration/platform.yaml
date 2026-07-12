@@ -29,6 +29,7 @@ metadata:
   namespace: bridge-integration
 data:
   agents.yaml: |
+    schemaVersion: 1
     agents:
       agent-integration:
         namespace: kagent

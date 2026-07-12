@@ -14,7 +14,7 @@ Human in a Matrix room:  "@agent-platform-helper why is the bridge pod not ready
 Human sees the answer in Element.
 ```
 
-At startup, and after every valid `agents.yaml` change, the bridge also fetches each mapped AgentCard. Local kagent cards use the authenticated agentgateway path. Remote cards are fetched directly from `<url>/.well-known/agent-card.json` and are trusted only when their A2A v1.0 ES256 signature and pinned identity match. The card's human-readable name becomes the ghost's Matrix display name; its description and skills back the local `!agents` directory. Local profile refresh failures retain the last-known profile. A remote card that becomes unsigned, mismatched, or tampered disables invocation until a later refresh validates it again.
+At startup, and after every valid `agents.yaml` change, the bridge also fetches each mapped AgentCard. The routing file declares `schemaVersion: 1` and is covered by the published [`agents.schema.json`](agents.schema.json); unknown majors fail closed. Files without the field temporarily load as v1 with a deprecation warning. Local kagent cards use the authenticated agentgateway path. Remote cards are fetched directly from `<url>/.well-known/agent-card.json` and are trusted only when their A2A v1.0 ES256 signature and pinned identity match. The card's human-readable name becomes the ghost's Matrix display name; its description and skills back the local `!agents` directory. Local profile refresh failures retain the last-known profile. A remote card that becomes unsigned, mismatched, or tampered disables invocation until a later refresh validates it again.
 
 ## How it works
 
@@ -83,6 +83,7 @@ On termination, the bridge-owned appservice server stops new intake and force-cl
 Remote targets are explicit and fail closed; the default chart enables none. Configure exactly one target form per ghost:
 
 ```yaml
+schemaVersion: 1
 agents:
   agent-partner-reviewer:
     url: https://agents.partner.example/a2a/reviewer

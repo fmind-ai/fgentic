@@ -27,7 +27,7 @@ Heavy CLIs (golangci-lint, gotestsum, gitleaks, dprint) are mise-managed; `goimp
 - `internal/telemetry/` — env-gated OTLP/HTTP exporter setup; unset `OTEL_EXPORTER_OTLP_ENDPOINT` keeps standalone development tracing-free.
 - `chart/` — Helm chart (Deployment, Service, ConfigMap for the agent map, NetworkPolicy, ServiceAccount; `database.secretName` feeds `DATABASE_URL`).
 - `deploy/` — the Flux unit (Namespace + HelmRelease) reconciled by the `bridge` Kustomization; CD pins the image digest here.
-- `registration.example.yaml` / `agents.example.yaml` — templates for the two config files.
+- `registration.example.yaml` / `agents.example.yaml` — templates for the two config files; `agents.schema.json` is the Stable v1 routing/allowlist contract validated against every in-repo fixture.
 
 ## Conventions
 
@@ -40,6 +40,7 @@ Heavy CLIs (golangci-lint, gotestsum, gitleaks, dprint) are mise-managed; `goimp
 - Each of the four invocation/notice sender/room limiter maps is independently capped at 4096 buckets. Unknown keys fail closed at capacity; never evict an active bucket to admit churn because that resets its burst budget. Idle cleanup scans at most once per minute and only on a new key.
 - Shutdown must stop bridge-owned HTTP intake, force-close timed-out transaction connections before the synchronous processor barrier, and then drain delegations for the configured 25-second grace under the chart's 45-second pod grace. Every accepted target gets a terminal audit, including queued drops; do not cancel the runtime context before acknowledged intake is ordered behind the barrier.
 - The full projected agent ConfigMap directory must be mounted, never `agents.yaml` via `subPath`: the latter cannot receive Kubernetes atomic updates. Invalid reloads keep the last-known routing policy.
+- Agent routing files declare `schemaVersion: 1`; an unknown major fails closed at startup/reload. Missing versions remain a deprecated v1 compatibility path only, and every additive or breaking schema change must follow `docs/stability.md`.
 - Remote cards refresh independently every five minutes in production. The provider-free kind fixture uses one second and a fixed public test-only P-256 identity; its valid round trip must assert the message metadata and `A2A-Extensions` token-budget contract. It then mutates the card after signing and must prove zero further remote dispatches plus exactly one bounded untrusted-card audit.
 - Matrix display names and configured `mxc://` avatars are portable. Arbitrary description fields require Matrix v1.16 and are not consistently rendered by Element, so keep `!agents` as the user-facing metadata/status surface.
 - Errors as values, wrapped with `%w`; never ignore an `err`. Context first for I/O, with a deadline on every A2A call. `log/slog` (JSON); stable audit records use the dedicated `log_stream=audit` child logger and must never include Matrix/A2A content bodies.

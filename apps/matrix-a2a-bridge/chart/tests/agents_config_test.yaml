@@ -2,6 +2,11 @@ suite: agent routing config
 templates:
   - templates/configmap.yaml
 tests:
+  - it: declares the immutable bridge configuration schema version
+    asserts:
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "^schemaVersion: 1\\n"
   - it: renders anchored bridged-origin MXID namespaces
     set:
       bridgedOrigins:
