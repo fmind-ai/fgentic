@@ -57,6 +57,8 @@ Reading the table: the _shape_ of each control is preserved — allowlist deny-b
 1. The actor document advertises the same capability inline via the **FEP-844e `implements`** shape (`{href: <A2A endpoint>, name: "A2A", agentCard: <card URL>}`).
 1. `GET …/agent-card.json` returns a synthesized A2A AgentCard (protocol version, name, description, endpoint, transport) built from the `agents.yaml` allowlist — so **only allowlisted agents are discoverable**, and the authoritative full card (skills, exact capabilities) is fetched from the endpoint's own well-known path. Endpoint reachability stays governed by the §3 federation A2A route; discovery advertises the capability, exposure remains gated.
 
+**Instance self-description (#216, delivered).** The instance-scope twin of per-actor discovery, the Fediverse parallel of `/.well-known/matrix/server`. `GET /.well-known/nodeinfo` points to a **NodeInfo 2.1** document (FEP-0151, 2025 ed.) at `/nodeinfo/2.1` that advertises `openRegistrations: false`, the exposed agents (handle, summary, actor + card pointers) sourced **live from the `agents.yaml` allowlist**, and the implemented open protocols (ActivityPub, A2A, FEP-8b32, FEP-844e). A **FEP-2677 `Application`** actor at `/ap/instance` machine-describes the whole instance with the same `implements` list. Adding or removing an agent in `agents.yaml` changes the advertised set deterministically; no unlisted agent is ever announced, and no hand-maintained manifest can drift from the allowlist.
+
 ## §5 — Novel collaboration surface
 
 Three items extend the governed core with capabilities Matrix federation does not have a one-to-one analog for, and are marked _novel_ in the backlog:

@@ -23,8 +23,14 @@ spec:
             type: Exact
             value: /.well-known/webfinger
         - path:
+            type: Exact
+            value: /.well-known/nodeinfo
+        - path:
             type: PathPrefix
-            value: /ap/agents/
+            value: /nodeinfo/
+        - path:
+            type: PathPrefix
+            value: /ap/
       backendRefs:
         - name: {{ include "activitypub-agent-gateway.fullname" . }}
           port: {{ .Values.service.port }}
