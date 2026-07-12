@@ -64,6 +64,65 @@ cluster_owned_by_demo() {
 		"k3d-${CLUSTER_NAME}-server-0" 2>/dev/null || true)" = "${OWNER_LABEL}" ]
 }
 
+cluster_container_ids() {
+	docker ps --all --filter "label=k3d.cluster=${CLUSTER_NAME}" --quiet
+}
+
+cluster_network_exists() {
+	docker network inspect "k3d-${CLUSTER_NAME}" >/dev/null 2>&1
+}
+
+cluster_volume_exists() {
+	docker volume inspect "k3d-${CLUSTER_NAME}-images" >/dev/null 2>&1
+}
+
+cluster_artifacts_exist() {
+	[ -n "$(cluster_container_ids)" ] || cluster_network_exists || cluster_volume_exists
+}
+
+cluster_cleanup_complete() {
+	! cluster_exists && ! cluster_artifacts_exist
+}
+
+cleanup_cluster_artifacts() {
+	local attempt
+	local container_ids=()
+	local network_owner
+	local volume_owner
+	for attempt in 1 2 3; do
+		mapfile -t container_ids < <(cluster_container_ids)
+		if ((${#container_ids[@]} > 0)); then
+			# Ownership was proven from the server's private runtime label before k3d deletion;
+			# the exact k3d.cluster label selects the remaining nodes and load balancer only.
+			docker rm --force "${container_ids[@]}" >/dev/null 2>&1 || true
+		fi
+
+		if network_owner="$(docker network inspect --format '{{index .Labels "app"}}' \
+			"k3d-${CLUSTER_NAME}" 2>/dev/null)"; then
+			[ "${network_owner}" = "k3d" ] ||
+				die "refusing to remove foreign network k3d-${CLUSTER_NAME}"
+			docker network rm "k3d-${CLUSTER_NAME}" >/dev/null 2>&1 || true
+		fi
+
+		if volume_owner="$(docker volume inspect --format '{{index .Labels "app"}}/{{index .Labels "k3d.cluster"}}' \
+			"k3d-${CLUSTER_NAME}-images" 2>/dev/null)"; then
+			[ "${volume_owner}" = "k3d/${CLUSTER_NAME}" ] ||
+				die "refusing to remove foreign volume k3d-${CLUSTER_NAME}-images"
+			docker volume rm "k3d-${CLUSTER_NAME}-images" >/dev/null 2>&1 || true
+		fi
+
+		cluster_cleanup_complete && return
+		[ "${attempt}" -eq 3 ] || sleep 2
+	done
+
+	echo "error: disposable cluster cleanup did not complete; inspect exact owned resources:" >&2
+	echo "  k3d cluster list --output json" >&2
+	echo "  docker ps -a --filter label=k3d.cluster=${CLUSTER_NAME}" >&2
+	echo "  docker network inspect k3d-${CLUSTER_NAME}" >&2
+	echo "  docker volume inspect k3d-${CLUSTER_NAME}-images" >&2
+	return 1
+}
+
 configure_provider() {
 	LLM_PROVIDER="${FGENTIC_LLM_PROVIDER:-demo}"
 	LLM_MODEL="${FGENTIC_LLM_MODEL:-}"
@@ -686,13 +745,16 @@ demo_down() {
 	if cluster_exists; then
 		cluster_owned_by_demo ||
 			die "refusing to delete ${CLUSTER_NAME}: it was not created by scripts/demo.sh"
-		k3d cluster delete "${CLUSTER_NAME}"
+		k3d cluster delete "${CLUSTER_NAME}" || true
+		cleanup_cluster_artifacts
 		local image_id
 		for image_id in $(docker images \
 			--filter "label=dev.fgentic.demo.cluster=${CLUSTER_NAME}" --quiet); do
 			docker image rm "${image_id}" >/dev/null 2>&1 || true
 		done
 		echo "The reusable local CA and FGENTIC_DEMO_CACHE_DIR, when set, were preserved."
+	elif cluster_artifacts_exist; then
+		die "refusing orphan cleanup for ${CLUSTER_NAME}: owner-labelled server evidence is unavailable"
 	else
 		echo "Demo cluster ${CLUSTER_NAME} does not exist."
 	fi
