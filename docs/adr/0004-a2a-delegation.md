@@ -1,3 +1,9 @@
+---
+type: Architecture Decision Record
+title: A2A Delegation, Non-Streaming, via a2a-go
+description: Delegate over A2A message/send with tasks/get polling, reusing the official a2a-go SDK.
+---
+
 # 0004 — A2A (`message/send`, Non-Streaming) via `a2a-go` v2
 
 Status: Accepted

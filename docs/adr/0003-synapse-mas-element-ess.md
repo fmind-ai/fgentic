@@ -1,3 +1,9 @@
+---
+type: Architecture Decision Record
+title: Synapse + MAS + Element via ESS Community
+description: Run ESS Community as the reference homeserver profile, with a permissive fallback governed by explicit triggers.
+---
+
 # 0003 — Synapse + MAS + Element via Element Server Suite (ESS) Community
 
 Status: Accepted

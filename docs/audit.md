@@ -1,3 +1,9 @@
+---
+type: Runbook
+title: Delegation Attribution Audit
+description: Evidence chain proving who invoked which agent, when, and over which model path for one Matrix delegation.
+---
+
 # Delegation Attribution Audit
 
 This runbook answers four questions for one Matrix delegation: **who** invoked an agent, **what** target was invoked, **when** it ran, and **what model usage** the task consumed. The join key starts with the Matrix event ID and ends with the kagent task ID.

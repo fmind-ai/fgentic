@@ -1,3 +1,9 @@
+---
+type: Threat Model
+title: Fgentic Threat Model
+description: STRIDE evidence map classifying each control as Implemented, Configured, or Deferred.
+---
+
 # Fgentic Threat Model
 
 This document applies STRIDE to the Fgentic reference architecture. It is an evidence map, not a claim that every planned control is deployed. Each control below is marked with one of four states:

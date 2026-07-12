@@ -1,3 +1,9 @@
+---
+type: Specification
+title: Identity and SSO
+description: Identity architecture: MAS as the Matrix-facing OIDC authority with Keycloak (or any upstream OIDC provider) for humans.
+---
+
 # Identity and SSO
 
 Fgentic uses Matrix Authentication Service (MAS) as the Matrix-facing OAuth/OIDC authority and an upstream OpenID Connect provider as the human identity source. The reference provider is Keycloak; Entra ID or another conformant provider replaces the SOPS-backed MAS provider fragment without changing Element, Synapse, or the bridge.

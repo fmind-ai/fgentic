@@ -1,3 +1,9 @@
+---
+type: Architecture Decision Record
+title: Bridge as a mautrix/go Appservice
+description: Build the Matrix↔A2A bridge as a plain mautrix/go appservice, not bridgev2.
+---
+
 # 0005 — The Matrix↔A2A Bridge is a `mautrix/go` Appservice (not bridgev2)
 
 Status: Accepted

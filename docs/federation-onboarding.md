@@ -1,3 +1,9 @@
+---
+type: Runbook
+title: Partner Federation Onboarding
+description: Bilateral operator checklist to onboard a partner organization into Matrix federation and A2A delegation.
+---
+
 # Partner Federation Onboarding
 
 This runbook turns the federation design in [§8](federation.md) into a bilateral operator checklist. Each organization completes the same gates for its own deployment, exchanges the resulting evidence, and enables the partner only after both sides sign off.

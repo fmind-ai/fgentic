@@ -1,3 +1,9 @@
+---
+type: Architecture Decision Record
+title: Agent Authorization Through Managed Room Membership
+description: Authorize enterprise agent access via managed room membership rather than a parallel ACL system.
+---
+
 # 0009 — Enterprise Agent Authorization Through Managed Room Membership
 
 Status: Proposed

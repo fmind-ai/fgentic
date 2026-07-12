@@ -16,6 +16,7 @@ The specification lives as topic docs under `docs/` (architecture, design-decisi
 1. Keep the design-decision register (`docs/design-decisions.md`, D1–D16) authoritative: a new settled decision gets the next `D` number with its evidence; reference decisions as `D<n>` everywhere else instead of restating them.
 1. `docs/roadmap.md` records phase **history** + the milestone mapping; the forward roadmap lives only in GitHub milestones — don't grow a parallel plan in the file.
 1. Markdown conventions: dprint-formatted (`mise run format`), every numbered list item uses `1.`, relative links between docs, no absolute paths.
+1. **OKF conformance.** `docs/` is an [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog/blob/main/okf/SPEC.md) bundle: every concept doc starts with YAML frontmatter carrying `type` (required — e.g. `Specification`, `Runbook`, `Architecture Decision Record`), `title`, and a one-sentence `description`. `index.md` files (bundle root, `adr/`, `security/`) are reserved directory listings — keep their entries and descriptions in sync when adding, renaming, or removing a doc; only the root `index.md` carries frontmatter (`okf_version`).
 
 ## Authoring an ADR (docs/adr/)
 

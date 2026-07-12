@@ -1,3 +1,9 @@
+---
+type: Architecture Decision Record
+title: Open-Standard Agent Collaboration Platform
+description: Build exclusively on open protocols and OSS components; every layer is swappable.
+---
+
 # 0001 — Open-Standard Agent Collaboration Platform
 
 Status: Accepted

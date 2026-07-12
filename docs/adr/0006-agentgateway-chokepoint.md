@@ -1,3 +1,9 @@
+---
+type: Architecture Decision Record
+title: agentgateway as the Egress Chokepoint
+description: Route all local LLM egress through agentgateway so no agent holds a model credential.
+---
+
 # 0006 — agentgateway as the Egress Chokepoint (with honest scope)
 
 Status: Accepted

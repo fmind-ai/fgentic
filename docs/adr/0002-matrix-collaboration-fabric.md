@@ -1,3 +1,9 @@
+---
+type: Architecture Decision Record
+title: Matrix as the Human↔Agent Collaboration Fabric
+description: Use federated Matrix rooms as the shared surface where humans and agents collaborate.
+---
+
 # 0002 — Matrix as the Human↔Agent Collaboration Fabric
 
 Status: Accepted

@@ -1,3 +1,9 @@
+---
+type: Architecture Decision Record
+title: Coexist with Microsoft Teams; No Production Bridge
+description: Coexist alongside Microsoft Teams instead of promising a production Matrix↔Teams bridge.
+---
+
 # 0011 — Coexist with Microsoft Teams; Do Not Promise a Production Matrix Bridge
 
 Status: Proposed

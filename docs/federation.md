@@ -1,3 +1,9 @@
+---
+type: Specification
+title: Federation Spec
+description: Cross-organization design: Matrix federation for the collaboration plane, A2A for the delegation plane (§8).
+---
+
 # Federation Spec (formerly SPEC §8) — the flagship differentiator, milestone M8
 
 Design position: **Matrix federation for the collaboration plane (humans + agents in shared rooms), A2A for the delegation plane (direct org-to-org machine calls)** — they compose rather than compete, and Fgentic ships both:
@@ -15,7 +21,7 @@ The production operator workflow is the bilateral [partner federation onboarding
 1. **Closed federation**: Synapse `federation_domain_whitelist` (mutual, includes own domain + a reachable key notary), federation listener firewalled to partner IPs where feasible.
 1. **Server ACLs** (`m.room.server_acl`) allowlisting partner servers per room; `m.federate: false` on rooms that must never federate (it is immutable at creation — set it deliberately, always).
 1. **Synapse module callbacks** (`federated_user_may_invite`, `should_drop_federated_event`) as the programmatic policy border — this is Fgentic's open equivalent of the "Secure Border Gateway" that TI-Messenger mandates between parties (and which Element gates behind ESS Pro; ours is policy-as-code instead of a paid appliance).
-1. **Bridge sender policy** (D6): per-agent `allowedServers`/`allowedSenders`; federated senders deny-by-default — already implemented and tested, ahead of Phase 6.
+1. **Bridge sender policy** (D6): per-agent `allowedServers`/`allowedSenders`; federated senders deny-by-default — already implemented and tested, ahead of M8.
 
 The executable lab encodes the first four controls as one defense-in-depth contract. Every Synapse release sets `default_room_version: "12"`. Organizations A and B each allow exactly their own server and the partner in `federation_domain_whitelist`; the partner also serves as the reachable `trusted_key_servers` notary, so the proof has no public notary dependency. The denied control server is deliberately absent from both allowlists.
 
@@ -50,7 +56,7 @@ No production remote or public Agent is configured by default. The listener, dis
 
 ### 8.4 E2EE revisit (supersedes ADR 0008's scope)
 
-For federated rooms, "unencrypted" means the partner's server operators read everything, forever. Options, in order of preference: (a) keep federated agent rooms plaintext but **scoped** — dedicated per-project rooms, no sensitive-room federation, contractual controls (ship this first; it is what TI-Messenger-style deployments do in practice); (b) adopt appservice E2EE (mautrix crypto) later if demanded — acknowledged as officially "not recommended" and config-heavy. Document (a) as ADR 0008-bis when Phase 6 starts.
+For federated rooms, "unencrypted" means the partner's server operators read everything, forever. Options, in order of preference: (a) keep federated agent rooms plaintext but **scoped** — dedicated per-project rooms, no sensitive-room federation, contractual controls (ship this first; it is what TI-Messenger-style deployments do in practice); (b) adopt appservice E2EE (mautrix crypto) later if demanded — acknowledged as officially "not recommended" and config-heavy. Document (a) as ADR 0008-bis when M8 federated-rooms work starts (issue #56).
 
 ### 8.5 Disposable federation hardening lab
 

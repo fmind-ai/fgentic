@@ -1,3 +1,9 @@
+---
+type: Specification
+title: Security Boundaries & Threat Model
+description: Trust zones, security boundaries, and the controls that hold them (§7).
+---
+
 # Security Boundaries & Threat Model (formerly SPEC §7)
 
 Trust zones, outermost first:
