@@ -24,19 +24,45 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2aclient/agentcard"
 )
 
-// userHeader carries the asserted AP actor to kagent for session/audit attribution. kagent's
-// default auth mode reads the caller identity from this header (docs/audit.md). It is NOT a
-// credential — the workload credential is the separate Authorization bearer.
-const userHeader = "X-User-Id"
+// A2A attribution headers (docs/audit.md). userHeader carries the FULL, un-truncated asserted AP
+// actor URI to kagent for session/audit attribution — kagent's default auth mode reads the caller
+// identity from it. The origin headers are BOUNDED audit metadata (a kind and a network) that add
+// provenance WITHOUT ever replacing or shortening the authoritative actor URI. None are credentials —
+// the workload credential is the separate Authorization bearer.
+const (
+	userHeader          = "X-User-Id"
+	originKindHeader    = "X-Origin-Kind"
+	originNetworkHeader = "X-Origin-Network"
+)
 
-type userKey struct{}
+type attributionKey struct{}
 
-// WithUser returns a context that stamps userID onto every outgoing A2A HTTP request.
-func WithUser(ctx context.Context, userID string) context.Context {
-	return context.WithValue(ctx, userKey{}, userID)
+// Origin is bounded, low-cardinality provenance for an asserted identity: a transport kind (e.g.
+// "activitypub") and a network (e.g. the signing domain). It never carries the full actor URI, which
+// remains authoritative and separate in X-User-Id.
+type Origin struct {
+	Kind    string
+	Network string
 }
 
-// userTransport injects the asserted user header and the workload bearer from each request's
+type attribution struct {
+	userID string
+	origin Origin
+}
+
+// WithUser stamps only the asserted user (no origin) onto the context.
+func WithUser(ctx context.Context, userID string) context.Context {
+	return WithAttribution(ctx, userID, Origin{})
+}
+
+// WithAttribution stamps the asserted user URI and its bounded origin onto the context so the A2A
+// client forwards them on every outgoing request. The userID is transmitted verbatim (never
+// shortened); the origin is additive audit metadata.
+func WithAttribution(ctx context.Context, userID string, origin Origin) context.Context {
+	return context.WithValue(ctx, attributionKey{}, attribution{userID: userID, origin: origin})
+}
+
+// userTransport injects the asserted attribution headers and the workload bearer from each request's
 // context, so one cached client serves per-call attribution.
 type userTransport struct {
 	base   http.RoundTripper
@@ -44,13 +70,19 @@ type userTransport struct {
 }
 
 func (t *userTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	user, _ := req.Context().Value(userKey{}).(string)
+	attr, _ := req.Context().Value(attributionKey{}).(attribution)
 	req = req.Clone(req.Context())
 	if req.Header == nil {
 		req.Header = make(http.Header)
 	}
-	if user != "" {
-		req.Header.Set(userHeader, user)
+	if attr.userID != "" {
+		req.Header.Set(userHeader, attr.userID)
+	}
+	if attr.origin.Kind != "" {
+		req.Header.Set(originKindHeader, attr.origin.Kind)
+	}
+	if attr.origin.Network != "" {
+		req.Header.Set(originNetworkHeader, attr.origin.Network)
 	}
 	if t.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+t.apiKey)

@@ -267,14 +267,17 @@ func (g *Gateway) handleInbox(w http.ResponseWriter, r *http.Request) {
 	}
 
 	contextID := deriveContextID(ghost, string(actorIRI), threadRoot(note))
-	ctx := a2aUser(r.Context(), string(actorIRI))
+	network := actorDomain(string(actorIRI))
+	ctx := a2aAttribution(r.Context(), string(actorIRI), network)
 	reply, err := g.delegator.Call(ctx, ref.Namespace, ref.Name, content, contextID)
 	if err != nil {
 		g.metrics.delegations.WithLabelValues(ghost, "error").Inc()
+		g.auditDelegation(ghost, string(actorIRI), network, contextID, "error")
 		g.log.Error("a2a delegation failed", "ghost", ghost, "actor", actorIRI, "error", err)
 		http.Error(w, "delegation failed", http.StatusBadGateway)
 		return
 	}
+	g.auditDelegation(ghost, string(actorIRI), network, contextID, "ok")
 	g.metrics.delegations.WithLabelValues(ghost, "ok").Inc()
 
 	activityID, err := g.publishReply(ghost, actorIRI, note.ID, reply)
@@ -345,34 +348,42 @@ func (g *Gateway) marshalReply(create *vocab.Create, actorID string) (json.RawMe
 	return signed, nil
 }
 
-// marshalActor serializes a ghost's Service actor, adding its FEP-8b32 assertionMethod Multikey and
-// the security contexts when object-integrity signing is enabled.
+// mastodonContext defines the toot: namespace so the bot flag is a resolvable JSON-LD term.
+const mastodonContext = "http://joinmastodon.org/ns#"
+
+// marshalActor serializes a ghost's actor with honest machine labeling — ActivityStreams `Service`
+// typing (buildActor) plus Mastodon's `bot: true` flag, so a Fediverse client cannot mistake an
+// agent for a person (docs/audit.md, docs/fediverse.md §3) — and, when object-integrity signing is
+// enabled, its FEP-8b32 assertionMethod Multikey and the security contexts.
 func (g *Gateway) marshalActor(ghost string, ref AgentRef) ([]byte, error) {
 	data, err := vocab.MarshalJSON(g.buildActor(ghost, ref))
 	if err != nil {
 		return nil, fmt.Errorf("marshal actor: %w", err)
 	}
-	if g.signer == nil {
-		return data, nil
-	}
 	var doc map[string]any
 	if err := json.Unmarshal(data, &doc); err != nil {
-		return nil, fmt.Errorf("decode actor for key publication: %w", err)
+		return nil, fmt.Errorf("decode actor for attribution: %w", err)
 	}
-	actorID := string(g.actorID(ghost))
-	doc["@context"] = []any{
+
+	// Honest machine labeling: Service type (from buildActor) + the explicit bot flag.
+	doc["bot"] = true
+	contexts := []any{
 		integrity.ActivityStreamsContext,
-		integrity.DataIntegrityContext,
-		"https://w3id.org/security/multikey/v1",
+		map[string]any{"toot": mastodonContext, "bot": "toot:bot"},
 	}
-	doc["assertionMethod"] = []any{
-		map[string]any{
-			"id":                 g.signer.VerificationMethod(actorID),
-			"type":               "Multikey",
-			"controller":         actorID,
-			"publicKeyMultibase": g.signer.PublicKeyMultibase(),
-		},
+	if g.signer != nil {
+		actorID := string(g.actorID(ghost))
+		contexts = append(contexts, integrity.DataIntegrityContext, "https://w3id.org/security/multikey/v1")
+		doc["assertionMethod"] = []any{
+			map[string]any{
+				"id":                 g.signer.VerificationMethod(actorID),
+				"type":               "Multikey",
+				"controller":         actorID,
+				"publicKeyMultibase": g.signer.PublicKeyMultibase(),
+			},
+		}
 	}
+	doc["@context"] = contexts
 	return json.Marshal(doc)
 }
 
@@ -429,6 +440,23 @@ func threadRoot(note *vocab.Object) string {
 		}
 	}
 	return string(note.ID)
+}
+
+// auditDelegation emits the AP-transport delegation evidence record (docs/audit.md): the FULL,
+// un-truncated asserted actor URI plus its bounded origin. Origin fields ADD provenance and never
+// replace or shorten the actor URI. It carries no note content and no model-token figure.
+func (g *Gateway) auditDelegation(ghost, actorURI, network, contextID, outcome string) {
+	g.log.Info(
+		"delegation audit",
+		"audit_schema", "fgentic.ap.delegation.v1",
+		"log_stream", "audit",
+		"ghost", ghost,
+		"a2a_user_id", actorURI, // authoritative, never shortened
+		"origin_kind", OriginKindActivityPub,
+		"origin_network", network,
+		"context_id", contextID,
+		"outcome", outcome,
+	)
 }
 
 // deriveContextID is a stable, opaque A2A contextId for a (ghost, actor, thread) triple. The ghost
