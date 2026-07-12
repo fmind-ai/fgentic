@@ -33,6 +33,12 @@ Run `mise run fed:policy-reload` to exercise policy projection separately. The d
 
 Inspect the lab after running `export KUBECONFIG="$(k3d kubeconfig write fgentic-fed)"`; the installer deliberately does not switch the default context. When finished, run `mise run fed:down`. Teardown verifies ownership and deletes only the federation cluster and its locally built images. The canonical topology, trade-off, and acceptance contract are in [docs/federation.md](../../../docs/federation.md#85-disposable-federation-hardening-lab).
 
+## Runbook: onboard a federation partner
+
+Follow the bilateral [partner onboarding runbook](../../../docs/federation-onboarding.md) before enabling a real organization. Both operators complete the same owner, technical, contractual, activation, rotation, and offboarding gates; a unilateral test is insufficient.
+
+Use `scripts/fed-check.sh partner.example` only to observe public Matrix discovery, then repeat with `--expect-server <agreed-host:port>` to fail closed on a delegation change. The script is credential-free, bounded, and read-only. Its output is public-probe evidence, not proof of mutual allowlists, room policy, A2A authorization, or contractual governance. Store onboarding evidence privately and never include tokens, private keys, room content, or personal contact details in Git.
+
 ## Runbook: one-time bootstrap
 
 1. **(Optional) Provision a cluster** — `cd infra/terraform && cp terraform.tfvars.example terraform.tfvars` (set your `/32`), then `terraform init && terraform apply`. Or use any conformant cluster / local k3d (`mise run cluster:up`).
