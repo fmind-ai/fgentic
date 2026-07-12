@@ -12,8 +12,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"net"
-	"net/url"
 	"os"
 	"regexp"
 	"sort"
@@ -232,9 +230,6 @@ func compileRemoteTarget(cfg *agentConfig) (a2aclient.Target, time.Duration, err
 		return a2aclient.Target{}, 0, fmt.Errorf("url target must not define namespace or name")
 	}
 	rawURL := configuredString(cfg.URL)
-	if err := validateRemoteURL(rawURL); err != nil {
-		return a2aclient.Target{}, 0, err
-	}
 	if cfg.Timeout == nil || *cfg.Timeout <= 0 {
 		return a2aclient.Target{}, 0, fmt.Errorf("url target timeout must be positive")
 	}
@@ -278,9 +273,6 @@ func compileCardIdentity(cfg *cardIdentityConfig) (a2aclient.CardIdentity, error
 	if cfg.PublicKey == nil {
 		return a2aclient.CardIdentity{}, fmt.Errorf("url target cardIdentity.publicKey is required")
 	}
-	if cfg.PublicKey.KeyType != "EC" || cfg.PublicKey.Curve != "P-256" {
-		return a2aclient.CardIdentity{}, fmt.Errorf("url target cardIdentity.publicKey must be an EC P-256 key")
-	}
 	publicKey, err := json.Marshal(cfg.PublicKey)
 	if err != nil {
 		return a2aclient.CardIdentity{}, fmt.Errorf("encode url target cardIdentity.publicKey: %w", err)
@@ -291,62 +283,6 @@ func compileCardIdentity(cfg *cardIdentityConfig) (a2aclient.CardIdentity, error
 		KeyID:        cfg.KeyID,
 		PublicKeyJWK: string(publicKey),
 	}, nil
-}
-
-func validateRemoteURL(raw string) error {
-	if raw == "" || strings.TrimSpace(raw) != raw {
-		return fmt.Errorf("url target URL must be non-empty without surrounding whitespace")
-	}
-	parsed, err := url.Parse(raw)
-	if err != nil {
-		return fmt.Errorf("parse url target URL %q: %w", raw, err)
-	}
-	if parsed.Host == "" || parsed.Hostname() == "" || parsed.Opaque != "" {
-		return fmt.Errorf("url target URL %q must be an absolute hierarchical URL", raw)
-	}
-	if parsed.User != nil || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return fmt.Errorf("url target URL %q must not contain credentials, a query, or a fragment", raw)
-	}
-	if parsed.Scheme == "https" {
-		return nil
-	}
-	if parsed.Scheme == "http" && (isLoopbackHost(parsed.Hostname()) || isKubernetesServiceHost(parsed.Hostname())) {
-		return nil
-	}
-	return fmt.Errorf("url target URL %q must use HTTPS (HTTP is allowed only for loopback or in-cluster services)", raw)
-}
-
-func isLoopbackHost(host string) bool {
-	host = strings.TrimSuffix(strings.ToLower(host), ".")
-	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
-		return true
-	}
-	ip := net.ParseIP(host)
-	return ip != nil && ip.IsLoopback()
-}
-
-var kubernetesDNSLabelRE = regexp.MustCompile(`^[a-z](?:[-a-z0-9]*[a-z0-9])?$`)
-
-func isKubernetesServiceHost(host string) bool {
-	host = strings.TrimSuffix(strings.ToLower(host), ".")
-	prefix := host
-	switch {
-	case strings.HasSuffix(host, ".svc.cluster.local"):
-		prefix = strings.TrimSuffix(host, ".svc.cluster.local")
-	case strings.HasSuffix(host, ".svc"):
-		prefix = strings.TrimSuffix(host, ".svc")
-	case strings.Contains(host, "."):
-		return false
-	}
-	if prefix == "" {
-		return false
-	}
-	for _, label := range strings.Split(prefix, ".") {
-		if len(label) > 63 || !kubernetesDNSLabelRE.MatchString(label) {
-			return false
-		}
-	}
-	return true
 }
 
 func mappingID(target a2aclient.Target, timeout time.Duration) string {

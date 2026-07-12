@@ -280,25 +280,14 @@ func (b *Bridge) syncProfilesChecked(ctx context.Context, entries []AgentEntry, 
 
 func (b *Bridge) syncProfile(ctx context.Context, entry AgentEntry) error {
 	target := entry.Ref.Target()
-	if b.client == nil {
-		if target.IsRemote() {
-			return fmt.Errorf("verify remote AgentCard for %s: A2A client is unavailable", entry.Ghost)
-		}
-		return nil
-	}
-	cardCtx, cancel := context.WithTimeout(ctx, agentRequestTimeout(entry.Ref, b.cfg.RequestTimeout))
-	card, err := b.client.ResolveAgentCard(cardCtx, target)
-	cancel()
+	card, err := b.verifyRemoteCard(ctx, entry)
 	if err == nil && card == nil {
-		err = errors.New("agent card resolver returned an empty card")
-	}
-	if err == nil && target.IsRemote() && !b.client.IsReady(target) {
-		err = fmt.Errorf("remote card resolver did not install a verified client: %w", a2aclient.ErrRemoteTargetUntrusted)
+		return nil
 	}
 	if err != nil {
 		previous, _ := b.profiles.get(entry.Ghost)
 		untrusted := target.IsRemote() && errors.Is(err, a2aclient.ErrRemoteTargetUntrusted)
-		unavailable := target.IsRemote() && !b.client.IsReady(target)
+		unavailable := target.IsRemote() && (b.client == nil || !b.client.IsReady(target))
 		profile := agentProfile{}
 		switch {
 		case untrusted:
@@ -331,6 +320,35 @@ func (b *Bridge) syncProfile(ctx context.Context, entry AgentEntry) error {
 		b.logAgentCardAudit(entry, "accepted", "agent_card_verified")
 	}
 	return nil
+}
+
+// verifyRemoteCard owns card resolution and the remote readiness postcondition used by both
+// profile refresh and configuration-reload preflight. A nil local client keeps profile sync
+// disabled; a nil remote client fails closed.
+func (b *Bridge) verifyRemoteCard(ctx context.Context, entry AgentEntry) (*a2a.AgentCard, error) {
+	target := entry.Ref.Target()
+	if b.client == nil {
+		if target.IsRemote() {
+			return nil, fmt.Errorf("A2A client is unavailable")
+		}
+		return nil, nil
+	}
+	cardCtx, cancel := context.WithTimeout(ctx, agentRequestTimeout(entry.Ref, b.cfg.RequestTimeout))
+	defer cancel()
+	card, err := b.client.ResolveAgentCard(cardCtx, target)
+	if err != nil {
+		return nil, err
+	}
+	if card == nil {
+		return nil, errors.New("agent card resolver returned an empty card")
+	}
+	if target.IsRemote() && !b.client.IsReady(target) {
+		return nil, fmt.Errorf(
+			"remote card resolver did not install a verified client: %w",
+			a2aclient.ErrRemoteTargetUntrusted,
+		)
+	}
+	return card, nil
 }
 
 func agentRequestTimeout(ref *AgentRef, global time.Duration) time.Duration {
@@ -393,29 +411,12 @@ func (b *Bridge) reloadAgents(ctx context.Context) (bool, error) {
 }
 
 func (b *Bridge) preflightRemoteAgents(ctx context.Context, entries []AgentEntry) error {
-	if b.client == nil {
-		for _, entry := range entries {
-			if entry.Ref.Target().IsRemote() {
-				return fmt.Errorf("verify remote AgentCard for %s: A2A client is unavailable", entry.Ghost)
-			}
-		}
-		return nil
-	}
 	var failures []error
 	for _, entry := range entries {
-		target := entry.Ref.Target()
-		if !target.IsRemote() {
+		if !entry.Ref.Target().IsRemote() {
 			continue
 		}
-		cardCtx, cancel := context.WithTimeout(ctx, agentRequestTimeout(entry.Ref, b.cfg.RequestTimeout))
-		card, err := b.client.ResolveAgentCard(cardCtx, target)
-		cancel()
-		if err == nil && card == nil {
-			err = errors.New("agent card resolver returned an empty card")
-		}
-		if err == nil && !b.client.IsReady(target) {
-			err = fmt.Errorf("remote card resolver did not install a verified client: %w", a2aclient.ErrRemoteTargetUntrusted)
-		}
+		_, err := b.verifyRemoteCard(ctx, entry)
 		if err != nil {
 			if errors.Is(err, a2aclient.ErrRemoteTargetUntrusted) {
 				b.logAgentCardAudit(entry, "rejected", "agent_card_untrusted")
