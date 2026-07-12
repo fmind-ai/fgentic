@@ -1,5 +1,5 @@
 [env]
-APP_NAME = "matrix-a2a-bridge"
+APP_NAME = "activitypub-agent-gateway"
 
 [settings.task]
 run_auto_install = false # fail fast in hooks/CI on a missing tool
@@ -11,8 +11,6 @@ gotestsum = "latest"
 gitleaks = "latest"
 dprint = "latest"
 lefthook = "latest"
-kind = "0.32.0"
-kubectl = "1.35.0"
 
 [tasks.all]
 alias = "a"
@@ -33,7 +31,7 @@ depends = ["build:go"]
 description = "Compile the production Go binary"
 sources = ["go.mod", "go.sum", "**/*.go"]
 outputs = ["bin/{{env.APP_NAME}}"]
-run = "go build -o bin/$APP_NAME ./cmd/bridge"
+run = "go build -o bin/$APP_NAME ./cmd/gateway"
 
 [tasks."build:image"]
 description = "Build the production OCI image (distroless nonroot)"
@@ -47,8 +45,8 @@ depends = ["check:lint", "check:vuln", "check:format", "check:leaks"]
 [tasks."check:lint"]
 alias = "cl"
 description = "Lint Go sources (golangci-lint)"
-# --allow-parallel-runners lets this queue behind the AP gateway's lint under the aggregate root
-# check (golangci-lint refuses concurrent runs by default).
+# --allow-parallel-runners lets this queue behind the bridge's lint under the aggregate root check
+# (golangci-lint refuses concurrent runs by default).
 run = "golangci-lint run --allow-parallel-runners ./..."
 
 [tasks."check:vuln"]
@@ -75,18 +73,6 @@ gotestsum --format pkgname -- -race -coverprofile=coverage.out ./...
 bash scripts/check-coverage.sh coverage.out
 """
 
-[tasks."test:integration"]
-description = "Exercise the real Matrix appservice wire path in an isolated kind cluster"
-run = "bash test/integration/run.sh"
-
-[tasks."test:load"]
-description = "Run the resource-bounded D3 dispatcher regression scenario"
-run = "bash test/integration/run-load.sh"
-
-[tasks."eval:models"]
-description = "Evaluate the three sample agents against the selected local model profile"
-run = "bash scripts/eval-models.sh"
-
 [tasks.format]
 alias = "f"
 description = "Format all sources and documents"
@@ -94,16 +80,11 @@ depends = ["format:go", "format:dprint"]
 
 [tasks."format:go"]
 description = "Format Go sources and imports (goimports + gofumpt)"
-run = ["go tool goimports -local github.com/fmind/matrix-a2a-bridge -w .", "go tool gofumpt -w ."]
+run = ["go tool goimports -local github.com/fmind/activitypub-agent-gateway -w .", "go tool gofumpt -w ."]
 
 [tasks."format:dprint"]
 description = "Format JSON, Markdown, TOML, YAML with dprint"
 run = "dprint fmt"
-
-[tasks.watch]
-alias = "w"
-description = "Run with live reload (air)"
-run = "go tool air"
 
 [tasks.clean]
 description = "Remove build artifacts and coverage files"

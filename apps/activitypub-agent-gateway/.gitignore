@@ -1,0 +1,7 @@
+bin/
+tmp/
+coverage.out
+*.coverprofile
+# Never commit a resolved agents override.
+agents.yaml
+*.dec.yaml

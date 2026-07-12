@@ -1,0 +1,112 @@
+{{- if ne (int .Values.replicaCount) 1 }}
+{{- fail "activitypub-agent-gateway requires replicaCount=1 (in-memory outbox + context threading)" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "activitypub-agent-gateway.fullname" . }}
+  labels:
+    {{- include "activitypub-agent-gateway.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  selector:
+    matchLabels:
+      {{- include "activitypub-agent-gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "activitypub-agent-gateway.selectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      serviceAccountName: {{ include "activitypub-agent-gateway.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: gateway
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: []
+          ports:
+            - name: http
+              containerPort: {{ .Values.config.listenPort }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.config.metricsPort }}
+              protocol: TCP
+          env:
+            - name: SERVER_NAME
+              value: {{ .Values.config.serverName | quote }}
+            - name: PUBLIC_SCHEME
+              value: {{ .Values.config.publicScheme | quote }}
+            {{- if .Values.config.publicHost }}
+            - name: PUBLIC_HOST
+              value: {{ .Values.config.publicHost | quote }}
+            {{- end }}
+            - name: A2A_BASE_URL
+              value: {{ .Values.config.a2aBaseURL | quote }}
+            {{- if .Values.a2aAuthentication.enabled }}
+            - name: A2A_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.a2aAuthentication.secretName }}
+                  key: {{ .Values.a2aAuthentication.key }}
+            {{- end }}
+            - name: GHOST_PREFIX
+              value: {{ .Values.config.ghostPrefix | quote }}
+            - name: REQUEST_TIMEOUT
+              value: {{ .Values.config.requestTimeout | quote }}
+            - name: TASK_TIMEOUT
+              value: {{ .Values.config.taskTimeout | quote }}
+            - name: SHUTDOWN_TIMEOUT
+              value: {{ .Values.config.shutdownTimeout | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.config.logFormat | quote }}
+            - name: LISTEN_PORT
+              value: {{ .Values.config.listenPort | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.config.metricsPort | quote }}
+            - name: AGENTS_PATH
+              value: /etc/activitypub-agent-gateway/agents/agents.yaml
+          volumeMounts:
+            - name: agents
+              # Mount the whole projected ConfigMap directory (atomic symlink swap on update).
+              mountPath: /etc/activitypub-agent-gateway/agents
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: agents
+          configMap:
+            name: {{ include "activitypub-agent-gateway.fullname" . }}-agents
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

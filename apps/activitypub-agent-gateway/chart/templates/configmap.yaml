@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "activitypub-agent-gateway.fullname" . }}-agents
+  labels:
+    {{- include "activitypub-agent-gateway.labels" . | nindent 4 }}
+data:
+  # WHICH agents are exposed as ActivityPub Service actors and WHERE they route (local kagent
+  # namespace/name). The description becomes the actor summary.
+  agents.yaml: |
+    schemaVersion: 1
+    agents:
+      {{- range $ghost, $ref := .Values.agents }}
+      {{ $ghost }}:
+        {{- toYaml $ref | nindent 8 }}
+      {{- end }}

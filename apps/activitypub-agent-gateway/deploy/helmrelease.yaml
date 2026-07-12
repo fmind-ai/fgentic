@@ -1,0 +1,34 @@
+# The ActivityPub agent gateway deploys from its in-repo Helm chart. It is a SECOND, additive
+# federation transport (docs/adr/0014), self-contained and never bundled into the mautrix bridge.
+#
+# NOT yet wired into the reconciled cluster DAG (clusters/base/apps.yaml): the image is published
+# and this unit is enabled only once the signed ActivityPub federation border (issue #211) gates
+# public exposure. Until then this manifest is schema-validated but not reconciled — the same
+# opt-in posture as the external mautrix bridge profiles. httpRoute stays disabled regardless.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: activitypub-agent-gateway
+  namespace: activitypub
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: ./apps/activitypub-agent-gateway/chart
+      reconcileStrategy: Revision # redeploy when the chart in git changes
+      sourceRef:
+        kind: GitRepository
+        name: flux-system
+        namespace: flux-system
+  values:
+    image:
+      repository: ghcr.io/fmind-ai/activitypub-agent-gateway
+      tag: "0.1.0" # CI overwrites with sha-<git>@sha256:<digest> once the image is published
+    config:
+      serverName: ${server_name}
+    # Public exposure is gated on the signed federation border (issue #211): keep this false.
+    httpRoute:
+      enabled: false
+    metrics:
+      podMonitor:
+        enabled: true # the observability layer provides the CRDs

@@ -1,0 +1,117 @@
+// Command gateway runs the ActivityPub agent gateway: it serves each exposed platform agent as an
+// AP Service actor and delegates inbound mentions to kagent over A2A through agentgateway. It is a
+// self-contained app, deliberately NOT part of the mautrix bridge, so the bridge stays AGPL-free
+// and homeserver-portable and no agent holds a model credential (docs/adr/0014, docs/fediverse.md).
+package main
+
+import (
+	"context"
+	"errors"
+	"log/slog"
+	"net"
+	"net/http"
+	"os"
+	"os/signal"
+	"strconv"
+	"syscall"
+	"time"
+
+	"github.com/prometheus/client_golang/prometheus"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
+
+	"github.com/fmind/activitypub-agent-gateway/internal/a2a"
+	"github.com/fmind/activitypub-agent-gateway/internal/apgateway"
+	"github.com/fmind/activitypub-agent-gateway/internal/config"
+)
+
+func main() {
+	if err := run(); err != nil {
+		slog.Error("gateway exited with error", "error", err)
+		os.Exit(1)
+	}
+}
+
+func run() error {
+	cfg, err := config.Load()
+	if err != nil {
+		return err
+	}
+	log, err := newLogger(cfg)
+	if err != nil {
+		return err
+	}
+
+	registry, err := apgateway.LoadRegistry(cfg.AgentsPath, cfg.GhostPrefix)
+	if err != nil {
+		return err
+	}
+	delegator := a2a.New(cfg.A2ABaseURL, cfg.A2AAPIKey, cfg.RequestTimeout, cfg.TaskTimeout, log)
+
+	registry.Ghosts() // touch to fail fast if empty (LoadRegistry already guarantees non-empty)
+	reg := prometheus.NewRegistry()
+	gateway, err := apgateway.New(cfg.PublicBaseURL(), cfg.ServerName, registry, delegator, reg, log)
+	if err != nil {
+		return err
+	}
+
+	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+	defer stop()
+
+	apServer := &http.Server{
+		Addr:              net.JoinHostPort(cfg.ListenHost, strconv.Itoa(cfg.ListenPort)),
+		Handler:           gateway.Handler(),
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+	metricsMux := http.NewServeMux()
+	metricsMux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	metricsServer := &http.Server{
+		Addr:              net.JoinHostPort(cfg.ListenHost, strconv.Itoa(cfg.MetricsPort)),
+		Handler:           metricsMux,
+		ReadHeaderTimeout: 10 * time.Second,
+	}
+
+	errCh := make(chan error, 2)
+	go serve(apServer, "activitypub", log, errCh)
+	go serve(metricsServer, "metrics", log, errCh)
+	log.Info("activitypub-agent-gateway started",
+		"listen", apServer.Addr, "metrics", metricsServer.Addr,
+		"server_name", cfg.ServerName, "public", cfg.PublicBaseURL(),
+		"agents", registry.Ghosts())
+
+	select {
+	case <-ctx.Done():
+		log.Info("shutdown signal received")
+	case err := <-errCh:
+		return err
+	}
+
+	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
+	defer cancel()
+	_ = metricsServer.Shutdown(shutdownCtx)
+	if err := apServer.Shutdown(shutdownCtx); err != nil {
+		return err
+	}
+	return nil
+}
+
+func serve(server *http.Server, name string, log *slog.Logger, errCh chan<- error) {
+	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		log.Error("http server stopped", "server", name, "error", err)
+		errCh <- err
+	}
+}
+
+func newLogger(cfg config.Config) (*slog.Logger, error) {
+	level, err := cfg.SlogLevel()
+	if err != nil {
+		return nil, err
+	}
+	opts := &slog.HandlerOptions{Level: level}
+	var handler slog.Handler
+	if cfg.LogFormat == config.LogFormatText {
+		handler = slog.NewTextHandler(os.Stdout, opts)
+	} else {
+		handler = slog.NewJSONHandler(os.Stdout, opts)
+	}
+	return slog.New(handler), nil
+}
