@@ -338,21 +338,7 @@ demo_up() {
 	trap cleanup EXIT INT TERM
 
 	if ! cluster_exists; then
-		if [ "${PROFILE}" = "federation" ]; then
-			CLUSTER_NAME="${CLUSTER_NAME}" FED_LOOPBACK="${FEDERATION_LOOPBACK}" yq '
-          .metadata.name = strenv(CLUSTER_NAME) |
-          .ports[0].port = (strenv(FED_LOOPBACK) + ":80:80") |
-          .ports[1].port = (strenv(FED_LOOPBACK) + ":443:443") |
-          .options.k3s.extraArgs += [{
-            "arg": "--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<1Gi,imagefs.available<1Gi,nodefs.inodesFree<5%,imagefs.inodesFree<5%",
-            "nodeFilters": ["server:*"]
-          }]
-        ' "${ROOT_DIR}/infra/k3d-config.yaml" >"${WORK_DIR}/k3d-config.yaml"
-		else
-			CLUSTER_NAME="${CLUSTER_NAME}" yq '.metadata.name = strenv(CLUSTER_NAME)' \
-				"${ROOT_DIR}/infra/k3d-config.yaml" \
-				>"${WORK_DIR}/k3d-config.yaml"
-		fi
+		render_k3d_config "${WORK_DIR}/k3d-config.yaml"
 		k3d cluster create --config "${WORK_DIR}/k3d-config.yaml" \
 			--runtime-label "dev.fgentic.demo=${OWNER_LABEL}@server:*" \
 			--kubeconfig-update-default=false --kubeconfig-switch-context=false

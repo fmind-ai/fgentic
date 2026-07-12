@@ -10,6 +10,7 @@ readonly DEMO="${ROOT_DIR}/scripts/demo.sh"
 readonly -a DEMO_SOURCES=(
 	"${DEMO}"
 	"${ROOT_DIR}/scripts/lib.sh"
+	"${ROOT_DIR}/scripts/lib/demo-config.sh"
 	"${ROOT_DIR}/scripts/lib/demo-cluster.sh"
 	"${ROOT_DIR}/scripts/lib/demo-secrets.sh"
 	"${ROOT_DIR}/scripts/lib/demo-federation.sh"
@@ -34,6 +35,29 @@ assert_yq() {
 }
 
 bash -n "${DEMO_SOURCES[@]}" "${ROOT_DIR}/scripts/seed-demo.sh"
+(
+	# Validate the generated cluster config without creating a cluster. Both disposable profiles
+	# need the explicit disk floor; only federation moves ingress to its alternate loopback.
+	# shellcheck source=scripts/lib/demo-config.sh
+	source "${ROOT_DIR}/scripts/lib/demo-config.sh"
+	CLUSTER_NAME=fgentic-demo-fixture
+	FEDERATION_LOOPBACK=127.0.0.2
+	PROFILE=demo
+	render_k3d_config "${WORK_DIR}/demo-k3d.yaml"
+	PROFILE=federation
+	render_k3d_config "${WORK_DIR}/federation-k3d.yaml"
+	for config in demo-k3d.yaml federation-k3d.yaml; do
+		assert_yq \
+			'.options.k3s.extraArgs[] |
+        select(.arg == "--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<1Gi,imagefs.available<1Gi,nodefs.inodesFree<5%,imagefs.inodesFree<5%") |
+        (.nodeFilters | ((length == 1) and (.[0] == "server:*")))' \
+			"${WORK_DIR}/${config}" "${config} omits the disposable-cluster eviction floor"
+	done
+	assert_yq '.ports[0].port == "127.0.0.1:80:80" and .ports[1].port == "127.0.0.1:443:443"' \
+		"${WORK_DIR}/demo-k3d.yaml" 'demo ingress ports changed'
+	assert_yq '.ports[0].port == "127.0.0.2:80:80" and .ports[1].port == "127.0.0.2:443:443"' \
+		"${WORK_DIR}/federation-k3d.yaml" 'federation ingress ports changed'
+)
 for entrypoint in "${SHARED_HELPER_ENTRYPOINTS[@]}"; do
 	rg --fixed-strings 'source "${ROOT_DIR}/scripts/lib.sh"' "${entrypoint}" >/dev/null || {
 		echo "error: ${entrypoint#"${ROOT_DIR}/"} does not source the shared script library" >&2

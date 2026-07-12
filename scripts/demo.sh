@@ -52,6 +52,8 @@ EOF
 }
 
 
+# shellcheck source=scripts/lib/demo-config.sh
+source "${ROOT_DIR}/scripts/lib/demo-config.sh"
 # shellcheck source=scripts/lib/demo-cluster.sh
 source "${ROOT_DIR}/scripts/lib/demo-cluster.sh"
 # shellcheck source=scripts/lib/demo-secrets.sh
