@@ -67,6 +67,15 @@ type Config struct {
 	IntegrityKeyFragment    string `env:"INTEGRITY_KEY_FRAGMENT" envDefault:"ed25519-key"`
 	IntegrityRequireInbound bool   `env:"INTEGRITY_REQUIRE_INBOUND" envDefault:"false"`
 
+	// BudgetEnabled turns on per-actor/per-domain token-budget admission (D7/D8): every inbound
+	// delegation reserves its token ceiling from the verified actor's and domain's git-configured
+	// pools before any A2A call, deny-by-default for an allowlisted-but-unbudgeted domain. It needs
+	// the border (POLICY_PATH), where budgets live. BudgetWindow is the rolling reservation window;
+	// BudgetCapacity bounds the number of tracked actor/domain keys (cardinality safety).
+	BudgetEnabled  bool          `env:"BUDGET_ENABLED" envDefault:"false"`
+	BudgetWindow   time.Duration `env:"BUDGET_WINDOW" envDefault:"1m"`
+	BudgetCapacity int           `env:"BUDGET_CAPACITY" envDefault:"4096"`
+
 	// RequestTimeout bounds one synchronous A2A message/send transport round trip. TaskTimeout
 	// bounds the whole delegation when the agent returns a long-running Task polled via tasks/get.
 	RequestTimeout time.Duration `env:"REQUEST_TIMEOUT" envDefault:"60s"`
@@ -146,6 +155,17 @@ func (c Config) validate() error {
 	}
 	if c.IntegrityRequireInbound && c.PolicyPath == "" {
 		return fmt.Errorf("INTEGRITY_REQUIRE_INBOUND needs POLICY_PATH (object integrity gates the border)")
+	}
+	if c.BudgetEnabled {
+		if c.PolicyPath == "" {
+			return fmt.Errorf("BUDGET_ENABLED needs POLICY_PATH (budgets live in the border policy)")
+		}
+		if c.BudgetWindow <= 0 {
+			return fmt.Errorf("BUDGET_WINDOW must be positive")
+		}
+		if c.BudgetCapacity < 1 {
+			return fmt.Errorf("BUDGET_CAPACITY must be at least 1")
+		}
 	}
 	if _, err := c.SlogLevel(); err != nil {
 		return err

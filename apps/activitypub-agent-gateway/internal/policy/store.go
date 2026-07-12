@@ -88,6 +88,17 @@ func (s *Store) Admit(actorURI string) Decision {
 	return Decision{Allowed: false, Reason: "off_allowlist", Digest: st.policy.Digest()}
 }
 
+// Budget resolves the current policy's token budget for a verified actor, failing closed (deny) when
+// the policy is invalid or unreadable. It reads the live snapshot, so a git budget change applies on
+// the next admission without a pod restart.
+func (s *Store) Budget(actorURI string) (Budget, bool) {
+	st := s.current.Load()
+	if st == nil || st.err != nil {
+		return Budget{}, false
+	}
+	return st.policy.Budget(actorURI)
+}
+
 // Healthy reports whether the current policy is valid (used by readiness).
 func (s *Store) Healthy() bool {
 	st := s.current.Load()

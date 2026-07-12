@@ -244,6 +244,11 @@ func (g *Gateway) handleInbox(w http.ResponseWriter, r *http.Request) {
 	// A2A call so an unsigned or off-allowlist remote never reaches an agent (docs/fediverse.md §3).
 	if g.border != nil {
 		decision := g.border.Authorize(r.Context(), r, body, string(actorIRI))
+		// Reservation is admission accounting, not consumption: record the outcome (never a token
+		// count, never a per-actor label) whenever the budget gate ran.
+		if decision.BudgetOutcome != "" {
+			g.metrics.reservations.WithLabelValues(ghost, decision.BudgetOutcome).Inc()
+		}
 		if !decision.Allowed {
 			g.metrics.rejected.WithLabelValues("border_" + decision.Reason).Inc()
 			// Content-free evidence: reason + policy digest, never the actor URI or note content.

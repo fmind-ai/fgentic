@@ -4,6 +4,9 @@
 {{- if and .Values.integrity.requireInbound (not .Values.policy.enabled) }}
 {{- fail "integrity.requireInbound needs policy.enabled (object integrity gates the border)" }}
 {{- end }}
+{{- if and .Values.budget.enabled (not .Values.policy.enabled) }}
+{{- fail "budget.enabled needs policy.enabled (budgets live in the border policy)" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -91,6 +94,14 @@ spec:
               value: {{ .Values.integrity.keyFragment | quote }}
             - name: INTEGRITY_REQUIRE_INBOUND
               value: {{ .Values.integrity.requireInbound | quote }}
+            {{- end }}
+            {{- if .Values.budget.enabled }}
+            - name: BUDGET_ENABLED
+              value: "true"
+            - name: BUDGET_WINDOW
+              value: {{ .Values.budget.window | quote }}
+            - name: BUDGET_CAPACITY
+              value: {{ .Values.budget.capacity | quote }}
             {{- end }}
           volumeMounts:
             - name: agents

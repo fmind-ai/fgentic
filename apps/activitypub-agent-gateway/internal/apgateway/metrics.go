@@ -7,9 +7,10 @@ import "github.com/prometheus/client_golang/prometheus"
 // aggregate at agentgateway, and cross-org budget admission lands with the federation border
 // (docs/fediverse.md §6). All are labeled by ghost only (low cardinality), never by remote actor.
 type metrics struct {
-	inbound     *prometheus.CounterVec
-	delegations *prometheus.CounterVec
-	rejected    *prometheus.CounterVec
+	inbound      *prometheus.CounterVec
+	delegations  *prometheus.CounterVec
+	rejected     *prometheus.CounterVec
+	reservations *prometheus.CounterVec
 }
 
 func newMetrics(reg prometheus.Registerer) *metrics {
@@ -26,7 +27,14 @@ func newMetrics(reg prometheus.Registerer) *metrics {
 			Name: "apgateway_rejected_total",
 			Help: "Inbound requests rejected before any delegation, by reason.",
 		}, []string{"reason"}),
+		// Admission ACCOUNTING only — a reservation gates delegation, it is NOT model-token
+		// consumption (D8). Consumption stays aggregate at agentgateway. Labeled by ghost + outcome,
+		// never by remote actor/domain, so a remote org cannot mine another's usage from these series.
+		reservations: prometheus.NewCounterVec(prometheus.CounterOpts{
+			Name: "apgateway_budget_reservations_total",
+			Help: "Token-budget admission reservations, by ghost and outcome (reserved|rejected). Reservation, not consumption.",
+		}, []string{"ghost", "outcome"}),
 	}
-	reg.MustRegister(m.inbound, m.delegations, m.rejected)
+	reg.MustRegister(m.inbound, m.delegations, m.rejected, m.reservations)
 	return m
 }
