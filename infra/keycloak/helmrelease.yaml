@@ -33,7 +33,7 @@ spec:
 
     image:
       repository: quay.io/keycloak/keycloak
-      tag: "26.7.0"
+      tag: "26.7.0@sha256:2eb3cd316835c990e69e26ade292ffa78f6fb0db7d5fc6377463c162e1979ac0"
       pullPolicy: IfNotPresent
 
     # The official image starts through kc.sh. Startup import is idempotent: Keycloak imports the
