@@ -196,9 +196,12 @@ func TestReloadAgentsRetainsLastKnownProfileAndConfig(t *testing.T) {
 		t.Fatal("reloaded sender policy did not take effect")
 	}
 
-	writeAgentsFile(t, agentsPath, "agents: [\n")
+	writeAgentsFile(t, agentsPath, "schemaVersion: 99\nagents:\n  agent-k8s: {namespace: kagent, name: replacement-agent}\n")
 	if reloaded, err = b.reloadAgents(t.Context()); err == nil || reloaded {
-		t.Fatalf("invalid reload = (%v, %v), want (false, error)", reloaded, err)
+		t.Fatalf("unknown-major reload = (%v, %v), want (false, error)", reloaded, err)
+	}
+	if !strings.Contains(err.Error(), "unsupported schemaVersion 99") {
+		t.Fatalf("unknown-major reload error = %v", err)
 	}
 	ref, ok := b.agents.Lookup("agent-k8s")
 	if !ok || ref.AllowsSender(b.agents.IdentifySender(id.NewUserID("alice", ownServer)), ownServer) {

@@ -1,6 +1,8 @@
 package bridge
 
 import (
+	"bytes"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -85,6 +87,16 @@ func TestLoadAgentsRejectsInvalidConfig(t *testing.T) {
 		want    string
 	}{
 		{name: "empty map", content: "agents: {}\n", want: "defines no agents"},
+		{
+			name:    "unknown schema major",
+			content: "schemaVersion: 99\nagents:\n  agent-x: {namespace: kagent, name: x}\n",
+			want:    "unsupported schemaVersion 99 (supported: 1)",
+		},
+		{
+			name:    "null schema version",
+			content: "schemaVersion: null\nagents:\n  agent-x: {namespace: kagent, name: x}\n",
+			want:    "schemaVersion must be an integer",
+		},
 		{
 			name:    "missing agent field",
 			content: "agents:\n  agent-x: {namespace: kagent}\n",
@@ -205,6 +217,41 @@ func TestLoadAgentsRejectsInvalidConfig(t *testing.T) {
 				t.Fatalf("LoadAgents() error = %v, want containing %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestLoadAgentsMissingSchemaVersionWarnsAndDefaultsToV1(t *testing.T) {
+	var output bytes.Buffer
+	log := slog.New(slog.NewJSONHandler(&output, nil))
+	agents, err := LoadAgents(writeTemp(t, "agents:\n  agent-x: {namespace: kagent, name: x}\n"))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+
+	agents.LogSchemaVersionWarning(log, "agents.yaml")
+	got := output.String()
+	for _, want := range []string{
+		`"level":"WARN"`,
+		`"msg":"agents config omits schemaVersion; defaulting to v1 is deprecated"`,
+		`"path":"agents.yaml"`,
+		`"schema_version":1`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Errorf("warning = %q, want containing %q", got, want)
+		}
+	}
+}
+
+func TestLoadAgentsExplicitSchemaVersionDoesNotWarn(t *testing.T) {
+	var output bytes.Buffer
+	agents, err := LoadAgents(writeTemp(t, "schemaVersion: 1\nagents:\n  agent-x: {namespace: kagent, name: x}\n"))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+
+	agents.LogSchemaVersionWarning(slog.New(slog.NewJSONHandler(&output, nil)), "agents.yaml")
+	if output.Len() != 0 {
+		t.Fatalf("unexpected warning for explicit schema version: %s", output.String())
 	}
 }
 

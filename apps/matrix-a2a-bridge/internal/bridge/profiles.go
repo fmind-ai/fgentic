@@ -382,6 +382,7 @@ func (b *Bridge) reloadAgents(ctx context.Context) (bool, error) {
 	if err := b.preflightRemoteAgents(ctx, entries); err != nil {
 		return false, err
 	}
+	next.LogSchemaVersionWarning(b.log, b.cfg.AgentsPath)
 	b.agentConfigMu.Lock()
 	b.agents.Replace(next)
 	b.profiles.prepare(entries)

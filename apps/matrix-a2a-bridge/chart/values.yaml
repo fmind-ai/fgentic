@@ -65,7 +65,8 @@ a2aAuthentication:
 # audit values; patterns use one trailing localpart '*' and an exact homeserver.
 bridgedOrigins: {}
 
-# The ghost -> A2A agent routing map (also the invocation allowlist). Rendered into a ConfigMap.
+# The ghost -> A2A agent routing map (also the invocation allowlist). Rendered into a ConfigMap
+# whose schemaVersion is fixed to the bridge/chart's current agents.schema.json major (v1).
 # `description` is only a startup/card-outage fallback; live profiles and `!agents` prefer the
 # current AgentCard. Optional avatarURL values must be existing mxc:// URIs. Local targets use
 # `namespace` + `name`. Remote targets instead use `url`, a positive whole-delegation `timeout`

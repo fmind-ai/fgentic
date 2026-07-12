@@ -100,6 +100,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	agents.LogSchemaVersionWarning(log, cfg.AgentsPath)
 	log.Info("loaded agent routing map", "agents", agents.Names())
 
 	client := a2aclient.New(cfg.A2ABaseURL, cfg.A2AAPIKey, log)
