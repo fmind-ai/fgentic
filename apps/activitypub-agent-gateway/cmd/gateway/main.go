@@ -23,6 +23,7 @@ import (
 	"github.com/fmind/activitypub-agent-gateway/internal/apgateway"
 	"github.com/fmind/activitypub-agent-gateway/internal/config"
 	"github.com/fmind/activitypub-agent-gateway/internal/httpsig"
+	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
 	"github.com/fmind/activitypub-agent-gateway/internal/policy"
 )
 
@@ -58,6 +59,20 @@ func run() error {
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 
+	// Object integrity signing (FEP-8b32): when a key is mounted, outbound replies carry an
+	// eddsa-jcs-2022 proof and each actor publishes its assertionMethod Multikey. An empty
+	// INTEGRITY_KEY_PATH serves replies without a proof — valid for local-only dev.
+	if cfg.IntegrityKeyPath != "" {
+		signer, err := integrity.LoadSignerFromFile(cfg.IntegrityKeyPath, cfg.IntegrityKeyFragment)
+		if err != nil {
+			return err
+		}
+		gateway.UseSigner(signer)
+		log.Info("object integrity signing enabled", "key", cfg.IntegrityKeyPath, "fragment", signer.KeyFragment())
+	} else {
+		log.Warn("object integrity signing DISABLED (INTEGRITY_KEY_PATH empty) — replies carry no FEP-8b32 proof")
+	}
+
 	// The federation policy border. When a policy is configured, every inbound activity must pass
 	// signature verification and the allowlist before any delegation; the policy hot-reloads from
 	// its mounted file without a pod restart. An empty POLICY_PATH disables the border and is valid
@@ -67,7 +82,13 @@ func run() error {
 		go store.Watch(ctx, cfg.PolicyReloadInterval)
 		keyClient := &http.Client{Timeout: cfg.RequestTimeout}
 		verifier := httpsig.NewVerifier(httpsig.NewHTTPKeyResolver(keyClient), cfg.SignatureMaxSkew)
-		gateway.UseBorder(apgateway.NewBorder(verifier, store, log))
+		border := apgateway.NewBorder(verifier, store, log)
+		if cfg.IntegrityRequireInbound {
+			resolver := integrity.NewHTTPKeyResolver(&http.Client{Timeout: cfg.RequestTimeout})
+			border.RequireObjectIntegrity(integrity.NewVerifier(resolver))
+			log.Info("inbound object integrity REQUIRED — activities without a valid FEP-8b32 proof are dropped")
+		}
+		gateway.UseBorder(border)
 		log.Info("federation policy border enabled", "policy", cfg.PolicyPath, "healthy", store.Healthy())
 	} else {
 		log.Warn("federation policy border DISABLED (POLICY_PATH empty) — local-only dev posture")

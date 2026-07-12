@@ -15,8 +15,9 @@ This is the second federation transport ([standing rule](../../docs/fediverse.md
 - `internal/a2a` — thin `a2a-go` wrapper. **Local kagent targets only**; the asserted AP actor is forwarded as `X-User-Id`, the workload credential as a separate bearer. Remote/pinned A2A + Signed AgentCard trust is a different boundary landed elsewhere.
 - `internal/httpsig` — inbound HTTP Message Signature verification (Cavage draft + RFC 9421) using only stdlib crypto (RSA PKCS1v15, RSA-PSS, Ed25519); body-digest binding + replay window; `HTTPKeyResolver` fetches the signer's key.
 - `internal/policy` — the strict, fail-closed federation allowlist (`policy.json`) with a hot-reload `Store` (poll + atomic swap; invalid/unreadable ⇒ deny all).
-- `internal/apgateway` — the AP surface: `Registry` (agents.yaml loader), Service `actor`, `webfinger` JRD, `store` (in-memory outbox), `border` (signature + actor-key binding + allowlist), `gateway` (routes + inbox→border→A2A→outbox), `metrics` (aggregate governance counters, never model tokens).
-- `chart/` — Helm chart (ClusterIP by default; the single exact public `HTTPRoute` is **gated off**; optional policy mount). `component/` — namespace-neutral Kustomize Component projecting the mutable `policy.json` ConfigMap. `deploy/` — Namespace + HelmRelease + Component Flux unit; **opt-in**, not yet in the reconciled DAG.
+- `internal/integrity` — FEP-8b32 object integrity proofs (`eddsa-jcs-2022`: Ed25519 over RFC 8785 JCS). `Sign`/`Verify` on the document, a `Signer` (SOPS PKCS#8 key, per-actor `verificationMethod`, `assertionMethod` Multikey), and an inbound `Verifier` + `HTTPKeyResolver`. Interop with **apsig** is pinned byte-for-byte by a golden vector (`mise run interop` re-derives it live).
+- `internal/apgateway` — the AP surface: `Registry` (agents.yaml loader), Service `actor` (publishes its Multikey when signing is on), `webfinger` JRD, `store` (in-memory outbox of signed bytes + id index), `border` (signature + actor-key binding + allowlist + optional object-integrity), `gateway` (routes + inbox→border→A2A→outbox, signs replies, dereferences `/activities/{seq}`), `metrics` (aggregate governance counters, never model tokens).
+- `chart/` — Helm chart (ClusterIP by default; the single exact public `HTTPRoute` is **gated off**; optional policy + signing-key mounts). `component/` — namespace-neutral Kustomize Component projecting the mutable `policy.json` ConfigMap. `deploy/` — Namespace + HelmRelease + Component Flux unit; **opt-in**, not yet in the reconciled DAG.
 
 ## Conventions (match the bridge)
 
@@ -26,4 +27,5 @@ This is the second federation transport ([standing rule](../../docs/fediverse.md
 1. Reach kagent only via `a2a-go` through agentgateway — never a hand-rolled JSON-RPC client, never a model credential in this app.
 1. Public exposure is governance-gated: keep `httpRoute.enabled=false` until the AP federation border is in force.
 1. Every dependency stays permissive (MIT / Apache-2.0); keep `NOTICE` current; never add AGPL.
-1. Validation gates: `mise run check` + `mise run test` warning-free. Coverage ratchets live in `scripts/check-coverage.sh` (core packages `internal/apgateway`, `internal/a2a`, `internal/config`).
+1. Object integrity is bidirectional and fail-closed: outbound replies always carry a proof when a key is mounted; inbound proofs are mandatory only when `integrity.requireInbound` is set (needs the policy border). Never weaken the tamper-rejection or actor-controller binding.
+1. Validation gates: `mise run check` + `mise run test` warning-free. Coverage ratchets live in `scripts/check-coverage.sh` (`internal/apgateway`, `internal/a2a`, `internal/config`, `internal/httpsig`, `internal/policy`, `internal/integrity`).

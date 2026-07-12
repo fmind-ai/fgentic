@@ -2,11 +2,13 @@ package apgateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
 
 	"github.com/fmind/activitypub-agent-gateway/internal/httpsig"
+	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
 	"github.com/fmind/activitypub-agent-gateway/internal/policy"
 )
 
@@ -15,15 +17,22 @@ import (
 // the git-reloadable allowlist. It is the AP twin of the Synapse callback border (docs/fediverse.md
 // §3). Every denial fails closed and yields content-free evidence — never an actor URI or content.
 type Border struct {
-	verifier *httpsig.Verifier
-	store    *policy.Store
-	log      *slog.Logger
+	verifier  *httpsig.Verifier
+	store     *policy.Store
+	integrity *integrity.Verifier // optional FEP-8b32 object-integrity gate; nil skips it
+	log       *slog.Logger
 }
 
 // NewBorder wires a verifier and a hot-reloadable policy store into the border.
 func NewBorder(verifier *httpsig.Verifier, store *policy.Store, log *slog.Logger) *Border {
 	return &Border{verifier: verifier, store: store, log: log}
 }
+
+// RequireObjectIntegrity adds a mandatory FEP-8b32 object-integrity check: after transport signature
+// and allowlist, an inbound activity must ALSO carry a valid eddsa-jcs-2022 proof whose key controller
+// is the activity actor. Missing/invalid proofs fail closed, so a relayed or tampered object cannot
+// be laundered through a trusted actor even if the transport hop was signed (docs/fediverse.md §3).
+func (b *Border) RequireObjectIntegrity(v *integrity.Verifier) { b.integrity = v }
 
 // BorderDecision is a content-free admission outcome for logs and metrics.
 type BorderDecision struct {
@@ -45,7 +54,43 @@ func (b *Border) Authorize(ctx context.Context, req *http.Request, body []byte, 
 		return BorderDecision{Allowed: false, Reason: "actor_key_mismatch", Digest: "none"}
 	}
 	decision := b.store.Admit(result.Owner)
-	return BorderDecision{Allowed: decision.Allowed, Reason: decision.Reason, Digest: decision.Digest}
+	if !decision.Allowed {
+		return BorderDecision{Allowed: false, Reason: decision.Reason, Digest: decision.Digest}
+	}
+
+	// Object integrity (optional): the transport hop is authenticated, but an integrity proof binds
+	// the object itself. When required, a missing or invalid proof — or a proof whose key controller
+	// is not the actor — denies before any A2A call.
+	if b.integrity != nil {
+		var doc map[string]any
+		if err := json.Unmarshal(body, &doc); err != nil {
+			return BorderDecision{Allowed: false, Reason: "malformed_object", Digest: decision.Digest}
+		}
+		controller, err := b.integrity.VerifyDocument(ctx, doc)
+		if err != nil {
+			return BorderDecision{Allowed: false, Reason: objectIntegrityReason(err), Digest: decision.Digest}
+		}
+		if controller != actorURI {
+			return BorderDecision{Allowed: false, Reason: "object_actor_mismatch", Digest: decision.Digest}
+		}
+	}
+	return BorderDecision{Allowed: true, Reason: decision.Reason, Digest: decision.Digest}
+}
+
+// objectIntegrityReason maps an object-integrity failure to a stable, content-free reason label.
+func objectIntegrityReason(err error) string {
+	switch {
+	case errors.Is(err, integrity.ErrNoProof):
+		return "unsigned_object"
+	case errors.Is(err, integrity.ErrUnsupportedProof):
+		return "unsupported_object_proof"
+	case errors.Is(err, integrity.ErrProofInvalid):
+		return "bad_object_proof"
+	case errors.Is(err, integrity.ErrKeyResolution):
+		return "object_key_unresolved"
+	default:
+		return "malformed_object_proof"
+	}
 }
 
 // signatureReason maps a verification error to a stable, content-free reason label.

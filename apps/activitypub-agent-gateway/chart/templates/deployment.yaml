@@ -1,6 +1,9 @@
 {{- if ne (int .Values.replicaCount) 1 }}
 {{- fail "activitypub-agent-gateway requires replicaCount=1 (in-memory outbox + context threading)" }}
 {{- end }}
+{{- if and .Values.integrity.requireInbound (not .Values.policy.enabled) }}
+{{- fail "integrity.requireInbound needs policy.enabled (object integrity gates the border)" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -81,6 +84,14 @@ spec:
             - name: SIGNATURE_MAX_SKEW
               value: {{ .Values.policy.signatureMaxSkew | quote }}
             {{- end }}
+            {{- if .Values.integrity.enabled }}
+            - name: INTEGRITY_KEY_PATH
+              value: /etc/activitypub-agent-gateway/signing-key/{{ .Values.integrity.secretKey }}
+            - name: INTEGRITY_KEY_FRAGMENT
+              value: {{ .Values.integrity.keyFragment | quote }}
+            - name: INTEGRITY_REQUIRE_INBOUND
+              value: {{ .Values.integrity.requireInbound | quote }}
+            {{- end }}
           volumeMounts:
             - name: agents
               # Mount the whole projected ConfigMap directory (atomic symlink swap on update).
@@ -90,6 +101,11 @@ spec:
             - name: policy
               # Whole-directory mount so the projected policy.json hot-reloads without a restart.
               mountPath: /etc/activitypub-agent-gateway/policy
+              readOnly: true
+            {{- end }}
+            {{- if .Values.integrity.enabled }}
+            - name: signing-key
+              mountPath: /etc/activitypub-agent-gateway/signing-key
               readOnly: true
             {{- end }}
           livenessProbe:
@@ -116,6 +132,12 @@ spec:
         - name: policy
           configMap:
             name: {{ .Values.policy.configMapName }}
+        {{- end }}
+        {{- if .Values.integrity.enabled }}
+        - name: signing-key
+          secret:
+            secretName: {{ .Values.integrity.secretName }}
+            defaultMode: 0400
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

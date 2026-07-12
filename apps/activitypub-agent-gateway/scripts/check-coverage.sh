@@ -35,3 +35,4 @@ check_package internal/a2a 70
 check_package internal/config 80
 check_package internal/httpsig 75
 check_package internal/policy 90
+check_package internal/integrity 85

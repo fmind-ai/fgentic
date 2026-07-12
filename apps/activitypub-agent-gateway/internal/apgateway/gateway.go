@@ -14,6 +14,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -24,6 +25,8 @@ import (
 
 	vocab "github.com/go-ap/activitypub"
 	"github.com/prometheus/client_golang/prometheus"
+
+	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
 )
 
 // maxInboxBytes bounds an untrusted inbound activity body.
@@ -45,12 +48,18 @@ type Gateway struct {
 	metrics    *metrics
 	log        *slog.Logger
 	now        func() time.Time
-	border     *Border // federation policy border; nil disables enforcement (local-only dev/tests)
+	border     *Border           // federation policy border; nil disables enforcement (local-only dev/tests)
+	signer     *integrity.Signer // FEP-8b32 object-integrity signer; nil serves replies without a proof
 }
 
 // UseBorder installs the federation policy border. When set, every inbound activity must pass
 // signature verification, actor-key binding, and the allowlist before any A2A delegation.
 func (g *Gateway) UseBorder(b *Border) { g.border = b }
+
+// UseSigner enables FEP-8b32 object integrity proofs: outbound replies carry an eddsa-jcs-2022
+// DataIntegrityProof and each actor publishes the signer's Multikey under its assertionMethod, so a
+// remote verifier can confirm the agent authored a reply even after relaying (docs/fediverse.md §3).
+func (g *Gateway) UseSigner(s *integrity.Signer) { g.signer = s }
 
 // New builds a Gateway. baseURL is the public scheme+host every actor URL is built from; serverName
 // is the acct: handle domain. reg (a prometheus.Registerer) receives the gateway's counters.
@@ -80,6 +89,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("GET /ap/agents/{ghost}", g.handleActor)
 	mux.HandleFunc("POST /ap/agents/{ghost}/inbox", g.handleInbox)
 	mux.HandleFunc("GET /ap/agents/{ghost}/outbox", g.handleOutbox)
+	mux.HandleFunc("GET /ap/agents/{ghost}/activities/{seq}", g.handleActivity)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") })
 	return mux
@@ -126,7 +136,8 @@ func (g *Gateway) parseHandle(resource string) (string, bool) {
 	return local, true
 }
 
-// handleActor serves a ghost's Service actor document.
+// handleActor serves a ghost's Service actor document, including its FEP-8b32 assertionMethod
+// Multikey when object-integrity signing is enabled so remote verifiers can resolve the signing key.
 func (g *Gateway) handleActor(w http.ResponseWriter, r *http.Request) {
 	ghost := r.PathValue("ghost")
 	ref, served := g.registry.Lookup(ghost)
@@ -134,10 +145,18 @@ func (g *Gateway) handleActor(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such agent", http.StatusNotFound)
 		return
 	}
-	g.writeAP(w, g.buildActor(ghost, ref))
+	data, err := g.marshalActor(ghost, ref)
+	if err != nil {
+		g.log.Error("marshal actor", "ghost", ghost, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	_, _ = w.Write(data)
 }
 
-// handleOutbox serves a ghost's published replies as an OrderedCollection (newest-first).
+// handleOutbox serves a ghost's published replies as an OrderedCollection (newest-first). The stored
+// bytes are served verbatim so a signed activity's exact signed octets reach the verifier unperturbed.
 func (g *Gateway) handleOutbox(w http.ResponseWriter, r *http.Request) {
 	ghost := r.PathValue("ghost")
 	if _, served := g.registry.Lookup(ghost); !served {
@@ -145,12 +164,42 @@ func (g *Gateway) handleOutbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	items := g.store.items(ghost)
-	oc := vocab.OrderedCollectionNew(g.outboxID(ghost))
-	oc.TotalItems = uint(len(items))
-	for _, activity := range items {
-		oc.OrderedItems = append(oc.OrderedItems, activity)
+	ordered := make([]json.RawMessage, len(items))
+	for i, it := range items {
+		ordered[i] = it.raw
 	}
-	g.writeAP(w, oc)
+	collection := map[string]any{
+		"@context":     integrity.ActivityStreamsContext,
+		"id":           string(g.outboxID(ghost)),
+		"type":         "OrderedCollection",
+		"totalItems":   len(items),
+		"orderedItems": ordered,
+	}
+	data, err := json.Marshal(collection)
+	if err != nil {
+		g.log.Error("marshal outbox", "ghost", ghost, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	_, _ = w.Write(data)
+}
+
+// handleActivity dereferences a single published activity by its IRI, serving the exact signed bytes.
+func (g *Gateway) handleActivity(w http.ResponseWriter, r *http.Request) {
+	ghost := r.PathValue("ghost")
+	if _, served := g.registry.Lookup(ghost); !served {
+		http.Error(w, "no such agent", http.StatusNotFound)
+		return
+	}
+	id := g.actorID(ghost) + vocab.IRI("/activities/"+r.PathValue("seq"))
+	raw, ok := g.store.lookup(id)
+	if !ok {
+		http.Error(w, "no such activity", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", contentType)
+	_, _ = w.Write(raw)
 }
 
 // handleInbox turns a Create(Note) mention into one A2A delegation and publishes the reply.
@@ -223,15 +272,20 @@ func (g *Gateway) handleInbox(w http.ResponseWriter, r *http.Request) {
 	}
 	g.metrics.delegations.WithLabelValues(ghost, "ok").Inc()
 
-	created := g.publishReply(ghost, actorIRI, note.ID, reply)
-	w.Header().Set("Location", string(created.ID))
+	activityID, err := g.publishReply(ghost, actorIRI, note.ID, reply)
+	if err != nil {
+		g.log.Error("publish reply", "ghost", ghost, "error", err)
+		http.Error(w, "internal error", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Location", string(activityID))
 	w.WriteHeader(http.StatusAccepted)
 }
 
-// publishReply mints and stores a Create(Note) reply attributed to the ghost's actor, inReplyTo
-// the triggering object. Per-reply bot/automated labeling beyond Service-actor typing lands with
-// the attribution twin (docs/fediverse.md §3).
-func (g *Gateway) publishReply(ghost string, actorIRI, inReplyTo vocab.IRI, text string) *vocab.Create {
+// publishReply mints, signs, and stores a Create(Note) reply attributed to the ghost's actor,
+// inReplyTo the triggering object, returning the activity IRI. Per-reply bot/automated labeling
+// beyond Service-actor typing lands with the attribution twin (docs/fediverse.md §3).
+func (g *Gateway) publishReply(ghost string, actorIRI, inReplyTo vocab.IRI, text string) (vocab.IRI, error) {
 	seq := g.store.next()
 	actor := g.actorID(ghost)
 	now := g.now()
@@ -246,13 +300,75 @@ func (g *Gateway) publishReply(ghost string, actorIRI, inReplyTo vocab.IRI, text
 		note.InReplyTo = inReplyTo
 	}
 
-	create := vocab.CreateNew(vocab.IRI(fmt.Sprintf("%s/activities/%d", actor, seq)), note)
+	activityID := vocab.IRI(fmt.Sprintf("%s/activities/%d", actor, seq))
+	create := vocab.CreateNew(activityID, note)
 	create.Actor = actor
 	create.To = vocab.ItemCollection{actorIRI}
 	create.Published = now
 
-	g.store.append(ghost, create)
-	return create
+	raw, err := g.marshalReply(create, string(actor))
+	if err != nil {
+		return "", err
+	}
+	g.store.append(ghost, activityID, raw)
+	return activityID, nil
+}
+
+// marshalReply serializes a reply activity, attaching a FEP-8b32 object integrity proof when signing
+// is enabled. The signed document carries both the AS2 and data-integrity contexts so `proof` and
+// `proofValue` are defined terms for a remote verifier.
+func (g *Gateway) marshalReply(create *vocab.Create, actorID string) (json.RawMessage, error) {
+	data, err := vocab.MarshalJSON(create)
+	if err != nil {
+		return nil, fmt.Errorf("marshal reply: %w", err)
+	}
+	if g.signer == nil {
+		return data, nil
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("decode reply for signing: %w", err)
+	}
+	doc["@context"] = []any{integrity.ActivityStreamsContext, integrity.DataIntegrityContext}
+	if err := g.signer.SignActivity(doc, actorID); err != nil {
+		return nil, fmt.Errorf("sign reply: %w", err)
+	}
+	signed, err := json.Marshal(doc)
+	if err != nil {
+		return nil, fmt.Errorf("encode signed reply: %w", err)
+	}
+	return signed, nil
+}
+
+// marshalActor serializes a ghost's Service actor, adding its FEP-8b32 assertionMethod Multikey and
+// the security contexts when object-integrity signing is enabled.
+func (g *Gateway) marshalActor(ghost string, ref AgentRef) ([]byte, error) {
+	data, err := vocab.MarshalJSON(g.buildActor(ghost, ref))
+	if err != nil {
+		return nil, fmt.Errorf("marshal actor: %w", err)
+	}
+	if g.signer == nil {
+		return data, nil
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(data, &doc); err != nil {
+		return nil, fmt.Errorf("decode actor for key publication: %w", err)
+	}
+	actorID := string(g.actorID(ghost))
+	doc["@context"] = []any{
+		integrity.ActivityStreamsContext,
+		integrity.DataIntegrityContext,
+		"https://w3id.org/security/multikey/v1",
+	}
+	doc["assertionMethod"] = []any{
+		map[string]any{
+			"id":                 g.signer.VerificationMethod(actorID),
+			"type":               "Multikey",
+			"controller":         actorID,
+			"publicKeyMultibase": g.signer.PublicKeyMultibase(),
+		},
+	}
+	return json.Marshal(doc)
 }
 
 // mentions reports whether the note names this ghost, via an AP Mention tag targeting its actor
@@ -271,18 +387,6 @@ func (g *Gateway) mentions(ghost string, note *vocab.Object) bool {
 // String() renders an empty value as "[]", so the first element is read directly.
 func nlvText(n vocab.NaturalLanguageValues) string {
 	return strings.TrimSpace(n.First().String())
-}
-
-// writeAP marshals an ActivityStreams object and writes it with the canonical AP content type.
-func (g *Gateway) writeAP(w http.ResponseWriter, item vocab.Item) {
-	data, err := vocab.MarshalJSON(item)
-	if err != nil {
-		g.log.Error("marshal activitypub object", "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", contentType)
-	_, _ = w.Write(data)
 }
 
 // parseCreateNote extracts the Create activity and its inline Note object from an inbound body.

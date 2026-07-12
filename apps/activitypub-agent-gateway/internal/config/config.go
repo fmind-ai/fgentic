@@ -58,6 +58,15 @@ type Config struct {
 	// SignatureMaxSkew bounds how far an inbound signature timestamp may drift from now (replay).
 	SignatureMaxSkew time.Duration `env:"SIGNATURE_MAX_SKEW" envDefault:"12h"`
 
+	// IntegrityKeyPath is the mounted, SOPS-backed PKCS#8 PEM Ed25519 key used to attach FEP-8b32
+	// object integrity proofs to outbound replies (and publish the actor's assertionMethod Multikey).
+	// Empty disables outbound signing. IntegrityKeyFragment names the key on each actor
+	// (verificationMethod = <actorID>#<fragment>). IntegrityRequireInbound makes a valid object proof
+	// mandatory on the inbox — it needs the border (POLICY_PATH), the single admission choke point.
+	IntegrityKeyPath        string `env:"INTEGRITY_KEY_PATH"`
+	IntegrityKeyFragment    string `env:"INTEGRITY_KEY_FRAGMENT" envDefault:"ed25519-key"`
+	IntegrityRequireInbound bool   `env:"INTEGRITY_REQUIRE_INBOUND" envDefault:"false"`
+
 	// RequestTimeout bounds one synchronous A2A message/send transport round trip. TaskTimeout
 	// bounds the whole delegation when the agent returns a long-running Task polled via tasks/get.
 	RequestTimeout time.Duration `env:"REQUEST_TIMEOUT" envDefault:"60s"`
@@ -131,6 +140,12 @@ func (c Config) validate() error {
 	}
 	if c.SignatureMaxSkew <= 0 {
 		return fmt.Errorf("SIGNATURE_MAX_SKEW must be positive")
+	}
+	if c.IntegrityKeyFragment == "" || strings.ContainsAny(c.IntegrityKeyFragment, "#/ ") {
+		return fmt.Errorf("INTEGRITY_KEY_FRAGMENT %q must be a non-empty fragment without '#', '/', or spaces", c.IntegrityKeyFragment)
+	}
+	if c.IntegrityRequireInbound && c.PolicyPath == "" {
+		return fmt.Errorf("INTEGRITY_REQUIRE_INBOUND needs POLICY_PATH (object integrity gates the border)")
 	}
 	if _, err := c.SlogLevel(); err != nil {
 		return err
