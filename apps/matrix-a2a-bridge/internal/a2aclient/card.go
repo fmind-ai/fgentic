@@ -278,7 +278,7 @@ func validateRemoteCardContract(card *a2a.AgentCard, target Target) error {
 			agentInterface.ProtocolBinding != a2a.TransportProtocolHTTPJSON {
 			continue
 		}
-		endpoint, err := normalizeRemoteURL(agentInterface.URL)
+		endpoint, err := NormalizeRemoteURL(agentInterface.URL)
 		if err != nil {
 			continue
 		}

@@ -101,7 +101,7 @@ func TestSignVerifyAndPublicJWK(t *testing.T) {
 	if jwk["kty"] != "EC" || jwk["crv"] != "P-256" || jwk["alg"] != "ES256" || jwk["use"] != "sig" {
 		t.Fatalf("public JWK = %#v", jwk)
 	}
-	publicKey, err := ParsePublicJWK(bundle.PublicJWK, "card-key-2026")
+	publicKey, err := ParsePublicJWK(bundle.PublicJWK, "card-key-2026", RequirePublicJWKMetadata)
 	if err != nil {
 		t.Fatalf("ParsePublicJWK: %v", err)
 	}
@@ -167,16 +167,60 @@ func TestParsePublicJWKRejectsPrivateOrMismatchedMaterial(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Sign: %v", err)
 	}
-	if _, err := ParsePublicJWK(bundle.PublicJWK, "other-key"); err == nil {
+	if _, err := ParsePublicJWK(bundle.PublicJWK, "other-key", RequirePublicJWKMetadata); err == nil {
 		t.Fatal("ParsePublicJWK accepted a mismatched key ID")
 	}
 	privateJWK := decodeTestObject(t, bundle.PublicJWK)
 	privateJWK["d"] = "private"
-	if _, err := ParsePublicJWK(encodeTestObject(t, privateJWK), "card-key"); err == nil || !strings.Contains(err.Error(), "unknown field") {
+	if _, err := ParsePublicJWK(encodeTestObject(t, privateJWK), "card-key", RequirePublicJWKMetadata); err == nil || !strings.Contains(err.Error(), "unknown field") {
 		t.Fatalf("ParsePublicJWK private d error = %v", err)
 	}
 	duplicate := bytes.Replace(bundle.PublicJWK, []byte(`"kid":`), []byte(`"kid":"attacker","kid":`), 1)
-	if _, err := ParsePublicJWK(duplicate, "card-key"); err == nil || !strings.Contains(err.Error(), "canonicalizable I-JSON") {
+	if _, err := ParsePublicJWK(duplicate, "card-key", RequirePublicJWKMetadata); err == nil || !strings.Contains(err.Error(), "canonicalizable I-JSON") {
 		t.Fatalf("ParsePublicJWK duplicate kid error = %v", err)
+	}
+}
+
+func TestParsePublicJWKOptionalMetadataPolicy(t *testing.T) {
+	bundle, err := Sign(testCardJSON(t), testPrivateKey(t), "card-key")
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	minimal := decodeTestObject(t, bundle.PublicJWK)
+	delete(minimal, "kid")
+	delete(minimal, "alg")
+	delete(minimal, "use")
+	delete(minimal, "key_ops")
+	minimalRaw := encodeTestObject(t, minimal)
+	if _, err := ParsePublicJWK(minimalRaw, "card-key", AllowOptionalJWKMetadata); err != nil {
+		t.Fatalf("ParsePublicJWK optional metadata: %v", err)
+	}
+	if _, err := ParsePublicJWK(minimalRaw, "card-key", RequirePublicJWKMetadata); err == nil {
+		t.Fatal("strict metadata policy accepted a coordinate-only JWK")
+	}
+
+	tests := []struct {
+		name  string
+		field string
+		value any
+	}{
+		{name: "mismatched kid", field: "kid", value: "other-key"},
+		{name: "wrong algorithm", field: "alg", value: "ES384"},
+		{name: "wrong use", field: "use", value: "enc"},
+		{name: "unsafe operation", field: "key_ops", value: []string{"sign"}},
+		{name: "mixed operations", field: "key_ops", value: []string{"verify", "sign"}},
+		{name: "private scalar", field: "d", value: "private"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			jwk := decodeTestObject(t, minimalRaw)
+			jwk[test.field] = test.value
+			if _, err := ParsePublicJWK(encodeTestObject(t, jwk), "card-key", AllowOptionalJWKMetadata); err == nil {
+				t.Fatalf("optional metadata policy accepted %s", test.name)
+			}
+		})
+	}
+	if _, err := ParsePublicJWK(minimalRaw, "card-key", PublicJWKMetadataPolicy(255)); err == nil {
+		t.Fatal("ParsePublicJWK accepted an unknown metadata policy")
 	}
 }

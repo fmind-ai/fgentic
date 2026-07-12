@@ -128,7 +128,7 @@ func runVerify(args []string) error {
 	if err != nil {
 		return err
 	}
-	key, err := agentcardjws.ParsePublicJWK(jwk, *keyID)
+	key, err := agentcardjws.ParsePublicJWK(jwk, *keyID, agentcardjws.RequirePublicJWKMetadata)
 	if err != nil {
 		return err
 	}

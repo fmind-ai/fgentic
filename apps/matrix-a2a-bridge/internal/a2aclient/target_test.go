@@ -146,6 +146,47 @@ func TestNewRemoteTargetAllowsDevelopmentAndClusterHTTP(t *testing.T) {
 	}
 }
 
+func TestNormalizeRemoteURLTransportPolicy(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		want bool
+	}{
+		{name: "public HTTPS", url: "https://partner.example/a2a", want: true},
+		{name: "IPv4 loopback", url: "http://127.0.0.1:8080/a2a", want: true},
+		{name: "IPv6 loopback", url: "http://[::1]:8080/a2a", want: true},
+		{name: "localhost subdomain", url: "http://fixture.localhost:8080/a2a", want: true},
+		{name: "single-label service", url: "http://a2a-stub:8080/a2a", want: true},
+		{name: "uppercase service", url: "http://A2A-STUB:8080/a2a", want: true},
+		{name: "service namespace", url: "http://a2a-stub.default.svc:8080/a2a", want: true},
+		{name: "cluster-local service", url: "http://a2a-stub.default.svc.cluster.local:8080/a2a", want: true},
+		{name: "public cleartext", url: "http://partner.example/a2a"},
+		{name: "localhost lookalike", url: "http://localhost.evil.example/a2a"},
+		{name: "svc lookalike", url: "http://a2a-stub.default.svc.evil/a2a"},
+		{name: "underscore service", url: "http://a2a_stub:8080/a2a"},
+		{name: "numeric service", url: "http://123:8080/a2a"},
+		{name: "leading hyphen", url: "http://-agent:8080/a2a"},
+		{name: "trailing hyphen", url: "http://agent-.default.svc:8080/a2a"},
+		{name: "long label", url: "http://aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa:8080/a2a"},
+		{name: "missing authority", url: "https:///a2a"},
+		{name: "credentials", url: "https://user:secret@partner.example/a2a"},
+		{name: "query", url: "https://partner.example/a2a?tenant=other"},
+		{name: "non-HTTP scheme", url: "ftp://a2a-stub/a2a"},
+		{name: "leading whitespace", url: " https://partner.example/a2a"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := NormalizeRemoteURL(tt.url)
+			if (err == nil) != tt.want {
+				t.Fatalf("NormalizeRemoteURL(%q) = %q, %v; want valid=%v", tt.url, got, err, tt.want)
+			}
+			if tt.want && got != tt.url {
+				t.Fatalf("NormalizeRemoteURL(%q) = %q, want canonical input unchanged", tt.url, got)
+			}
+		})
+	}
+}
+
 func TestNewRemoteTargetRejectsInvalidTrustMaterialWithoutPanicking(t *testing.T) {
 	key := newTestSigningKey(t)
 	valid := testCardIdentity(t, key)

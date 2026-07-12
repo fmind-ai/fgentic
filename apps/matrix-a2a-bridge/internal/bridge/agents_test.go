@@ -181,7 +181,7 @@ func TestLoadAgentsRejectsInvalidConfig(t *testing.T) {
 		{
 			name:    "external cleartext URL",
 			content: strings.Replace(validRemoteAgentsYAML, "https://partner.example", "http://partner.example", 1),
-			want:    "must use HTTPS",
+			want:    "may use http only",
 		},
 		{
 			name:    "noncanonical trailing slash URL",
@@ -201,7 +201,7 @@ func TestLoadAgentsRejectsInvalidConfig(t *testing.T) {
 		{
 			name:    "invalid P256 point",
 			content: strings.Replace(validRemoteAgentsYAML, "axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY", "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA", 1),
-			want:    "coordinates are not on P-256",
+			want:    "point is not on P-256",
 		},
 		{
 			name:    "unknown field",
@@ -281,37 +281,6 @@ func TestLoadAgentsRemoteTarget(t *testing.T) {
 	}
 	if ref.MappingID() == "" {
 		t.Error("MappingID() is empty")
-	}
-}
-
-func TestRemoteURLTransportPolicy(t *testing.T) {
-	tests := []struct {
-		name string
-		url  string
-		want bool
-	}{
-		{name: "public HTTPS", url: "https://partner.example/a2a", want: true},
-		{name: "IPv4 loopback", url: "http://127.0.0.1:8080/a2a", want: true},
-		{name: "IPv6 loopback", url: "http://[::1]:8080/a2a", want: true},
-		{name: "localhost subdomain", url: "http://fixture.localhost:8080/a2a", want: true},
-		{name: "single-label service", url: "http://a2a-stub:8080/a2a", want: true},
-		{name: "service namespace", url: "http://a2a-stub.default.svc:8080/a2a", want: true},
-		{name: "cluster-local service", url: "http://a2a-stub.default.svc.cluster.local:8080/a2a", want: true},
-		{name: "public cleartext", url: "http://partner.example/a2a"},
-		{name: "localhost lookalike", url: "http://localhost.evil.example/a2a"},
-		{name: "svc lookalike", url: "http://a2a-stub.default.svc.evil/a2a"},
-		{name: "missing authority", url: "https:///a2a"},
-		{name: "credentials", url: "https://user:secret@partner.example/a2a"},
-		{name: "query", url: "https://partner.example/a2a?tenant=other"},
-		{name: "non-HTTP scheme", url: "ftp://a2a-stub/a2a"},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			err := validateRemoteURL(tt.url)
-			if (err == nil) != tt.want {
-				t.Fatalf("validateRemoteURL(%q) error = %v, want valid=%v", tt.url, err, tt.want)
-			}
-		})
 	}
 }
 

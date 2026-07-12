@@ -46,6 +46,18 @@ type publicJWK struct {
 	KeyOps    []string `json:"key_ops"`
 }
 
+// PublicJWKMetadataPolicy controls whether JOSE metadata is mandatory (published signing
+// artifacts) or may be omitted (operator-pinned coordinates). Present metadata is always
+// validated and private or unknown fields are always rejected.
+type PublicJWKMetadataPolicy uint8
+
+const (
+	// RequirePublicJWKMetadata requires the complete metadata emitted by Sign.
+	RequirePublicJWKMetadata PublicJWKMetadataPolicy = iota + 1
+	// AllowOptionalJWKMetadata permits coordinate-only operator pins while validating any metadata present.
+	AllowOptionalJWKMetadata
+)
+
 // ParseP256PrivateKeyPEM parses exactly one unencrypted PKCS#8 or SEC1 ECDSA P-256 private key.
 func ParseP256PrivateKeyPEM(raw []byte) (*ecdsa.PrivateKey, error) {
 	trimmed := bytes.TrimSpace(raw)
@@ -90,11 +102,18 @@ func ParseP256PrivateKeyPEM(raw []byte) (*ecdsa.PrivateKey, error) {
 	return key, nil
 }
 
-// ParsePublicJWK parses the public artifact emitted by Sign and binds it to expectedKeyID.
+// ParsePublicJWK parses an ES256 public key and binds any present metadata to expectedKeyID.
 // Unknown or private fields are rejected so verification never accepts a broader key contract.
-func ParsePublicJWK(raw []byte, expectedKeyID string) (*ecdsa.PublicKey, error) {
+func ParsePublicJWK(
+	raw []byte,
+	expectedKeyID string,
+	metadataPolicy PublicJWKMetadataPolicy,
+) (*ecdsa.PublicKey, error) {
 	if err := validateKeyID(expectedKeyID); err != nil {
 		return nil, err
+	}
+	if metadataPolicy != RequirePublicJWKMetadata && metadataPolicy != AllowOptionalJWKMetadata {
+		return nil, fmt.Errorf("unsupported public JWK metadata policy %d", metadataPolicy)
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	decoder.DisallowUnknownFields()
@@ -111,14 +130,32 @@ func ParsePublicJWK(raw []byte, expectedKeyID string) (*ecdsa.PublicKey, error) 
 	if jwk.KeyType != "EC" || jwk.Curve != "P-256" {
 		return nil, fmt.Errorf("public JWK must be an EC P-256 key")
 	}
-	if jwk.KeyID != expectedKeyID {
-		return nil, fmt.Errorf("public JWK kid does not match expected key ID")
-	}
-	if jwk.Algorithm != "ES256" || jwk.Use != "sig" {
-		return nil, fmt.Errorf("public JWK must be an ES256 signature key")
-	}
-	if len(jwk.KeyOps) != 1 || jwk.KeyOps[0] != "verify" {
-		return nil, fmt.Errorf("public JWK key_ops must contain only verify")
+	switch metadataPolicy {
+	case RequirePublicJWKMetadata:
+		if jwk.KeyID != expectedKeyID {
+			return nil, fmt.Errorf("public JWK kid does not match expected key ID")
+		}
+		if jwk.Algorithm != "ES256" || jwk.Use != "sig" {
+			return nil, fmt.Errorf("public JWK must be an ES256 signature key")
+		}
+		if len(jwk.KeyOps) != 1 || jwk.KeyOps[0] != "verify" {
+			return nil, fmt.Errorf("public JWK key_ops must contain only verify")
+		}
+	case AllowOptionalJWKMetadata:
+		if jwk.KeyID != "" && jwk.KeyID != expectedKeyID {
+			return nil, fmt.Errorf("public JWK kid does not match expected key ID")
+		}
+		if jwk.Algorithm != "" && jwk.Algorithm != "ES256" {
+			return nil, fmt.Errorf("public JWK alg %q is not ES256", jwk.Algorithm)
+		}
+		if jwk.Use != "" && jwk.Use != "sig" {
+			return nil, fmt.Errorf("public JWK use %q is not sig", jwk.Use)
+		}
+		for _, operation := range jwk.KeyOps {
+			if operation != "verify" {
+				return nil, fmt.Errorf("public JWK key_ops contains unsupported operation %q", operation)
+			}
+		}
 	}
 	xBytes, err := base64.RawURLEncoding.Strict().DecodeString(jwk.X)
 	if err != nil || len(xBytes) != p256CoordinateBytes {

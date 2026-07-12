@@ -6,13 +6,14 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
-	"io"
 	"net"
 	"net/url"
 	"path"
+	"regexp"
 	"strings"
+
+	"github.com/fmind/matrix-a2a-bridge/internal/agentcardjws"
 )
 
 // TokenBudgetExtensionURI identifies Fgentic's A2A extension for a caller-supplied,
@@ -71,7 +72,7 @@ func NewLocalTarget(agentPath string) (Target, error) {
 // NewRemoteTarget validates an exact remote A2A endpoint and its pinned ES256 card identity.
 // tokenBudget is transmitted through TokenBudgetExtensionURI and must be positive.
 func NewRemoteTarget(rawURL string, identity CardIdentity, tokenBudget uint64) (Target, error) {
-	endpoint, err := normalizeRemoteURL(rawURL)
+	endpoint, err := NormalizeRemoteURL(rawURL)
 	if err != nil {
 		return Target{}, err
 	}
@@ -90,10 +91,20 @@ func NewRemoteTarget(rawURL string, identity CardIdentity, tokenBudget uint64) (
 	if tokenBudget > maxExactJSONInteger {
 		return Target{}, fmt.Errorf("remote token budget must not exceed %d", maxExactJSONInteger)
 	}
-	_, encoded, err := parseES256PublicJWK(identity.PublicKeyJWK, identity.KeyID)
+	publicKey, err := agentcardjws.ParsePublicJWK(
+		[]byte(identity.PublicKeyJWK),
+		identity.KeyID,
+		agentcardjws.AllowOptionalJWKMetadata,
+	)
 	if err != nil {
 		return Target{}, fmt.Errorf("remote card identity public key: %w", err)
 	}
+	publicKeyBytes, err := publicKey.Bytes()
+	if err != nil {
+		return Target{}, fmt.Errorf("encode remote card identity public key: %w", err)
+	}
+	var encoded [65]byte
+	copy(encoded[:], publicKeyBytes)
 
 	fingerprintInput := strings.Join([]string{
 		"remote",
@@ -190,7 +201,12 @@ func normalizeLocalPath(raw string) (string, error) {
 	return cleaned, nil
 }
 
-func normalizeRemoteURL(raw string) (string, error) {
+// NormalizeRemoteURL validates one exact remote A2A endpoint. Cleartext HTTP is restricted to
+// loopback development hosts and DNS-valid Kubernetes service names.
+func NormalizeRemoteURL(raw string) (string, error) {
+	if raw == "" || strings.TrimSpace(raw) != raw {
+		return "", fmt.Errorf("remote agent URL must be non-empty without surrounding whitespace")
+	}
 	parsed, err := url.Parse(raw)
 	if err != nil {
 		return "", fmt.Errorf("parse remote agent URL %q: %w", raw, err)
@@ -208,7 +224,10 @@ func normalizeRemoteURL(raw string) (string, error) {
 		return "", fmt.Errorf("remote agent URL %q must use a canonical hierarchical path", raw)
 	}
 	if parsed.Scheme == "http" && !isAllowedCleartextHost(parsed.Hostname()) {
-		return "", fmt.Errorf("remote agent URL %q may use http only for loopback, single-label, .svc, or .localhost hosts", raw)
+		return "", fmt.Errorf(
+			"remote agent URL %q may use http only for loopback, .localhost, or DNS-valid Kubernetes service hosts",
+			raw,
+		)
 	}
 	parsed.Path = strings.TrimRight(parsed.Path, "/")
 	if parsed.Path == "" {
@@ -227,68 +246,6 @@ func normalizeRemoteURL(raw string) (string, error) {
 	return normalized, nil
 }
 
-type rawECJWK struct {
-	KeyType   string   `json:"kty"`
-	Curve     string   `json:"crv"`
-	X         string   `json:"x"`
-	Y         string   `json:"y"`
-	KeyID     string   `json:"kid,omitempty"`
-	Algorithm string   `json:"alg,omitempty"`
-	Use       string   `json:"use,omitempty"`
-	KeyOps    []string `json:"key_ops,omitempty"`
-}
-
-func parseES256PublicJWK(raw, expectedKeyID string) (*ecdsa.PublicKey, [65]byte, error) {
-	var empty [65]byte
-	decoder := json.NewDecoder(strings.NewReader(raw))
-	decoder.DisallowUnknownFields()
-	var jwk rawECJWK
-	if err := decoder.Decode(&jwk); err != nil {
-		return nil, empty, fmt.Errorf("decode JWK: %w", err)
-	}
-	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
-		if err == nil {
-			return nil, empty, fmt.Errorf("decode JWK: trailing JSON value")
-		}
-		return nil, empty, fmt.Errorf("decode JWK trailing data: %w", err)
-	}
-	if jwk.KeyType != "EC" || jwk.Curve != "P-256" {
-		return nil, empty, fmt.Errorf("JWK must be an EC P-256 key")
-	}
-	if jwk.KeyID != "" && jwk.KeyID != expectedKeyID {
-		return nil, empty, fmt.Errorf("JWK kid %q does not match expected keyID %q", jwk.KeyID, expectedKeyID)
-	}
-	if jwk.Algorithm != "" && jwk.Algorithm != "ES256" {
-		return nil, empty, fmt.Errorf("JWK alg %q is not ES256", jwk.Algorithm)
-	}
-	if jwk.Use != "" && jwk.Use != "sig" {
-		return nil, empty, fmt.Errorf("JWK use %q is not sig", jwk.Use)
-	}
-	for _, op := range jwk.KeyOps {
-		if op == "verify" {
-			continue
-		}
-		return nil, empty, fmt.Errorf("JWK key_ops contains unsupported operation %q", op)
-	}
-	xBytes, err := base64.RawURLEncoding.Strict().DecodeString(jwk.X)
-	if err != nil || len(xBytes) != 32 {
-		return nil, empty, fmt.Errorf("JWK x must be a 32-byte base64url coordinate")
-	}
-	yBytes, err := base64.RawURLEncoding.Strict().DecodeString(jwk.Y)
-	if err != nil || len(yBytes) != 32 {
-		return nil, empty, fmt.Errorf("JWK y must be a 32-byte base64url coordinate")
-	}
-	empty[0] = 4 // SEC 1 uncompressed point form.
-	copy(empty[1:33], xBytes)
-	copy(empty[33:], yBytes)
-	key, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), empty[:])
-	if err != nil {
-		return nil, [65]byte{}, fmt.Errorf("JWK coordinates are not on P-256: %w", err)
-	}
-	return key, empty, nil
-}
-
 func isAllowedCleartextHost(host string) bool {
 	if ip := net.ParseIP(host); ip != nil {
 		return ip.IsLoopback()
@@ -297,9 +254,27 @@ func isAllowedCleartextHost(host string) bool {
 		return false
 	}
 	host = strings.ToLower(strings.TrimSuffix(host, "."))
-	return host == "localhost" ||
-		!strings.Contains(host, ".") ||
-		strings.HasSuffix(host, ".svc") ||
-		strings.HasSuffix(host, ".svc.cluster.local") ||
-		strings.HasSuffix(host, ".localhost")
+	if host == "localhost" || strings.HasSuffix(host, ".localhost") {
+		return true
+	}
+	prefix := host
+	switch {
+	case strings.HasSuffix(host, ".svc.cluster.local"):
+		prefix = strings.TrimSuffix(host, ".svc.cluster.local")
+	case strings.HasSuffix(host, ".svc"):
+		prefix = strings.TrimSuffix(host, ".svc")
+	case strings.Contains(host, "."):
+		return false
+	}
+	if prefix == "" {
+		return false
+	}
+	for _, label := range strings.Split(prefix, ".") {
+		if len(label) > 63 || !kubernetesDNSLabelRE.MatchString(label) {
+			return false
+		}
+	}
+	return true
 }
+
+var kubernetesDNSLabelRE = regexp.MustCompile(`^[a-z](?:[-a-z0-9]*[a-z0-9])?$`)
