@@ -1,6 +1,6 @@
-# PROD only. Redirects plaintext HTTP to HTTPS (301) at the shared Gateway's `http` listener so
-# apps attach exclusively to the HTTPS listeners. cert-manager still solves ACME HTTP-01 on :80
-# via its own higher-specificity temporary route, so issuance is unaffected. Not applied locally.
+# Redirects plaintext HTTP to HTTPS (301) at the shared Gateway's `http` listener so apps attach
+# exclusively to the HTTPS listeners. cert-manager still solves ACME HTTP-01 on :80 via its own
+# higher-specificity temporary route, so issuance is unaffected in every environment.
 apiVersion: gateway.networking.k8s.io/v1
 kind: HTTPRoute
 metadata:
