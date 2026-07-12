@@ -44,6 +44,7 @@ readonly AGENT_CARD_SIGNER="${ROOT_DIR}/scripts/sign-agent-card.sh"
 readonly -a DEMO_SOURCES=(
 	"${ROOT_DIR}/scripts/demo.sh"
 	"${ROOT_DIR}/scripts/lib.sh"
+	"${ROOT_DIR}/scripts/lib/demo-config.sh"
 	"${ROOT_DIR}/scripts/lib/demo-cluster.sh"
 	"${ROOT_DIR}/scripts/lib/demo-secrets.sh"
 	"${ROOT_DIR}/scripts/lib/demo-federation.sh"

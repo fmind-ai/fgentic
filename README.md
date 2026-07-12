@@ -77,7 +77,7 @@ Reference deployment: `fgentic.fmind.ai` (Element at `chat.`, Synapse at `matrix
 
 ## Evaluate in 15 minutes
 
-Prerequisites: Docker, Git, and [mise](https://mise.jdx.dev/). The default is deliberately free and deterministic: it exercises Matrix → bridge → agentgateway → kagent with an in-cluster OpenAI-compatible response stub. It proves the integration path, not model quality.
+Prerequisites: Docker, Git, [mise](https://mise.jdx.dev/), and at least 10 GiB of free disk for the pinned cluster images. The default is deliberately free and deterministic: it exercises Matrix → bridge → agentgateway → kagent with an in-cluster OpenAI-compatible response stub. It proves the integration path, not model quality.
 
 ```bash
 mise install
