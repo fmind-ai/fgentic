@@ -25,6 +25,8 @@ type Policy struct {
 	version        int
 	allowedDomains map[string]struct{}
 	allowedActors  map[string]struct{}
+	// budgets is the optional per-actor/domain token-budget reservation config (nil when absent).
+	budgets *budgets
 	// digest is a stable, content-free identifier (domain/actor counts + version) for evidence
 	// logs; it never contains an actor URI or activity content.
 	domainCount int
@@ -33,9 +35,10 @@ type Policy struct {
 
 // file is the on-disk schema. Unknown fields are rejected at decode time (strict parsing).
 type file struct {
-	Version        int      `json:"version"`
-	AllowedDomains []string `json:"allowed_domains"`
-	AllowedActors  []string `json:"allowed_actors"`
+	Version        int         `json:"version"`
+	AllowedDomains []string    `json:"allowed_domains"`
+	AllowedActors  []string    `json:"allowed_actors"`
+	Budgets        *budgetFile `json:"budgets"`
 }
 
 // Parse validates raw policy bytes into an immutable Policy, failing closed on any defect.
@@ -61,10 +64,15 @@ func Parse(raw []byte) (*Policy, error) {
 	if err != nil {
 		return nil, err
 	}
+	bdg, err := parseBudgets(f.Budgets)
+	if err != nil {
+		return nil, err
+	}
 	return &Policy{
 		version:        f.Version,
 		allowedDomains: domains,
 		allowedActors:  actors,
+		budgets:        bdg,
 		domainCount:    len(domains),
 		actorCount:     len(actors),
 	}, nil

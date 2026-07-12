@@ -39,6 +39,11 @@ spec:
     integrity:
       enabled: true
       requireInbound: true
+    # Per-actor/per-domain token-budget admission (issue #213) is ON: every inbound delegation
+    # reserves its token ceiling from the verified actor's/domain's pools (policy.json `budgets`)
+    # before any A2A call, deny-by-default for an unbudgeted domain. Reservation ≠ consumption.
+    budget:
+      enabled: true
     # Public exposure is gated on the border being proven in force (docs/fediverse.md §3): keep the
     # route false until then, even though the border itself is now enabled.
     httpRoute:

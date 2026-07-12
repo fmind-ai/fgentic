@@ -6,7 +6,10 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strings"
 
+	"github.com/fmind/activitypub-agent-gateway/internal/budget"
 	"github.com/fmind/activitypub-agent-gateway/internal/httpsig"
 	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
 	"github.com/fmind/activitypub-agent-gateway/internal/policy"
@@ -20,6 +23,7 @@ type Border struct {
 	verifier  *httpsig.Verifier
 	store     *policy.Store
 	integrity *integrity.Verifier // optional FEP-8b32 object-integrity gate; nil skips it
+	reserver  *budget.Reserver    // optional per-actor/domain token-budget reserver; nil skips it
 	log       *slog.Logger
 }
 
@@ -34,11 +38,24 @@ func NewBorder(verifier *httpsig.Verifier, store *policy.Store, log *slog.Logger
 // be laundered through a trusted actor even if the transport hop was signed (docs/fediverse.md §3).
 func (b *Border) RequireObjectIntegrity(v *integrity.Verifier) { b.integrity = v }
 
+// RequireBudget adds a per-actor/per-domain token-budget admission reservation: after signature,
+// allowlist, and object integrity, an inbound delegation must reserve its token ceiling from the
+// verified actor's and domain's git-configured pools, or it is rejected before any A2A/LLM call. An
+// allowlisted domain with no configured budget is denied (deny-by-default). Reservation ≠ consumption.
+func (b *Border) RequireBudget(r *budget.Reserver) { b.reserver = r }
+
+// BudgetEnforced reports whether token-budget admission is active (drives the reservation metric).
+func (b *Border) BudgetEnforced() bool { return b != nil && b.reserver != nil }
+
 // BorderDecision is a content-free admission outcome for logs and metrics.
 type BorderDecision struct {
 	Allowed bool
 	Reason  string
 	Digest  string
+	// BudgetOutcome is "reserved" when a token reservation was taken, "rejected" when the budget
+	// gate denied admission, and "" when budget was not evaluated. It feeds the reservation metric
+	// and is never a consumption figure.
+	BudgetOutcome string
 }
 
 // Authorize runs the full border check for an inbound activity from actorURI. The request's raw
@@ -74,7 +91,31 @@ func (b *Border) Authorize(ctx context.Context, req *http.Request, body []byte, 
 			return BorderDecision{Allowed: false, Reason: "object_actor_mismatch", Digest: decision.Digest}
 		}
 	}
+
+	// Token-budget admission (optional): reserve this delegation's token ceiling from the verified
+	// actor's and domain's git-configured pools before any A2A call. Deny-by-default when the
+	// allowlisted domain has no budget; reject when either pool is exhausted (reservation ≠ spend).
+	if b.reserver != nil {
+		grant, ok := b.store.Budget(actorURI)
+		if !ok {
+			return BorderDecision{Allowed: false, Reason: "no_budget", Digest: decision.Digest, BudgetOutcome: "rejected"}
+		}
+		if !b.reserver.Reserve(actorURI, actorDomain(actorURI), grant.Reservation, grant.ActorPool, grant.DomainPool) {
+			return BorderDecision{Allowed: false, Reason: "over_budget", Digest: decision.Digest, BudgetOutcome: "rejected"}
+		}
+		return BorderDecision{Allowed: true, Reason: decision.Reason, Digest: decision.Digest, BudgetOutcome: "reserved"}
+	}
 	return BorderDecision{Allowed: true, Reason: decision.Reason, Digest: decision.Digest}
+}
+
+// actorDomain extracts the lowercased host of an actor URI for the per-domain budget key. A
+// malformed URI yields "", which shares one bounded bucket rather than fanning out cardinality.
+func actorDomain(actorURI string) string {
+	parsed, err := url.Parse(actorURI)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(parsed.Host)
 }
 
 // objectIntegrityReason maps an object-integrity failure to a stable, content-free reason label.

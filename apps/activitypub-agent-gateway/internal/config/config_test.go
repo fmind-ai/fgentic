@@ -70,8 +70,22 @@ func TestValidateRejectsBadInput(t *testing.T) {
 		"empty fragment": func(c *Config) { c.IntegrityKeyFragment = "" },
 		"fragment hash":  func(c *Config) { c.IntegrityKeyFragment = "key#extra" },
 		"inbound no pol": func(c *Config) { c.IntegrityRequireInbound = true; c.PolicyPath = "" },
-		"bad level":      func(c *Config) { c.LogLevel = "loud" },
-		"bad format":     func(c *Config) { c.LogFormat = "xml" },
+		"budget no pol":  func(c *Config) { c.BudgetEnabled = true; c.PolicyPath = "" },
+		"budget window": func(c *Config) {
+			c.BudgetEnabled = true
+			c.PolicyPath = "/p"
+			c.BudgetWindow = time.Minute
+			c.BudgetCapacity = 8
+			c.BudgetWindow = 0
+		},
+		"budget cap": func(c *Config) {
+			c.BudgetEnabled = true
+			c.PolicyPath = "/p"
+			c.BudgetWindow = time.Minute
+			c.BudgetCapacity = 0
+		},
+		"bad level":  func(c *Config) { c.LogLevel = "loud" },
+		"bad format": func(c *Config) { c.LogFormat = "xml" },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {

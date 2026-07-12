@@ -21,6 +21,7 @@ import (
 
 	"github.com/fmind/activitypub-agent-gateway/internal/a2a"
 	"github.com/fmind/activitypub-agent-gateway/internal/apgateway"
+	"github.com/fmind/activitypub-agent-gateway/internal/budget"
 	"github.com/fmind/activitypub-agent-gateway/internal/config"
 	"github.com/fmind/activitypub-agent-gateway/internal/httpsig"
 	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
@@ -87,6 +88,11 @@ func run() error {
 			resolver := integrity.NewHTTPKeyResolver(&http.Client{Timeout: cfg.RequestTimeout})
 			border.RequireObjectIntegrity(integrity.NewVerifier(resolver))
 			log.Info("inbound object integrity REQUIRED — activities without a valid FEP-8b32 proof are dropped")
+		}
+		if cfg.BudgetEnabled {
+			border.RequireBudget(budget.New(cfg.BudgetWindow, cfg.BudgetCapacity))
+			log.Info("token-budget admission ENABLED — over-budget or unbudgeted actors are dropped before A2A",
+				"window", cfg.BudgetWindow, "capacity", cfg.BudgetCapacity)
 		}
 		gateway.UseBorder(border)
 		log.Info("federation policy border enabled", "policy", cfg.PolicyPath, "healthy", store.Healthy())

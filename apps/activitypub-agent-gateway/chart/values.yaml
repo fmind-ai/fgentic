@@ -67,6 +67,17 @@ integrity:
   keyFragment: ed25519-key # verificationMethod = <actorID>#<keyFragment>
   requireInbound: false # require a valid inbound object proof (needs policy.enabled)
 
+# Per-actor/per-domain token-budget admission (D7/D8, issue #213). When enabled, every inbound
+# delegation reserves its token ceiling from the VERIFIED actor's and domain's pools (declared in the
+# policy.json `budgets` block) before any A2A/LLM call; deny-by-default for an allowlisted-but-
+# unbudgeted domain. A reservation gates admission — it is NOT consumption and is never reported as
+# spend (model-token metering stays aggregate at agentgateway). Needs policy.enabled. DISABLED here
+# so the chart installs standalone; the deploy unit enables it.
+budget:
+  enabled: false
+  window: 1m # rolling reservation window
+  capacity: 4096 # max tracked actor/domain keys (cardinality safety)
+
 service:
   type: ClusterIP
   port: 8480

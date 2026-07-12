@@ -1,5 +1,11 @@
 {
   "version": 1,
   "allowed_domains": [],
-  "allowed_actors": []
+  "allowed_actors": [],
+  "budgets": {
+    "reservation_tokens": 3000,
+    "default_tokens_per_minute": 0,
+    "domains": {},
+    "actors": {}
+  }
 }
