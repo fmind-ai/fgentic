@@ -25,6 +25,8 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
 	"github.com/gowebpki/jcs"
+
+	"github.com/fmind/matrix-a2a-bridge/internal/agentcardjws"
 )
 
 const remoteFixturePath = "/remote-agent"
@@ -86,7 +88,11 @@ func newRemoteContractFixture(
 	t.Cleanup(fixture.server.Close)
 
 	fixture.baseCard = validRemoteCard(fixture.server.URL + remoteFixturePath)
-	fixture.cardBody = signAgentCard(t, fixture.baseCard, fixture.key, fixture.identity.KeyID, jku, nil, nil)
+	if jku == "" {
+		fixture.cardBody = signValidAgentCard(t, fixture.baseCard, fixture.key, fixture.identity.KeyID)
+	} else {
+		fixture.cardBody = signAgentCard(t, fixture.baseCard, fixture.key, fixture.identity.KeyID, jku, nil, nil)
+	}
 	target, err := NewRemoteTarget(fixture.server.URL+remoteFixturePath, fixture.identity, 4096)
 	if err != nil {
 		t.Fatalf("NewRemoteTarget: %v", err)
@@ -214,6 +220,20 @@ func signAgentCard(
 	t.Helper()
 	document := agentCardDocument(t, card)
 	return signCardDocument(t, document, cloneDocument(t, document), key, keyID, jku, protectedOverrides, unprotected)
+}
+
+func signValidAgentCard(t *testing.T, card *a2a.AgentCard, key *ecdsa.PrivateKey, keyID string) []byte {
+	t.Helper()
+	document := agentCardDocument(t, card)
+	raw, err := json.Marshal(document)
+	if err != nil {
+		t.Fatalf("Marshal unsigned AgentCard: %v", err)
+	}
+	bundle, err := agentcardjws.Sign(raw, key, keyID)
+	if err != nil {
+		t.Fatalf("Sign AgentCard: %v", err)
+	}
+	return bundle.AgentCard
 }
 
 func signCardDocument(

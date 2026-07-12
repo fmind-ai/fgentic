@@ -1,0 +1,11 @@
+# Exact backend for the sole agent exported by the federation profile. It deliberately does not
+# reuse the base prefix backend, which the Component deletes together with its broad route.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: federated-docs-qa-a2a
+  namespace: agentgateway-system
+spec:
+  a2a:
+    host: kagent-controller.kagent.svc.cluster.local
+    port: 8083

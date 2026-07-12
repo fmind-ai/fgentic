@@ -1,4 +1,5 @@
-# Homeserver A needs only HTTP redirect, apex delegation, and the Synapse HTTPS listener.
+# Homeserver A keeps its Matrix listeners and adds one isolated public A2A listener. The
+# listener admits routes only from agentgateway-system; kagent remains ClusterIP-only.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 patches:
@@ -49,3 +50,17 @@ patches:
                 selector:
                   matchLabels:
                     kubernetes.io/metadata.name: matrix
+          - name: https-a2a
+            protocol: HTTPS
+            port: 443
+            hostname: a2a.${server_name}
+            tls:
+              mode: Terminate
+              certificateRefs:
+                - name: matrix-tls
+            allowedRoutes:
+              namespaces:
+                from: Selector
+                selector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: agentgateway-system

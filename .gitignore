@@ -2,6 +2,8 @@
 # Never commit decrypted secrets or private keys.
 *.dec.yaml
 *.dec.yml
+*.pem
+*.key
 age.key
 *.agekey
 **/secrets/*.plain.yaml

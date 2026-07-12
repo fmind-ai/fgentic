@@ -1,0 +1,16 @@
+# Agentgateway's control plane resolves Keycloak's JWKS through this cross-namespace Service
+# reference, while JWT issuer and audience checks remain bound to the public org-B identity.
+apiVersion: gateway.networking.k8s.io/v1beta1
+kind: ReferenceGrant
+metadata:
+  name: agentgateway-keycloak-jwks
+  namespace: keycloak
+spec:
+  from:
+    - group: agentgateway.dev
+      kind: AgentgatewayPolicy
+      namespace: agentgateway-system
+  to:
+    - group: ""
+      kind: Service
+      name: keycloak-http

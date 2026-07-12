@@ -35,3 +35,31 @@ Two supported profiles behind the same Helm layer; a full candidate comparison (
 1. **Switch triggers (do not switch preemptively):** (a) Element moves a Community capability the platform uses (appservice loading, MAS wiring, well-known, non-worker Synapse) behind Pro or discontinues ESS Community; (b) a deployment hard-bans AGPL → activate the pure-permissive profile _for that deployment_; (c) Tuwunel/continuwuity ship Postgres + a maintained chart + 6 regression-free months on the appservice API → re-evaluate the default. Migration cost if triggered: the bridge survives nearly intact (spec-only API; only the registration delivery mechanism changes); MAS and the `synapse`/`mas` CNPG databases are orphaned; accounts/history are recreated, not migrated (no tooling exists).
 
 Rules regardless of profile: never mirror AGPL images into project registries (reference upstream only — redistribution is what triggers source-offer duties), never fork AGPL components in-repo.
+
+### 10.4 Consulting-engagement AGPL compliance — what is and isn't permitted
+
+This project's adoption path is OSS-free/consulting-paid: deployments happen on customer premises or GCP as a paid engagement, not as a sold product. That model interacts with AGPL differently from "we ship a SaaS" — recorded here so no engagement crosses a licensing boundary by accident.
+
+**The trigger is network use, not distribution.** [AGPL-3.0 §13](https://www.gnu.org/licenses/agpl-3.0.html#section13) extends copyleft to software users interact with over a network, closing the classic "ASP loophole" regular GPL leaves open. Deploying Synapse/MAS/Element (AGPL) or Grafana/Loki (AGPL) onto a customer's cluster, unmodified, still counts as conveying under §13 once the customer's users reach it over the network — code changes are not the trigger.
+
+**Why this is cheap to satisfy, not a blocker.** Every AGPL component in the stack (§10.2) is deployed as unmodified upstream — pinned charts/images, no in-repo forks (§10.3's closing rule). Unmodified upstream source is already public. §13 compliance reduces to naming the exact deployed version/commit and the upstream repository the customer can pull it from — already implied by this project's digest-pinning discipline (D13). No separate publication step, and nothing of this project's own code is implicated: the bridge talks to Synapse only over its stable-spec appservice HTTP API (§5–§6), never links against AGPL source, and stays a legally separate program under Apache-2.0 (§10.1).
+
+**ESS Community's "non-commercial, up to 100 users" README line is Element's support/liability positioning, not an enforceable license term.** AGPL cannot legally restrict commercial use or scale (verified against the license text linked above) — Element's own README says so is a statement about what Element will support for free, not what the license permits. Treat it as a signal that ESS Community carries no vendor SLA or liability coverage at scale, which is exactly the gap a consulting engagement fills or a customer buys off via ESS Pro.
+
+**Permitted, without qualification:**
+
+1. Deploy any AGPL component in this stack (§10.2), unmodified, onto a customer's own infrastructure (on-prem or GCP) as part of a paid engagement, at any user scale — ESS Community's "100 users" note is not a license ceiling.
+1. Charge for the deployment, integration, operation, and support work itself — AGPL places no restriction on charging for services rendered around the software.
+1. Keep this project's own code (the bridge, manifests, policy module — all Apache-2.0) under Apache-2.0 terms, including in a customer engagement, because it is architecturally separate from the AGPL components it talks to over network APIs (never statically or dynamically linked).
+
+**Not permitted, or requires a deliberate extra step:**
+
+1. Modifying Synapse/MAS/Element/Grafana/Loki source for a customer without offering that modified source to the customer's users — this is the actual §13 trigger this project avoids by policy (§10.3's closing rule: never fork AGPL components in-repo).
+1. Representing ESS Community as carrying Element's official support/SLA — it does not; either the consulting engagement is the support layer (state that explicitly in scoping) or the customer buys ESS Pro.
+1. Mirroring or redistributing AGPL images/charts into a project- or customer-owned registry (§10.3) — reference upstream only, per-engagement, to avoid becoming the source of a "conveyed" copy.
+
+**Engagement scoping checklist (apply before signing, not after):**
+
+1. State in the SOW that AGPL components are deployed unmodified from named upstream sources at a pinned version/commit, with no warranty beyond the consulting services themselves.
+1. If a customer's procurement policy blanket-bans AGPL (common in large enterprises and some regulated sectors — the [Google OSPO AGPL policy](https://opensource.google/documentation/reference/using/agpl-policy) is the frequently-cited reference case), say so during scoping, not after: the pure-permissive homeserver fallback (§10.3, profile 2) is a real, uncosted migration today (no Postgres, no maintained Helm chart on any candidate), not a drop-in swap — price it as such rather than assume it.
+1. For sovereignty-first buyers (EU/government), note AGPL can be a selling point, not just a risk: it guarantees any vendor modification stays public. Lead with that where relevant instead of only defending against the license.

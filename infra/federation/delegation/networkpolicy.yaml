@@ -1,0 +1,132 @@
+# Only the shared Traefik namespace reaches the dedicated public listener. The base Component
+# patch separately keeps kagent on the internal :8080 listener.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentgateway-allow-federation-gateway
+  namespace: agentgateway-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agentgateway-proxy
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gateway
+      ports:
+        - protocol: TCP
+          port: 8081
+---
+# The selected demo-provider egress policy already grants proxy DNS, control-plane, model, and
+# kagent paths. NetworkPolicy rules are additive, so this grants only the missing RLS hop.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentgateway-allow-rate-limit-egress
+  namespace: agentgateway-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agentgateway-proxy
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: federation-rate-limit
+      ports:
+        - protocol: TCP
+          port: 8081
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: federation-rate-limit
+  namespace: agentgateway-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: federation-rate-limit
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agentgateway-proxy
+      ports:
+        - protocol: TCP
+          port: 8081
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: federation-redis
+      ports:
+        - protocol: TCP
+          port: 6379
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: federation-redis
+  namespace: agentgateway-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: federation-redis
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: federation-rate-limit
+      ports:
+        - protocol: TCP
+          port: 6379
+  egress: []
+---
+# Remote JWKS is fetched by agentgateway's control plane, not by the proxy. This additive policy
+# opens only Keycloak's internal HTTP port to that controller identity.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keycloak-allow-agentgateway-jwks
+  namespace: keycloak
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: keycloak
+      app.kubernetes.io/name: keycloak
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentgateway-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agentgateway
+      ports:
+        - protocol: TCP
+          port: 8080

@@ -5,13 +5,8 @@ package main
 
 import (
 	"context"
-	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
-	"crypto/rand"
-	"crypto/sha256"
-	"encoding/asn1"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -32,7 +27,8 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
-	"github.com/gowebpki/jcs"
+
+	"github.com/fmind/matrix-a2a-bridge/internal/agentcardjws"
 )
 
 const (
@@ -375,36 +371,18 @@ func signedRemoteAgentCard(baseURL string) (*a2a.AgentCard, error) {
 }
 
 func signAgentCard(card *a2a.AgentCard) (*a2a.AgentCard, error) {
-	unsigned := *card
-	unsigned.Signatures = nil
-	encoded, err := json.Marshal(&unsigned)
+	encoded, err := json.Marshal(card)
 	if err != nil {
 		return nil, fmt.Errorf("encode unsigned AgentCard: %w", err)
 	}
-	canonical, err := jcs.Transform(encoded)
-	if err != nil {
-		return nil, fmt.Errorf("canonicalize unsigned AgentCard: %w", err)
-	}
-
-	protectedJSON := []byte(`{"alg":"ES256","kid":"` + remoteKeyID + `","typ":"JOSE"}`)
-	protected := base64.RawURLEncoding.EncodeToString(protectedJSON)
-	payload := base64.RawURLEncoding.EncodeToString(canonical)
-	digest := sha256.Sum256([]byte(protected + "." + payload))
-	privateKey := fixturePrivateKey()
-	der, err := privateKey.Sign(rand.Reader, digest[:], crypto.SHA256)
-	if err != nil {
-		return nil, fmt.Errorf("sign AgentCard: %w", err)
-	}
-	signature, err := joseSignature(der)
+	bundle, err := agentcardjws.Sign(encoded, fixturePrivateKey(), remoteKeyID)
 	if err != nil {
 		return nil, err
 	}
-
-	signed := *card
-	signed.Signatures = []a2a.AgentCardSignature{{
-		Protected: protected,
-		Signature: base64.RawURLEncoding.EncodeToString(signature),
-	}}
+	var signed a2a.AgentCard
+	if err := json.Unmarshal(bundle.AgentCard, &signed); err != nil {
+		return nil, fmt.Errorf("decode signed AgentCard: %w", err)
+	}
 	return &signed, nil
 }
 
@@ -421,28 +399,6 @@ func fixturePrivateKey() *ecdsa.PrivateKey {
 		},
 		D: big.NewInt(1),
 	}
-}
-
-func joseSignature(der []byte) ([]byte, error) {
-	var decoded struct {
-		R *big.Int
-		S *big.Int
-	}
-	rest, err := asn1.Unmarshal(der, &decoded)
-	if err != nil {
-		return nil, fmt.Errorf("decode ECDSA signature: %w", err)
-	}
-	if len(rest) != 0 || decoded.R == nil || decoded.S == nil {
-		return nil, fmt.Errorf("decode ECDSA signature: malformed value")
-	}
-	const coordinateBytes = 32
-	if decoded.R.BitLen() > coordinateBytes*8 || decoded.S.BitLen() > coordinateBytes*8 {
-		return nil, fmt.Errorf("decode ECDSA signature: coordinate exceeds P-256 width")
-	}
-	raw := make([]byte, coordinateBytes*2)
-	decoded.R.FillBytes(raw[:coordinateBytes])
-	decoded.S.FillBytes(raw[coordinateBytes:])
-	return raw, nil
 }
 
 func loadDelay() (time.Duration, error) {

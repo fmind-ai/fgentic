@@ -14,3 +14,9 @@ data:
   cluster_issuer: local-ca
   acme_email: unused@fgentic.localhost
   ingress_ip_name: unused-federation
+  llm_provider: demo
+  llm_model: fgentic-demo
+  # Admission reserves the request budget: one maximum request fits, a second in the same minute
+  # deterministically exceeds this lab quota.
+  federation_a2a_max_budget_units: "4096"
+  federation_a2a_quota_budget_units_per_minute: "5000"

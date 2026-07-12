@@ -1,0 +1,162 @@
+# Federation-only agentgateway surface. Compose this Component into the existing agentgateway
+# Flux Kustomization so the shared Gateway retains one field owner.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - backend.yaml
+  - routes.yaml
+  - policies.yaml
+  - rate-limit.yaml
+  - referencegrant.yaml
+  - networkpolicy.yaml
+patches:
+  # A second listener is a hard trust boundary: all canonical routes explicitly remain on
+  # `default`, while the federation routes below attach only to `federation-a2a`.
+  - target:
+      group: gateway.networking.k8s.io
+      version: v1
+      kind: Gateway
+      name: agentgateway-proxy
+      namespace: agentgateway-system
+    patch: |
+      - op: add
+        path: /spec/listeners/-
+        value:
+          name: federation-a2a
+          protocol: HTTP
+          port: 8081
+          hostname: a2a.${server_name}
+          allowedRoutes:
+            namespaces:
+              from: Same
+  # The federation profile has no local bridge or MCP tool caller. Remove those broad base
+  # routes and their Secret-backed policies instead of manufacturing unused credentials.
+  - target:
+      group: agentgateway.dev
+      version: v1alpha1
+      kind: AgentgatewayBackend
+      name: kagent-a2a
+      namespace: agentgateway-system
+    patch: |
+      $patch: delete
+      apiVersion: agentgateway.dev/v1alpha1
+      kind: AgentgatewayBackend
+      metadata:
+        name: kagent-a2a
+        namespace: agentgateway-system
+  - target:
+      group: gateway.networking.k8s.io
+      version: v1
+      kind: HTTPRoute
+      name: kagent-a2a
+      namespace: agentgateway-system
+    patch: |
+      $patch: delete
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: kagent-a2a
+        namespace: agentgateway-system
+  - target:
+      group: agentgateway.dev
+      version: v1alpha1
+      kind: AgentgatewayPolicy
+      name: a2a-bridge-authorization
+      namespace: agentgateway-system
+    patch: |
+      $patch: delete
+      apiVersion: agentgateway.dev/v1alpha1
+      kind: AgentgatewayPolicy
+      metadata:
+        name: a2a-bridge-authorization
+        namespace: agentgateway-system
+  - target:
+      group: agentgateway.dev
+      version: v1alpha1
+      kind: AgentgatewayBackend
+      name: kagent-tools
+      namespace: agentgateway-system
+    patch: |
+      $patch: delete
+      apiVersion: agentgateway.dev/v1alpha1
+      kind: AgentgatewayBackend
+      metadata:
+        name: kagent-tools
+        namespace: agentgateway-system
+  - target:
+      group: gateway.networking.k8s.io
+      version: v1
+      kind: HTTPRoute
+      name: kagent-tools-mcp
+      namespace: agentgateway-system
+    patch: |
+      $patch: delete
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: kagent-tools-mcp
+        namespace: agentgateway-system
+  - target:
+      group: agentgateway.dev
+      version: v1alpha1
+      kind: AgentgatewayPolicy
+      name: platform-helper-mcp-authorization
+      namespace: agentgateway-system
+    patch: |
+      $patch: delete
+      apiVersion: agentgateway.dev/v1alpha1
+      kind: AgentgatewayPolicy
+      metadata:
+        name: platform-helper-mcp-authorization
+        namespace: agentgateway-system
+  - target:
+      group: agentgateway.dev
+      version: v1alpha1
+      kind: AgentgatewayPolicy
+      name: mcp-tool-audit
+      namespace: agentgateway-system
+    patch: |
+      $patch: delete
+      apiVersion: agentgateway.dev/v1alpha1
+      kind: AgentgatewayPolicy
+      metadata:
+        name: mcp-tool-audit
+        namespace: agentgateway-system
+  # Observability is intentionally absent from this disposable profile.
+  - target:
+      group: agentgateway.dev
+      version: v1alpha1
+      kind: AgentgatewayPolicy
+      name: tracing
+      namespace: agentgateway-system
+    patch: |
+      $patch: delete
+      apiVersion: agentgateway.dev/v1alpha1
+      kind: AgentgatewayPolicy
+      metadata:
+        name: tracing
+        namespace: agentgateway-system
+  # Limit the base ingress policy to the proxy and its sole remaining internal consumer. The
+  # dedicated policies in networkpolicy.yaml exclusively admit Traefik to the public listener.
+  - target:
+      group: networking.k8s.io
+      version: v1
+      kind: NetworkPolicy
+      name: agentgateway-allow-agents
+      namespace: agentgateway-system
+    patch: |
+      - op: replace
+        path: /spec/podSelector
+        value:
+          matchLabels:
+            app.kubernetes.io/name: agentgateway-proxy
+      - op: replace
+        path: /spec/ingress
+        value:
+          - from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: kagent
+            ports:
+              - protocol: TCP
+                port: 8080
