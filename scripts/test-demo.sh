@@ -59,6 +59,13 @@ assert_yq \
      (.spec.patches[0].patch | contains("pullPolicy: Never")))' \
 	"${WORK_DIR}/cluster.yaml" 'demo bridge is not pinned to the side-loaded image'
 
+kubectl kustomize "${ROOT_DIR}/infra/flux" >"${WORK_DIR}/controllers.yaml"
+assert_yq \
+	'select(.kind == "HelmRelease" and .metadata.name == "traefik") |
+    .spec.timeout == "10m"' \
+	"${WORK_DIR}/controllers.yaml" \
+	'Traefik Helm actions must tolerate constrained-host startup'
+
 kubectl kustomize "${ROOT_DIR}/infra/agentgateway/providers/profiles/demo" \
 	>"${WORK_DIR}/provider.yaml"
 assert_yq \
