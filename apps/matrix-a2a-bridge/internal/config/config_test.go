@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -175,5 +176,26 @@ func TestValidateRejectsNonPositiveRateLimitBucketCapacity(t *testing.T) {
 	t.Setenv("RATE_LIMIT_BUCKET_CAPACITY", "0")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error for non-positive RATE_LIMIT_BUCKET_CAPACITY, got nil")
+	}
+}
+
+func TestLoadRejectsInvalidLoggingConfig(t *testing.T) {
+	tests := []struct {
+		name  string
+		key   string
+		value string
+		want  string
+	}{
+		{name: "level", key: "LOG_LEVEL", value: "bogus", want: `validate environment: LOG_LEVEL "bogus"`},
+		{name: "format", key: "LOG_FORMAT", value: "yaml", want: `validate environment: LOG_FORMAT "yaml"`},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv(test.key, test.value)
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Load() error = %v, want containing %q", err, test.want)
+			}
+		})
 	}
 }

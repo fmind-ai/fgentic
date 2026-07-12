@@ -4,9 +4,17 @@ package config
 
 import (
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/caarlos0/env/v11"
+)
+
+const (
+	// LogFormatJSON selects slog's structured JSON handler.
+	LogFormatJSON = "json"
+	// LogFormatText selects slog's human-readable text handler.
+	LogFormatText = "text"
 )
 
 // Config is the fully-resolved bridge configuration.
@@ -90,7 +98,7 @@ func Load() (Config, error) {
 		return Config{}, fmt.Errorf("parse environment: %w", err)
 	}
 	if err := c.validate(); err != nil {
-		return Config{}, err
+		return Config{}, fmt.Errorf("validate environment: %w", err)
 	}
 	return c, nil
 }
@@ -147,5 +155,20 @@ func (c Config) validate() error {
 	if c.RateLimitBucketCapacity < 1 {
 		return fmt.Errorf("RATE_LIMIT_BUCKET_CAPACITY must be >= 1")
 	}
+	if _, err := c.SlogLevel(); err != nil {
+		return err
+	}
+	if c.LogFormat != LogFormatJSON && c.LogFormat != LogFormatText {
+		return fmt.Errorf("LOG_FORMAT %q must be %q or %q", c.LogFormat, LogFormatJSON, LogFormatText)
+	}
 	return nil
+}
+
+// SlogLevel parses LOG_LEVEL through the standard library's accepted level grammar.
+func (c Config) SlogLevel() (slog.Level, error) {
+	var level slog.Level
+	if err := level.UnmarshalText([]byte(c.LogLevel)); err != nil {
+		return 0, fmt.Errorf("LOG_LEVEL %q: %w", c.LogLevel, err)
+	}
+	return level, nil
 }
