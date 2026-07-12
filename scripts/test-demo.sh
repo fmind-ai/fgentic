@@ -2,8 +2,25 @@
 # Offline contract checks for the credential-free evaluation lifecycle and its embedded model.
 set -euo pipefail
 
-readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-readonly WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo-check.XXXXXX")"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly ROOT_DIR
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo-check.XXXXXX")"
+readonly WORK_DIR
+readonly DEMO="${ROOT_DIR}/scripts/demo.sh"
+readonly -a DEMO_SOURCES=(
+	"${DEMO}"
+	"${ROOT_DIR}/scripts/lib.sh"
+	"${ROOT_DIR}/scripts/lib/demo-cluster.sh"
+	"${ROOT_DIR}/scripts/lib/demo-secrets.sh"
+	"${ROOT_DIR}/scripts/lib/demo-federation.sh"
+)
+readonly -a SHARED_HELPER_ENTRYPOINTS=(
+	"${ROOT_DIR}/scripts/demo.sh"
+	"${ROOT_DIR}/scripts/federation.sh"
+	"${ROOT_DIR}/scripts/reload-federation-policy.sh"
+	"${ROOT_DIR}/scripts/seed-demo.sh"
+	"${ROOT_DIR}/scripts/seed-federation.sh"
+)
 trap 'rm -rf "${WORK_DIR}"' EXIT INT TERM
 
 assert_yq() {
@@ -16,12 +33,26 @@ assert_yq() {
 	}
 }
 
-bash -n "${ROOT_DIR}/scripts/demo.sh" "${ROOT_DIR}/scripts/seed-demo.sh"
-"${ROOT_DIR}/scripts/demo.sh" --help >"${WORK_DIR}/help.txt"
+bash -n "${DEMO_SOURCES[@]}" "${ROOT_DIR}/scripts/seed-demo.sh"
+for entrypoint in "${SHARED_HELPER_ENTRYPOINTS[@]}"; do
+	rg --fixed-strings 'source "${ROOT_DIR}/scripts/lib.sh"' "${entrypoint}" >/dev/null || {
+		echo "error: ${entrypoint#"${ROOT_DIR}/"} does not source the shared script library" >&2
+		exit 1
+	}
+done
+for helper in die require_command bootstrap_secret_value request_status; do
+	definitions="$(rg --files-with-matches "^${helper}\\(\\)" \
+		"${ROOT_DIR}/scripts/lib.sh" "${SHARED_HELPER_ENTRYPOINTS[@]}" | wc -l)"
+	[ "${definitions}" -eq 1 ] || {
+		echo "error: shared helper ${helper} has ${definitions} definitions" >&2
+		exit 1
+	}
+done
+"${DEMO}" --help >"${WORK_DIR}/help.txt"
 rg --fixed-strings 'deterministic in-cluster response stub' "${WORK_DIR}/help.txt" >/dev/null
 rg --fixed-strings 'FGENTIC_ALLOW_PAID_PROVIDER=yes' "${WORK_DIR}/help.txt" >/dev/null
 rg --fixed-strings 'FGENTIC_DEMO_CACHE_DIR' "${WORK_DIR}/help.txt" >/dev/null
-if FGENTIC_DEMO_CLUSTER=fgentic "${ROOT_DIR}/scripts/demo.sh" down \
+if FGENTIC_DEMO_CLUSTER=fgentic "${DEMO}" down \
 	>"${WORK_DIR}/reserved-cluster.txt" 2>&1; then
 	echo 'error: demo teardown accepted the reserved fgentic cluster name' >&2
 	exit 1
@@ -117,7 +148,7 @@ run_teardown_fixture() {
 	if [ "${scenario}" = foreign ]; then
 		if PATH="${fake_bin}:${PATH}" FAKE_DOCKER_STATE="${state}" \
 			FAKE_CLUSTER_NAME=fgentic-demo-teardown FAKE_TEARDOWN_SCENARIO="${scenario}" \
-			FGENTIC_DEMO_CLUSTER=fgentic-demo-teardown "${ROOT_DIR}/scripts/demo.sh" down \
+			FGENTIC_DEMO_CLUSTER=fgentic-demo-teardown "${DEMO}" down \
 			>"${state}/output" 2>&1; then
 			echo 'error: demo teardown removed a foreign control cluster' >&2
 			exit 1
@@ -133,7 +164,7 @@ run_teardown_fixture() {
 
 	PATH="${fake_bin}:${PATH}" FAKE_DOCKER_STATE="${state}" \
 		FAKE_CLUSTER_NAME=fgentic-demo-teardown FAKE_TEARDOWN_SCENARIO="${scenario}" \
-		FGENTIC_DEMO_CLUSTER=fgentic-demo-teardown "${ROOT_DIR}/scripts/demo.sh" down \
+		FGENTIC_DEMO_CLUSTER=fgentic-demo-teardown "${DEMO}" down \
 		>"${state}/output"
 	for resource in cluster container network volume; do
 		[ ! -e "${state}/${resource}" ] || {
@@ -193,10 +224,10 @@ assert_yq \
 kubectl kustomize "${ROOT_DIR}/infra/agentgateway/providers/profiles/demo" \
 	>"${WORK_DIR}/provider.yaml"
 assert_yq \
-	'select(.kind == "AgentgatewayBackend" and .metadata.name == "llm-demo") |
-    .spec.ai.provider.openai.model == "${llm_model}" and
-    .spec.ai.provider.host == "demo-llm.models.svc.cluster.local" and
-    .spec.ai.provider.port == 80' \
+	"select(.kind == \"AgentgatewayBackend\" and .metadata.name == \"llm-demo\") |
+    .spec.ai.provider.openai.model == \"\${llm_model}\" and
+    .spec.ai.provider.host == \"demo-llm.models.svc.cluster.local\" and
+    .spec.ai.provider.port == 80" \
 	"${WORK_DIR}/provider.yaml" 'demo AgentgatewayBackend contract changed'
 assert_yq \
 	'select(.kind == "Deployment" and .metadata.name == "demo-llm") |
@@ -212,21 +243,21 @@ python -m py_compile "${WORK_DIR}/server.py"
 rg --fixed-strings 'chat.completion' "${WORK_DIR}/server.py" >/dev/null
 rg --fixed-strings 'data: [DONE]' "${WORK_DIR}/server.py" >/dev/null
 
-rg --fixed-strings 'mcp-agent-callers' "${ROOT_DIR}/scripts/demo.sh" >/dev/null
-rg --fixed-strings 'platform-helper-mcp-credential' "${ROOT_DIR}/scripts/demo.sh" >/dev/null
+rg --fixed-strings 'mcp-agent-callers' "${DEMO_SOURCES[@]}" >/dev/null
+rg --fixed-strings 'platform-helper-mcp-credential' "${DEMO_SOURCES[@]}" >/dev/null
 rg --regexp 'SOURCE_BASE_IMAGE="[^" ]+@sha256:[0-9a-f]{64}"' \
-	"${ROOT_DIR}/scripts/demo.sh" >/dev/null
+	"${DEMO_SOURCES[@]}" >/dev/null
 rg --regexp 'SOURCE_GIT_PACKAGES="git=[^ ]+ git-daemon=[^ ]+ busybox-extras=[^"]+"' \
-	"${ROOT_DIR}/scripts/demo.sh" >/dev/null
-rg --fixed-strings 'git-http-backend' "${ROOT_DIR}/scripts/demo.sh" >/dev/null
+	"${DEMO_SOURCES[@]}" >/dev/null
+rg --fixed-strings 'git-http-backend' "${DEMO_SOURCES[@]}" >/dev/null
 rg --fixed-strings 'http://fgentic-demo-source.flux-system.svc.cluster.local:8080/cgi-bin/git/repo.git' \
-	"${ROOT_DIR}/scripts/demo.sh" >/dev/null
+	"${DEMO_SOURCES[@]}" >/dev/null
 for retry_contract in \
 	'if flux reconcile source git flux-system --timeout=2m >/dev/null &&' \
-	'expected_revision="main@sha1:${SOURCE_REVISION}"' \
-	'! kustomizations="$(kubectl --namespace flux-system get kustomizations --output json)"' \
-	'! helmreleases="$(kubectl get helmreleases --all-namespaces --output json)"'; do
-	rg --fixed-strings "${retry_contract}" "${ROOT_DIR}/scripts/demo.sh" >/dev/null || {
+	"expected_revision=\"main@sha1:\${SOURCE_REVISION}\"" \
+	"! kustomizations=\"\$(kubectl --namespace flux-system get kustomizations --output json)\"" \
+	"! helmreleases=\"\$(kubectl get helmreleases --all-namespaces --output json)\""; do
+	rg --fixed-strings "${retry_contract}" "${DEMO_SOURCES[@]}" >/dev/null || {
 		echo "error: demo lifecycle does not retry transient API failures" >&2
 		exit 1
 	}
@@ -236,10 +267,10 @@ for lease_contract in \
 	'FLUX_LEADER_ELECTION_LEASE_DURATION="180s"' \
 	'FLUX_LEADER_ELECTION_RENEW_DEADLINE="170s"' \
 	'FLUX_LEADER_ELECTION_RETRY_PERIOD="30s"' \
-	'--leader-election-lease-duration=${FLUX_LEADER_ELECTION_LEASE_DURATION}' \
-	'--leader-election-renew-deadline=${FLUX_LEADER_ELECTION_RENEW_DEADLINE}' \
-	'--leader-election-retry-period=${FLUX_LEADER_ELECTION_RETRY_PERIOD}'; do
-	rg --fixed-strings -- "${lease_contract}" "${ROOT_DIR}/scripts/demo.sh" >/dev/null || {
+	"--leader-election-lease-duration=\${FLUX_LEADER_ELECTION_LEASE_DURATION}" \
+	"--leader-election-renew-deadline=\${FLUX_LEADER_ELECTION_RENEW_DEADLINE}" \
+	"--leader-election-retry-period=\${FLUX_LEADER_ELECTION_RETRY_PERIOD}"; do
+	rg --fixed-strings -- "${lease_contract}" "${DEMO_SOURCES[@]}" >/dev/null || {
 		echo "error: ephemeral Flux controllers omit ${lease_contract}" >&2
 		exit 1
 	}
@@ -262,7 +293,7 @@ done
 rg --fixed-strings '/api/admin/v1/users' "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
 
 if rg -n 'mas_password_login_enabled|llm_token_budget_15m' \
-	"${ROOT_DIR}/clusters/demo" "${ROOT_DIR}/scripts/demo.sh"; then
+	"${ROOT_DIR}/clusters/demo" "${DEMO_SOURCES[@]}"; then
 	echo 'error: demo path uses a retired platform-setting name' >&2
 	exit 1
 fi

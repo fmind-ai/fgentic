@@ -8,7 +8,11 @@ readonly MAS_ADMIN_CLIENT_ID="01KX8D3M0AD3M0ADM1NC13NT01"
 readonly MATRIX_URL="https://matrix.${SERVER_NAME}"
 readonly AUTH_URL="https://auth.${SERVER_NAME}"
 readonly CA_CERT="${FGENTIC_CA_DIR:-${HOME}/.local/share/fgentic/local-ca}/ca.crt"
-readonly WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo-seed.XXXXXX")"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo-seed.XXXXXX")"
+readonly WORK_DIR
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 
 MATRIX_TOKEN=""
 MAS_ADMIN_TOKEN=""
@@ -18,27 +22,6 @@ cleanup() {
 	rm -rf "${WORK_DIR}"
 }
 trap cleanup EXIT INT TERM
-
-die() {
-	echo "error: $*" >&2
-	exit 1
-}
-
-require_command() {
-	command -v "$1" >/dev/null 2>&1 || die "required command not found: $1 (run 'mise install')"
-}
-
-bootstrap_secret_value() {
-	kubectl --namespace flux-system get secret fgentic-demo-bootstrap \
-		--output "go-template={{index .data \"$1\" | base64decode}}"
-}
-
-request_status() {
-	local output="$1"
-	shift
-	curl --silent --show-error --cacert "${CA_CERT}" --output "${output}" \
-		--write-out '%{http_code}' "$@"
-}
 
 create_lobby() {
 	local output_variable="$1"
@@ -217,9 +200,10 @@ fi
 agents_yaml="$(kubectl --namespace bridge get configmap matrix-a2a-bridge-agents \
 	--output 'go-template={{index .data "agents.yaml"}}')"
 GHOSTS=()
+ghost_names="$(yq -r '.agents | keys | .[]' <<<"${agents_yaml}")"
 while IFS= read -r ghost; do
 	GHOSTS[${#GHOSTS[@]}]="${ghost}"
-done < <(yq -r '.agents | keys | .[]' <<<"${agents_yaml}")
+done <<<"${ghost_names}"
 ((${#GHOSTS[@]} > 0)) || die "the bridge exposes no mapped demo agents"
 
 for ghost in "${GHOSTS[@]}"; do
@@ -288,12 +272,13 @@ if [ "${should_seed}" = true ]; then
 		"${MATRIX_URL}/_matrix/client/v3/rooms/${encoded_room}/send/m.room.message/demo-$$")"
 	[ "${status}" = "200" ] || die "could not post the demo welcome message (HTTP ${status})"
 	event_id="$(jq -er '.event_id' "${OUTPUT}")"
+	seed_state="$(jq --null-input --compact-output --arg event_id "${event_id}" \
+		--arg provider "${LLM_PROVIDER}" --arg model "${LLM_MODEL}" \
+		'{version: 1, welcome_event_id: $event_id, provider: $provider, model: $model}')"
 	status="$(request_status "${OUTPUT}" --request PUT \
 		--header "Authorization: Bearer ${MATRIX_TOKEN}" \
 		--header 'Content-Type: application/json' \
-		--data "$(jq --null-input --compact-output --arg event_id "${event_id}" \
-			--arg provider "${LLM_PROVIDER}" --arg model "${LLM_MODEL}" \
-			'{version: 1, welcome_event_id: $event_id, provider: $provider, model: $model}')" \
+		--data "${seed_state}" \
 		"${MATRIX_URL}/_matrix/client/v3/rooms/${encoded_room}/state/${encoded_marker}")"
 	[ "${status}" = "200" ] || die "could not record demo seed state (HTTP ${status})"
 fi
