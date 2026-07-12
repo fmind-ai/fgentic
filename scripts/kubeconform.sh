@@ -125,6 +125,8 @@ done
 
 echo "==> Rendering + validating pinned KeycloakX chart"
 keycloak_chart_version="$(yq -er '.spec.chart.spec.version' infra/keycloak/helmrelease.yaml)"
+keycloak_render="$(mktemp)"
+trap 'rm -f "${keycloak_render}"' EXIT
 yq -e '.spec.values' infra/keycloak/helmrelease.yaml \
   | flux envsubst --strict \
   | helm template keycloak keycloakx \
@@ -132,7 +134,15 @@ yq -e '.spec.values' infra/keycloak/helmrelease.yaml \
     --version "${keycloak_chart_version}" \
     --namespace keycloak \
     --values - \
-  | "${KUBECONFORM[@]}"
+  > "${keycloak_render}"
+yq -e '
+  select(.kind == "StatefulSet" and .metadata.name == "keycloak") |
+  .metadata.labels."app.kubernetes.io/version" == "26.7.0" and
+  .spec.template.spec.containers[] |
+  select(.name == "keycloak") |
+  .image == "quay.io/keycloak/keycloak@sha256:2eb3cd316835c990e69e26ade292ffa78f6fb0db7d5fc6377463c162e1979ac0"
+' "${keycloak_render}" >/dev/null
+"${KUBECONFORM[@]}" < "${keycloak_render}"
 
 echo "==> Substituting + validating raw infra manifests"
 # Skip Helm charts, kustomization files, SOPS ciphertext and templates, and Terraform. Other inline
