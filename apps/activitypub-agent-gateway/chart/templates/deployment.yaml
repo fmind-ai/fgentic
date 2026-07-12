@@ -52,6 +52,10 @@ spec:
             - name: PUBLIC_HOST
               value: {{ .Values.config.publicHost | quote }}
             {{- end }}
+            {{- if .Values.config.a2aPublicBaseURL }}
+            - name: A2A_PUBLIC_BASE_URL
+              value: {{ .Values.config.a2aPublicBaseURL | quote }}
+            {{- end }}
             - name: A2A_BASE_URL
               value: {{ .Values.config.a2aBaseURL | quote }}
             {{- if .Values.a2aAuthentication.enabled }}

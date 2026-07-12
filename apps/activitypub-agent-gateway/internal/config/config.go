@@ -31,6 +31,12 @@ type Config struct {
 	PublicScheme string `env:"PUBLIC_SCHEME" envDefault:"https"`
 	PublicHost   string `env:"PUBLIC_HOST"`
 
+	// A2APublicBaseURL is the externally-reachable base of the agent's A2A endpoint, advertised in
+	// the published AgentCard and the actor's FEP-844e `implements` for cross-protocol discovery
+	// (issue #215). It defaults to the gated federation A2A host (<scheme>://a2a.<PublicHost>); actual
+	// reachability of that route stays governed by the federation profile (docs/fediverse.md §3).
+	A2APublicBaseURL string `env:"A2A_PUBLIC_BASE_URL"`
+
 	// ListenHost/ListenPort are where the public AP HTTP server binds (actor, WebFinger, inbox,
 	// outbox). MetricsPort serves Prometheus /metrics on a separate, never-public side port.
 	ListenHost  string `env:"LISTEN_HOST" envDefault:"0.0.0.0"`
@@ -96,6 +102,10 @@ func Load() (Config, error) {
 	if c.PublicHost == "" {
 		c.PublicHost = c.ServerName
 	}
+	if c.A2APublicBaseURL == "" {
+		c.A2APublicBaseURL = c.PublicScheme + "://a2a." + c.PublicHost
+	}
+	c.A2APublicBaseURL = strings.TrimRight(c.A2APublicBaseURL, "/")
 	if err := c.validate(); err != nil {
 		return Config{}, fmt.Errorf("validate environment: %w", err)
 	}
@@ -116,6 +126,9 @@ func (c Config) validate() error {
 	}
 	if c.PublicHost == "" {
 		return fmt.Errorf("PUBLIC_HOST must not be empty")
+	}
+	if !strings.HasPrefix(c.A2APublicBaseURL, "http://") && !strings.HasPrefix(c.A2APublicBaseURL, "https://") {
+		return fmt.Errorf("A2A_PUBLIC_BASE_URL %q must be an absolute http(s) URL", c.A2APublicBaseURL)
 	}
 	if c.A2ABaseURL == "" {
 		return fmt.Errorf("A2A_BASE_URL must not be empty")

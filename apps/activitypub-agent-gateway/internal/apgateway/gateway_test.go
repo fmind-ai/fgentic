@@ -98,8 +98,16 @@ func TestWebFinger(t *testing.T) {
 	if doc.Subject != "acct:agent-docs-qa@fgentic.localhost" {
 		t.Errorf("subject = %q", doc.Subject)
 	}
-	if len(doc.Links) != 1 || doc.Links[0].Href != "https://fgentic.localhost/ap/agents/agent-docs-qa" {
-		t.Errorf("links = %+v", doc.Links)
+	// One WebFinger resolution yields both the AP actor (rel=self) and the A2A card pointer (#215).
+	links := make(map[string]string, len(doc.Links))
+	for _, l := range doc.Links {
+		links[l.Rel] = l.Href
+	}
+	if links["self"] != "https://fgentic.localhost/ap/agents/agent-docs-qa" {
+		t.Errorf("self link = %q", links["self"])
+	}
+	if links[a2aAgentCardRel] != "https://fgentic.localhost/ap/agents/agent-docs-qa/agent-card.json" {
+		t.Errorf("a2a card link = %q (links %+v)", links[a2aAgentCardRel], doc.Links)
 	}
 }
 

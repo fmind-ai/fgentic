@@ -56,6 +56,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	gateway.SetA2APublicBase(cfg.A2APublicBaseURL)
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()

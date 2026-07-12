@@ -24,6 +24,10 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2aclient/agentcard"
 )
 
+// ProtocolVersion is the A2A protocol version this build speaks, sourced from the SDK so the
+// published AgentCard (issue #215) stays consistent with the client that dials kagent.
+const ProtocolVersion = string(a2a.Version)
+
 // A2A attribution headers (docs/audit.md). userHeader carries the FULL, un-truncated asserted AP
 // actor URI to kagent for session/audit attribution — kagent's default auth mode reads the caller
 // identity from it. The origin headers are BOUNDED audit metadata (a kind and a network) that add

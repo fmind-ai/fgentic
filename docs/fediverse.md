@@ -51,6 +51,12 @@ Reading the table: the _shape_ of each control is preserved — allowlist deny-b
 1. **NodeInfo + an instance application actor** (#216) advertises which agents/skills the instance exposes, honestly and enumerably, without leaking internal topology.
 1. Discovery is exposure: it ships only after the §3 border, integrity, and budget twins are proven fail-closed.
 
+**Cross-protocol discovery (#215, delivered — _novel_).** One WebFinger lookup on a fediverse handle reveals **both** transports, so a remote org can _choose_ the higher-fidelity A2A delegation over degraded Note-passing — with no proprietary directory in the path. The flow is fully open-standard and decentralized (the per-actor complement to the AGNTCY directory, #146):
+
+1. `GET /.well-known/webfinger?resource=acct:agent-<name>@<domain>` returns two links: `rel="self"` → the ActivityPub `Service` actor, and `rel="https://fgentic.fmind.ai/ns/a2a#agent-card"` → the agent's published **A2A AgentCard**.
+1. The actor document advertises the same capability inline via the **FEP-844e `implements`** shape (`{href: <A2A endpoint>, name: "A2A", agentCard: <card URL>}`).
+1. `GET …/agent-card.json` returns a synthesized A2A AgentCard (protocol version, name, description, endpoint, transport) built from the `agents.yaml` allowlist — so **only allowlisted agents are discoverable**, and the authoritative full card (skills, exact capabilities) is fetched from the endpoint's own well-known path. Endpoint reachability stays governed by the §3 federation A2A route; discovery advertises the capability, exposure remains gated.
+
 ## §5 — Novel collaboration surface
 
 Three items extend the governed core with capabilities Matrix federation does not have a one-to-one analog for, and are marked _novel_ in the backlog:
