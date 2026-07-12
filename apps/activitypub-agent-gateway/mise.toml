@@ -73,6 +73,12 @@ gotestsum --format pkgname -- -race -coverprofile=coverage.out ./...
 bash scripts/check-coverage.sh coverage.out
 """
 
+[tasks.interop]
+description = "Cross-check FEP-8b32 proofs against the apsig reference impl (needs uv + network)"
+# Deliberately NOT in check/test: those stay offline/deterministic. The Go golden vector already
+# pins interop byte-for-byte; this re-derives it live against apsig on demand.
+run = "uv run scripts/apsig-interop.py"
+
 [tasks.format]
 alias = "f"
 description = "Format all sources and documents"

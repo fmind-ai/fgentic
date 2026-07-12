@@ -45,6 +45,7 @@ func TestValidateRejectsBadInput(t *testing.T) {
 			RequestTimeout: time.Minute, TaskTimeout: 10 * time.Minute,
 			ShutdownTimeout: time.Second, LogLevel: "info", LogFormat: "json",
 			PolicyReloadInterval: 5 * time.Second, SignatureMaxSkew: 12 * time.Hour,
+			IntegrityKeyFragment: "ed25519-key",
 		}
 	}
 	if err := base().validate(); err != nil {
@@ -66,6 +67,9 @@ func TestValidateRejectsBadInput(t *testing.T) {
 		"bad shutdown":   func(c *Config) { c.ShutdownTimeout = 0 },
 		"bad reload":     func(c *Config) { c.PolicyReloadInterval = 0 },
 		"bad skew":       func(c *Config) { c.SignatureMaxSkew = 0 },
+		"empty fragment": func(c *Config) { c.IntegrityKeyFragment = "" },
+		"fragment hash":  func(c *Config) { c.IntegrityKeyFragment = "key#extra" },
+		"inbound no pol": func(c *Config) { c.IntegrityRequireInbound = true; c.PolicyPath = "" },
 		"bad level":      func(c *Config) { c.LogLevel = "loud" },
 		"bad format":     func(c *Config) { c.LogFormat = "xml" },
 	}

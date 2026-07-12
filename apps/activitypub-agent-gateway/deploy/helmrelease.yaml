@@ -31,6 +31,14 @@ spec:
     # HTTP-Signature verification and the allowlist before any A2A call.
     policy:
       enabled: true
+    # FEP-8b32 object integrity (issue #212) is ON: outbound replies are signed with the SOPS-backed
+    # Ed25519 key and each actor publishes its assertionMethod Multikey, and inbound activities must
+    # ALSO carry a valid object proof (requireInbound) — belt-and-suspenders over the transport
+    # signature so a relayed or tampered object cannot ride a trusted actor. Requires the
+    # activitypub-agent-gateway-signing-key Secret (scripts/gen-secrets.sh).
+    integrity:
+      enabled: true
+      requireInbound: true
     # Public exposure is gated on the border being proven in force (docs/fediverse.md §3): keep the
     # route false until then, even though the border itself is now enabled.
     httpRoute:

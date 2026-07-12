@@ -14,6 +14,8 @@ It embeds the following third-party components, all under permissive licenses:
   - github.com/a2aproject/a2a-go        Apache-2.0
   - github.com/caarlos0/env             MIT
   - github.com/prometheus/client_golang Apache-2.0
+  - github.com/gowebpki/jcs             Apache-2.0
+  - github.com/mr-tron/base58           MIT
   - gopkg.in/yaml.v3                    MIT / Apache-2.0
 
 No AGPL dependency is present. Never add one: reaching kagent is done through the

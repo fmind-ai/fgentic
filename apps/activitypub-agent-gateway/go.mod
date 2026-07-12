@@ -6,6 +6,8 @@ require (
 	github.com/a2aproject/a2a-go/v2 v2.3.1
 	github.com/caarlos0/env/v11 v11.4.1
 	github.com/go-ap/activitypub v0.0.0-20260701132640-13f25467c431
+	github.com/gowebpki/jcs v1.0.1
+	github.com/mr-tron/base58 v1.3.0
 	github.com/prometheus/client_golang v1.23.2
 	gopkg.in/yaml.v3 v3.0.1
 )

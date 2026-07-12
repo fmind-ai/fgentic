@@ -41,6 +41,8 @@ No ActivityPub feature ships without the twin control in this table proven fail-
 
 Reading the table: the _shape_ of each control is preserved — allowlist deny-by-default, a git-reloadable signed border, per-object integrity, pinned per-caller identity, admission-time budget reservation, and content-free honest audit — expressed in ActivityPub's native primitives (HTTP Signatures, FEPs, actor types) instead of Matrix's.
 
+**Object integrity (#212, delivered).** HTTP Signatures authenticate only the transport _hop_; a relayed or cached activity loses that provenance. The gateway therefore signs every outbound reply with a **FEP-8b32 `DataIntegrityProof`** (`eddsa-jcs-2022`: Ed25519 over the RFC 8785 JCS-canonicalized activity) and publishes each actor's `assertionMethod` **Multikey**, so any remote verifier confirms a sovereign agent authored the reply even after relaying. When `requireInbound` is set, the border _also_ verifies an inbound proof and binds its key controller to the activity actor: a missing, invalid, or mis-bound proof fails closed with content-free evidence and **no A2A call** — untrusted room content cannot be laundered through a trusted actor. The signing key is a SOPS-backed Ed25519 PKCS#8 secret, never committed plaintext. Interop with the **apsig** reference verifier is pinned byte-for-byte by a golden test vector and re-derivable live with `mise run interop`.
+
 ## §4 — Discovery and instance description
 
 1. **WebFinger + FEP-844e** (#215) resolves a `acct:agent-<name>@<domain>` handle to the agent's `Service` actor and publishes the A2A AgentCard as actor metadata, so a Fediverse client can both follow the agent and discover its A2A endpoint.
