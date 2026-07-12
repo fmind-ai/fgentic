@@ -11,6 +11,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 - [Bridge Specification](bridge.md) - behavioral contract of the Matrix-to-A2A bridge appservice (§5, §6, §12)
 - [Security Boundaries & Threat Model](security.md) - trust zones and the controls that hold them (§7)
 - [Federation Spec](federation.md) - Matrix collaboration plane + A2A delegation plane across organizations (§8)
+- [Fediverse Interop Spec](fediverse.md) - ActivityPub as a second, additive cross-org transport with every M8 control mapped to an AP twin (M18)
 - [Observability Spec](observability.md) - metrics, traces, dashboards, and the LLM token-burn alert (§9)
 - [Licensing & Foundation Strategy](licensing.md) - Apache-2.0 rationale, AGPL boundaries, homeserver triggers (§10)
 - [Roadmap](roadmap.md) - phase history and the mapping to GitHub milestones M0–M17 (§13)

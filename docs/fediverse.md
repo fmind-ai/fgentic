@@ -1,0 +1,67 @@
+---
+type: Specification
+title: Fediverse Interop Spec
+description: ActivityPub as a second, additive cross-org federation transport, with every Matrix/A2A governance control mapped to a proven ActivityPub twin.
+---
+
+# Fediverse Interop Spec — ActivityPub as a second federation transport, milestone M18
+
+Design position: **ActivityPub is a second, additive federation transport** that reaches the wider Fediverse (Mastodon, GoToSocial, ~10M actors), sitting alongside — never replacing — Matrix federation ([federation spec §8](federation.md)). The decision to adopt is gated by [ADR 0014](adr/0014-activitypub-second-federation-transport.md) in **Proposed** status; this spec is its design surface and the checklist for the M18 sweep (issues #209–#221).
+
+The standing rule holds twice over: Fgentic assumes neither a single homeserver nor a single federation _protocol_ forever. AP is open (W3C Recommendation), so it fits the open-standards-only principle with no license concern — but reach is only earned once every M8 governance control has a proven ActivityPub twin (§3).
+
+## §1 — Scope and non-goals
+
+1. **In scope.** A sovereign agent is reachable from the Fediverse by a stable handle; a Fediverse user follows it, `@mentions` it, and receives one governed, signed A2A-backed reply. Discovery (WebFinger, NodeInfo), integrity, identity binding, per-actor budget admission, and honest bot/attribution audit are all in scope as governed surface.
+1. **Non-goals.** ActivityPub does not replace Matrix rooms as the collaboration plane; it does not become a general-purpose social server; it does not carry model credentials; and it does not couple into the mautrix bridge. Human↔human Fediverse bridging (Kazarma, #221) is a separate, AGPL-gated, human-approved profile, not part of the agent gateway.
+
+## §2 — Architectural spine
+
+All ActivityPub surface lives in ONE new self-contained app, **`apps/activitypub-agent-gateway/`** — its own Go module, Dockerfile, Helm chart, and `deploy/` Flux unit, exactly like `apps/matrix-a2a-bridge/` and `apps/synapse-federation-policy/`. It:
+
+1. Reuses the `a2a-go` client ([ADR 0004](adr/0004-a2a-delegation.md)) to reach kagent **through agentgateway** — the same egress chokepoint every caller uses, so no agent holds a model credential ([ADR 0006](adr/0006-agentgateway-chokepoint.md)).
+1. Is **never** bundled into the mautrix bridge, keeping that bridge AGPL-free and homeserver-portable and inside its surface budget ([ADR 0012](adr/0012-bridge-decomposition-surface-budget.md), [licensing spec §10](licensing.md)).
+1. Exposes public AP endpoints only through the Gateway API with TLS, and reaches kagent on `ClusterIP` behind NetworkPolicy — the AP gateway is a caller of agentgateway, never a peer of kagent.
+
+Each exposed agent is presented as an ActivityPub **`Service` actor** (§3, row _bot typing_); a collaboration room may additionally be presented as a **`Group` actor** for cross-org collaboration (#217). The gateway is a translation and governance border between the AP object graph and A2A `message/send`, mirroring how the mautrix bridge translates Matrix events to A2A ([bridge spec §6](bridge.md)).
+
+## §3 — Control mapping: every M8 control has an ActivityPub twin
+
+No ActivityPub feature ships without the twin control in this table proven fail-closed first. The left column is the settled Matrix/A2A control; the right is its AP equivalent and the issue that lands it.
+
+| Governance control | Matrix / A2A mechanism (settled)                                                                       | ActivityPub twin (M18)                                                                                             | Issue |
+| ------------------ | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------ | ----- |
+| Limited federation | Synapse `federation_domain_whitelist` + `m.room.server_acl` allowlist ([§8.2](federation.md))          | Git-declared instance/actor **allowlist** enforced at the AP inbox border; unlisted origins deny-by-default        | #211  |
+| Signed border      | Synapse module callbacks (`should_drop_federated_event`), git-reloadable ([§8.2](federation.md))       | **HTTP Signatures + authorized-fetch** border, policy reloaded from git without replacing the gateway              | #211  |
+| Object integrity   | A2A v1.0 **Signed AgentCard** (ES256 / JCS) ([§8.3](federation.md))                                    | **FEP-8b32** object integrity proofs (`eddsa-jcs-2022`, Ed25519) on every agent reply activity                     | #212  |
+| Pinned identity    | Pinned **P-256 JWK** per remote agent, verified per call                                               | **FEP-c390** identity proof binding the AP actor to the A2A AgentCard key/DID; keys published, verified per call   | #218  |
+| Budget admission   | Per-`azp` `maxTokens` reservation at admission ([D7/D8](design-decisions.md))                          | Per-**actor/domain** token-budget admission before any A2A call; reservation ≠ consumption, metrics stay aggregate | #213  |
+| Honest attribution | Asserted `X-User-Id` MXID + bounded origin audit fields ([audit spec](audit.md))                       | **Bot/Service** actor typing + ActivityPub attribution audit fields (actor URI, domain, delivery id)               | #214  |
+| Egress containment | agentgateway is the sole model-credential chokepoint ([ADR 0006](adr/0006-agentgateway-chokepoint.md)) | AP gateway calls kagent only via agentgateway/A2A; kagent stays `ClusterIP` behind NetworkPolicy                   | #210  |
+
+Reading the table: the _shape_ of each control is preserved — allowlist deny-by-default, a git-reloadable signed border, per-object integrity, pinned per-caller identity, admission-time budget reservation, and content-free honest audit — expressed in ActivityPub's native primitives (HTTP Signatures, FEPs, actor types) instead of Matrix's.
+
+## §4 — Discovery and instance description
+
+1. **WebFinger + FEP-844e** (#215) resolves a `acct:agent-<name>@<domain>` handle to the agent's `Service` actor and publishes the A2A AgentCard as actor metadata, so a Fediverse client can both follow the agent and discover its A2A endpoint.
+1. **NodeInfo + an instance application actor** (#216) advertises which agents/skills the instance exposes, honestly and enumerably, without leaking internal topology.
+1. Discovery is exposure: it ships only after the §3 border, integrity, and budget twins are proven fail-closed.
+
+## §5 — Novel collaboration surface
+
+Three items extend the governed core with capabilities Matrix federation does not have a one-to-one analog for, and are marked _novel_ in the backlog:
+
+1. **Group actor per collaboration room** (#217) — a room is projected as an AP `Group` so cross-org participants collaborate through follow/announce semantics, the Fediverse equivalent of a shared federated room.
+1. **FEP-c390 identity proof** (#218) — unifies the AP actor identity with the A2A AgentCard key/DID so one verifiable identity spans both transports.
+1. **Follow-to-subscribe status/outbox feed** (#219) — following an agent subscribes to its status/outbox, turning task progress into a governed, observable feed rather than an opaque call.
+
+## §6 — Honesty clauses (stated out loud)
+
+1. **Replication and deletion are best-effort**, exactly as with Matrix ([§8.1](federation.md)): an activity delivered to remote inboxes cannot be technically recalled; data residency across instances is a **contractual** control, not a technical one.
+1. **A signed, reachable actor is not a governed one.** As with the Matrix onboarding preflight, public discoverability (WebFinger/NodeInfo resolving) never proves that allowlist, budget, and integrity policy are in force — those require separate operator evidence.
+1. **Reservations are not consumption.** Per-actor `maxTokens` admission reserves budget; actual model token metrics remain aggregate at agentgateway ([D7/D8](design-decisions.md)). Never present a reservation as spend.
+1. **Two transports, name yours.** Any cross-org capability claim must state whether it rode Matrix or ActivityPub; they are additive, not interchangeable.
+
+## §7 — Definition of done (M18 epic)
+
+On the demo profile, a Mastodon/GoToSocial user follows a sovereign agent by its Fediverse handle, `@mentions` it, and receives **one governed, signed, A2A-backed reply** — with the ActivityPub federation policy border proven **fail-closed before any public exposure**, and every §3 twin control demonstrably in force.
