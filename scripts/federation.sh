@@ -3,8 +3,12 @@
 # owns the shared mechanics; this wrapper fixes the profile, cluster, and deletion guard.
 set -euo pipefail
 
-readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly ROOT_DIR
 readonly FEDERATION_CLUSTER="fgentic-fed"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 
 usage() {
 	cat <<'EOF'
@@ -27,11 +31,6 @@ Environment:
   FGENTIC_DEMO_CACHE_DIR
                        optional persistent BuildKit cache directory for the source image
 EOF
-}
-
-die() {
-	echo "error: $*" >&2
-	exit 1
 }
 
 if (($# != 1)); then

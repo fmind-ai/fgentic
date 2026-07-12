@@ -6,14 +6,8 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly ROOT_DIR
 readonly FEDERATION_CLUSTER="fgentic-fed"
 
-die() {
-	echo "error: $*" >&2
-	exit 1
-}
-
-require_command() {
-	command -v "$1" >/dev/null 2>&1 || die "required command not found: $1 (run 'mise install')"
-}
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 
 synapse_pod_uid() {
 	local namespace="$1"
