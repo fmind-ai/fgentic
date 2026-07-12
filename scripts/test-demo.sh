@@ -221,6 +221,29 @@ rg --regexp 'SOURCE_GIT_PACKAGES="git=[^ ]+ git-daemon=[^ ]+ busybox-extras=[^"]
 rg --fixed-strings 'git-http-backend' "${ROOT_DIR}/scripts/demo.sh" >/dev/null
 rg --fixed-strings 'http://fgentic-demo-source.flux-system.svc.cluster.local:8080/cgi-bin/git/repo.git' \
 	"${ROOT_DIR}/scripts/demo.sh" >/dev/null
+for retry_contract in \
+	'if flux reconcile source git flux-system --timeout=2m >/dev/null &&' \
+	'expected_revision="main@sha1:${SOURCE_REVISION}"' \
+	'! kustomizations="$(kubectl --namespace flux-system get kustomizations --output json)"' \
+	'! helmreleases="$(kubectl get helmreleases --all-namespaces --output json)"'; do
+	rg --fixed-strings "${retry_contract}" "${ROOT_DIR}/scripts/demo.sh" >/dev/null || {
+		echo "error: demo lifecycle does not retry transient API failures" >&2
+		exit 1
+	}
+done
+for lease_contract in \
+	'configure_ephemeral_flux_controllers' \
+	'FLUX_LEADER_ELECTION_LEASE_DURATION="180s"' \
+	'FLUX_LEADER_ELECTION_RENEW_DEADLINE="170s"' \
+	'FLUX_LEADER_ELECTION_RETRY_PERIOD="30s"' \
+	'--leader-election-lease-duration=${FLUX_LEADER_ELECTION_LEASE_DURATION}' \
+	'--leader-election-renew-deadline=${FLUX_LEADER_ELECTION_RENEW_DEADLINE}' \
+	'--leader-election-retry-period=${FLUX_LEADER_ELECTION_RETRY_PERIOD}'; do
+	rg --fixed-strings -- "${lease_contract}" "${ROOT_DIR}/scripts/demo.sh" >/dev/null || {
+		echo "error: ephemeral Flux controllers omit ${lease_contract}" >&2
+		exit 1
+	}
+done
 rg --fixed-strings '#lobby:fgentic.localhost' "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
 rg --fixed-strings 'creation_content: {"m.federate": false}' \
 	"${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null

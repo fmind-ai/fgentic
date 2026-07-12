@@ -1,0 +1,153 @@
+# Org B's disposable client-credentials issuer. Compose this Component into infra/keycloak; the
+# separate realm avoids mutating the platform's human-login realm and imports cleanly in the lab.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      version: v1
+      kind: ConfigMap
+      name: keycloak-realm
+      namespace: keycloak
+    patch: |
+      - op: add
+        path: /data/fgentic-federation-realm.json
+        value: |
+          {
+            "realm": "fgentic-federation",
+            "displayName": "Fgentic Federation Lab",
+            "enabled": true,
+            "sslRequired": "external",
+            "registrationAllowed": false,
+            "loginWithEmailAllowed": false,
+            "resetPasswordAllowed": false,
+            "rememberMe": false,
+            "bruteForceProtected": true,
+            "eventsEnabled": true,
+            "adminEventsEnabled": true,
+            "adminEventsDetailsEnabled": true,
+            "accessTokenLifespan": 300,
+            "clients": [
+              {
+                "clientId": "org-b-a2a",
+                "name": "Authorized org-B A2A consumer",
+                "enabled": true,
+                "clientAuthenticatorType": "client-secret",
+                "secret": "$${ORG_B_A2A_CLIENT_SECRET}",
+                "protocol": "openid-connect",
+                "publicClient": false,
+                "bearerOnly": false,
+                "standardFlowEnabled": false,
+                "implicitFlowEnabled": false,
+                "directAccessGrantsEnabled": false,
+                "serviceAccountsEnabled": true,
+                "frontchannelLogout": false,
+                "protocolMappers": [
+                  {
+                    "name": "fgentic-a2a-audience",
+                    "protocol": "openid-connect",
+                    "protocolMapper": "oidc-audience-mapper",
+                    "consentRequired": false,
+                    "config": {
+                      "included.client.audience": "fgentic-a2a",
+                      "id.token.claim": "false",
+                      "access.token.claim": "true",
+                      "introspection.token.claim": "true"
+                    }
+                  }
+                ]
+              },
+              {
+                "clientId": "untrusted-a2a",
+                "name": "Valid audience but unauthorized A2A consumer",
+                "enabled": true,
+                "clientAuthenticatorType": "client-secret",
+                "secret": "$${UNTRUSTED_A2A_CLIENT_SECRET}",
+                "protocol": "openid-connect",
+                "publicClient": false,
+                "bearerOnly": false,
+                "standardFlowEnabled": false,
+                "implicitFlowEnabled": false,
+                "directAccessGrantsEnabled": false,
+                "serviceAccountsEnabled": true,
+                "frontchannelLogout": false,
+                "protocolMappers": [
+                  {
+                    "name": "fgentic-a2a-audience",
+                    "protocol": "openid-connect",
+                    "protocolMapper": "oidc-audience-mapper",
+                    "consentRequired": false,
+                    "config": {
+                      "included.client.audience": "fgentic-a2a",
+                      "id.token.claim": "false",
+                      "access.token.claim": "true",
+                      "introspection.token.claim": "true"
+                    }
+                  }
+                ]
+              },
+              {
+                "clientId": "wrong-audience-a2a",
+                "name": "Wrong-audience A2A negative-test consumer",
+                "enabled": true,
+                "clientAuthenticatorType": "client-secret",
+                "secret": "$${WRONG_AUDIENCE_A2A_CLIENT_SECRET}",
+                "protocol": "openid-connect",
+                "publicClient": false,
+                "bearerOnly": false,
+                "standardFlowEnabled": false,
+                "implicitFlowEnabled": false,
+                "directAccessGrantsEnabled": false,
+                "serviceAccountsEnabled": true,
+                "frontchannelLogout": false,
+                "protocolMappers": [
+                  {
+                    "name": "wrong-audience",
+                    "protocol": "openid-connect",
+                    "protocolMapper": "oidc-audience-mapper",
+                    "consentRequired": false,
+                    "config": {
+                      "included.client.audience": "fgentic-wrong-audience",
+                      "id.token.claim": "false",
+                      "access.token.claim": "true",
+                      "introspection.token.claim": "true"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+  # The org-B hostname is both the public discovery URL and the exact JWT issuer. Keep the
+  # database settings from the base release while replacing its environment string atomically.
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: keycloak
+      namespace: keycloak
+    patch: |
+      - op: replace
+        path: /spec/values/extraEnv
+        value: |
+          - name: KC_HOSTNAME
+            value: https://id.${federation_partner_server_name}
+          - name: KC_DB_URL_PROPERTIES
+            value: "?sslmode=require"
+          - name: KC_DB_POOL_MAX_SIZE
+            value: "20"
+  - target:
+      group: gateway.networking.k8s.io
+      version: v1
+      kind: HTTPRoute
+      name: keycloak
+      namespace: keycloak
+    patch: |
+      - op: replace
+        path: /spec/parentRefs
+        value:
+          - name: federation-b
+            namespace: gateway
+            sectionName: https-id-b
+      - op: replace
+        path: /spec/hostnames
+        value:
+          - id.${federation_partner_server_name}

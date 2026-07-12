@@ -1,5 +1,4 @@
-# Disposable federation hardening overlay. It keeps only the controllers, Gateway,
-# CloudNativePG, and three Synapse releases needed to exercise allow and deny paths.
+# Disposable provider-free federation and cross-organization delegation lab.
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
@@ -7,4 +6,5 @@ resources:
   - platform-settings.yaml
   - secrets.yaml
 components:
+  - ../base/provider-selection
   - ../../infra/federation/cluster

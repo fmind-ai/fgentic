@@ -8,6 +8,7 @@ metadata:
 spec:
   parentRefs:
     - name: agentgateway-proxy
+      sectionName: default
   rules:
     - matches:
         - path:

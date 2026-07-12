@@ -1,30 +1,9 @@
-# Keep only namespaces used by the provider-free federation topology and add homeservers B and C.
+# Keep the provider-free delegation namespaces, omit unrelated stacks, and add homeservers B/C.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 resources:
   - namespace.yaml
 patches:
-  - target: { kind: Namespace, name: keycloak }
-    patch: |
-      $patch: delete
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: keycloak
-  - target: { kind: Namespace, name: agentgateway-system }
-    patch: |
-      $patch: delete
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: agentgateway-system
-  - target: { kind: Namespace, name: kagent }
-    patch: |
-      $patch: delete
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: kagent
   - target: { kind: Namespace, name: bridge }
     patch: |
       $patch: delete
@@ -46,10 +25,3 @@ patches:
       kind: Namespace
       metadata:
         name: monitoring
-  - target: { kind: Namespace, name: models }
-    patch: |
-      $patch: delete
-      apiVersion: v1
-      kind: Namespace
-      metadata:
-        name: models

@@ -1,0 +1,112 @@
+# scripts/demo.sh replaces the unique body marker with the minified ES256-signed card before it
+# commits the disposable Flux snapshot. The tracked source never contains a private signing key.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: federated-docs-qa-card
+  namespace: agentgateway-system
+  annotations:
+    fgentic.dev/signed-card-injection: required
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: federated-docs-qa-card
+  traffic:
+    directResponse:
+      status: 200
+      body: __FGENTIC_SIGNED_AGENT_CARD_JSON__
+      headers:
+        - name: Content-Type
+          value: '"application/a2a+json"'
+        - name: Cache-Control
+          value: '"no-store"'
+---
+# Strict JWT validation precedes authorization and global rate limiting in agentgateway v1.3.1.
+# Require validates every dynamic descriptor input, so malformed requests cannot make CEL skip the
+# rate-limit service and reach kagent. GetTask is authenticated but consumes no new reservation.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: federated-docs-qa
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: federated-docs-qa
+  traffic:
+    buffer:
+      request:
+        maxBytes: 64Ki
+    jwtAuthentication:
+      mode: Strict
+      providers:
+        - issuer: https://id.${federation_partner_server_name}/realms/fgentic-federation
+          audiences:
+            - fgentic-a2a
+          jwks:
+            remote:
+              jwksPath: /realms/fgentic-federation/protocol/openid-connect/certs
+              cacheDuration: 5m
+              backendRef:
+                group: ""
+                kind: Service
+                name: keycloak-http
+                namespace: keycloak
+                port: 80
+    authorization:
+      action: Require
+      policy:
+        # Agentgateway's json() returns dynamic numeric values. An exact int round-trip rejects
+        # fractions and non-numeric JSON types without accepting numeric strings.
+        matchExpressions:
+          - >-
+            jwt.azp == "org-b-a2a" &&
+            request.method == "POST" &&
+            request.path == "/api/a2a/kagent/docs-qa" &&
+            "a2a-version" in request.headers &&
+            request.headers["a2a-version"] == "1.0" &&
+            "a2a-extensions" in request.headers &&
+            "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1"
+              in request.headers.split()["a2a-extensions"] &&
+            json(request.body).with(body,
+              body.jsonrpc == "2.0" &&
+              (
+                body.method == "GetTask" ||
+                (
+                  body.method == "SendMessage" &&
+                  "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1"
+                    in body.params.message.extensions &&
+                  body.params.message.metadata[
+                    "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1"
+                  ].with(budget,
+                    budget.maxTokens == int(budget.maxTokens) &&
+                    budget.maxTokens >= 1 &&
+                    budget.maxTokens <= ${federation_a2a_max_budget_units}
+                  )
+                )
+              )
+            )
+    rateLimit:
+      conditional:
+        - condition: json(request.body).method == "SendMessage"
+          policy:
+            global:
+              backendRef:
+                group: ""
+                kind: Service
+                name: federation-rate-limit
+                port: 8081
+              failureMode: FailClosed
+              domain: fgentic-cross-org-a2a
+              descriptors:
+                - entries:
+                    - name: consumer
+                      expression: jwt.azp
+                  # Requests evaluates cost before proxying and maps it to RLS hits_addend.
+                  unit: Requests
+                  cost: >-
+                    json(request.body).params.message.metadata[
+                      "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1"
+                    ].maxTokens

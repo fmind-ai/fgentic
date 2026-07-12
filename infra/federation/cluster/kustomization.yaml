@@ -1,5 +1,5 @@
-# Opt-in wiring for the provider-free federation lab. Components keep one Flux field owner for
-# namespaces, controllers, Postgres, and homeserver A; homeservers B and C get their own Flux units.
+# Opt-in wiring for the provider-free federation lab. Existing Flux units retain field ownership;
+# delegation components extend Keycloak, agentgateway, and the single exposed docs-qa agent.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 resources:
@@ -97,12 +97,14 @@ patches:
       name: keycloak
       namespace: flux-system
     patch: |
-      $patch: delete
-      apiVersion: kustomize.toolkit.fluxcd.io/v1
-      kind: Kustomization
-      metadata:
-        name: keycloak
-        namespace: flux-system
+      - op: add
+        path: /spec/components
+        value:
+          - ../federation/delegation/keycloak
+      - op: add
+        path: /spec/dependsOn/-
+        value:
+          name: matrix-b
   - target:
       group: kustomize.toolkit.fluxcd.io
       version: v1
@@ -110,25 +112,15 @@ patches:
       name: agentgateway
       namespace: flux-system
     patch: |
-      $patch: delete
-      apiVersion: kustomize.toolkit.fluxcd.io/v1
-      kind: Kustomization
-      metadata:
-        name: agentgateway
-        namespace: flux-system
-  - target:
-      group: kustomize.toolkit.fluxcd.io
-      version: v1
-      kind: Kustomization
-      name: agentgateway-provider
-      namespace: flux-system
-    patch: |
-      $patch: delete
-      apiVersion: kustomize.toolkit.fluxcd.io/v1
-      kind: Kustomization
-      metadata:
-        name: agentgateway-provider
-        namespace: flux-system
+      - op: add
+        path: /spec/components
+        value:
+          - ../federation/delegation
+      - op: replace
+        path: /spec/dependsOn
+        value:
+          - name: controllers
+          - name: keycloak
   - target:
       group: kustomize.toolkit.fluxcd.io
       version: v1
@@ -136,12 +128,10 @@ patches:
       name: kagent
       namespace: flux-system
     patch: |
-      $patch: delete
-      apiVersion: kustomize.toolkit.fluxcd.io/v1
-      kind: Kustomization
-      metadata:
-        name: kagent
-        namespace: flux-system
+      - op: add
+        path: /spec/components
+        value:
+          - ../federation/delegation/kagent
   - target:
       group: kustomize.toolkit.fluxcd.io
       version: v1

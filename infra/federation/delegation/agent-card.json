@@ -1,0 +1,53 @@
+{
+  "name": "Fgentic docs-qa",
+  "description": "Answers Fgentic architecture and operations questions from a deployment-local documentation snapshot.",
+  "supportedInterfaces": [
+    {
+      "url": "https://a2a.${server_name}/api/a2a/kagent/docs-qa",
+      "protocolBinding": "JSONRPC",
+      "protocolVersion": "1.0"
+    }
+  ],
+  "provider": {
+    "organization": "Fgentic Org A",
+    "url": "https://${server_name}"
+  },
+  "version": "1.0.0",
+  "capabilities": {
+    "extensions": [
+      {
+        "uri": "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1",
+        "description": "Caller-declared response-token ceiling reserved against the authenticated consumer quota.",
+        "required": true
+      }
+    ]
+  },
+  "securitySchemes": {
+    "orgBOIDC": {
+      "openIdConnectSecurityScheme": {
+        "openIdConnectUrl": "https://id.${federation_partner_server_name}/realms/fgentic-federation/.well-known/openid-configuration"
+      }
+    }
+  },
+  "securityRequirements": [
+    {
+      "schemes": {
+        "orgBOIDC": []
+      }
+    }
+  ],
+  "defaultInputModes": ["text/plain"],
+  "defaultOutputModes": ["text/plain"],
+  "skills": [
+    {
+      "id": "fgentic-documentation",
+      "name": "Fgentic documentation Q&A",
+      "description": "Explain the platform using the deployment-local repository documentation.",
+      "tags": ["documentation", "architecture", "operations"],
+      "examples": [
+        "How does a Matrix mention reach an agent?",
+        "Which model providers can a cluster select?"
+      ]
+    }
+  ]
+}

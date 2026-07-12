@@ -1,4 +1,4 @@
-# Federation-only CNPG inventory: one C-collated database and exact login role per homeserver.
+# Federation CNPG inventory: three homeservers plus the provider-free Keycloak/kagent plane.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 resources:
@@ -33,12 +33,22 @@ patches:
             login: true
             passwordSecret:
               name: pg-synapse-c
+          - name: kagent
+            login: true
+            passwordSecret:
+              name: pg-kagent
+          - name: keycloak
+            login: true
+            passwordSecret:
+              name: pg-keycloak
       - op: replace
         path: /spec/postgresql/pg_hba
         value:
           - hostssl synapse synapse all scram-sha-256
           - hostssl synapse_b synapse_b all scram-sha-256
           - hostssl synapse_c synapse_c all scram-sha-256
+          - hostssl kagent kagent all scram-sha-256
+          - hostssl keycloak keycloak all scram-sha-256
           - hostssl all all all reject
           - hostnossl all all all reject
   - target:
@@ -69,20 +79,4 @@ patches:
       kind: Database
       metadata:
         name: bridge
-        namespace: postgres
-  - target: { group: postgresql.cnpg.io, version: v1, kind: Database, name: kagent }
-    patch: |
-      $patch: delete
-      apiVersion: postgresql.cnpg.io/v1
-      kind: Database
-      metadata:
-        name: kagent
-        namespace: postgres
-  - target: { group: postgresql.cnpg.io, version: v1, kind: Database, name: keycloak }
-    patch: |
-      $patch: delete
-      apiVersion: postgresql.cnpg.io/v1
-      kind: Database
-      metadata:
-        name: keycloak
         namespace: postgres

@@ -11,9 +11,17 @@ readonly FEDERATION_SERVER_NAME="org-a.fgentic.localhost"
 readonly FEDERATION_LOOPBACK="127.0.0.2"
 readonly FEDERATION_POLICY_PATH="apps/synapse-federation-policy/policy/policy.json"
 readonly FEDERATION_POLICY_EVENT_TYPE="com.fgentic.blocked"
+readonly FEDERATION_AGENT_CARD_TEMPLATE_PATH="infra/federation/delegation/agent-card.json"
+readonly FEDERATION_AGENT_CARD_POLICY_PATH="infra/federation/delegation/policies.yaml"
+readonly FEDERATION_AGENT_CARD_MARKER="__FGENTIC_SIGNED_AGENT_CARD_JSON__"
+readonly FEDERATION_AGENT_CARD_CONFIGMAP="federated-docs-qa-agent-card"
+readonly FEDERATION_AGENT_CARD_DEFAULT_KEY_ID="fgentic-org-a-docs-qa-v1"
 readonly MAS_ADMIN_CLIENT_ID="01KX8D3M0AD3M0ADM1NC13NT01"
 readonly SOURCE_BASE_IMAGE="alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40"
 readonly SOURCE_GIT_PACKAGES="git=2.52.0-r0 git-daemon=2.52.0-r0 busybox-extras=1.37.0-r30"
+readonly FLUX_LEADER_ELECTION_LEASE_DURATION="180s"
+readonly FLUX_LEADER_ELECTION_RENEW_DEADLINE="170s"
+readonly FLUX_LEADER_ELECTION_RETRY_PERIOD="30s"
 
 usage() {
 	cat <<'EOF'
@@ -48,6 +56,44 @@ die() {
 
 require_command() {
 	command -v "$1" >/dev/null 2>&1 || die "required command not found: $1 (run 'mise install')"
+}
+
+configure_ephemeral_flux_controllers() {
+	local deployment
+	local patch
+	local deployments=()
+
+	# Ephemeral profiles run on the same constrained workstation as clusters/local. Keep the
+	# single-replica controllers alive through API-server I/O stalls instead of flapping every
+	# dependent Kustomization after the default 15-second leader-election lease expires.
+	mapfile -t deployments < <(
+		kubectl --namespace flux-system get deployments \
+			--selector app.kubernetes.io/part-of=flux --output json |
+			jq --raw-output --arg lease "--leader-election-lease-duration=${FLUX_LEADER_ELECTION_LEASE_DURATION}" '
+          .items[] |
+          select((((.spec.template.spec.containers[0].args // []) | index($lease)) == null)) |
+          .metadata.name
+        '
+	)
+	((${#deployments[@]} > 0)) || return
+
+	patch="$(jq --null-input --compact-output \
+		--arg lease "--leader-election-lease-duration=${FLUX_LEADER_ELECTION_LEASE_DURATION}" \
+		--arg renew "--leader-election-renew-deadline=${FLUX_LEADER_ELECTION_RENEW_DEADLINE}" \
+		--arg retry "--leader-election-retry-period=${FLUX_LEADER_ELECTION_RETRY_PERIOD}" '
+      [
+        {op: "add", path: "/spec/template/spec/containers/0/args/-", value: $lease},
+        {op: "add", path: "/spec/template/spec/containers/0/args/-", value: $renew},
+        {op: "add", path: "/spec/template/spec/containers/0/args/-", value: $retry}
+      ]
+    ')"
+	for deployment in "${deployments[@]}"; do
+		kubectl --namespace flux-system patch deployment "${deployment}" \
+			--type json --patch "${patch}" >/dev/null
+	done
+	for deployment in "${deployments[@]}"; do
+		kubectl --namespace flux-system rollout status deployment "${deployment}" --timeout=3m
+	done
 }
 
 random_hex() {
@@ -219,6 +265,7 @@ snapshot_source() {
 			'.data.federation_gateway_ip = strenv(FED_GATEWAY_IP)' \
 			"${SNAPSHOT_DIR}/${OVERLAY_PATH}/platform-settings.yaml"
 		configure_federation_policy_snapshot
+		sign_federation_agent_card_snapshot
 	fi
 
 	# Flux reports Git artifacts as `sha1:<40 hex>` in the pinned source-controller contract.
@@ -234,6 +281,138 @@ snapshot_source() {
 	mkdir -p "${SOURCE_CONTEXT}"
 	git clone --quiet --bare "${SNAPSHOT_DIR}" "${SOURCE_CONTEXT}/repo.git"
 	git --git-dir="${SOURCE_CONTEXT}/repo.git" update-server-info
+}
+
+prepare_federation_agent_card_key() {
+	local bootstrap_json encoded_private_key public_artifacts_exist
+	AGENT_CARD_PRIVATE_KEY="${WORK_DIR}/agent-card-private-key.pem"
+	AGENT_CARD_KEY_ID=""
+	EXISTING_AGENT_CARD_JWK_FILE=""
+	chmod 700 "${WORK_DIR}"
+
+	# The signing key is needed before the ephemeral Git snapshot exists. Keep it only in the
+	# lifecycle-owned bootstrap Secret; neither the signed source nor a workload namespace ever
+	# receives private material. Reusing the key keeps the public trust anchor stable across up.
+	kubectl create namespace flux-system --dry-run=client --output=yaml |
+		kubectl apply --filename - >/dev/null
+	bootstrap_json="$(kubectl --namespace flux-system get secret fgentic-demo-bootstrap \
+		--output json 2>/dev/null || printf '{}')"
+	public_artifacts_exist=false
+	if kubectl --namespace agentgateway-system get configmap \
+		"${FEDERATION_AGENT_CARD_CONFIGMAP}" >/dev/null 2>&1; then
+		public_artifacts_exist=true
+		EXISTING_AGENT_CARD_JWK_FILE="${WORK_DIR}/existing-public-jwk.json"
+		kubectl --namespace agentgateway-system get configmap \
+			"${FEDERATION_AGENT_CARD_CONFIGMAP}" \
+			--output 'go-template={{index .data "public-jwk.json"}}' \
+			>"${EXISTING_AGENT_CARD_JWK_FILE}"
+		jq -e '
+      keys == ["alg", "crv", "key_ops", "kid", "kty", "use", "x", "y"] and
+      .kty == "EC" and .crv == "P-256" and .alg == "ES256" and
+      .use == "sig" and .key_ops == ["verify"] and (has("d") | not)
+    ' "${EXISTING_AGENT_CARD_JWK_FILE}" >/dev/null ||
+			die "existing federation AgentCard public JWK is invalid"
+	fi
+
+	encoded_private_key="$(jq -r '.data["agent-card-private-key"] // ""' \
+		<<<"${bootstrap_json}")"
+	AGENT_CARD_KEY_ID="$(jq -r '.data["agent-card-key-id"] // "" | @base64d' \
+		<<<"${bootstrap_json}")"
+	if [ -n "${encoded_private_key}" ]; then
+		printf '%s' "${encoded_private_key}" | base64 --decode >"${AGENT_CARD_PRIVATE_KEY}"
+		[ -n "${AGENT_CARD_KEY_ID}" ] ||
+			die "federation AgentCard key ID is missing from the bootstrap Secret"
+	else
+		[ "${public_artifacts_exist}" = false ] ||
+			die "refusing to rotate a missing AgentCard key while public artifacts still exist"
+		AGENT_CARD_KEY_ID="${FEDERATION_AGENT_CARD_DEFAULT_KEY_ID}"
+		openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+			-out "${AGENT_CARD_PRIVATE_KEY}" 2>/dev/null
+	fi
+	chmod 600 "${AGENT_CARD_PRIVATE_KEY}"
+
+	if kubectl --namespace flux-system get secret fgentic-demo-bootstrap >/dev/null 2>&1; then
+		kubectl --namespace flux-system create secret generic fgentic-demo-bootstrap \
+			--from-file="agent-card-private-key=${AGENT_CARD_PRIVATE_KEY}" \
+			--from-literal="agent-card-key-id=${AGENT_CARD_KEY_ID}" \
+			--dry-run=client --output=json |
+			jq --compact-output '{data: .data}' |
+			kubectl --namespace flux-system patch secret fgentic-demo-bootstrap \
+				--type=merge --patch-file /dev/stdin \
+			>/dev/null
+	else
+		apply_secret flux-system fgentic-demo-bootstrap \
+			--from-file="agent-card-private-key=${AGENT_CARD_PRIVATE_KEY}" \
+			--from-literal="agent-card-key-id=${AGENT_CARD_KEY_ID}"
+	fi
+	bootstrap_json=""
+	encoded_private_key=""
+}
+
+sign_federation_agent_card_snapshot() {
+	local template policy settings bundle marker_count signed_card card_server card_partner
+	template="${SNAPSHOT_DIR}/${FEDERATION_AGENT_CARD_TEMPLATE_PATH}"
+	policy="${SNAPSHOT_DIR}/${FEDERATION_AGENT_CARD_POLICY_PATH}"
+	settings="${SNAPSHOT_DIR}/${OVERLAY_PATH}/platform-settings.yaml"
+	bundle="${WORK_DIR}/agent-card-bundle.json"
+	AGENT_CARD_PUBLIC_FILE="${WORK_DIR}/agent-card.json"
+	AGENT_CARD_JWK_FILE="${WORK_DIR}/public-jwk.json"
+	[ -f "${template}" ] || die "federation AgentCard template not found"
+	[ -f "${policy}" ] || die "federation AgentCard policy not found"
+	marker_count="$(rg --only-matching --fixed-strings "${FEDERATION_AGENT_CARD_MARKER}" \
+		"${policy}" | wc -l | tr -d ' ')"
+	[ "${marker_count}" = "1" ] ||
+		die "federation AgentCard policy must contain exactly one signed-card marker"
+	card_server="$(yq --unwrapScalar '.data.server_name' "${settings}")"
+	card_partner="$(yq --unwrapScalar '.data.federation_partner_server_name' "${settings}")"
+	[ -n "${card_server}" ] && [ -n "${card_partner}" ] ||
+		die "federation AgentCard domains are missing from platform settings"
+	CARD_SERVER="${card_server}" CARD_PARTNER="${card_partner}" yq --inplace '
+      (... | select(tag == "!!str")) |=
+        sub("\\$\\{server_name\\}"; strenv(CARD_SERVER)) |
+      (... | select(tag == "!!str")) |=
+        sub("\\$\\{federation_partner_server_name\\}"; strenv(CARD_PARTNER))
+    ' "${template}"
+	if rg --regexp '\$\{[^}]+\}' "${template}" >/dev/null; then
+		die "federation AgentCard contains an unresolved substitution before signing"
+	fi
+
+	"${ROOT_DIR}/scripts/sign-agent-card.sh" sign \
+		--input "${template}" --private-key "${AGENT_CARD_PRIVATE_KEY}" \
+		--key-id "${AGENT_CARD_KEY_ID}" --output "${bundle}"
+	jq --exit-status --join-output --compact-output \
+		'.agentCard | select(type == "object")' "${bundle}" >"${AGENT_CARD_PUBLIC_FILE}"
+	jq --exit-status --join-output --compact-output \
+		'.publicJwk | select(type == "object" and has("d") == false)' \
+		"${bundle}" >"${AGENT_CARD_JWK_FILE}"
+	"${ROOT_DIR}/scripts/sign-agent-card.sh" verify \
+		--input "${AGENT_CARD_PUBLIC_FILE}" --public-key "${AGENT_CARD_JWK_FILE}" \
+		--key-id "${AGENT_CARD_KEY_ID}"
+	if [ -n "${EXISTING_AGENT_CARD_JWK_FILE}" ]; then
+		jq --exit-status --slurp '.[0] == .[1]' \
+			"${EXISTING_AGENT_CARD_JWK_FILE}" "${AGENT_CARD_JWK_FILE}" >/dev/null ||
+			die "refusing to replace the independently pinnable AgentCard public JWK"
+	fi
+
+	signed_card="$(<"${AGENT_CARD_PUBLIC_FILE}")"
+	SIGNED_CARD_JSON="${signed_card}" CARD_MARKER="${FEDERATION_AGENT_CARD_MARKER}" \
+		yq --inplace \
+		'(... | select(tag == "!!str" and . == strenv(CARD_MARKER))) = strenv(SIGNED_CARD_JSON)' \
+		"${policy}"
+	if rg --fixed-strings "${FEDERATION_AGENT_CARD_MARKER}" "${policy}" >/dev/null; then
+		die "signed AgentCard marker remained in the ephemeral policy"
+	fi
+}
+
+publish_federation_agent_card_artifacts() {
+	# These are the exact public bytes served by the snapshot policy. The ConfigMap is evidence
+	# for the acceptance test and a convenient public-key distribution point, never key storage.
+	kubectl --namespace agentgateway-system create configmap \
+		"${FEDERATION_AGENT_CARD_CONFIGMAP}" \
+		--from-file="agent-card.json=${AGENT_CARD_PUBLIC_FILE}" \
+		--from-file="public-jwk.json=${AGENT_CARD_JWK_FILE}" \
+		--dry-run=client --output=yaml |
+		kubectl apply --filename - >/dev/null
 }
 
 configure_federation_policy_snapshot() {
@@ -402,10 +581,12 @@ EOF
 	actual_revision=""
 	source_deadline=$((SECONDS + 120))
 	while ((SECONDS < source_deadline)); do
-		flux reconcile source git flux-system --timeout=2m >/dev/null
-		actual_revision="$(kubectl --namespace flux-system get gitrepository flux-system \
-			--output jsonpath='{.status.artifact.revision}')"
-		[ "${actual_revision}" = "${expected_revision}" ] && break
+		if flux reconcile source git flux-system --timeout=2m >/dev/null &&
+			actual_revision="$(kubectl --namespace flux-system get gitrepository flux-system \
+				--output jsonpath='{.status.artifact.revision}')" &&
+			[ "${actual_revision}" = "${expected_revision}" ]; then
+			break
+		fi
 		sleep 2
 	done
 	[ "${actual_revision}" = "${expected_revision}" ] ||
@@ -424,16 +605,17 @@ timeout_seconds() {
 }
 
 wait_for_platform() {
-	local source_revision deadline kustomizations helmreleases
-	source_revision="$(kubectl --namespace flux-system get gitrepository flux-system \
-		--output jsonpath='{.status.artifact.revision}')"
-	[ -n "${source_revision}" ] || die "the local Flux source has no artifact revision"
+	local expected_revision deadline kustomizations helmreleases
+	expected_revision="main@sha1:${SOURCE_REVISION}"
 	deadline=$((SECONDS + $(timeout_seconds "${DEMO_TIMEOUT}")))
 
 	while ((SECONDS < deadline)); do
-		kustomizations="$(kubectl --namespace flux-system get kustomizations --output json)"
-		helmreleases="$(kubectl get helmreleases --all-namespaces --output json)"
-		if jq -e --arg revision "${source_revision}" '
+		if ! kustomizations="$(kubectl --namespace flux-system get kustomizations --output json)" ||
+			! helmreleases="$(kubectl get helmreleases --all-namespaces --output json)"; then
+			sleep 5
+			continue
+		fi
+		if jq -e --arg revision "${expected_revision}" '
         (.items | length > 0) and all(.items[];
           .status.observedGeneration == .metadata.generation and
           .status.lastAppliedRevision == $revision and
@@ -614,21 +796,30 @@ create_federation_secrets() {
 		--output json 2>/dev/null || printf '{}')"
 	# Preserve existing lab identities while making upgrades self-healing when a new homeserver is
 	# added to an already running, ownership-labelled cluster.
-	for key in pg-synapse pg-synapse-b pg-synapse-c \
-		alice-password bob-password charlie-password; do
+	for key in pg-synapse pg-synapse-b pg-synapse-c pg-keycloak pg-kagent \
+		alice-password bob-password charlie-password keycloak-admin-password \
+		fgentic-client-secret fgentic-alice-password fgentic-bob-password \
+		org-b-a2a-client-secret untrusted-a2a-client-secret \
+		wrong-audience-a2a-client-secret; do
 		value="$(jq -r --arg key "${key}" '.data[$key] // "" | @base64d' \
 			<<<"${bootstrap_json}")"
 		[ -n "${value}" ] || value="$(random_hex 24)"
 		bootstrap_arguments+=("--from-literal=${key}=${value}")
 	done
+	bootstrap_arguments+=(
+		"--from-file=agent-card-private-key=${AGENT_CARD_PRIVATE_KEY}"
+		"--from-literal=agent-card-key-id=${AGENT_CARD_KEY_ID}"
+	)
 	apply_secret flux-system fgentic-demo-bootstrap "${bootstrap_arguments[@]}"
 	bootstrap_json=""
 	value=""
 
-	local pg_synapse pg_synapse_b pg_synapse_c namespace
+	local pg_synapse pg_synapse_b pg_synapse_c pg_keycloak pg_kagent namespace
 	pg_synapse="$(bootstrap_secret_value pg-synapse)"
 	pg_synapse_b="$(bootstrap_secret_value pg-synapse-b)"
 	pg_synapse_c="$(bootstrap_secret_value pg-synapse-c)"
+	pg_keycloak="$(bootstrap_secret_value pg-keycloak)"
+	pg_kagent="$(bootstrap_secret_value pg-kagent)"
 	apply_secret postgres pg-synapse --type=kubernetes.io/basic-auth \
 		--from-literal=username=synapse --from-literal=password="${pg_synapse}"
 	apply_secret matrix pg-synapse --type=kubernetes.io/basic-auth \
@@ -641,6 +832,25 @@ create_federation_secrets() {
 		--from-literal=username=synapse_c --from-literal=password="${pg_synapse_c}"
 	apply_secret matrix-c pg-synapse-c --type=kubernetes.io/basic-auth \
 		--from-literal=username=synapse_c --from-literal=password="${pg_synapse_c}"
+	apply_secret postgres pg-keycloak --type=kubernetes.io/basic-auth \
+		--from-literal=username=keycloak --from-literal=password="${pg_keycloak}"
+	apply_secret keycloak pg-keycloak --type=kubernetes.io/basic-auth \
+		--from-literal=username=keycloak --from-literal=password="${pg_keycloak}"
+	apply_secret postgres pg-kagent --type=kubernetes.io/basic-auth \
+		--from-literal=username=kagent --from-literal=password="${pg_kagent}"
+	apply_secret kagent kagent-db \
+		--from-literal=url="postgresql://kagent:${pg_kagent}@platform-pg-rw.postgres.svc.cluster.local:5432/kagent?sslmode=require"
+	apply_secret kagent kagent-model-auth \
+		--from-literal=OPENAI_API_KEY=sk-not-used-agentgateway-holds-the-real-key
+	apply_secret keycloak keycloak-credentials \
+		--from-literal=KC_BOOTSTRAP_ADMIN_USERNAME=admin \
+		--from-literal=KC_BOOTSTRAP_ADMIN_PASSWORD="$(bootstrap_secret_value keycloak-admin-password)" \
+		--from-literal=FGENTIC_CLIENT_SECRET="$(bootstrap_secret_value fgentic-client-secret)" \
+		--from-literal=FGENTIC_ALICE_PASSWORD="$(bootstrap_secret_value fgentic-alice-password)" \
+		--from-literal=FGENTIC_BOB_PASSWORD="$(bootstrap_secret_value fgentic-bob-password)" \
+		--from-literal=ORG_B_A2A_CLIENT_SECRET="$(bootstrap_secret_value org-b-a2a-client-secret)" \
+		--from-literal=UNTRUSTED_A2A_CLIENT_SECRET="$(bootstrap_secret_value untrusted-a2a-client-secret)" \
+		--from-literal=WRONG_AUDIENCE_A2A_CLIENT_SECRET="$(bootstrap_secret_value wrong-audience-a2a-client-secret)"
 
 	# Only the public root is mirrored into the homeserver namespaces. The CA key remains in
 	# cert-manager, and both runtime and config-check pods mount this ConfigMap read-only.
@@ -649,10 +859,11 @@ create_federation_secrets() {
 			--from-file="ca.crt=${ca_cert}" --dry-run=client --output=yaml |
 			kubectl apply --filename - >/dev/null
 	done
+	publish_federation_agent_card_artifacts
 }
 
 demo_up() {
-	for command in base64 curl docker git jq k3d kubectl flux yq openssl tar; do
+	for command in base64 curl docker git jq k3d kubectl flux yq openssl rg tar; do
 		require_command "${command}"
 	done
 	docker info >/dev/null 2>&1 || die "Docker daemon is not running"
@@ -664,7 +875,7 @@ demo_up() {
 		configure_provider
 	else
 		LLM_PROVIDER="demo"
-		LLM_MODEL="unused-federation-profile"
+		LLM_MODEL="fgentic-demo"
 		GCP_PROJECT="not-configured"
 		VERTEX_REGION="europe-west1"
 		OPENAI_HOST="api.openai.com"
@@ -710,11 +921,13 @@ demo_up() {
 		FEDERATION_GATEWAY_IP="$(docker inspect "k3d-${CLUSTER_NAME}-serverlb" |
 			jq -er --arg network "k3d-${CLUSTER_NAME}" \
 			'.[0].NetworkSettings.Networks[$network].IPAddress')"
+		prepare_federation_agent_card_key
 	fi
 
 	snapshot_source
 	build_and_load_images
 	flux install >/dev/null
+	configure_ephemeral_flux_controllers
 	kubectl --namespace flux-system rollout status deployment/source-controller --timeout=2m
 	if ! kubectl get customresourcedefinition \
 		gateways.gateway.networking.k8s.io httproutes.gateway.networking.k8s.io \

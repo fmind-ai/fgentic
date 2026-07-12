@@ -6,6 +6,7 @@ WORKDIR /src
 ENV CGO_ENABLED=0
 COPY go.mod go.sum ./
 RUN go mod download
+COPY internal/agentcardjws ./internal/agentcardjws
 COPY test/integration/cmd/a2a-stub ./test/integration/cmd/a2a-stub
 RUN go build -trimpath -ldflags="-s -w" -o /out/plain-a2a-agent ./test/integration/cmd/a2a-stub
 

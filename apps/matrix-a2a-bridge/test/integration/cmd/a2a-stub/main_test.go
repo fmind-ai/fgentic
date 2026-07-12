@@ -2,11 +2,8 @@ package main
 
 import (
 	"context"
-	"crypto/ecdsa"
-	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
-	"math/big"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -14,9 +11,9 @@ import (
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
-	"github.com/gowebpki/jcs"
 
 	"github.com/fmind/matrix-a2a-bridge/internal/a2aclient"
+	"github.com/fmind/matrix-a2a-bridge/internal/agentcardjws"
 )
 
 func TestParseLoadMarker(t *testing.T) {
@@ -196,47 +193,14 @@ func TestValidTokenBudgetContract(t *testing.T) {
 
 func validFixtureSignature(t *testing.T, card *a2a.AgentCard) bool {
 	t.Helper()
-	if len(card.Signatures) != 1 {
-		t.Fatalf("AgentCard signatures = %d, want 1", len(card.Signatures))
-	}
-	signature := card.Signatures[0]
-	protectedJSON, err := base64.RawURLEncoding.DecodeString(signature.Protected)
+	encoded, err := json.Marshal(card)
 	if err != nil {
-		t.Fatalf("decode protected header: %v", err)
+		t.Fatalf("encode AgentCard: %v", err)
 	}
-	var protected struct {
-		Algorithm string `json:"alg"`
-		KeyID     string `json:"kid"`
-		Type      string `json:"typ"`
-	}
-	if err := json.Unmarshal(protectedJSON, &protected); err != nil {
-		t.Fatalf("decode protected header JSON: %v", err)
-	}
-	if protected.Algorithm != "ES256" || protected.KeyID != remoteKeyID || protected.Type != "JOSE" {
-		t.Fatalf("protected header = %+v", protected)
-	}
-
-	unsigned := *card
-	unsigned.Signatures = nil
-	encoded, err := json.Marshal(&unsigned)
+	document, err := agentcardjws.Parse(encoded)
 	if err != nil {
-		t.Fatalf("encode unsigned AgentCard: %v", err)
-	}
-	canonical, err := jcs.Transform(encoded)
-	if err != nil {
-		t.Fatalf("canonicalize unsigned AgentCard: %v", err)
-	}
-	payload := base64.RawURLEncoding.EncodeToString(canonical)
-	digest := sha256.Sum256([]byte(signature.Protected + "." + payload))
-	raw, err := base64.RawURLEncoding.DecodeString(signature.Signature)
-	if err != nil {
-		t.Fatalf("decode signature: %v", err)
-	}
-	if len(raw) != 64 {
-		t.Fatalf("signature bytes = %d, want 64", len(raw))
+		t.Fatalf("parse signed AgentCard: %v", err)
 	}
 	privateKey := fixturePrivateKey()
-	r := new(big.Int).SetBytes(raw[:32])
-	s := new(big.Int).SetBytes(raw[32:])
-	return ecdsa.Verify(&privateKey.PublicKey, digest[:], r, s)
+	return agentcardjws.Verify(document, &privateKey.PublicKey, remoteKeyID) == nil
 }
