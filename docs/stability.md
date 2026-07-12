@@ -1,3 +1,9 @@
+---
+type: Contract
+title: Public Surface Stability Contract
+description: Stability tiers for the public surfaces partners pin: extension URIs, event namespaces, schemas.
+---
+
 # Public Surface Stability Contract
 
 Fgentic mints public surfaces beyond its code: extension URIs partners pin, event namespaces clients parse, schemas operators write. Anyone building on the platform needs to know which of these are contracts and which are experiments. This registry is the single source of truth; adding or changing a public surface requires a PR touching this file.

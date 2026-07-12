@@ -1,3 +1,9 @@
+---
+type: Evidence
+title: Bridge Performance Evidence
+description: Dated, reproducible load-sanity evidence for the bridge; the regression reference for §12.5.
+---
+
 # Bridge Performance Evidence
 
 This note records dated, reproducible evidence for the [bridge load-sanity requirement (§12.5)](bridge.md). It is a regression reference for the resource-bounded integration fixture, not a production capacity claim.

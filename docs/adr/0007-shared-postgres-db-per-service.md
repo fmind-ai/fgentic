@@ -1,3 +1,9 @@
+---
+type: Architecture Decision Record
+title: Shared CloudNativePG, Database-per-Service
+description: One shared CNPG cluster; every service gets its own database and scoped role.
+---
+
 # 0007 — Shared CloudNativePG, Database-per-Service
 
 Status: Accepted

@@ -1,3 +1,9 @@
+---
+type: Architecture Decision Record
+title: Bridge Decomposition and Surface Budget
+description: Decompose the bridge under an explicit surface budget that caps what the core may grow.
+---
+
 # 0012 — Bridge Decomposition and Surface Budget
 
 Status: Proposed

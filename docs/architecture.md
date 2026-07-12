@@ -1,3 +1,9 @@
+---
+type: Specification
+title: Architecture & Vision
+description: What Fgentic is, why it matters, and the end-to-end architecture of the sovereign Matrix + A2A agent-collaboration platform (§1–§3, §11).
+---
+
 # Fgentic Architecture & Vision (formerly SPEC §1–§3, §11)
 
 > Retired root `SPEC.md` lives on as topic docs under `docs/` — the `§N` numbering is preserved so existing references (issues, ADRs) still resolve. Positioning is **sovereignty-first** (self-hosted, per-cluster model choice — see [design-decisions.md](design-decisions.md) D16) with **federation as the destination** ([federation.md](federation.md)).
@@ -6,7 +12,7 @@
 
 1. **What Fgentic is.** A **sovereign**, open-source, self-hostable agent-collaboration platform: humans and AI agents co-inhabit Matrix rooms; `@mention` delegates a task over A2A to an agent hosted on kagent, governed by agentgateway — every layer an open protocol or swappable OSS component, deployable out of the box on any conformant Kubernetes, with the model backend a per-cluster choice (D16). The differentiating destination is **federation**: organizations federate, so agents and humans from different companies collaborate in shared rooms across org boundaries without any proprietary SaaS in the loop.
 1. **Why it matters.** The closed platforms (Microsoft Entra Agent ID + Teams, Google's agent ecosystem, Slack AI) all shipped the same @mentionable-agent-in-channel UX — tenant-anchored and vendor-owned, every one. Large organizations (public sector, regulated industries, EU digital-sovereignty buyers) want the capability without the anchor: self-hosted, auditable, open-protocol, with a credible exit at every layer — and they struggle to even specify it. No open, production-ready alternative for _cross-organization_ agent collaboration exists in mid-2026 either (verified: AGNTCY, NANDA, ANP are all pre-production; the A2A registry is a roadmap item). Matrix federation is the only battle-tested cross-org messaging federation in production (Germany's TI-Messenger: 150k+ healthcare orgs; NATO NI2CE; Sweden's public sector; France's Tchap; the European Commission piloting Matrix in 2026). Fgentic composes that proven fabric with the emerging agent standards (A2A, MCP) — a genuinely unoccupied niche: **no other Matrix↔A2A appservice bridge exists** (closest prior art: MindRoom, Beeper ai-bridge, baibot — all direct-LLM bots, none A2A).
-1. **Adoption target.** Long-term donation to the **Agentic AI Foundation (AAIF)**. Realism check (verified against [AAIF's lifecycle policy](https://github.com/aaif/project-proposals)): AAIF has no low-bar sandbox — its entry (Growth) stage already requires wide production adoption, a TC sponsor, and maintainer diversity. The achievable path is: build adoption → **CNCF Sandbox** (kagent's path; low bar: Apache-2.0, DCO, trademark transfer) → AAIF when adoption warrants it. Both paths effectively require **Apache-2.0** (§10) and vendor-neutral open governance (DCO, public tracker, GOVERNANCE.md when contributors arrive).
+1. **Adoption target (§1.3).** Long-term donation to the **Agentic AI Foundation (AAIF)**. Realism check (verified against [AAIF's lifecycle policy](https://github.com/aaif/project-proposals)): AAIF has no low-bar sandbox — its entry (Growth) stage already requires wide production adoption, a TC sponsor, and maintainer diversity. The achievable path is: build adoption → **CNCF Sandbox** (kagent's path; low bar: Apache-2.0, DCO, trademark transfer) → AAIF when adoption warrants it. Both paths effectively require **Apache-2.0** (§10) and vendor-neutral open governance (DCO, public tracker, GOVERNANCE.md when contributors arrive).
 1. **Non-goals.** Not an agent framework (kagent owns that), not a gateway (agentgateway owns that), not a Matrix distribution (ESS/others own that). Fgentic is the _composition_: the bridge, the manifests, the federation profile, the runbooks, and the reference deployment (`fgentic.fmind.ai`).
 
 ### 1.1 Naming (decided 2026-07-10)
@@ -36,6 +42,12 @@ The layering established by the original research record (PLAN.md, retired — s
 ### 2.1 Runtime-independence proof
 
 `mise run test:integration` continuously proves that kagent is an implementation choice rather than a bridge dependency. The disposable kind cluster installs no kagent namespace, CRD, controller, or `Agent`; instead, a deterministic server built directly on the official `a2a-go` SDK runs as the only workload in a separate restricted namespace. Its standalone non-root distroless image contains no bridge binary, and a default-deny NetworkPolicy admits the bridge integration namespace only. The bridge maps the server through the same exact `url:` and pinned Signed AgentCard contract used for partner agents. The real Synapse appservice path verifies reply attribution, the token-budget extension, per-sender admission, success/rate-limit metrics, and fail-closed card tampering. This proof deliberately remains a CI fixture rather than an always-on reference workload, keeping deployed clusters smaller while guarding runtime swappability on every bridge change.
+
+---
+
+## 3. Core Data Flow
+
+The `@mention → A2A → reply` flow stands, amended by the async delegation model ([bridge.md §6](bridge.md)): the bridge ACKs the Matrix transaction immediately, dispatches the A2A call on a bounded per-room-ordered worker pool, and posts/edits the ghost reply when the task completes — the appservice transaction queue is never blocked and LLM concurrency is always bounded.
 
 ---
 

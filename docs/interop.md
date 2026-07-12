@@ -1,3 +1,9 @@
+---
+type: Specification
+title: External-Network Interop
+description: How optional external-network bridges (Slack, Telegram) compose as governed identity boundaries, disabled by default.
+---
+
 # External-network interop
 
 Fgentic treats every external-network bridge as an optional identity boundary, not as a feature of the core Matrix-to-A2A bridge. The repository ships reusable deployment machinery plus opt-in Slack and Telegram reference units. Neither unit is enabled by the local or GCP profile, and a rendered manifest is not evidence that a provider account, tenant policy, or live message path has been accepted.

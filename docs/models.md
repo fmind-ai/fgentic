@@ -1,3 +1,9 @@
+---
+type: Specification
+title: Model Provider Profiles
+description: Per-cluster model backends behind agentgateway: the Vertex AI default and the self-hosted vLLM profile (D16).
+---
+
 # Model Provider Profiles (D16)
 
 Fgentic keeps model choice at the cluster boundary: agents call the same in-cluster OpenAI-compatible endpoint, while the selected agentgateway profile owns the model endpoint and any credential. This implements [D16](design-decisions.md#d16--sovereign-model-profiles-decided-2026-07-11-implementation-milestone-m1) without giving model credentials to kagent or the bridge.

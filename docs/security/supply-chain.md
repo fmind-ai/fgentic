@@ -1,3 +1,9 @@
+---
+type: Runbook
+title: Bridge Supply-Chain Verification
+description: How to independently verify the bridge's signed multi-arch image, SBOM, and provenance chain.
+---
+
 # Bridge Supply-Chain Verification
 
 The bridge release chain has two independently verified deployable artifacts:

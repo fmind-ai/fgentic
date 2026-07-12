@@ -1,3 +1,9 @@
+---
+type: Architecture Decision Record
+title: Agent Rooms Unencrypted, Enforced Server-Side
+description: Keep collaboration/agent rooms unencrypted by policy, force-disabled server-side; revisit for federated rooms.
+---
+
 # 0008 — Agent Rooms Unencrypted, Enforced Server-Side
 
 Status: Accepted

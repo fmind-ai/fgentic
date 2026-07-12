@@ -1,3 +1,9 @@
+---
+type: Runbook
+title: Production Installation
+description: Production path: Flux reconciliation of a reviewed revision, SOPS secrets, SSO, observability, and acceptance gates.
+---
+
 # Production Installation
 
 The production path reconciles a reviewed git revision through Flux, decrypts per-cluster SOPS secrets in-cluster, enables SSO and observability, and keeps the canonical HelmRelease values under `infra/` and `apps/`. It is intentionally different from the disposable [evaluation installer](../README.md#evaluate-in-15-minutes).

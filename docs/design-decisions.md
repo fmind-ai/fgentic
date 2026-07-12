@@ -1,3 +1,9 @@
+---
+type: Decision Register
+title: Design Decisions D1–D16
+description: The durable register of settled design decisions with the evidence behind each; revisit via a new ADR, never a drive-by PR (§4).
+---
+
 # Design Decisions D1–D16 (formerly SPEC §4)
 
 > The durable record of _why_ the system looks the way it does. Revisit via a new ADR, never a drive-by PR. Section references `§N` map per the table in [.agents/AGENTS.md](../.agents/AGENTS.md).
@@ -52,11 +58,11 @@ kagent v0.9.11's default `auth.mode: unsecure` derives identity from a spoofable
 
 ### D12 — Data durability (was: zero backups)
 
-A single PVC loss would have destroyed Synapse history, MAS identities, kagent sessions, and bridge state simultaneously. **Now:** CNPG WAL archiving + nightly `ScheduledBackup` to a Terraform-provisioned GCS bucket via a keyless Workload-Identity binding; `instances: 3` documented as the production profile. Still open: the Synapse **media store** decision (S3/GCS media provider vs snapshot-backed PVC) — Phase 1.
+A single PVC loss would have destroyed Synapse history, MAS identities, kagent sessions, and bridge state simultaneously. **Now:** CNPG WAL archiving + nightly `ScheduledBackup` to a Terraform-provisioned GCS bucket via a keyless Workload-Identity binding; `instances: 3` documented as the production profile. Still open: the Synapse **media store** decision (S3/GCS media provider vs snapshot-backed PVC) — tracked as issue #62 (M9).
 
 ### D13 — Supply chain: digest-pinned, signed images (was: mutable `latest`)
 
-**Now:** `cd.yml` builds multi-arch → trivy-scans the pushed digest → emits Syft SBOM plus SLSA/SBOM attestations → cosign-signs the image and an OCI Helm chart (keyless OIDC) → commits both immutable digests into the deployment source. Flux keyless-verifies the chart's exact workflow identity before helm-controller can install it. CI (`ci.yml`) runs the same `mise` gates as the git hooks plus a clean-tree assertion. The one-time safe bootstrap and operator verification commands are in `docs/security/supply-chain.md`.
+**Now:** `cd.yml` builds multi-arch → trivy-scans the pushed digest → emits Syft SBOM plus SLSA/SBOM attestations → cosign-signs the image and an OCI Helm chart (keyless OIDC) → commits both immutable digests into the deployment source. Flux keyless-verifies the chart's exact workflow identity before helm-controller can install it. CI (`ci.yml`) runs the same `mise` gates as the git hooks plus a clean-tree assertion. The one-time safe bootstrap and operator verification commands are in [docs/security/supply-chain.md](security/supply-chain.md).
 
 ### D14 — NetworkPolicies pre-wired for monitoring (was: self-sabotaging)
 

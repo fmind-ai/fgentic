@@ -1,3 +1,9 @@
+---
+type: Specification
+title: Prompt-Injection Controls and Limits
+description: Prompt-injection controls and their honest limits for untrusted room content (§7.2).
+---
+
 # Prompt-Injection Controls and Limits (SPEC §7.2)
 
 Prompt injection is an unresolved model-behavior risk, not an input-validation bug that the Matrix bridge can eliminate. Matrix messages, quoted replies, agent output, retrieved documents, and tool results are all untrusted data. Models process that data in the same natural-language context as instructions, so no delimiter, classifier, fine-tune, or retrieval design creates a reliable security boundary. This is the [OWASP LLM01:2025](https://genai.owasp.org/llmrisk/llm01-prompt-injection/) threat model.

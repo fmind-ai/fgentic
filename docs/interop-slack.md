@@ -1,3 +1,9 @@
+---
+type: Runbook
+title: Slack Interop Walkthrough
+description: Operator walkthrough for enabling the opt-in mautrix-slack bridge unit over Socket Mode.
+---
+
 # Slack interop walkthrough
 
 Status: manifests and offline policy tests are implementable without provider access. Live Slack workspace acceptance, bidirectional screenshots, and a real provider audit record require a workspace owner and remain a human gate.

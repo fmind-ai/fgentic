@@ -1,9 +1,12 @@
-# ADR 0010: Defer SPIFFE workload identity until both protocol endpoints can consume it
+---
+type: Architecture Decision Record
+title: Defer SPIFFE Workload Identity
+description: Defer SPIFFE until both protocol endpoints can actually consume workload identities.
+---
 
-- **Status:** Accepted
-- **Date:** 2026-07-11
-- **Decision owners:** Fgentic maintainers
-- **Related:** D11, issue #20, issue #40, issue #42, issue #93
+# 0010 — Defer SPIFFE Workload Identity Until Both Protocol Endpoints Can Consume It
+
+Status: Accepted (2026-07-11). Related: D11, issue #20, issue #40, issue #42, issue #93.
 
 ## Context
 

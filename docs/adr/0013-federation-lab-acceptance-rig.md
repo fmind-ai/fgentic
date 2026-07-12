@@ -1,3 +1,9 @@
+---
+type: Architecture Decision Record
+title: Federation Lab as the Permanent Acceptance Rig
+description: Keep the provider-free federation lab as the permanent acceptance rig for cross-org changes.
+---
+
 # 0013 — Federation Lab as the Permanent Acceptance Rig
 
 Status: Proposed
