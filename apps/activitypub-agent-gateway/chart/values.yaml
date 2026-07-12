@@ -11,6 +11,9 @@ config:
   serverName: fgentic.fmind.ai # the acct: handle domain; overridden per cluster (${server_name})
   publicScheme: https # scheme of every actor/inbox/outbox URL
   publicHost: "" # externally-reachable host for actor IDs; empty defaults to serverName
+  # Base URL advertised in the published A2A AgentCard + actor `implements` for cross-protocol
+  # discovery (#215). Empty defaults in-app to the gated federation A2A host (https://a2a.<publicHost>).
+  a2aPublicBaseURL: ""
   # Route A2A THROUGH agentgateway by default (telemetry + the LLM-credential chokepoint on the
   # agent's own egress). Point directly at kagent to skip the gateway hop:
   #   http://kagent-controller.kagent.svc.cluster.local:8083

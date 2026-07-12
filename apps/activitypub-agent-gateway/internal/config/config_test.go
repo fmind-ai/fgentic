@@ -40,7 +40,8 @@ func TestValidateRejectsBadInput(t *testing.T) {
 	base := func() Config {
 		return Config{
 			ServerName: "s", PublicScheme: "https", PublicHost: "h",
-			A2ABaseURL: "http://gw", AgentsPath: "/a", GhostPrefix: "agent-",
+			A2APublicBaseURL: "https://a2a.h",
+			A2ABaseURL:       "http://gw", AgentsPath: "/a", GhostPrefix: "agent-",
 			ListenPort: 8480, MetricsPort: 9090,
 			RequestTimeout: time.Minute, TaskTimeout: 10 * time.Minute,
 			ShutdownTimeout: time.Second, LogLevel: "info", LogFormat: "json",
@@ -57,6 +58,7 @@ func TestValidateRejectsBadInput(t *testing.T) {
 		"bad scheme":     func(c *Config) { c.PublicScheme = "ftp" },
 		"empty public":   func(c *Config) { c.PublicHost = "" },
 		"empty a2a":      func(c *Config) { c.A2ABaseURL = "" },
+		"bad a2a public": func(c *Config) { c.A2APublicBaseURL = "ftp://a2a.h" },
 		"empty agents":   func(c *Config) { c.AgentsPath = "" },
 		"padded prefix":  func(c *Config) { c.GhostPrefix = " agent-" },
 		"bad listen":     func(c *Config) { c.ListenPort = 0 },

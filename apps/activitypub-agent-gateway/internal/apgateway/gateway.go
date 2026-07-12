@@ -50,6 +50,16 @@ type Gateway struct {
 	now        func() time.Time
 	border     *Border           // federation policy border; nil disables enforcement (local-only dev/tests)
 	signer     *integrity.Signer // FEP-8b32 object-integrity signer; nil serves replies without a proof
+	a2aBaseURL string            // public base of the advertised A2A endpoint (defaults to baseURL)
+}
+
+// SetA2APublicBase overrides the base URL the published AgentCard and the actor's `implements`
+// advertise for A2A delegation (issue #215). It defaults to the AP public base; production points it
+// at the gated federation A2A host (a2a.<domain>).
+func (g *Gateway) SetA2APublicBase(baseURL string) {
+	if baseURL != "" {
+		g.a2aBaseURL = strings.TrimRight(baseURL, "/")
+	}
 }
 
 // UseBorder installs the federation policy border. When set, every inbound activity must pass
@@ -79,6 +89,7 @@ func New(baseURL, serverName string, registry *Registry, delegator Delegator, re
 		metrics:    newMetrics(reg),
 		log:        log,
 		now:        func() time.Time { return time.Now().UTC() },
+		a2aBaseURL: strings.TrimRight(baseURL, "/"),
 	}, nil
 }
 
@@ -90,6 +101,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("POST /ap/agents/{ghost}/inbox", g.handleInbox)
 	mux.HandleFunc("GET /ap/agents/{ghost}/outbox", g.handleOutbox)
 	mux.HandleFunc("GET /ap/agents/{ghost}/activities/{seq}", g.handleActivity)
+	mux.HandleFunc("GET /ap/agents/{ghost}/agent-card.json", g.handleAgentCard)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") })
 	return mux
@@ -110,13 +122,22 @@ func (g *Gateway) handleWebFinger(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "no such agent", http.StatusNotFound)
 		return
 	}
+	// One WebFinger resolution reveals BOTH the ActivityPub actor (rel=self) AND a resolvable
+	// pointer to the richer A2A AgentCard — the novel cross-protocol discovery of issue #215.
 	writeJRD(w, jrd{
 		Subject: g.handle(ghost),
-		Links: []jrdLink{{
-			Rel:  "self",
-			Type: "application/activity+json",
-			Href: string(g.actorID(ghost)),
-		}},
+		Links: []jrdLink{
+			{
+				Rel:  "self",
+				Type: "application/activity+json",
+				Href: string(g.actorID(ghost)),
+			},
+			{
+				Rel:  a2aAgentCardRel,
+				Type: "application/json",
+				Href: g.a2aCardURL(ghost),
+			},
+		},
 	})
 }
 
@@ -367,6 +388,13 @@ func (g *Gateway) marshalActor(ghost string, ref AgentRef) ([]byte, error) {
 
 	// Honest machine labeling: Service type (from buildActor) + the explicit bot flag.
 	doc["bot"] = true
+	// FEP-844e cross-protocol advertisement: this actor also implements A2A at the endpoint below,
+	// pointing to its published AgentCard so a remote org can discover the richer capability (#215).
+	doc["implements"] = []any{map[string]any{
+		"href":      g.a2aEndpoint(ref),
+		"name":      "A2A",
+		"agentCard": g.a2aCardURL(ghost),
+	}}
 	contexts := []any{
 		integrity.ActivityStreamsContext,
 		map[string]any{"toot": mastodonContext, "bot": "toot:bot"},
