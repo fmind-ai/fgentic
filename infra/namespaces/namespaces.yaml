@@ -10,6 +10,7 @@ metadata:
   labels:
     fgentic.dev/managed: "true"
     fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: small
     pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
@@ -21,6 +22,7 @@ metadata:
   labels:
     fgentic.dev/managed: "true"
     fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: small
     pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
@@ -32,6 +34,7 @@ metadata:
   labels:
     fgentic.dev/managed: "true"
     fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: small
     pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
@@ -43,6 +46,7 @@ metadata:
   labels:
     fgentic.dev/managed: "true"
     fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: small
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
@@ -54,6 +58,7 @@ metadata:
   labels:
     fgentic.dev/managed: "true"
     fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: small
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
@@ -65,6 +70,7 @@ metadata:
   labels:
     fgentic.dev/managed: "true"
     fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: core
     pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
@@ -76,6 +82,7 @@ metadata:
   labels:
     fgentic.dev/managed: "true"
     fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: small
     pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
@@ -87,6 +94,7 @@ metadata:
   labels:
     fgentic.dev/managed: "true"
     fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: core
     # kagent's tool/agent pods need broader access than "restricted"; enforce baseline.
     pod-security.kubernetes.io/enforce: baseline
     pod-security.kubernetes.io/audit: restricted
@@ -98,6 +106,7 @@ metadata:
   name: bridge
   labels:
     fgentic.dev/managed: "true"
+    fgentic.dev/quota-profile: small
     # The local overlay deliberately side-loads matrix-a2a-bridge:local; keep this staged.
     fgentic.dev/image-policy: audit
     pod-security.kubernetes.io/enforce: restricted
@@ -111,6 +120,7 @@ metadata:
   labels:
     fgentic.dev/managed: "true"
     fgentic.dev/image-policy: enforce
+    fgentic.dev/quota-profile: small
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
@@ -122,6 +132,7 @@ metadata:
   labels:
     fgentic.dev/managed: "true"
     fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: core
     # node-exporter needs host access (hostNetwork/hostPath) — the one privileged namespace.
     pod-security.kubernetes.io/enforce: privileged
     pod-security.kubernetes.io/audit: privileged
@@ -134,6 +145,7 @@ metadata:
   labels:
     fgentic.dev/managed: "true"
     fgentic.dev/image-policy: enforce
+    fgentic.dev/quota-profile: compute
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted

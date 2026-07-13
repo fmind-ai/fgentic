@@ -22,4 +22,11 @@ spec:
     namespace: flux-system
   # Control plane only; the data-plane proxy is spawned per-Gateway and shaped by
   # AgentgatewayParameters (infra/agentgateway).
-  values: {}
+  values:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi

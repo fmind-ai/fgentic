@@ -1,0 +1,8 @@
+# Reusable effective namespace layer for lifecycle bootstrap and offline validation. Flux composes
+# the same base and federation component; this helper prevents a second hand-maintained omit list.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../namespaces
+components:
+  - ../namespaces

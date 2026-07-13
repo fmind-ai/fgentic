@@ -54,7 +54,7 @@ spec:
               enabled: true
       resources:
         requests: { cpu: 50m, memory: 128Mi }
-        limits: { memory: 512Mi }
+        limits: { cpu: 500m, memory: 512Mi }
     prometheus:
       prometheusSpec:
         retention: 7d
@@ -65,9 +65,9 @@ spec:
         ruleSelectorNilUsesHelmValues: false
         resources:
           requests: { cpu: 100m, memory: 512Mi }
-          limits: { memory: 1Gi }
+          limits: { cpu: "1", memory: 1Gi }
     alertmanager:
       alertmanagerSpec:
         resources:
           requests: { cpu: 10m, memory: 64Mi }
-          limits: { memory: 128Mi }
+          limits: { cpu: 250m, memory: 128Mi }

@@ -25,6 +25,8 @@ All ActivityPub surface lives in ONE new self-contained app, **`apps/activitypub
 
 Each exposed agent is presented as an ActivityPub **`Service` actor** (§3, row _bot typing_); a collaboration room may additionally be presented as a **`Group` actor** for cross-org collaboration (#217). The gateway is a translation and governance border between the AP object graph and A2A `message/send`, mirroring how the mautrix bridge translates Matrix events to A2A ([bridge spec §6](bridge.md)).
 
+The dormant `deploy/` unit already bounds its `activitypub` namespace with the shared `small` ResourceQuota and container defaults. Its future Flux Kustomization **must** source `platform-settings` (plus the optional overrides ConfigMap) through post-build substitution before activation; applying the unit directly with unresolved quota variables is unsupported.
+
 ## §3 — Control mapping: every M8 control has an ActivityPub twin
 
 No ActivityPub feature ships without the twin control in this table proven fail-closed first. The left column is the settled Matrix/A2A control; the right is its AP equivalent and the issue that lands it.

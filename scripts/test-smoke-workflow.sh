@@ -27,12 +27,20 @@ yq -e '
   ([.jobs.demo.steps[] | select(.uses == "docker/setup-buildx-action@v4")] | length) > 0 and
   ([.jobs.demo.steps[] | select(.run == "mise run demo:up")] | length) > 0 and
   ([.jobs.demo.steps[] |
+    select(.id == "quota_usage" and ."continue-on-error" == true and
+      ((.run // "") | contains("kubectl get resourcequota --all-namespaces")) and
+      ((.run // "") | contains("--field-selector metadata.name=compute-budget")) and
+      ((.run // "") | contains("agentgateway-system")) and
+      ((.run // "") | contains("postgres")))] | length) == 1 and
+  ([.jobs.demo.steps[] |
     select(.run == "mise run demo:down" and (.if | contains("always")))] | length) > 0 and
   ([.jobs.demo.steps[] |
     select(((.run // "") | contains("infra/models/demo/server.yaml")) and
       ((.env.BAD_MODEL_IMAGE // "") | contains("sha256:0000000000000000")))] | length) > 0 and
   ([.jobs.demo.steps[] |
     select((.run // "") == "bash scripts/collect-smoke-diagnostics.sh demo-up")] | length) > 0 and
+  ([.jobs.demo.steps[] | select(.name == "Enforce demo result") |
+    select((.run // "") | contains("steps.quota_usage.outcome"))] | length) == 1 and
   ([.jobs.demo.steps[] |
     select(.uses == "actions/upload-artifact@v7" and (.if | contains("failure")))] |
     length) > 0 and
@@ -40,6 +48,14 @@ yq -e '
   ([.jobs.policy.steps[] | select(.run == "mise run test:mcp-governance")] | length) > 0 and
   ([.jobs.policy.steps[] | select(.run == "mise run test:tracing")] | length) > 0 and
   ([.jobs.policy.steps[] | select(.run == "mise run test:network-policies:kind")] | length) > 0 and
+  ([.jobs.policy.steps[] |
+    select(.run == "mise run test:resource-quotas" and .id == "quota" and
+      ."continue-on-error" == true and .env.KIND_CLUSTER_NAME == "fgentic-smoke-quota")] |
+    length) == 1 and
+  ([.jobs.policy.steps[] | select(.name == "Record policy results") |
+    select((.run // "") | contains("quota=${{ steps.quota.outcome }}"))] | length) == 1 and
+  ([.jobs.policy.steps[] | select(.name == "Enforce policy result") |
+    select((.run // "") | contains("steps.quota.outcome"))] | length) == 1 and
   ([.jobs.policy.steps[] |
     select(.uses == "actions/upload-artifact@v7" and (.if | contains("failure")))] |
     length) > 0 and

@@ -105,6 +105,7 @@ depends = [
   "check:reference-grants",
   "check:a2a-authorization",
   "check:admission-policies",
+  "check:resource-quotas",
   "check:mcp-governance",
   "check:audit-attribution",
   "check:postgres-audit",
@@ -192,6 +193,10 @@ run = "bash scripts/test-a2a-authorization.sh"
 description = "Validate the fail-closed Kubernetes admission policy and Flux bootstrap contract"
 run = "bash scripts/test-admission-policies.sh"
 
+[tasks."check:resource-quotas"]
+description = "Validate namespace quota profiles, defaults, and Flux substitution offline"
+run = "bash scripts/test-resource-quotas.sh"
+
 [tasks."check:mcp-governance"]
 description = "Validate the fail-closed per-agent MCP route, tool allowlist, and audit contract"
 run = "bash scripts/test-mcp-governance.sh"
@@ -251,6 +256,10 @@ run = "bash scripts/test-a2a-authorization.sh --runtime"
 [tasks."test:admission-policies"]
 description = "Exercise admission denials on an explicitly selected disposable/local cluster"
 run = "bash scripts/test-admission-policies.sh --runtime"
+
+[tasks."test:resource-quotas"]
+description = "Scale an agent Deployment past quota in an isolated disposable kind cluster"
+run = "bash scripts/test-resource-quotas.sh --runtime"
 
 [tasks."test:mcp-governance"]
 description = "Exercise MCP authentication, tool filtering, backend routing, and content-free audit records"

@@ -43,7 +43,7 @@ spec:
       readOnlyRootFilesystem: true
     resources:
       requests: { cpu: 25m, memory: 64Mi }
-      limits: { memory: 256Mi }
+      limits: { cpu: 500m, memory: 256Mi }
     ports:
       otlp:
         enabled: true
@@ -196,7 +196,7 @@ spec:
         readOnlyRootFilesystem: true
       resources:
         requests: { cpu: 25m, memory: 96Mi }
-        limits: { memory: 256Mi }
+        limits: { cpu: 500m, memory: 256Mi }
       ingress:
         enabled: false
       httproute:

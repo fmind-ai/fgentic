@@ -1,0 +1,341 @@
+# Namespace compute budgets are created with the Namespaces so later Helm and operator workloads
+# cannot bypass accounting during their first reconciliation. The three profiles are deliberately
+# broad initial ceilings; tune their platform-settings values only from observed usage. Kubernetes
+# system namespaces outside this owned layer remain exempt.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-budget
+  namespace: cert-manager
+spec:
+  hard:
+    pods: "${quota_small_pods}"
+    requests.cpu: "${quota_small_requests_cpu}"
+    requests.memory: "${quota_small_requests_memory}"
+    limits.cpu: "${quota_small_limits_cpu}"
+    limits.memory: "${quota_small_limits_memory}"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-defaults
+  namespace: cert-manager
+spec:
+  limits:
+    - type: Container
+      # Defaults affect only omitted fields; reviewed workload-specific values still win.
+      default:
+        cpu: "${quota_default_limit_cpu}"
+        memory: "${quota_default_limit_memory}"
+      defaultRequest:
+        cpu: "${quota_default_request_cpu}"
+        memory: "${quota_default_request_memory}"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-budget
+  namespace: cnpg-system
+spec:
+  hard:
+    pods: "${quota_small_pods}"
+    requests.cpu: "${quota_small_requests_cpu}"
+    requests.memory: "${quota_small_requests_memory}"
+    limits.cpu: "${quota_small_limits_cpu}"
+    limits.memory: "${quota_small_limits_memory}"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-defaults
+  namespace: cnpg-system
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "${quota_default_limit_cpu}"
+        memory: "${quota_default_limit_memory}"
+      defaultRequest:
+        cpu: "${quota_default_request_cpu}"
+        memory: "${quota_default_request_memory}"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-budget
+  namespace: gateway
+spec:
+  hard:
+    pods: "${quota_small_pods}"
+    requests.cpu: "${quota_small_requests_cpu}"
+    requests.memory: "${quota_small_requests_memory}"
+    limits.cpu: "${quota_small_limits_cpu}"
+    limits.memory: "${quota_small_limits_memory}"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-defaults
+  namespace: gateway
+spec:
+  limits:
+    - type: Container
+      # Defaults affect only omitted fields; reviewed workload-specific values still win.
+      default:
+        cpu: "${quota_default_limit_cpu}"
+        memory: "${quota_default_limit_memory}"
+      defaultRequest:
+        cpu: "${quota_default_request_cpu}"
+        memory: "${quota_default_request_memory}"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-budget
+  namespace: postgres
+spec:
+  hard:
+    pods: "${quota_small_pods}"
+    requests.cpu: "${quota_small_requests_cpu}"
+    requests.memory: "${quota_small_requests_memory}"
+    limits.cpu: "${quota_small_limits_cpu}"
+    limits.memory: "${quota_small_limits_memory}"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-defaults
+  namespace: postgres
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "${quota_default_limit_cpu}"
+        memory: "${quota_default_limit_memory}"
+      defaultRequest:
+        cpu: "${quota_default_request_cpu}"
+        memory: "${quota_default_request_memory}"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-budget
+  namespace: keycloak
+spec:
+  hard:
+    pods: "${quota_small_pods}"
+    requests.cpu: "${quota_small_requests_cpu}"
+    requests.memory: "${quota_small_requests_memory}"
+    limits.cpu: "${quota_small_limits_cpu}"
+    limits.memory: "${quota_small_limits_memory}"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-defaults
+  namespace: keycloak
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "${quota_default_limit_cpu}"
+        memory: "${quota_default_limit_memory}"
+      defaultRequest:
+        cpu: "${quota_default_request_cpu}"
+        memory: "${quota_default_request_memory}"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-budget
+  namespace: agentgateway-system
+spec:
+  hard:
+    pods: "${quota_small_pods}"
+    requests.cpu: "${quota_small_requests_cpu}"
+    requests.memory: "${quota_small_requests_memory}"
+    limits.cpu: "${quota_small_limits_cpu}"
+    limits.memory: "${quota_small_limits_memory}"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-defaults
+  namespace: agentgateway-system
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "${quota_default_limit_cpu}"
+        memory: "${quota_default_limit_memory}"
+      defaultRequest:
+        cpu: "${quota_default_request_cpu}"
+        memory: "${quota_default_request_memory}"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-budget
+  namespace: bridge
+spec:
+  hard:
+    pods: "${quota_small_pods}"
+    requests.cpu: "${quota_small_requests_cpu}"
+    requests.memory: "${quota_small_requests_memory}"
+    limits.cpu: "${quota_small_limits_cpu}"
+    limits.memory: "${quota_small_limits_memory}"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-defaults
+  namespace: bridge
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "${quota_default_limit_cpu}"
+        memory: "${quota_default_limit_memory}"
+      defaultRequest:
+        cpu: "${quota_default_request_cpu}"
+        memory: "${quota_default_request_memory}"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-budget
+  namespace: bridges
+spec:
+  hard:
+    pods: "${quota_small_pods}"
+    requests.cpu: "${quota_small_requests_cpu}"
+    requests.memory: "${quota_small_requests_memory}"
+    limits.cpu: "${quota_small_limits_cpu}"
+    limits.memory: "${quota_small_limits_memory}"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-defaults
+  namespace: bridges
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "${quota_default_limit_cpu}"
+        memory: "${quota_default_limit_memory}"
+      defaultRequest:
+        cpu: "${quota_default_request_cpu}"
+        memory: "${quota_default_request_memory}"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-budget
+  namespace: matrix
+spec:
+  hard:
+    pods: "${quota_core_pods}"
+    requests.cpu: "${quota_core_requests_cpu}"
+    requests.memory: "${quota_core_requests_memory}"
+    limits.cpu: "${quota_core_limits_cpu}"
+    limits.memory: "${quota_core_limits_memory}"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-defaults
+  namespace: matrix
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "${quota_default_limit_cpu}"
+        memory: "${quota_default_limit_memory}"
+      defaultRequest:
+        cpu: "${quota_default_request_cpu}"
+        memory: "${quota_default_request_memory}"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-budget
+  namespace: kagent
+spec:
+  hard:
+    pods: "${quota_core_pods}"
+    requests.cpu: "${quota_core_requests_cpu}"
+    requests.memory: "${quota_core_requests_memory}"
+    limits.cpu: "${quota_core_limits_cpu}"
+    limits.memory: "${quota_core_limits_memory}"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-defaults
+  namespace: kagent
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "${quota_default_limit_cpu}"
+        memory: "${quota_default_limit_memory}"
+      defaultRequest:
+        cpu: "${quota_default_request_cpu}"
+        memory: "${quota_default_request_memory}"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-budget
+  namespace: monitoring
+spec:
+  hard:
+    pods: "${quota_core_pods}"
+    requests.cpu: "${quota_core_requests_cpu}"
+    requests.memory: "${quota_core_requests_memory}"
+    limits.cpu: "${quota_core_limits_cpu}"
+    limits.memory: "${quota_core_limits_memory}"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-defaults
+  namespace: monitoring
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "${quota_default_limit_cpu}"
+        memory: "${quota_default_limit_memory}"
+      defaultRequest:
+        cpu: "${quota_default_request_cpu}"
+        memory: "${quota_default_request_memory}"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-budget
+  namespace: models
+spec:
+  hard:
+    pods: "${quota_compute_pods}"
+    requests.cpu: "${quota_compute_requests_cpu}"
+    requests.memory: "${quota_compute_requests_memory}"
+    limits.cpu: "${quota_compute_limits_cpu}"
+    limits.memory: "${quota_compute_limits_memory}"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-defaults
+  namespace: models
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "${quota_default_limit_cpu}"
+        memory: "${quota_default_limit_memory}"
+      defaultRequest:
+        cpu: "${quota_default_request_cpu}"
+        memory: "${quota_default_request_memory}"
