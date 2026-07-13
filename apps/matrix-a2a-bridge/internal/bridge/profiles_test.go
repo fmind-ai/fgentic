@@ -455,6 +455,8 @@ type matrixProfileRequest struct {
 func TestMatrixProfileWriterUsesStandardProfileAPIs(t *testing.T) {
 	var mu sync.Mutex
 	var requests []matrixProfileRequest
+	currentDisplayName := ""
+	currentAvatarURL := ""
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
@@ -463,9 +465,15 @@ func TestMatrixProfileWriterUsesStandardProfileAPIs(t *testing.T) {
 		case req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/register"):
 			_, _ = w.Write([]byte("{}"))
 		case req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/displayname"):
-			_, _ = w.Write([]byte(`{"displayname":""}`))
+			mu.Lock()
+			value := currentDisplayName
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]string{"displayname": value})
 		case req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/avatar_url"):
-			_, _ = w.Write([]byte(`{"avatar_url":""}`))
+			mu.Lock()
+			value := currentAvatarURL
+			mu.Unlock()
+			_ = json.NewEncoder(w).Encode(map[string]string{"avatar_url": value})
 		case req.Method == http.MethodGet && strings.Contains(req.URL.Path, "/download/"):
 			// IntentAPI probes the media before setting it for homeserver compatibility. A failed
 			// probe is explicitly non-fatal in mautrix and does not change the profile API call.
@@ -478,6 +486,12 @@ func TestMatrixProfileWriterUsesStandardProfileAPIs(t *testing.T) {
 			}
 			mu.Lock()
 			requests = append(requests, matrixProfileRequest{method: req.Method, path: req.URL.Path, body: body})
+			if strings.HasSuffix(req.URL.Path, "/displayname") {
+				currentDisplayName, _ = body["displayname"].(string)
+			}
+			if strings.HasSuffix(req.URL.Path, "/avatar_url") {
+				currentAvatarURL, _ = body["avatar_url"].(string)
+			}
 			mu.Unlock()
 			_, _ = w.Write([]byte("{}"))
 		default:
@@ -540,5 +554,22 @@ func TestMatrixProfileWriterUsesStandardProfileAPIs(t *testing.T) {
 	}
 	if skills, ok := metadata["skills"].([]any); !ok || len(skills) != 2 {
 		t.Errorf("custom skills = %#v", metadata["skills"])
+	}
+
+	mu.Lock()
+	requests = nil
+	mu.Unlock()
+	profile.AvatarURL = id.ContentURI{}
+	if err := writer.Apply(t.Context(), id.NewUserID("agent-k8s", ownServer), profile); err != nil {
+		t.Fatalf("Apply without avatar: %v", err)
+	}
+	mu.Lock()
+	got = slices.Clone(requests)
+	mu.Unlock()
+	if len(got) != 2 {
+		t.Fatalf("profile PUT requests after avatar removal = %d, want avatar clear and %s: %+v", len(got), agentProfileField, got)
+	}
+	if !strings.HasSuffix(got[0].path, "/avatar_url") || got[0].body["avatar_url"] != "" {
+		t.Errorf("avatar clear request = %+v", got[0])
 	}
 }

@@ -324,6 +324,10 @@ for lease_contract in \
 	}
 done
 rg --fixed-strings '#lobby:fgentic.localhost' "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
+rg --fixed-strings 'APP_SERVICE_MEMBERS=("a2a-bridge" "${GHOSTS[@]}")' \
+	"${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
+rg --fixed-strings 'Send !agents to discover the agents available to you' \
+	"${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
 rg --fixed-strings 'creation_content: {"m.federate": false}' \
 	"${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
 rg --fixed-strings '/state/m.room.create' "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null

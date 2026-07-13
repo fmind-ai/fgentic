@@ -235,7 +235,7 @@ func (f fixture) sendLoadMessages(
 			for sequence := range messagesPerRoom {
 				content := messageContent{
 					Body:     fmt.Sprintf("%s load room=%02d seq=%02d", ghost, roomIndex, sequence),
-					Mentions: mentions{UserIDs: []string{ghost}},
+					Mentions: &mentions{UserIDs: []string{ghost}},
 					MsgType:  "m.text",
 				}
 				transactionID := fmt.Sprintf("load-%02d-%02d", roomIndex, sequence)

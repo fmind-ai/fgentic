@@ -28,6 +28,9 @@ const (
 	password             = "integration-password"
 	ghostLocalpart       = "agent-integration"
 	plainGhostLocalpart  = "agent-plain"
+	bridgeBotLocalpart   = "a2a-bridge"
+	localProfileName     = "Fgentic bridge integration stub"
+	localDescription     = "Deterministic A2A endpoint for the Matrix appservice wire test"
 	replyText            = "integration reply"
 	plainReplyText       = "plain A2A reply"
 	rateLimitedReplyText = "⚠️ rate limit reached — please retry in a moment."
@@ -58,9 +61,9 @@ type matrixEvent struct {
 }
 
 type messageContent struct {
-	Body      string   `json:"body"`
-	Mentions  mentions `json:"m.mentions,omitempty"`
-	MsgType   string   `json:"msgtype"`
+	Body      string    `json:"body"`
+	Mentions  *mentions `json:"m.mentions,omitempty"`
+	MsgType   string    `json:"msgtype"`
 	RelatesTo struct {
 		InReplyTo struct {
 			EventID string `json:"event_id"`
@@ -122,10 +125,42 @@ func (f fixture) runBasic(ctx context.Context) error {
 	if err := f.waitForJoin(ctx, sess.AccessToken, roomID, ghost); err != nil {
 		return err
 	}
+	if err := f.waitForDisplayName(ctx, sess.AccessToken, ghost, localProfileName); err != nil {
+		return fmt.Errorf("AgentCard-backed ghost profile: %w", err)
+	}
+	bridgeBot := "@" + bridgeBotLocalpart + ":" + f.server
+	if err := f.invite(ctx, sess.AccessToken, roomID, bridgeBot); err != nil {
+		return err
+	}
+	if err := f.waitForJoin(ctx, sess.AccessToken, roomID, bridgeBot); err != nil {
+		return err
+	}
+
+	directoryEventID, err := f.sendMessageTxn(
+		ctx,
+		sess.AccessToken,
+		roomID,
+		"integration-directory",
+		messageContent{Body: "!agents", MsgType: "m.text"},
+	)
+	if err != nil {
+		return err
+	}
+	if err := f.waitForNoticeContract(
+		ctx,
+		sess.AccessToken,
+		roomID,
+		bridgeBot,
+		directoryEventID,
+		[]string{localProfileName, ghost, localDescription},
+		[]string{"@agent-denied:" + f.server},
+	); err != nil {
+		return fmt.Errorf("in-room agent directory: %w", err)
+	}
 
 	content := messageContent{
 		Body:     ghost + " prove the appservice wire path",
-		Mentions: mentions{UserIDs: []string{ghost}},
+		Mentions: &mentions{UserIDs: []string{ghost}},
 		MsgType:  "m.text",
 	}
 	eventID, err := f.sendMessage(ctx, sess.AccessToken, roomID, content)
@@ -158,7 +193,7 @@ func (f fixture) runBasic(ctx context.Context) error {
 	}
 	plainContent := messageContent{
 		Body:     plainGhost + " prove the framework-independent A2A path",
-		Mentions: mentions{UserIDs: []string{plainGhost}},
+		Mentions: &mentions{UserIDs: []string{plainGhost}},
 		MsgType:  "m.text",
 	}
 	plainEventID, err := f.sendMessageTxn(
@@ -202,7 +237,7 @@ func (f fixture) runBasic(ctx context.Context) error {
 
 	rateContent := messageContent{
 		Body:     plainGhost + " this second invocation must stay inside the bridge budget",
-		Mentions: mentions{UserIDs: []string{plainGhost}},
+		Mentions: &mentions{UserIDs: []string{plainGhost}},
 		MsgType:  "m.text",
 	}
 	rateEventID, err := f.sendMessageTxn(
@@ -247,7 +282,7 @@ func (f fixture) runBasic(ctx context.Context) error {
 
 	tamperedContent := messageContent{
 		Body:     plainGhost + " this must fail closed after card tampering",
-		Mentions: mentions{UserIDs: []string{plainGhost}},
+		Mentions: &mentions{UserIDs: []string{plainGhost}},
 		MsgType:  "m.text",
 	}
 	tamperedEventID := "$plain-tampered:integration.test"
@@ -268,6 +303,9 @@ func (f fixture) runBasic(ctx context.Context) error {
 	slog.Info(
 		"bridge integration passed",
 		"room_id", roomID,
+		"ghost_profile", localProfileName,
+		"directory_event_id", directoryEventID,
+		"directory_discovery", true,
 		"mention_event_id", eventID,
 		"reply", replyText,
 		"deduplicated_replay", true,
@@ -379,6 +417,41 @@ func (f fixture) waitForJoin(ctx context.Context, token, roomID, userID string) 
 	}
 }
 
+func (f fixture) waitForDisplayName(
+	ctx context.Context,
+	token, userID, expected string,
+) error {
+	endpoint := fmt.Sprintf(
+		"%s/_matrix/client/v3/profile/%s/displayname",
+		f.matrixURL,
+		pathSegment(userID),
+	)
+	var lastErr error
+	for {
+		status, body, err := f.request(ctx, http.MethodGet, endpoint, token, nil)
+		switch {
+		case err != nil:
+			lastErr = fmt.Errorf("query Matrix profile: %w", err)
+		case status != http.StatusOK:
+			lastErr = fmt.Errorf("query Matrix profile: status %d: %s", status, body)
+		default:
+			var profile struct {
+				DisplayName string `json:"displayname"`
+			}
+			if decodeErr := json.Unmarshal(body, &profile); decodeErr != nil {
+				lastErr = fmt.Errorf("decode Matrix profile: %w", decodeErr)
+			} else if profile.DisplayName == expected {
+				return nil
+			} else {
+				lastErr = fmt.Errorf("display name = %q, want %q", profile.DisplayName, expected)
+			}
+		}
+		if err := wait(ctx, 250*time.Millisecond); err != nil {
+			return errors.Join(lastErr, fmt.Errorf("wait for Matrix profile: %w", err))
+		}
+	}
+}
+
 func (f fixture) sendMessage(ctx context.Context, token, roomID string, content messageContent) (string, error) {
 	return f.sendMessageTxn(ctx, token, roomID, "integration-mention", content)
 }
@@ -470,6 +543,60 @@ func (f fixture) waitForReplyCount(
 				)
 			}
 			return fmt.Errorf("wait for Matrix reply: %w", waitErr)
+		}
+	}
+}
+
+func (f fixture) waitForNoticeContract(
+	ctx context.Context,
+	token, roomID, sender, replyTo string,
+	required, forbidden []string,
+) error {
+	var lastErr error
+	for {
+		events, err := f.roomMessages(ctx, token, roomID)
+		if err != nil {
+			lastErr = err
+		} else {
+			lastErr = fmt.Errorf("no matching m.notice reply from %s", sender)
+			for _, matrixEvent := range events {
+				if matrixEvent.Type != "m.room.message" || matrixEvent.Sender != sender {
+					continue
+				}
+				var content messageContent
+				if err := json.Unmarshal(matrixEvent.Content, &content); err != nil {
+					lastErr = fmt.Errorf("decode Matrix message %s: %w", matrixEvent.EventID, err)
+					continue
+				}
+				if content.MsgType != "m.notice" || content.RelatesTo.InReplyTo.EventID != replyTo {
+					continue
+				}
+				missing := ""
+				for _, value := range required {
+					if !strings.Contains(content.Body, value) {
+						missing = value
+						break
+					}
+				}
+				if missing != "" {
+					lastErr = fmt.Errorf("directory reply is missing %q: %s", missing, content.Body)
+					continue
+				}
+				unexpected := ""
+				for _, value := range forbidden {
+					if strings.Contains(content.Body, value) {
+						unexpected = value
+						break
+					}
+				}
+				if unexpected == "" {
+					return nil
+				}
+				lastErr = fmt.Errorf("directory reply contains forbidden mapping %q: %s", unexpected, content.Body)
+			}
+		}
+		if err := wait(ctx, 250*time.Millisecond); err != nil {
+			return errors.Join(lastErr, fmt.Errorf("wait for Matrix notice: %w", err))
 		}
 	}
 }

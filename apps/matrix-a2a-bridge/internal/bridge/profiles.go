@@ -219,10 +219,10 @@ func (w *matrixProfileWriter) Apply(ctx context.Context, ghost id.UserID, profil
 	if err := intent.SetDisplayName(ctx, profile.DisplayName); err != nil {
 		errs = append(errs, fmt.Errorf("set display name for %s: %w", ghost, err))
 	}
-	if !profile.AvatarURL.IsEmpty() {
-		if err := intent.SetAvatarURL(ctx, profile.AvatarURL); err != nil {
-			errs = append(errs, fmt.Errorf("set avatar for %s: %w", ghost, err))
-		}
+	// Reconcile the empty value too: removing avatarURL from a valid config must clear the
+	// previously published Matrix avatar instead of leaving stale agent identity behind.
+	if err := intent.SetAvatarURL(ctx, profile.AvatarURL); err != nil {
+		errs = append(errs, fmt.Errorf("set avatar for %s: %w", ghost, err))
 	}
 	if w.customProfileFields {
 		metadata := struct {

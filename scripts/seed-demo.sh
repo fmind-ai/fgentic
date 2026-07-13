@@ -208,19 +208,20 @@ while IFS= read -r ghost; do
 done <<<"${ghost_names}"
 ((${#GHOSTS[@]} > 0)) || die "the bridge exposes no mapped demo agents"
 
-for ghost in "${GHOSTS[@]}"; do
-	ghost_mxid="@${ghost}:${SERVER_NAME}"
+APP_SERVICE_MEMBERS=("a2a-bridge" "${GHOSTS[@]}")
+for member in "${APP_SERVICE_MEMBERS[@]}"; do
+	member_mxid="@${member}:${SERVER_NAME}"
 	joined="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 		--header "Authorization: Bearer ${MATRIX_TOKEN}" \
 		"${MATRIX_URL}/_matrix/client/v3/rooms/${encoded_room}/joined_members")"
-	if ! jq -e --arg mxid "${ghost_mxid}" '.joined | has($mxid)' <<<"${joined}" >/dev/null; then
-		invite_document="$(jq --null-input --compact-output --arg mxid "${ghost_mxid}" \
+	if ! jq -e --arg mxid "${member_mxid}" '.joined | has($mxid)' <<<"${joined}" >/dev/null; then
+		invite_document="$(jq --null-input --compact-output --arg mxid "${member_mxid}" \
 			'{user_id: $mxid}')"
 		status="$(request_status "${OUTPUT}" --request POST \
 			--header "Authorization: Bearer ${MATRIX_TOKEN}" \
 			--header 'Content-Type: application/json' --data "${invite_document}" \
 			"${MATRIX_URL}/_matrix/client/v3/rooms/${encoded_room}/invite")"
-		[ "${status}" = "200" ] || die "could not invite ${ghost_mxid} (HTTP ${status})"
+		[ "${status}" = "200" ] || die "could not invite ${member_mxid} (HTTP ${status})"
 	fi
 done
 
@@ -231,14 +232,14 @@ while ((SECONDS < deadline)); do
 		--header "Authorization: Bearer ${MATRIX_TOKEN}" \
 		"${MATRIX_URL}/_matrix/client/v3/rooms/${encoded_room}/joined_members")"
 	all_joined=true
-	for ghost in "${GHOSTS[@]}"; do
-		jq -e --arg mxid "@${ghost}:${SERVER_NAME}" '.joined | has($mxid)' \
+	for member in "${APP_SERVICE_MEMBERS[@]}"; do
+		jq -e --arg mxid "@${member}:${SERVER_NAME}" '.joined | has($mxid)' \
 			<<<"${joined}" >/dev/null || all_joined=false
 	done
 	[ "${all_joined}" = true ] && break
 	sleep 2
 done
-[ "${all_joined}" = true ] || die "mapped agent ghosts did not join #lobby within 2 minutes"
+[ "${all_joined}" = true ] || die "the bridge bot and mapped agent ghosts did not join #lobby within 2 minutes"
 
 marker_type='dev.fgentic.demo.seed'
 encoded_marker="$(jq --null-input --raw-output --arg value "${marker_type}" '$value | @uri')"
@@ -253,7 +254,7 @@ if [ "${status}" = "200" ]; then
 	marker_document="$(<"${OUTPUT}")"
 	event_id="$(jq -r '.welcome_event_id // empty' <<<"${marker_document}")"
 	if jq -e --arg provider "${LLM_PROVIDER}" --arg model "${LLM_MODEL}" \
-		'.version == 1 and .provider == $provider and .model == $model and
+		'.version == 2 and .provider == $provider and .model == $model and
      (.welcome_event_id | type == "string" and length > 0)' \
 		<<<"${marker_document}" >/dev/null; then
 		should_seed=false
@@ -265,7 +266,7 @@ fi
 if [ "${should_seed}" = true ]; then
 	message_document="$(jq --null-input --compact-output --arg mxid "${first_mxid}" '{
     msgtype: "m.text",
-    body: ("Welcome to Fgentic. Try " + $mxid + " confirm that the evaluation path works."),
+    body: ("Welcome to Fgentic. Send !agents to discover the agents available to you, or try " + $mxid + " confirm that the evaluation path works."),
     "m.mentions": {user_ids: [$mxid]}
   }')"
 	status="$(request_status "${OUTPUT}" --request PUT \
@@ -276,7 +277,7 @@ if [ "${should_seed}" = true ]; then
 	event_id="$(jq -er '.event_id' "${OUTPUT}")"
 	seed_state="$(jq --null-input --compact-output --arg event_id "${event_id}" \
 		--arg provider "${LLM_PROVIDER}" --arg model "${LLM_MODEL}" \
-		'{version: 1, welcome_event_id: $event_id, provider: $provider, model: $model}')"
+		'{version: 2, welcome_event_id: $event_id, provider: $provider, model: $model}')"
 	status="$(request_status "${OUTPUT}" --request PUT \
 		--header "Authorization: Bearer ${MATRIX_TOKEN}" \
 		--header 'Content-Type: application/json' \

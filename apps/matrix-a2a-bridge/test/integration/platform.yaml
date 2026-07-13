@@ -47,6 +47,12 @@ data:
             crv: P-256
             x: axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY
             y: T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU
+      agent-denied:
+        namespace: kagent
+        name: denied-agent
+        description: Must stay hidden from the integration user.
+        allowedSenders:
+          - "@someone-else:integration.test"
 ---
 apiVersion: v1
 kind: ConfigMap
