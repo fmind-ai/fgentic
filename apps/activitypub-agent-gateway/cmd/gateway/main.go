@@ -104,17 +104,26 @@ func run() error {
 		log.Warn("federation policy border DISABLED (POLICY_PATH empty) — local-only dev posture")
 	}
 
-	// Group collaboration (issue #217): expose designated rooms as AP Group actors that remote actors
-	// can follow and post to, with Announce fan-out and governed @agent routing. Signed outbound
-	// delivery reuses the object-integrity key; config validation guarantees the signer and border.
-	if cfg.GroupsPath != "" {
-		groupRegistry, gerr := apgateway.LoadGroupRegistry(cfg.GroupsPath)
-		if gerr != nil {
-			return gerr
-		}
+	// Outbound federation (issues #217, #219): group fan-out and the agent status feed both sign
+	// deliveries with the object-integrity key and share the follower store. Config validation
+	// guarantees the signer and border are present whenever either is enabled.
+	if cfg.GroupsPath != "" || cfg.StatusFeedEnabled {
 		deliverer := delivery.New(&http.Client{Timeout: cfg.RequestTimeout}, signer.PrivateKey(), log)
-		gateway.UseGroups(groupRegistry, deliverer, &http.Client{Timeout: cfg.RequestTimeout})
-		log.Info("group collaboration ENABLED", "groups", groupRegistry.Groups())
+		gateway.UseDelivery(deliverer, &http.Client{Timeout: cfg.RequestTimeout})
+		if cfg.GroupsPath != "" {
+			groupRegistry, gerr := apgateway.LoadGroupRegistry(cfg.GroupsPath)
+			if gerr != nil {
+				return gerr
+			}
+			gateway.UseGroups(groupRegistry, deliverer, &http.Client{Timeout: cfg.RequestTimeout})
+			log.Info("group collaboration ENABLED", "groups", groupRegistry.Groups())
+		}
+		if cfg.StatusFeedEnabled {
+			// Two keys per agent (actor + domain), so the limiter capacity scales with the roster.
+			limiter := budget.New(cfg.StatusWindow, 2*len(registry.Ghosts())+2)
+			gateway.UseStatusFeed(limiter, uint64(cfg.StatusMaxPerWindow))
+			log.Info("agent status feed ENABLED", "window", cfg.StatusWindow, "maxPerWindow", cfg.StatusMaxPerWindow)
+		}
 	}
 
 	apServer := &http.Server{
@@ -124,6 +133,10 @@ func run() error {
 	}
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	if cfg.StatusFeedEnabled {
+		// The Alertmanager receiver rides the INTERNAL metrics server, never the public AP surface.
+		metricsMux.HandleFunc("POST /alerts", gateway.AlertsHandler())
+	}
 	metricsServer := &http.Server{
 		Addr:              net.JoinHostPort(cfg.ListenHost, strconv.Itoa(cfg.MetricsPort)),
 		Handler:           metricsMux,

@@ -49,6 +49,11 @@ spec:
     # group traffic passes the F3/F4/F5 border; outbound delivery is signed with the integrity key.
     groups:
       enabled: true
+    # Follow-to-subscribe agent status feed (issue #219) is ON: agents accept Follows and Prometheus
+    # alerts (POSTed to the internal /alerts endpoint) become signed, rate-limited status Notes fanned
+    # out to followers. Sovereign, pull-based notifications with no outbound webhook lock-in.
+    statusFeed:
+      enabled: true
     # Public exposure is gated on the border being proven in force (docs/fediverse.md §3): keep the
     # route false until then, even though the border itself is now enabled.
     httpRoute:

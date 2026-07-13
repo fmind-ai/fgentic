@@ -76,6 +76,8 @@ Three items extend the governed core with capabilities Matrix federation does no
 
 Outbound `Accept`/`Announce` deliveries are **HTTP-Signature signed** with the group's Ed25519 key (published as the actor's `publicKey`), the symmetric counterpart of the inbound signature border. The Group is the AP projection of the room; wiring the two transports' message bodies at runtime is deployment configuration and stays outside this AGPL-free app.
 
+**Follow-to-subscribe status feed (#219, delivered).** Sovereign, pull-based notifications with **no webhook lock-in**: an agent publishes operational updates (deploy events, task completions, **LLM cost-alert firings**) as public `Note`s in its outbox, and any human or org **`Follow`s to subscribe** — unfollowing is the unsubscribe. The event source is the **existing Prometheus alert layer**: Alertmanager POSTs to an `/alerts` receiver on the gateway's **internal** metrics port (never the public AP surface), and each firing alert labelled with an allowlisted `agent` becomes a **FEP-8b32-signed** status `Note` fanned out to that agent's followers. Output is **rate-limited per agent** so a flapping alert cannot spam. The `Follow`/`Undo(Follow)` handshake is the whole subscription lifecycle, gated by the F3/F4 border; the cost alert (the token-burn `PrometheusRule`, [observability §9](observability.md)) becomes a first-class, self-hosted, standard-protocol signal — no per-subscriber outbound webhook is ever introduced.
+
 ## §6 — Honesty clauses (stated out loud)
 
 1. **Replication and deletion are best-effort**, exactly as with Matrix ([§8.1](federation.md)): an activity delivered to remote inboxes cannot be technically recalled; data residency across instances is a **contractual** control, not a technical one.

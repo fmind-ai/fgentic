@@ -55,6 +55,15 @@ groups:
       name: Fgentic collaboration
       description: Cross-organization agent collaboration room.
 
+# Follow-to-subscribe agent status feed (issue #219): agents accept Follows, and Prometheus alerts
+# POSTed to the INTERNAL /alerts endpoint (metrics port) are published as signed status Notes fanned
+# out to followers, capped per agent per window. Sovereign, pull-based notifications — no outbound
+# webhook lock-in. Needs integrity.enabled (signing) and policy.enabled (border). DISABLED here.
+statusFeed:
+  enabled: false
+  window: 1m # rate-limit window
+  maxPerWindow: 6 # max status Notes per agent per window (flapping-alert guard)
+
 # The git-reloadable federation policy border (issue #211). When enabled, every inbound activity
 # must pass HTTP-Signature verification and this allowlist before any A2A call. The allowlist is a
 # ConfigMap projected by the namespace-neutral Component (component/) — mounted as a directory so

@@ -26,6 +26,7 @@ import (
 	vocab "github.com/go-ap/activitypub"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/fmind/activitypub-agent-gateway/internal/budget"
 	"github.com/fmind/activitypub-agent-gateway/internal/delivery"
 	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
 )
@@ -53,22 +54,40 @@ type Gateway struct {
 	signer     *integrity.Signer // FEP-8b32 object-integrity signer; nil serves replies without a proof
 	a2aBaseURL string            // public base of the advertised A2A endpoint (defaults to baseURL)
 
-	// Group collaboration (issue #217); all nil unless UseGroups is called.
-	groups      *GroupRegistry
-	followers   *followerStore
-	deliverer   *delivery.Deliverer
-	groupClient *http.Client
+	// Outbound federation (issues #217, #219); nil unless UseDelivery is called.
+	groups             *GroupRegistry
+	followers          *followerStore
+	deliverer          *delivery.Deliverer
+	groupClient        *http.Client
+	statusLimiter      *budget.Reserver // per-agent status-feed rate limiter; nil disables the feed
+	statusMaxPerWindow uint64           // max status Notes per agent per limiter window
 }
 
-// UseGroups enables the ActivityPub Group collaboration surface: designated collaboration rooms are
-// exposed as Group actors that remote actors can follow and post to, with Announce fan-out and
-// governed @agent routing (issue #217). deliverer signs outbound Accept/Announce; client fetches a
-// follower's inbox. Requires a signer (for the actor's publicKey) and a border (F3/F4/F5).
-func (g *Gateway) UseGroups(registry *GroupRegistry, deliverer *delivery.Deliverer, client *http.Client) {
-	g.groups = registry
-	g.followers = newFollowerStore()
+// UseDelivery installs the outbound delivery infrastructure shared by group fan-out (#217) and the
+// agent status feed (#219): a signed-activity deliverer, an inbox-resolving client, and the follower
+// store. Requires a signer (for the actor publicKey) and a border (F3/F4 on inbound subscription).
+func (g *Gateway) UseDelivery(deliverer *delivery.Deliverer, client *http.Client) {
 	g.deliverer = deliverer
 	g.groupClient = client
+	if g.followers == nil {
+		g.followers = newFollowerStore()
+	}
+}
+
+// UseGroups enables the ActivityPub Group collaboration surface (issue #217): designated rooms are
+// exposed as Group actors that remote actors can follow and post to, with Announce fan-out and
+// governed @agent routing.
+func (g *Gateway) UseGroups(registry *GroupRegistry, deliverer *delivery.Deliverer, client *http.Client) {
+	g.UseDelivery(deliverer, client)
+	g.groups = registry
+}
+
+// UseStatusFeed enables the follow-to-subscribe agent status feed (issue #219): agents accept
+// Follows, and operational events (Prometheus alerts) are published as signed status Notes fanned out
+// to followers, capped at maxPerWindow per agent per the limiter window. Requires UseDelivery + signer.
+func (g *Gateway) UseStatusFeed(limiter *budget.Reserver, maxPerWindow uint64) {
+	g.statusLimiter = limiter
+	g.statusMaxPerWindow = maxPerWindow
 }
 
 // SetA2APublicBase overrides the base URL the published AgentCard and the actor's `implements`
@@ -278,6 +297,15 @@ func (g *Gateway) handleInbox(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "cannot read body", http.StatusBadRequest)
 		return
 	}
+
+	// Follow-to-subscribe (issue #219): when the status feed is enabled, a Follow/Undo to an agent
+	// manages its subscriber set instead of triggering a delegation.
+	if g.statusEnabled() {
+		if handled := g.maybeHandleAgentSubscription(w, r, ghost, body); handled {
+			return
+		}
+	}
+
 	activity, note, err := parseCreateNote(body)
 	if err != nil {
 		g.metrics.inbound.WithLabelValues(ghost, "unparseable").Inc()

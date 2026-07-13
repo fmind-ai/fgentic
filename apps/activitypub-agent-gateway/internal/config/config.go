@@ -87,6 +87,14 @@ type Config struct {
 	// actor publicKey and signed outbound delivery) and the border (F3/F4/F5 on inbound group traffic).
 	GroupsPath string `env:"GROUPS_PATH"`
 
+	// StatusFeedEnabled turns on the follow-to-subscribe agent status feed (issue #219): agents accept
+	// Follows and operational events (Prometheus alerts POSTed to the internal /alerts endpoint) are
+	// published as signed status Notes fanned out to followers, capped at StatusMaxPerWindow per agent
+	// per StatusWindow. Like groups, it needs the signing key and the border.
+	StatusFeedEnabled  bool          `env:"STATUS_FEED_ENABLED" envDefault:"false"`
+	StatusWindow       time.Duration `env:"STATUS_WINDOW" envDefault:"1m"`
+	StatusMaxPerWindow int           `env:"STATUS_MAX_PER_WINDOW" envDefault:"6"`
+
 	// RequestTimeout bounds one synchronous A2A message/send transport round trip. TaskTimeout
 	// bounds the whole delegation when the agent returns a long-running Task polled via tasks/get.
 	RequestTimeout time.Duration `env:"REQUEST_TIMEOUT" envDefault:"60s"`
@@ -180,6 +188,20 @@ func (c Config) validate() error {
 		}
 		if c.PolicyPath == "" {
 			return fmt.Errorf("GROUPS_PATH needs POLICY_PATH (the border gates inbound group traffic)")
+		}
+	}
+	if c.StatusFeedEnabled {
+		if c.IntegrityKeyPath == "" {
+			return fmt.Errorf("STATUS_FEED_ENABLED needs INTEGRITY_KEY_PATH (status Notes are signed and delivery is signed)")
+		}
+		if c.PolicyPath == "" {
+			return fmt.Errorf("STATUS_FEED_ENABLED needs POLICY_PATH (the border gates who may subscribe)")
+		}
+		if c.StatusWindow <= 0 {
+			return fmt.Errorf("STATUS_WINDOW must be positive")
+		}
+		if c.StatusMaxPerWindow < 1 {
+			return fmt.Errorf("STATUS_MAX_PER_WINDOW must be at least 1")
 		}
 	}
 	if c.BudgetEnabled {
