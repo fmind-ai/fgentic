@@ -145,7 +145,9 @@ func (f fixture) runBasic(ctx context.Context) error {
 		return err
 	}
 	if _, err := f.sendMessageTxn(ctx, sess.AccessToken, roomID, "integration-directory",
-		messageContent{Body: directoryCommand, MsgType: "m.text"}); err != nil {
+		// m.mentions is a non-pointer field, so an empty array is required — a nil slice serializes
+		// to "user_ids": null, which Synapse rejects as M_BAD_JSON.
+		messageContent{Body: directoryCommand, MsgType: "m.text", Mentions: mentions{UserIDs: []string{}}}); err != nil {
 		return err
 	}
 	restricted := "@" + restrictedGhostLocalpart + ":" + f.server
