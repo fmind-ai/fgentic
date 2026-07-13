@@ -38,3 +38,4 @@ check_package internal/policy 90
 check_package internal/integrity 85
 check_package internal/budget 90
 check_package internal/delivery 80
+check_package internal/identity 80

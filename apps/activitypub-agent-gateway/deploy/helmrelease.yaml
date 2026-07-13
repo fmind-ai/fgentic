@@ -39,6 +39,11 @@ spec:
     integrity:
       enabled: true
       requireInbound: true
+    # FEP-c390 cross-transport identity (issue #218) is ON: each actor binds to a P-256 did:key and
+    # its AgentCard publishes the matching JWK. Requires the activitypub-agent-gateway-identity-key
+    # Secret (scripts/gen-secrets.sh).
+    identity:
+      enabled: true
     # Per-actor/per-domain token-budget admission (issue #213) is ON: every inbound delegation
     # reserves its token ceiling from the verified actor's/domain's pools (policy.json `budgets`)
     # before any A2A call, deny-by-default for an unbudgeted domain. Reservation ≠ consumption.

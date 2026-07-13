@@ -73,6 +73,11 @@ type Config struct {
 	IntegrityKeyFragment    string `env:"INTEGRITY_KEY_FRAGMENT" envDefault:"ed25519-key"`
 	IntegrityRequireInbound bool   `env:"INTEGRITY_REQUIRE_INBOUND" envDefault:"false"`
 
+	// IdentityKeyPath is the mounted, SOPS-backed PKCS#8 PEM P-256 key that anchors the FEP-c390
+	// cross-transport identity (issue #218): each actor attaches a VerifiableIdentityStatement bound
+	// to this key's did:key, and its AgentCard publishes the matching JWK. Empty disables the binding.
+	IdentityKeyPath string `env:"IDENTITY_KEY_PATH"`
+
 	// BudgetEnabled turns on per-actor/per-domain token-budget admission (D7/D8): every inbound
 	// delegation reserves its token ceiling from the verified actor's and domain's git-configured
 	// pools before any A2A call, deny-by-default for an allowlisted-but-unbudgeted domain. It needs

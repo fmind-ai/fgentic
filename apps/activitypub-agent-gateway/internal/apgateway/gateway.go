@@ -28,6 +28,7 @@ import (
 
 	"github.com/fmind/activitypub-agent-gateway/internal/budget"
 	"github.com/fmind/activitypub-agent-gateway/internal/delivery"
+	"github.com/fmind/activitypub-agent-gateway/internal/identity"
 	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
 )
 
@@ -52,6 +53,7 @@ type Gateway struct {
 	now        func() time.Time
 	border     *Border           // federation policy border; nil disables enforcement (local-only dev/tests)
 	signer     *integrity.Signer // FEP-8b32 object-integrity signer; nil serves replies without a proof
+	identity   *identity.Signer  // FEP-c390 P-256 identity anchor; nil serves no cross-transport binding
 	a2aBaseURL string            // public base of the advertised A2A endpoint (defaults to baseURL)
 
 	// Outbound federation (issues #217, #219); nil unless UseDelivery is called.
@@ -107,6 +109,11 @@ func (g *Gateway) UseBorder(b *Border) { g.border = b }
 // DataIntegrityProof and each actor publishes the signer's Multikey under its assertionMethod, so a
 // remote verifier can confirm the agent authored a reply even after relaying (docs/fediverse.md §3).
 func (g *Gateway) UseSigner(s *integrity.Signer) { g.signer = s }
+
+// UseIdentity enables FEP-c390 cross-transport identity (issue #218): each actor attaches a
+// VerifiableIdentityStatement binding it to a P-256 did:key, and its A2A AgentCard publishes the same
+// key as a JWK, so a verifier can confirm both federation faces share one sovereign key.
+func (g *Gateway) UseIdentity(s *identity.Signer) { g.identity = s }
 
 // New builds a Gateway. baseURL is the public scheme+host every actor URL is built from; serverName
 // is the acct: handle domain. reg (a prometheus.Registerer) receives the gateway's counters.
@@ -477,6 +484,17 @@ func (g *Gateway) marshalActor(ghost string, ref AgentRef) ([]byte, error) {
 				"controller":         actorID,
 				"publicKeyMultibase": g.signer.PublicKeyMultibase(),
 			},
+		}
+	}
+	// FEP-c390 identity (issue #218): bind this actor to the platform's sovereign did:key so a
+	// verifier can confirm the AP actor and its A2A AgentCard share one key that survives a domain move.
+	if g.identity != nil {
+		actorID := string(g.actorID(ghost))
+		if statement, err := g.identity.Statement(actorID); err == nil {
+			doc["attachment"] = []any{statement}
+			doc["alsoKnownAs"] = []any{g.identity.DID()}
+		} else {
+			g.log.Warn("identity statement failed", "ghost", ghost, "error", err.Error())
 		}
 	}
 	doc["@context"] = contexts
