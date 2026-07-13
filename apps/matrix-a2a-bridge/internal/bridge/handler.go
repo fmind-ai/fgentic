@@ -35,6 +35,7 @@ const (
 	emptyReplyText   = "(the agent returned no content)"
 	rateLimitedText  = "⚠️ rate limit reached — please retry in a moment."
 	policyDeniedText = "⚠️ you are not allowed to invoke this agent — ask an operator to review its sender allowlist."
+	stageDeniedText  = "⚠️ this agent is a staging (dev) build and can only be invoked in its designated staging room."
 
 	provenanceStart = "--- BEGIN FGENTIC BRIDGE PROVENANCE ---"
 	provenanceEnd   = "--- END FGENTIC BRIDGE PROVENANCE ---"
@@ -131,6 +132,7 @@ type Bridge struct {
 	profiles           *profileStore
 	profileWriter      ghostProfileWriter
 	inflight           *inflightRegistry
+	stagingRooms       map[string]struct{} // rooms where stage:dev agents may be invoked (#128)
 	tracer             trace.Tracer
 	watchWG            sync.WaitGroup
 	watchCancel        context.CancelFunc
@@ -164,11 +166,27 @@ func New(cfg config.Config, as *appservice.AppService, agents *AgentMap, client 
 		pollMax:            pollMax,
 		pollWait:           waitForPoll,
 		inflight:           newInflightRegistry(),
+		stagingRooms:       stagingRoomSet(cfg.StagingRooms),
 		tracer:             otel.Tracer(tracerName),
 	}
 	bridge.profiles = newProfileStore(agents.Entries())
 	bridge.profileWriter = &matrixProfileWriter{as: as, log: log}
 	return bridge
+}
+
+// stagingRoomSet indexes the configured staging room IDs for O(1) membership checks (#128).
+func stagingRoomSet(rooms []string) map[string]struct{} {
+	set := make(map[string]struct{}, len(rooms))
+	for _, room := range rooms {
+		set[room] = struct{}{}
+	}
+	return set
+}
+
+// isStagingRoom reports whether roomID is a configured staging room where stage:dev agents run.
+func (b *Bridge) isStagingRoom(roomID id.RoomID) bool {
+	_, ok := b.stagingRooms[roomID.String()]
+	return ok
 }
 
 func waitForPoll(ctx context.Context, delay time.Duration) error {
@@ -402,6 +420,12 @@ func (b *Bridge) dispatchResolvedTarget(
 			return
 		}
 		b.refuseQueuedTarget(evt, ref, localpart, sender, dedupVerdict, "sender_policy_rejected")
+		return
+	}
+	// Stage admission (#128): a stage:dev agent is confined to configured staging rooms. Elsewhere
+	// it is refused fail-closed with a distinct reason, before any trust, cost, limiter, or A2A step.
+	if ref.IsDev() && !b.isStagingRoom(evt.RoomID) {
+		b.refuseStagedTarget(ctx, evt, ref, localpart, sender, dedupVerdict)
 		return
 	}
 	if ref.Target().IsRemote() && (b.client == nil || !b.client.IsReady(ref.Target())) {
@@ -721,6 +745,66 @@ func (b *Bridge) rejectBridgedSender(
 		"bridged sender not allowed to invoke agent",
 		"sender", evt.Sender,
 		"sender_origin_network", sender.origin.network,
+		"ghost", localpart,
+		"room", evt.RoomID,
+	)
+}
+
+// refuseStagedTarget fails a stage:dev agent closed when it is invoked outside a configured staging
+// room (#128). It is a blast-radius boundary distinct from the sender allowlist: the sender may be
+// allowed, but the room is not a staging room. It posts one bounded policy notice and never spends a
+// limiter token or reaches A2A. Promoting the agent to stage:prod (a one-line agents.yaml reload)
+// removes the restriction with no pod restart.
+func (b *Bridge) refuseStagedTarget(
+	ctx context.Context,
+	evt *event.Event,
+	ref *AgentRef,
+	localpart string,
+	sender senderIdentity,
+	dedupVerdict auditDedupVerdict,
+) {
+	started := time.Now()
+	audit := delegationAuditResult{
+		outcome:          outcomeDenied,
+		terminalStage:    "admission",
+		terminalReason:   "stage_policy_rejected",
+		dedupVerdict:     dedupVerdict,
+		rateLimitVerdict: rateLimitVerdictNotChecked,
+	}
+	defer func() {
+		audit.duration = time.Since(started)
+		b.logDelegationAudit(evt, ref, localpart, sender, audit)
+	}()
+	if !b.allowNotice(sender, evt.RoomID, localpart) {
+		delegationsTotal.WithLabelValues(localpart, outcomeRateLimited).Inc()
+		audit.outcome = outcomeRateLimited
+		audit.terminalReason = "denial_notice_rate_limit_rejected"
+		audit.rateLimitVerdict = rateLimitVerdictRejected
+		return
+	}
+	audit.rateLimitVerdict = rateLimitVerdictAllowed
+
+	ghost := id.NewUserID(localpart, b.cfg.ServerName)
+	intent := b.as.Intent(ghost)
+	if err := intent.EnsureRegistered(ctx); err != nil {
+		b.log.Error("ensure stage-denied ghost registered", "ghost", ghost, "err", err)
+		audit.outcome = outcomeError
+		audit.terminalStage = "matrix_register"
+		audit.terminalReason = "matrix_registration_failed"
+		return
+	}
+	if err := intent.EnsureJoined(ctx, evt.RoomID); err != nil {
+		b.log.Error("ensure stage-denied ghost joined", "ghost", ghost, "room", evt.RoomID, "err", err)
+		audit.outcome = outcomeError
+		audit.terminalStage = "matrix_join"
+		audit.terminalReason = "matrix_join_failed"
+		return
+	}
+	delegationsTotal.WithLabelValues(localpart, outcomeDenied).Inc()
+	audit.replyEventID = b.postReply(ctx, intent, evt, stageDeniedText)
+	b.log.Warn(
+		"staging agent invoked outside a staging room",
+		"sender", evt.Sender,
 		"ghost", localpart,
 		"room", evt.RoomID,
 	)

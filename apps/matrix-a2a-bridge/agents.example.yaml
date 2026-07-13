@@ -24,6 +24,9 @@ bridgedOrigins:
 #                   server, but never a sender matching bridgedOrigins.
 #   description: startup fallback while the AgentCard is unavailable.
 #   avatarURL: optional existing mxc:// URI; HTTP(S) icons are not uploaded implicitly.
+#   stage: `dev` confines the agent to the bridge's STAGING_ROOMS (blast-radius boundary before a
+#          new agent meets production rooms); `prod` (the default) is unrestricted. Flipping
+#          `stage: dev` -> `prod` is a one-line reload that promotes the agent with no pod restart.
 agents:
   agent-platform-helper:
     namespace: kagent

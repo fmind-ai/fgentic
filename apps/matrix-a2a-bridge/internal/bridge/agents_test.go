@@ -348,6 +348,43 @@ func TestLoadAgentsRemoteMaxCost(t *testing.T) {
 	}
 }
 
+func TestLoadAgentsStage(t *testing.T) {
+	agents, err := LoadAgents(writeTemp(t, `agents:
+  agent-dev: {namespace: kagent, name: dev-agent, stage: dev}
+  agent-prod: {namespace: kagent, name: prod-agent, stage: prod}
+  agent-default: {namespace: kagent, name: default-agent}
+`))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	for name, wantDev := range map[string]bool{"agent-dev": true, "agent-prod": false, "agent-default": false} {
+		ref, ok := agents.Lookup(name)
+		if !ok {
+			t.Fatalf("%s not found", name)
+		}
+		if ref.IsDev() != wantDev {
+			t.Errorf("%s IsDev() = %v, want %v", name, ref.IsDev(), wantDev)
+		}
+	}
+	// Flipping stage re-keys the mapping so queued jobs re-validate under the new stage.
+	dev, _ := agents.Lookup("agent-dev")
+	promoted, err := LoadAgents(writeTemp(t, "agents:\n  agent-dev: {namespace: kagent, name: dev-agent, stage: prod}\n"))
+	if err != nil {
+		t.Fatalf("LoadAgents promoted: %v", err)
+	}
+	prodDev, _ := promoted.Lookup("agent-dev")
+	if dev.MappingID() == prodDev.MappingID() {
+		t.Fatal("stage flip did not change the mapping ID")
+	}
+}
+
+func TestLoadAgentsRejectsInvalidStage(t *testing.T) {
+	_, err := LoadAgents(writeTemp(t, "agents:\n  agent-x: {namespace: kagent, name: x, stage: staging}\n"))
+	if err == nil || !strings.Contains(err.Error(), `stage must be "dev" or "prod"`) {
+		t.Fatalf("LoadAgents invalid stage err = %v", err)
+	}
+}
+
 func TestLoadAgentsRejectsInvalidMaxCost(t *testing.T) {
 	local := "agents:\n  agent-k8s:\n    namespace: kagent\n    name: k8s-agent\n    maxCost: 5\n"
 	if _, err := LoadAgents(writeTemp(t, local)); err == nil || !strings.Contains(err.Error(), "only valid for a url target") {

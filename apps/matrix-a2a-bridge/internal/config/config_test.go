@@ -103,6 +103,24 @@ func TestValidateRejectsBadPort(t *testing.T) {
 	}
 }
 
+func TestLoadStagingRooms(t *testing.T) {
+	t.Setenv("STAGING_ROOMS", "!alpha:example.org,!beta:example.org")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.StagingRooms) != 2 || cfg.StagingRooms[0] != "!alpha:example.org" || cfg.StagingRooms[1] != "!beta:example.org" {
+		t.Fatalf("StagingRooms = %v", cfg.StagingRooms)
+	}
+}
+
+func TestValidateRejectsBadStagingRoom(t *testing.T) {
+	t.Setenv("STAGING_ROOMS", "not-a-room-id")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for malformed STAGING_ROOMS entry, got nil")
+	}
+}
+
 // validate is exercised directly: caarlos0/env applies envDefault to empty-set variables, so an
 // empty SERVER_NAME can only reach validate through a struct, never through the environment.
 func TestValidateRejectsEmptyServerName(t *testing.T) {

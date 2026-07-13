@@ -36,6 +36,9 @@ config:
   agentCardRefreshInterval: 5m # independently revalidate every signed remote AgentCard
   # Standard OTLP/HTTP endpoint. Empty keeps tracing disabled for standalone installs.
   otelEndpoint: ""
+  # Room IDs where stage:dev agents may be invoked (#128). Empty = every dev agent is
+  # deny-by-default everywhere. e.g. ["!staging:fgentic.fmind.ai"].
+  stagingRooms: []
 
 # Postgres backing the bridge state (mautrix StateStore + contexts + event dedup — SPEC §5).
 # The Secret holds a full connection URL under `key` (e.g. postgres://bridge:...@platform-pg-rw

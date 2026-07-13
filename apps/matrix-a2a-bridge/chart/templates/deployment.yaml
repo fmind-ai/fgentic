@@ -107,6 +107,10 @@ spec:
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.config.otelEndpoint | quote }}
             {{- end }}
+            {{- if .Values.config.stagingRooms }}
+            - name: STAGING_ROOMS
+              value: {{ join "," .Values.config.stagingRooms | quote }}
+            {{- end }}
           volumeMounts:
             - name: registration
               mountPath: /etc/matrix-a2a-bridge/registration.yaml

@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/caarlos0/env/v11"
@@ -103,6 +104,13 @@ type Config struct {
 	// silently. Enable it only after granting agent ghosts that power (matrix-agents add-agent runbook).
 	PinInFlightTasks bool `env:"PIN_IN_FLIGHT_TASKS" envDefault:"false"`
 
+	// StagingRooms lists the Matrix room IDs where `stage: dev` agents may be invoked (#128). A dev
+	// agent mentioned in any other room is refused fail-closed with a stage_policy_rejected audit.
+	// This is the single authoritative staging-room list; it never lives in agents.yaml, so the
+	// stage flag and the room set cannot drift across files. Empty means every dev agent is
+	// deny-by-default everywhere, so an unconfigured staging boundary never silently promotes.
+	StagingRooms []string `env:"STAGING_ROOMS" envSeparator:","`
+
 	LogLevel  string `env:"LOG_LEVEL" envDefault:"info"`
 	LogFormat string `env:"LOG_FORMAT" envDefault:"json"`
 }
@@ -176,6 +184,11 @@ func (c Config) validate() error {
 	}
 	if c.MaxTaskProgressPosts < 0 {
 		return fmt.Errorf("MAX_TASK_PROGRESS_POSTS must be >= 0")
+	}
+	for _, room := range c.StagingRooms {
+		if !strings.HasPrefix(room, "!") || !strings.Contains(room, ":") {
+			return fmt.Errorf("STAGING_ROOMS entry %q must be a Matrix room ID (!opaque:server)", room)
+		}
 	}
 	if _, err := c.SlogLevel(); err != nil {
 		return err

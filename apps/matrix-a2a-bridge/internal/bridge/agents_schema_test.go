@@ -56,6 +56,22 @@ func TestAgentsSchemaRejectsUnknownMajor(t *testing.T) {
 	}
 }
 
+func TestAgentsSchemaStage(t *testing.T) {
+	schema := compileAgentsSchema(t)
+	for _, doc := range [][]byte{
+		[]byte("schemaVersion: 1\nagents:\n  agent-local: {namespace: kagent, name: k8s, stage: dev}\n"),
+		[]byte("schemaVersion: 1\nagents:\n  agent-local: {namespace: kagent, name: k8s, stage: prod}\n"),
+	} {
+		if err := schema.Validate(yamlInstance(t, doc)); err != nil {
+			t.Fatalf("valid stage rejected: %v", err)
+		}
+	}
+	invalid := []byte("schemaVersion: 1\nagents:\n  agent-local: {namespace: kagent, name: k8s, stage: staging}\n")
+	if err := schema.Validate(yamlInstance(t, invalid)); err == nil {
+		t.Fatal("schema accepted invalid stage enum")
+	}
+}
+
 func TestAgentsSchemaExtensions(t *testing.T) {
 	schema := compileAgentsSchema(t)
 	key := "publicKey: {kty: EC, crv: P-256, " +
