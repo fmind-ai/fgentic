@@ -80,6 +80,11 @@ rg --fixed-strings 'scripts/test-admission-policies.sh" --runtime' \
 	echo 'error: demo acceptance omits the admission runtime contract' >&2
 	exit 1
 }
+rg --fixed-strings 'rollout status deployment/agentgateway-proxy' \
+	"${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null || {
+	echo 'error: demo seeding does not wait for the agentgateway data plane' >&2
+	exit 1
+}
 if (
 	cd "${WORK_DIR}"
 	env -u ROOT_DIR FGENTIC_CA_DIR="${WORK_DIR}/missing-ca" \
@@ -295,6 +300,27 @@ assert_yq \
     ((.spec.patches[0].patch | contains("matrix-a2a-bridge")) and
      (.spec.patches[0].patch | contains("pullPolicy: Never")))' \
 	"${WORK_DIR}/cluster.yaml" 'demo bridge is not pinned to the side-loaded image'
+
+kubectl kustomize "${ROOT_DIR}/infra/agentgateway" >"${WORK_DIR}/agentgateway.yaml"
+assert_yq \
+	'select(.kind == "NetworkPolicy" and .metadata.name == "agentgateway-allow-agents") |
+    (.spec.podSelector.matchLabels."app.kubernetes.io/name" == "agentgateway-proxy" and
+     .spec.ingress[0].from[0].namespaceSelector.matchLabels."kubernetes.io/metadata.name" == "bridge" and
+     .spec.ingress[0].from[1].namespaceSelector.matchLabels."kubernetes.io/metadata.name" == "kagent" and
+     .spec.ingress[0].ports[0].port == 8080 and .spec.ingress[0].ports[0].protocol == "TCP" and
+     (.spec.ingress[0].ports | length) == 1 and
+     .spec.ingress[1].from[0].namespaceSelector.matchLabels."kubernetes.io/metadata.name" == "monitoring" and
+     .spec.ingress[1].ports[0].port == 15020 and .spec.ingress[1].ports[0].protocol == "TCP" and
+     (.spec.ingress[1].ports | length) == 1)' \
+	"${WORK_DIR}/agentgateway.yaml" 'agentgateway data-plane ingress is not port scoped'
+assert_yq \
+	'select(.kind == "NetworkPolicy" and .metadata.name == "agentgateway-allow-xds") |
+    (.spec.podSelector.matchLabels."app.kubernetes.io/name" == "agentgateway" and
+     .spec.ingress[0].from[0].namespaceSelector.matchLabels."kubernetes.io/metadata.name" == "agentgateway-system" and
+     .spec.ingress[0].from[0].podSelector.matchLabels."app.kubernetes.io/name" == "agentgateway-proxy" and
+     .spec.ingress[0].ports[0].port == 9978 and .spec.ingress[0].ports[0].protocol == "TCP" and
+     (.spec.ingress[0].ports | length) == 1)' \
+	"${WORK_DIR}/agentgateway.yaml" 'agentgateway xDS ingress is not restricted to its proxy'
 
 kubectl kustomize "${ROOT_DIR}/infra/flux" >"${WORK_DIR}/controllers.yaml"
 assert_yq \

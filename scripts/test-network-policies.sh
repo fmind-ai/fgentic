@@ -185,6 +185,8 @@ require_resource networkpolicy kagent agent-zoo-egress
 require_resource service kagent kagent-controller
 require_resource service kagent kagent-tools
 require_resource networkpolicy agentgateway-system agentgateway-allow-agents
+require_resource networkpolicy agentgateway-system agentgateway-allow-xds
+require_resource service agentgateway-system agentgateway
 require_resource service agentgateway-system agentgateway-proxy
 
 # kagent is reachable only from the namespaces listed in its load-bearing ingress policy.
@@ -212,6 +214,14 @@ run_probe bridge netpol-gateway-bridge \
   agentgateway-proxy.agentgateway-system.svc.cluster.local 8080 reachable
 run_probe kagent netpol-gateway-kagent \
   agentgateway-proxy.agentgateway-system.svc.cluster.local 8080 reachable
+
+# The proxy is the sole xDS client. Without this same-namespace exception the controller can be
+# healthy while every proxy fails its startup probe, and an arbitrary workload must remain denied.
+run_probe "${PROBE_NAMESPACE}" netpol-xds-denied \
+  agentgateway.agentgateway-system.svc.cluster.local 9978 denied
+run_probe agentgateway-system netpol-xds-proxy \
+  agentgateway.agentgateway-system.svc.cluster.local 9978 reachable \
+  '    app.kubernetes.io/name: agentgateway-proxy'
 
 VLLM_SERVICE="vllm-qwen2-5-0-5b-engine-service"
 if kubectl get namespace models >/dev/null 2>&1 \

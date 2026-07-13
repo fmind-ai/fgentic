@@ -1,14 +1,17 @@
 # Zero-trust ingress to the agent data plane: only the agent workloads (the bridge in ns `bridge`
-# and kagent in ns `kagent`) may reach agentgateway. The exact policy passes isolated kind+Calico
-# deny/allow conformance; repeat the active-cluster probe on each target CNI. Combined with the
-# ClusterIP Service, this policy restricts other namespaces.
+# and kagent in ns `kagent`) may reach the proxy. Prometheus receives only the metrics port. The
+# control plane is isolated separately because the proxy needs its xDS listener during startup.
+# These exact policies pass isolated kind+Calico deny/allow conformance; repeat the active-cluster
+# probe on each target CNI. Combined with the ClusterIP Services, they restrict other namespaces.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: agentgateway-allow-agents
   namespace: agentgateway-system
 spec:
-  podSelector: {}
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agentgateway-proxy
   policyTypes:
     - Ingress
   ingress:
@@ -19,8 +22,40 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kagent
-        # Prometheus scrapes the proxy metrics port (:15020) — without this the observability
-        # layer silently loses the gateway's GenAI metrics (SPEC §4 F14).
+      ports:
+        - port: 8080
+          protocol: TCP
+    # Prometheus scrapes the proxy metrics port (:15020) — without this the observability layer
+    # silently loses the gateway's GenAI metrics (SPEC §4 F14).
+    - from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 15020
+          protocol: TCP
+---
+# The data-plane proxy must receive its configuration from the controller before its readiness
+# probe can pass. Select both namespace and workload identity so no other pod can reach xDS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentgateway-allow-xds
+  namespace: agentgateway-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agentgateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentgateway-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agentgateway-proxy
+      ports:
+        - port: 9978
+          protocol: TCP

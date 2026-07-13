@@ -136,6 +136,12 @@ for command in curl jq kubectl yq; do
 done
 [ -r "${CA_CERT}" ] || die "local CA certificate not found: ${CA_CERT}"
 
+# Flux cannot wait for the Deployment dynamically created from the Gateway resource. Require the
+# proxy's xDS-backed readiness before emitting events so a successful seed never depends on a
+# control-plane startup race.
+kubectl --namespace agentgateway-system rollout status deployment/agentgateway-proxy \
+	--timeout=2m >/dev/null || die "agentgateway proxy did not become ready within 2 minutes"
+
 DEMO_PASSWORD="$(bootstrap_secret_value demo-password)"
 MAS_ADMIN_CLIENT_SECRET="$(bootstrap_secret_value mas-admin-client)"
 LLM_PROVIDER="$(kubectl --namespace flux-system get configmap platform-settings \
