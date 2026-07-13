@@ -41,6 +41,10 @@ func (*tracingA2AClient) IsReady(target a2aclient.Target) bool {
 	return !target.IsRemote()
 }
 
+func (*tracingA2AClient) QuoteAdmission(a2aclient.Target, uint64) a2aclient.QuoteVerdict {
+	return a2aclient.QuoteNotApplicable
+}
+
 func TestDispatchEmitsContentFreeDelegationSpan(t *testing.T) {
 	exporter := tracetest.NewInMemoryExporter()
 	provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))

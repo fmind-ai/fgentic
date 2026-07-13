@@ -324,6 +324,41 @@ func TestLoadAgentsRejectsExtensionsOnLocalTarget(t *testing.T) {
 	}
 }
 
+func TestLoadAgentsRemoteMaxCost(t *testing.T) {
+	yaml := strings.Replace(validRemoteAgentsYAML, "    tokenBudget: 8192\n", "    tokenBudget: 8192\n    maxCost: 25\n", 1)
+	agents, err := LoadAgents(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	ref, ok := agents.Lookup("agent-remote")
+	if !ok {
+		t.Fatal("agent-remote not found")
+	}
+	if ref.MaxCost() != 25 {
+		t.Fatalf("MaxCost() = %d, want 25", ref.MaxCost())
+	}
+	// A maxCost change re-keys the mapping so queued jobs re-validate under the new cost policy.
+	base, _ := LoadAgents(writeTemp(t, validRemoteAgentsYAML))
+	baseRef, _ := base.Lookup("agent-remote")
+	if baseRef.MaxCost() != 0 {
+		t.Fatalf("default MaxCost() = %d, want 0", baseRef.MaxCost())
+	}
+	if ref.MappingID() == baseRef.MappingID() {
+		t.Fatal("maxCost did not change the mapping ID")
+	}
+}
+
+func TestLoadAgentsRejectsInvalidMaxCost(t *testing.T) {
+	local := "agents:\n  agent-k8s:\n    namespace: kagent\n    name: k8s-agent\n    maxCost: 5\n"
+	if _, err := LoadAgents(writeTemp(t, local)); err == nil || !strings.Contains(err.Error(), "only valid for a url target") {
+		t.Fatalf("LoadAgents local+maxCost err = %v", err)
+	}
+	zero := strings.Replace(validRemoteAgentsYAML, "    tokenBudget: 8192\n", "    tokenBudget: 8192\n    maxCost: 0\n", 1)
+	if _, err := LoadAgents(writeTemp(t, zero)); err == nil || !strings.Contains(err.Error(), "maxCost must be positive") {
+		t.Fatalf("LoadAgents maxCost=0 err = %v", err)
+	}
+}
+
 func TestAgentRefSameTargetBindsTrustAndOperationalPolicy(t *testing.T) {
 	load := func(t *testing.T, content string) *AgentRef {
 		t.Helper()

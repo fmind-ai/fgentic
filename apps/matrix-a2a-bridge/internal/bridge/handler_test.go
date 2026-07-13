@@ -1193,20 +1193,21 @@ type scriptedPoll struct {
 }
 
 type scriptedA2AClient struct {
-	callResult  a2aclient.Result
-	callErr     error
-	callText    string
-	callCount   int
-	card        *a2a.AgentCard
-	cardErr     error
-	cardPaths   []string
-	polls       []scriptedPoll
-	pollPaths   []string
-	pollTasks   []string
-	cancelPaths []string
-	cancelTasks []string
-	cancelErr   error
-	remoteReady bool
+	callResult   a2aclient.Result
+	callErr      error
+	callText     string
+	callCount    int
+	card         *a2a.AgentCard
+	cardErr      error
+	cardPaths    []string
+	polls        []scriptedPoll
+	pollPaths    []string
+	pollTasks    []string
+	cancelPaths  []string
+	cancelTasks  []string
+	cancelErr    error
+	remoteReady  bool
+	quoteVerdict a2aclient.QuoteVerdict // zero value QuoteNotApplicable admits by default
 }
 
 func (c *scriptedA2AClient) ResolveAgentCard(_ context.Context, target a2aclient.Target) (*a2a.AgentCard, error) {
@@ -1242,6 +1243,10 @@ func (c *scriptedA2AClient) CancelTask(_ context.Context, target a2aclient.Targe
 
 func (c *scriptedA2AClient) IsReady(target a2aclient.Target) bool {
 	return !target.IsRemote() || c.remoteReady
+}
+
+func (c *scriptedA2AClient) QuoteAdmission(_ a2aclient.Target, _ uint64) a2aclient.QuoteVerdict {
+	return c.quoteVerdict
 }
 
 type matrixRecorder struct {
@@ -1642,6 +1647,51 @@ func TestDispatchRefusesQuarantinedRemoteBeforeAdmission(t *testing.T) {
 	}
 }
 
+func TestDispatchRefusesRemoteOverBudgetQuoteBeforeAdmission(t *testing.T) {
+	yaml := strings.Replace(validRemoteAgentsYAML, "    tokenBudget: 8192\n", "    tokenBudget: 8192\n    maxCost: 5\n", 1)
+	agents, err := LoadAgents(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	ref, ok := agents.Lookup("agent-remote")
+	if !ok {
+		t.Fatal("agent-remote fixture missing")
+	}
+	if ref.MaxCost() != 5 {
+		t.Fatalf("MaxCost() = %d, want 5", ref.MaxCost())
+	}
+	for _, verdict := range []a2aclient.QuoteVerdict{a2aclient.QuoteOverBudget, a2aclient.QuoteMissing} {
+		t.Run(fmt.Sprintf("verdict-%d", verdict), func(t *testing.T) {
+			client := &scriptedA2AClient{remoteReady: true, quoteVerdict: verdict}
+			b := testBridge(t)
+			b.agents = agents
+			b.client = client
+			b.profiles = newProfileStore(agents.Entries())
+			var output strings.Builder
+			setBridgeLogOutput(b, &output)
+
+			evt, _ := msgEvent(id.NewUserID("alice", ownServer), "@agent-remote inspect the pod")
+			evt.ID = "$remote-over-budget"
+			sender := agents.IdentifySender(evt.Sender)
+			b.dispatchResolvedTarget(t.Context(), evt, "agent-remote", "inspect the pod", ref, sender, dedupVerdictAccepted)
+
+			if client.callCount != 0 {
+				t.Fatalf("A2A calls = %d, want zero (fail closed before dispatch)", client.callCount)
+			}
+			audits := auditRecords(t, output.String())
+			if len(audits) != 1 {
+				t.Fatalf("delegation audits = %d, want one", len(audits))
+			}
+			audit := audits[0]
+			if audit["outcome"] != outcomeDenied || audit["terminal_stage"] != "admission" ||
+				audit["terminal_reason"] != "quote_over_budget" || audit["a2a_attempted"] != false ||
+				audit["rate_limit_verdict"] != string(rateLimitVerdictNotChecked) {
+				t.Fatalf("over-budget refusal audit = %#v", audit)
+			}
+		})
+	}
+}
+
 func TestDispatchClassifiesTrustRevocationAtTransportBoundary(t *testing.T) {
 	client := &scriptedA2AClient{
 		callErr:     fmt.Errorf("remote transport refused request: %w", a2aclient.ErrRemoteTargetUntrusted),
@@ -1752,6 +1802,10 @@ func (*deadlineA2AClient) ResolveAgentCard(context.Context, a2aclient.Target) (*
 }
 
 func (*deadlineA2AClient) IsReady(a2aclient.Target) bool { return true }
+
+func (*deadlineA2AClient) QuoteAdmission(a2aclient.Target, uint64) a2aclient.QuoteVerdict {
+	return a2aclient.QuoteNotApplicable
+}
 
 func TestRemoteTimeoutBoundsDelegationWithoutCancellingMatrixNotice(t *testing.T) {
 	client := &deadlineA2AClient{}

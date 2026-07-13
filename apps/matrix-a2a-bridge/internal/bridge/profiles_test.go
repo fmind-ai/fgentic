@@ -108,6 +108,10 @@ func (*cardSequenceClient) CancelTask(context.Context, a2aclient.Target, string)
 	return errors.New("unexpected A2A task cancel")
 }
 
+func (*cardSequenceClient) QuoteAdmission(a2aclient.Target, uint64) a2aclient.QuoteVerdict {
+	return a2aclient.QuoteNotApplicable
+}
+
 func (c *cardSequenceClient) IsReady(target a2aclient.Target) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()

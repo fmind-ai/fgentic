@@ -55,10 +55,14 @@ agents:
   # `extensions` (optional, remote only) lists extra A2A extension URIs to activate on top of the
   # always-on token-budget contract; the bridge sends only those the verified card also declares
   # and treats the list as its allowlist of `required` card extensions. Add only through review.
+  # `maxCost` (optional, remote only) is the highest per-skill credit-unit price the bridge will
+  # pay this remote; the verified card must then advertise a skill-quote within it or the delegation
+  # fails closed (quote_over_budget). Credit-units are bilateral accounting units, not currency.
   # agent-partner-reviewer:
   #   url: https://agents.partner.example/a2a/reviewer
   #   timeout: 30s
   #   tokenBudget: 4096
+  #   maxCost: 8192
   #   extensions:
   #     - https://fgentic.fmind.ai/a2a/extensions/skill-quote/v1
   #   cardIdentity:
