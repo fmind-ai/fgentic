@@ -28,7 +28,7 @@ func runLongTask(t *testing.T, b *Bridge, intent *appservice.IntentAPI, evt *eve
 
 func TestThreadedProgressPostsBoundedDedupedUpdates(t *testing.T) {
 	client := &scriptedA2AClient{
-		callResult: a2aclient.Result{TaskID: "task-1", ContextID: "ctx-1"},
+		callResult: a2aclient.Result{TaskID: "task-1", ContextID: "ctx-1", Text: "submitted"},
 		polls: []scriptedPoll{
 			{result: a2aclient.Result{TaskID: "task-1", Text: "step 1"}},
 			{result: a2aclient.Result{TaskID: "task-1", Text: "step 1"}}, // duplicate — deduped
@@ -44,11 +44,14 @@ func TestThreadedProgressPostsBoundedDedupedUpdates(t *testing.T) {
 	}
 
 	events := recorder.snapshot()
-	if len(events) != 4 {
-		t.Fatalf("Matrix events = %d, want placeholder + 2 progress + final edit", len(events))
+	if len(events) != 5 {
+		t.Fatalf("Matrix events = %d, want placeholder + 3 progress + final edit", len(events))
 	}
 	placeholder := id.EventID("$reply-1")
-	for i, want := range []string{"step 1", "step 2"} {
+	if events[0].Body != workingText {
+		t.Fatalf("placeholder body = %q, want fixed working marker %q", events[0].Body, workingText)
+	}
+	for i, want := range []string{"submitted", "step 1", "step 2"} {
 		p := events[1+i]
 		if p.Body != want {
 			t.Errorf("progress[%d] body = %q, want %q", i, p.Body, want)
@@ -58,7 +61,7 @@ func TestThreadedProgressPostsBoundedDedupedUpdates(t *testing.T) {
 		}
 	}
 	// The final answer stays the m.replace edit of the root placeholder so thread previews are correct.
-	final := events[3]
+	final := events[4]
 	if final.RelatesTo == nil || final.RelatesTo.GetReplaceID() != placeholder {
 		t.Fatalf("final relation = %+v, want m.replace of %s", final.RelatesTo, placeholder)
 	}

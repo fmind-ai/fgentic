@@ -100,6 +100,21 @@ apply_secret() {
 		"${name}" "${namespace}" "${type}" "${data}" | kubectl apply --filename - >/dev/null
 }
 
+a2a_caller_document() {
+	local key="$1"
+	jq --null-input --compact-output --arg key "${key}" \
+		'{key: $key, metadata: {workload: "matrix-a2a-bridge"}}'
+}
+
+apply_a2a_secrets() {
+	local key="$1"
+	local caller
+	caller="$(a2a_caller_document "${key}")"
+	apply_secret agentgateway-system a2a-bridge-callers \
+		--from-literal=matrix-a2a-bridge="${caller}"
+	apply_secret bridge a2a-bridge-credential --from-literal=token="${key}"
+}
+
 create_ephemeral_secrets() {
 	if [ "${PROFILE}" = "federation" ]; then
 		create_federation_secrets
@@ -169,11 +184,7 @@ EOF
 	apply_secret matrix matrix-a2a-bridge-registration \
 		--from-literal=registration.yaml="${registration}"
 
-	local callers
-	callers="$(jq --null-input --compact-output --arg key "${A2A_KEY}" \
-		'{"matrix-a2a-bridge": {key: $key, metadata: {workload: "matrix-a2a-bridge"}}}')"
-	apply_secret agentgateway-system a2a-bridge-callers --from-literal=matrix-a2a-bridge="${callers}"
-	apply_secret bridge a2a-bridge-credential --from-literal=token="${A2A_KEY}"
+	apply_a2a_secrets "${A2A_KEY}"
 
 	local mcp_callers
 	mcp_callers="$(jq --null-input --compact-output --arg key "${MCP_PLATFORM_HELPER_KEY}" \

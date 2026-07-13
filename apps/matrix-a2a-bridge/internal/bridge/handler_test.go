@@ -1494,8 +1494,8 @@ func TestAwaitTaskPollsWithCappedBackoffAndEmptyReplyFallback(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("Matrix events = %d, want placeholder and edit", len(events))
 	}
-	if events[0].Body != "preparing" {
-		t.Fatalf("placeholder body = %q, want preparing", events[0].Body)
+	if events[0].Body != workingText {
+		t.Fatalf("placeholder body = %q, want %q", events[0].Body, workingText)
 	}
 	assertEdit(t, events[1], emptyReplyText)
 	if audit.outcome != outcomeOK || audit.terminalStage != "task_result" || audit.taskID != "task-1" {

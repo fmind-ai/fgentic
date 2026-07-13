@@ -7,6 +7,14 @@ readonly ROOT_DIR
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo-check.XXXXXX")"
 readonly WORK_DIR
 readonly DEMO="${ROOT_DIR}/scripts/demo.sh"
+readonly REPLY_FILTER="${ROOT_DIR}/scripts/lib/demo-reply.jq"
+readonly SEED_STATE_FILTER="${ROOT_DIR}/scripts/lib/demo-seed-state.jq"
+readonly EXPECTED_DEMO_REPLY="Fgentic's deterministic evaluation model is working through agentgateway and kagent."
+readonly -a DEMO_SEED_SOURCES=(
+	"${ROOT_DIR}/scripts/seed-demo.sh"
+	"${REPLY_FILTER}"
+	"${SEED_STATE_FILTER}"
+)
 readonly -a DEMO_SOURCES=(
 	"${DEMO}"
 	"${ROOT_DIR}/scripts/lib.sh"
@@ -34,7 +42,99 @@ assert_yq() {
 	}
 }
 
+reply_fixture() {
+	local body="$1"
+	local sender="${2:-@agent-docs-qa:fgentic.localhost}"
+	local msgtype="${3:-m.notice}"
+	jq --null-input --compact-output --arg body "${body}" --arg sender "${sender}" \
+		--arg msgtype "${msgtype}" '{
+      events_before: [],
+      events_after: [{
+        event_id: "$reply",
+        type: "m.room.message",
+        sender: $sender,
+        content: {
+          msgtype: $msgtype,
+          body: $body,
+          "m.relates_to": {"m.in_reply_to": {event_id: "$probe"}}
+        }
+      }]
+    }'
+}
+
+replacement_fixture() {
+	local body="$1"
+	local sender="${2:-@agent-docs-qa:fgentic.localhost}"
+	local replacement_sender="${3:-${sender}}"
+	local replaced_event_id="${4:-\$reply}"
+	local replacement_msgtype="${5:-m.notice}"
+	local placeholder_body="${6:---- BEGIN FGENTIC BRIDGE PROVENANCE ---
+untrusted request
+--- END UNTRUSTED MATRIX CONTENT ---}"
+	jq --null-input --compact-output --arg body "${body}" --arg sender "${sender}" \
+		--arg replacement_sender "${replacement_sender}" \
+		--arg replaced_event_id "${replaced_event_id}" \
+		--arg replacement_msgtype "${replacement_msgtype}" \
+		--arg placeholder_body "${placeholder_body}" '{
+      events_before: [],
+      events_after: [
+        {
+          event_id: "$reply",
+          type: "m.room.message",
+          sender: $sender,
+          content: {
+            msgtype: "m.notice",
+            body: $placeholder_body,
+            "m.relates_to": {"m.in_reply_to": {event_id: "$probe"}}
+          }
+        },
+        {
+          event_id: "$replacement",
+          type: "m.room.message",
+          sender: $replacement_sender,
+          content: {
+            msgtype: "m.notice",
+            body: ("* " + $body),
+            "m.new_content": {msgtype: $replacement_msgtype, body: $body},
+            "m.relates_to": {rel_type: "m.replace", event_id: $replaced_event_id}
+          }
+        }
+      ]
+    }'
+}
+
+reply_fixture_matches() {
+	local provider="${1:-demo}"
+	local model="${2:-fgentic-demo}"
+	jq --exit-status --arg sender '@agent-docs-qa:fgentic.localhost' --arg event_id '$probe' \
+		--arg provider "${provider}" --arg model "${model}" \
+		--arg expected_demo_reply "${EXPECTED_DEMO_REPLY}" \
+		--from-file "${REPLY_FILTER}" >/dev/null
+}
+
 bash -n "${DEMO_SOURCES[@]}" "${ROOT_DIR}/scripts/seed-demo.sh"
+(
+	# The Secret key already names the caller. Its value must be one Agentgateway credential record,
+	# not another caller-name map, or every bridge request is rejected as an unknown API key.
+	# shellcheck source=scripts/lib/demo-secrets.sh
+	source "${ROOT_DIR}/scripts/lib/demo-secrets.sh"
+	secret_calls=()
+	apply_secret() {
+		secret_calls+=("$*")
+	}
+	apply_a2a_secrets fixture-key
+	[ "${#secret_calls[@]}" -eq 2 ]
+	server_prefix='agentgateway-system a2a-bridge-callers --from-literal=matrix-a2a-bridge='
+	[[ "${secret_calls[0]}" == "${server_prefix}"* ]]
+	server_document="${secret_calls[0]#"${server_prefix}"}"
+	jq --exit-status '
+    .key == "fixture-key" and
+    .metadata == {"workload": "matrix-a2a-bridge"} and
+    (has("matrix-a2a-bridge") | not)
+  ' <<<"${server_document}" >/dev/null
+	[ "${secret_calls[1]}" = \
+		'bridge a2a-bridge-credential --from-literal=token=fixture-key' ]
+)
 rg --fixed-strings \
 	'kubectl apply --server-side --kustomize "${SNAPSHOT_DIR}/infra/policies"' \
 	"${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null || {
@@ -44,6 +144,16 @@ rg --fixed-strings \
 rg --fixed-strings 'scripts/test-admission-policies.sh" --runtime' \
 	"${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null || {
 	echo 'error: demo acceptance omits the admission runtime contract' >&2
+	exit 1
+}
+rg --fixed-strings 'wait --for=create deployment/agentgateway-proxy' \
+	"${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null || {
+	echo 'error: demo seeding does not wait for the agentgateway data plane to exist' >&2
+	exit 1
+}
+rg --fixed-strings 'rollout status deployment/agentgateway-proxy' \
+	"${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null || {
+	echo 'error: demo seeding does not wait for the agentgateway data plane' >&2
 	exit 1
 }
 if (
@@ -262,6 +372,40 @@ assert_yq \
      (.spec.patches[0].patch | contains("pullPolicy: Never")))' \
 	"${WORK_DIR}/cluster.yaml" 'demo bridge is not pinned to the side-loaded image'
 
+kubectl kustomize "${ROOT_DIR}/infra/agentgateway" >"${WORK_DIR}/agentgateway.yaml"
+assert_yq \
+	'select(.kind == "NetworkPolicy" and .metadata.name == "agentgateway-default-deny-ingress") |
+    (((.spec.podSelector | tag) == "!!map") and
+     ((.spec.podSelector | length) == 0) and
+     ((.spec.policyTypes | length) == 1) and
+     (.spec.policyTypes[0] == "Ingress") and
+     (((.spec | has("ingress")) | not)))' \
+	"${WORK_DIR}/agentgateway.yaml" 'agentgateway namespace does not fail closed for ingress'
+assert_yq \
+	'select(.kind == "NetworkPolicy" and .metadata.name == "agentgateway-allow-agents") |
+    (.spec.podSelector.matchLabels."app.kubernetes.io/name" == "agentgateway-proxy" and
+     .spec.ingress[0].from[0].namespaceSelector.matchLabels."kubernetes.io/metadata.name" == "bridge" and
+     .spec.ingress[0].from[1].namespaceSelector.matchLabels."kubernetes.io/metadata.name" == "kagent" and
+     .spec.ingress[0].ports[0].port == 8080 and .spec.ingress[0].ports[0].protocol == "TCP" and
+     (.spec.ingress[0].from | length) == 2 and
+     (.spec.ingress[0].ports | length) == 1 and
+     .spec.ingress[1].from[0].namespaceSelector.matchLabels."kubernetes.io/metadata.name" == "monitoring" and
+     .spec.ingress[1].ports[0].port == 15020 and .spec.ingress[1].ports[0].protocol == "TCP" and
+     (.spec.ingress[1].from | length) == 1 and
+     (.spec.ingress[1].ports | length) == 1 and
+     (.spec.ingress | length) == 2)' \
+	"${WORK_DIR}/agentgateway.yaml" 'agentgateway data-plane ingress is not port scoped'
+assert_yq \
+	'select(.kind == "NetworkPolicy" and .metadata.name == "agentgateway-allow-xds") |
+    (.spec.podSelector.matchLabels."app.kubernetes.io/name" == "agentgateway" and
+     .spec.ingress[0].from[0].namespaceSelector.matchLabels."kubernetes.io/metadata.name" == "agentgateway-system" and
+     .spec.ingress[0].from[0].podSelector.matchLabels."app.kubernetes.io/name" == "agentgateway-proxy" and
+     .spec.ingress[0].ports[0].port == 9978 and .spec.ingress[0].ports[0].protocol == "TCP" and
+     (.spec.ingress[0].from | length) == 1 and
+     (.spec.ingress[0].ports | length) == 1 and
+     (.spec.ingress | length) == 1)' \
+	"${WORK_DIR}/agentgateway.yaml" 'agentgateway xDS ingress is not restricted to its proxy'
+
 kubectl kustomize "${ROOT_DIR}/infra/flux" >"${WORK_DIR}/controllers.yaml"
 assert_yq \
 	'select(.kind == "HelmRelease" and .metadata.name == "traefik") |
@@ -339,6 +483,106 @@ for contract in \
 	rg --fixed-strings -- "${contract}" "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
 done
 rg --fixed-strings '/api/admin/v1/users' "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
+for contract in \
+	'all_probes_have_replies' \
+	'probe_event_ids' \
+	'/_matrix/client/v3/rooms/${encoded_room}/context/${encoded_event}?limit=50' \
+	'.source_revision == $source_revision' \
+	'Fgentic'"'"'s deterministic evaluation model is working through agentgateway and kagent.' \
+	'.content.msgtype == "m.notice"' \
+	'source_revision: $source_revision'; do
+	rg --fixed-strings -- "${contract}" "${DEMO_SEED_SOURCES[@]}" >/dev/null || {
+		echo "error: demo seeder omits the per-agent reply contract: ${contract}" >&2
+		exit 1
+	}
+done
+if rg --fixed-strings 'first_ghost=' "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null; then
+	echo 'error: demo seeder still proves only the first mapped agent' >&2
+	exit 1
+fi
+if rg --fixed-strings '/send/m.room.message/demo-${ghost}' \
+	"${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null; then
+	echo 'error: demo seeder puts an unescaped ghost localpart in a Matrix transaction path' >&2
+	exit 1
+fi
+
+reply_fixture "${EXPECTED_DEMO_REPLY}" | reply_fixture_matches || {
+	echo 'error: demo reply predicate rejected the exact deterministic model response' >&2
+	exit 1
+}
+replacement_fixture "${EXPECTED_DEMO_REPLY}" | reply_fixture_matches || {
+	echo 'error: demo reply predicate rejected the streamed Matrix replacement response' >&2
+	exit 1
+}
+replacement_fixture 'A useful model response.' |
+	reply_fixture_matches vertex google/gemini-2.5-flash || {
+	echo 'error: demo reply predicate rejected a successful configured-model replacement' >&2
+	exit 1
+}
+if replacement_fixture "${EXPECTED_DEMO_REPLY}" \
+	'@agent-docs-qa:fgentic.localhost' '@agent-scribe:fgentic.localhost' |
+	reply_fixture_matches; then
+	echo 'error: demo reply predicate accepted a replacement from the wrong ghost' >&2
+	exit 1
+fi
+if replacement_fixture "${EXPECTED_DEMO_REPLY}" \
+	'@agent-docs-qa:fgentic.localhost' '@agent-docs-qa:fgentic.localhost' '$other' |
+	reply_fixture_matches; then
+	echo 'error: demo reply predicate accepted a replacement for another event' >&2
+	exit 1
+fi
+if replacement_fixture "${EXPECTED_DEMO_REPLY}" \
+	'@agent-docs-qa:fgentic.localhost' '@agent-docs-qa:fgentic.localhost' '$reply' 'm.text' |
+	reply_fixture_matches; then
+	echo 'error: demo reply predicate accepted a replacement with the wrong message type' >&2
+	exit 1
+fi
+if reply_fixture '--- BEGIN FGENTIC BRIDGE PROVENANCE ---' |
+	reply_fixture_matches vertex google/gemini-2.5-flash; then
+	echo 'error: demo reply predicate accepted the streaming provenance envelope' >&2
+	exit 1
+fi
+if replacement_fixture '⚠️ agent failed after starting.' \
+	'@agent-docs-qa:fgentic.localhost' '@agent-docs-qa:fgentic.localhost' \
+	'$reply' 'm.notice' 'Processing request' |
+	reply_fixture_matches vertex google/gemini-2.5-flash; then
+	echo 'error: demo reply predicate accepted a placeholder before a terminal failure' >&2
+	exit 1
+fi
+for rejected_reply in \
+	'⚠️ could not reach agent "agent-docs-qa" — see the bridge logs.' \
+	'🛑 canceled by @alice:fgentic.localhost.' \
+	'⏳ working on it…' \
+	'(the agent returned no content)' \
+	'   '; do
+	if reply_fixture "${rejected_reply}" |
+		reply_fixture_matches vertex google/gemini-2.5-flash; then
+		echo "error: demo reply predicate accepted a non-success notice: ${rejected_reply}" >&2
+		exit 1
+	fi
+done
+if jq --null-input --compact-output '{events_before: [], events_after: []}' |
+	reply_fixture_matches; then
+	echo 'error: demo reply predicate accepted a missing reply' >&2
+	exit 1
+fi
+
+ghosts_json='["agent-docs-qa","agent-platform-helper","agent-scribe"]'
+seed_state='{"version":2,"provider":"demo","model":"fgentic-demo","source_revision":"main@sha1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","probe_event_ids":{"agent-docs-qa":"$1","agent-platform-helper":"$2","agent-scribe":"$3"}}'
+seed_state_matches() {
+	local source_revision="$1"
+	jq --exit-status --arg provider demo --arg model fgentic-demo \
+		--arg source_revision "${source_revision}" --argjson ghosts "${ghosts_json}" \
+		--from-file "${SEED_STATE_FILTER}" >/dev/null <<<"${seed_state}"
+}
+seed_state_matches 'main@sha1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' || {
+	echo 'error: demo seed-state predicate rejected the reconciled source revision' >&2
+	exit 1
+}
+if seed_state_matches 'main@sha1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'; then
+	echo 'error: demo seed-state predicate reused proof from an older source revision' >&2
+	exit 1
+fi
 
 if rg -n 'mas_password_login_enabled|llm_token_budget_15m' \
 	"${ROOT_DIR}/clusters/demo" "${DEMO_SOURCES[@]}"; then
