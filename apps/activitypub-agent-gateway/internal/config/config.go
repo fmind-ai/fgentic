@@ -82,6 +82,11 @@ type Config struct {
 	BudgetWindow   time.Duration `env:"BUDGET_WINDOW" envDefault:"1m"`
 	BudgetCapacity int           `env:"BUDGET_CAPACITY" envDefault:"4096"`
 
+	// GroupsPath is the projected groups.yaml mapping each exposed collaboration room to an AP Group
+	// actor (issue #217). Empty disables the Group surface. Groups need the signing key (for the
+	// actor publicKey and signed outbound delivery) and the border (F3/F4/F5 on inbound group traffic).
+	GroupsPath string `env:"GROUPS_PATH"`
+
 	// RequestTimeout bounds one synchronous A2A message/send transport round trip. TaskTimeout
 	// bounds the whole delegation when the agent returns a long-running Task polled via tasks/get.
 	RequestTimeout time.Duration `env:"REQUEST_TIMEOUT" envDefault:"60s"`
@@ -168,6 +173,14 @@ func (c Config) validate() error {
 	}
 	if c.IntegrityRequireInbound && c.PolicyPath == "" {
 		return fmt.Errorf("INTEGRITY_REQUIRE_INBOUND needs POLICY_PATH (object integrity gates the border)")
+	}
+	if c.GroupsPath != "" {
+		if c.IntegrityKeyPath == "" {
+			return fmt.Errorf("GROUPS_PATH needs INTEGRITY_KEY_PATH (the signing key authenticates group delivery)")
+		}
+		if c.PolicyPath == "" {
+			return fmt.Errorf("GROUPS_PATH needs POLICY_PATH (the border gates inbound group traffic)")
+		}
 	}
 	if c.BudgetEnabled {
 		if c.PolicyPath == "" {

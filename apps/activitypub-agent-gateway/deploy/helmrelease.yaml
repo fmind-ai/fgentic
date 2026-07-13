@@ -44,6 +44,11 @@ spec:
     # before any A2A call, deny-by-default for an unbudgeted domain. Reservation ≠ consumption.
     budget:
       enabled: true
+    # Group collaboration (issue #217) is ON: designated rooms are exposed as AP Group actors that
+    # remote actors follow and post to, with Announce fan-out and governed @agent routing. Inbound
+    # group traffic passes the F3/F4/F5 border; outbound delivery is signed with the integrity key.
+    groups:
+      enabled: true
     # Public exposure is gated on the border being proven in force (docs/fediverse.md §3): keep the
     # route false until then, even though the border itself is now enabled.
     httpRoute:

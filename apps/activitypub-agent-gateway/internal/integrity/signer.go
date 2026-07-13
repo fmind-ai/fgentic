@@ -47,6 +47,14 @@ func (s *Signer) PublicKeyMultibase() string {
 	return EncodePublicKeyMultibase(s.priv.Public().(ed25519.PublicKey))
 }
 
+// PublicKey is the signer's Ed25519 public key, used to publish the HTTP-Signature `publicKeyPem`
+// and to seed the outbound deliverer with the matching private key.
+func (s *Signer) PublicKey() ed25519.PublicKey { return s.priv.Public().(ed25519.PublicKey) }
+
+// PrivateKey is the signer's Ed25519 private key, shared with the outbound deliverer so HTTP
+// signatures and object proofs use one platform identity.
+func (s *Signer) PrivateKey() ed25519.PrivateKey { return s.priv }
+
 // SignActivity attaches a proof to doc in place, using actorID to derive the verificationMethod and
 // the signer's clock for the created timestamp.
 func (s *Signer) SignActivity(doc map[string]any, actorID string) error {

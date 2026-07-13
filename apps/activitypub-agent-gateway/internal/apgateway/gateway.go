@@ -26,6 +26,7 @@ import (
 	vocab "github.com/go-ap/activitypub"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/fmind/activitypub-agent-gateway/internal/delivery"
 	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
 )
 
@@ -51,6 +52,23 @@ type Gateway struct {
 	border     *Border           // federation policy border; nil disables enforcement (local-only dev/tests)
 	signer     *integrity.Signer // FEP-8b32 object-integrity signer; nil serves replies without a proof
 	a2aBaseURL string            // public base of the advertised A2A endpoint (defaults to baseURL)
+
+	// Group collaboration (issue #217); all nil unless UseGroups is called.
+	groups      *GroupRegistry
+	followers   *followerStore
+	deliverer   *delivery.Deliverer
+	groupClient *http.Client
+}
+
+// UseGroups enables the ActivityPub Group collaboration surface: designated collaboration rooms are
+// exposed as Group actors that remote actors can follow and post to, with Announce fan-out and
+// governed @agent routing (issue #217). deliverer signs outbound Accept/Announce; client fetches a
+// follower's inbox. Requires a signer (for the actor's publicKey) and a border (F3/F4/F5).
+func (g *Gateway) UseGroups(registry *GroupRegistry, deliverer *delivery.Deliverer, client *http.Client) {
+	g.groups = registry
+	g.followers = newFollowerStore()
+	g.deliverer = deliverer
+	g.groupClient = client
 }
 
 // SetA2APublicBase overrides the base URL the published AgentCard and the actor's `implements`
@@ -105,6 +123,10 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("GET /ap/agents/{ghost}/outbox", g.handleOutbox)
 	mux.HandleFunc("GET /ap/agents/{ghost}/activities/{seq}", g.handleActivity)
 	mux.HandleFunc("GET /ap/agents/{ghost}/agent-card.json", g.handleAgentCard)
+	mux.HandleFunc("GET /ap/groups/{group}", g.handleGroupActor)
+	mux.HandleFunc("POST /ap/groups/{group}/inbox", g.handleGroupInbox)
+	mux.HandleFunc("GET /ap/groups/{group}/outbox", g.handleGroupOutbox)
+	mux.HandleFunc("GET /ap/groups/{group}/followers", g.handleGroupFollowers)
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") })
 	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, _ *http.Request) { _, _ = io.WriteString(w, "ok") })
 	return mux
@@ -114,17 +136,32 @@ func (g *Gateway) Handler() http.Handler {
 // it matches the FULL handle (localpart AND host), never the localpart alone (docs/fediverse.md §6).
 func (g *Gateway) handleWebFinger(w http.ResponseWriter, r *http.Request) {
 	resource := r.URL.Query().Get("resource")
-	ghost, ok := g.parseHandle(resource)
+	local, ok := g.parseHandle(resource)
 	if !ok {
 		g.metrics.rejected.WithLabelValues("webfinger_bad_resource").Inc()
-		http.Error(w, "resource must be acct:<ghost>@"+g.serverName, http.StatusBadRequest)
+		http.Error(w, "resource must be acct:<local>@"+g.serverName, http.StatusBadRequest)
 		return
 	}
-	if _, served := g.registry.Lookup(ghost); !served {
+	if _, served := g.registry.Lookup(local); !served {
+		// A collaboration Group resolves to its Group actor (issue #217).
+		if g.groups != nil {
+			if _, isGroup := g.groups.Lookup(local); isGroup {
+				writeJRD(w, jrd{
+					Subject: g.handle(local),
+					Links: []jrdLink{{
+						Rel:  "self",
+						Type: "application/activity+json",
+						Href: string(g.groupActorID(local)),
+					}},
+				})
+				return
+			}
+		}
 		g.metrics.rejected.WithLabelValues("webfinger_unknown_agent").Inc()
 		http.Error(w, "no such agent", http.StatusNotFound)
 		return
 	}
+	ghost := local
 	// One WebFinger resolution reveals BOTH the ActivityPub actor (rel=self) AND a resolvable
 	// pointer to the richer A2A AgentCard — the novel cross-protocol discovery of issue #215.
 	writeJRD(w, jrd{

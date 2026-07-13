@@ -23,6 +23,7 @@ import (
 	"github.com/fmind/activitypub-agent-gateway/internal/apgateway"
 	"github.com/fmind/activitypub-agent-gateway/internal/budget"
 	"github.com/fmind/activitypub-agent-gateway/internal/config"
+	"github.com/fmind/activitypub-agent-gateway/internal/delivery"
 	"github.com/fmind/activitypub-agent-gateway/internal/httpsig"
 	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
 	"github.com/fmind/activitypub-agent-gateway/internal/policy"
@@ -63,9 +64,11 @@ func run() error {
 
 	// Object integrity signing (FEP-8b32): when a key is mounted, outbound replies carry an
 	// eddsa-jcs-2022 proof and each actor publishes its assertionMethod Multikey. An empty
-	// INTEGRITY_KEY_PATH serves replies without a proof — valid for local-only dev.
+	// INTEGRITY_KEY_PATH serves replies without a proof — valid for local-only dev. The same key is
+	// reused for Group HTTP-Signature delivery (one platform identity).
+	var signer *integrity.Signer
 	if cfg.IntegrityKeyPath != "" {
-		signer, err := integrity.LoadSignerFromFile(cfg.IntegrityKeyPath, cfg.IntegrityKeyFragment)
+		signer, err = integrity.LoadSignerFromFile(cfg.IntegrityKeyPath, cfg.IntegrityKeyFragment)
 		if err != nil {
 			return err
 		}
@@ -99,6 +102,19 @@ func run() error {
 		log.Info("federation policy border enabled", "policy", cfg.PolicyPath, "healthy", store.Healthy())
 	} else {
 		log.Warn("federation policy border DISABLED (POLICY_PATH empty) — local-only dev posture")
+	}
+
+	// Group collaboration (issue #217): expose designated rooms as AP Group actors that remote actors
+	// can follow and post to, with Announce fan-out and governed @agent routing. Signed outbound
+	// delivery reuses the object-integrity key; config validation guarantees the signer and border.
+	if cfg.GroupsPath != "" {
+		groupRegistry, gerr := apgateway.LoadGroupRegistry(cfg.GroupsPath)
+		if gerr != nil {
+			return gerr
+		}
+		deliverer := delivery.New(&http.Client{Timeout: cfg.RequestTimeout}, signer.PrivateKey(), log)
+		gateway.UseGroups(groupRegistry, deliverer, &http.Client{Timeout: cfg.RequestTimeout})
+		log.Info("group collaboration ENABLED", "groups", groupRegistry.Groups())
 	}
 
 	apServer := &http.Server{

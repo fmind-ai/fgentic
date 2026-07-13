@@ -86,8 +86,10 @@ func TestValidateRejectsBadInput(t *testing.T) {
 			c.BudgetWindow = time.Minute
 			c.BudgetCapacity = 0
 		},
-		"bad level":  func(c *Config) { c.LogLevel = "loud" },
-		"bad format": func(c *Config) { c.LogFormat = "xml" },
+		"groups no key": func(c *Config) { c.GroupsPath = "/g"; c.IntegrityKeyPath = ""; c.PolicyPath = "/p" },
+		"groups no pol": func(c *Config) { c.GroupsPath = "/g"; c.IntegrityKeyPath = "/k"; c.PolicyPath = "" },
+		"bad level":     func(c *Config) { c.LogLevel = "loud" },
+		"bad format":    func(c *Config) { c.LogFormat = "xml" },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
