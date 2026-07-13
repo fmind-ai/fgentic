@@ -7,6 +7,9 @@
 {{- if and .Values.budget.enabled (not .Values.policy.enabled) }}
 {{- fail "budget.enabled needs policy.enabled (budgets live in the border policy)" }}
 {{- end }}
+{{- if and .Values.groups.enabled (or (not .Values.integrity.enabled) (not .Values.policy.enabled)) }}
+{{- fail "groups.enabled needs integrity.enabled (signing key) and policy.enabled (border)" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -107,6 +110,10 @@ spec:
             - name: BUDGET_CAPACITY
               value: {{ .Values.budget.capacity | quote }}
             {{- end }}
+            {{- if .Values.groups.enabled }}
+            - name: GROUPS_PATH
+              value: /etc/activitypub-agent-gateway/groups/groups.yaml
+            {{- end }}
           volumeMounts:
             - name: agents
               # Mount the whole projected ConfigMap directory (atomic symlink swap on update).
@@ -121,6 +128,11 @@ spec:
             {{- if .Values.integrity.enabled }}
             - name: signing-key
               mountPath: /etc/activitypub-agent-gateway/signing-key
+              readOnly: true
+            {{- end }}
+            {{- if .Values.groups.enabled }}
+            - name: groups
+              mountPath: /etc/activitypub-agent-gateway/groups
               readOnly: true
             {{- end }}
           livenessProbe:
@@ -153,6 +165,11 @@ spec:
           secret:
             secretName: {{ .Values.integrity.secretName }}
             defaultMode: 0400
+        {{- end }}
+        {{- if .Values.groups.enabled }}
+        - name: groups
+          configMap:
+            name: {{ include "activitypub-agent-gateway.fullname" . }}-groups
         {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:

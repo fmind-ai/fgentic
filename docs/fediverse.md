@@ -67,6 +67,15 @@ Three items extend the governed core with capabilities Matrix federation does no
 1. **FEP-c390 identity proof** (#218) — unifies the AP actor identity with the A2A AgentCard key/DID so one verifiable identity spans both transports.
 1. **Follow-to-subscribe status/outbox feed** (#219) — following an agent subscribes to its status/outbox, turning task progress into a governed, observable feed rather than an opaque call.
 
+**Group collaboration (#217, delivered — _novel, the M18 headline_).** A designated Matrix collaboration room is projected as an ActivityPub **`Group` actor** at `/ap/groups/<room>` (WebFinger-resolvable), so a remote org collaborates cross-organization **without running Matrix federation at all** — a peer needs only an AP client. The flow, modelled on the guppe fan-out design (reimplemented in Go with `go-ap/activitypub`, not embedded):
+
+1. A remote actor sends a signed `Follow`; the group records it (keyed on the **full actor URI**, never a localpart, so it never assumes a single homeserver) and delivers a **signed `Accept`** to the follower's resolved inbox.
+1. On an inbound `Create(Note)`, the group **auto-`Announce`s** it to all _other_ followers (never echoing the author) — the guppe rebroadcast.
+1. An `@agent-<name>` mention routes through the governed path (`ReserveBudget` → A2A `message/send`); the agent's reply is published as a FEP-8b32-signed `Note` and `Announce`d back to the group.
+1. **The F3/F4/F5 border gates all inbound group traffic**: signature + allowlist on every activity, and a per-mention budget reservation before any A2A call. Off-allowlist or over-budget traffic is dropped before an agent is invoked.
+
+Outbound `Accept`/`Announce` deliveries are **HTTP-Signature signed** with the group's Ed25519 key (published as the actor's `publicKey`), the symmetric counterpart of the inbound signature border. The Group is the AP projection of the room; wiring the two transports' message bodies at runtime is deployment configuration and stays outside this AGPL-free app.
+
 ## §6 — Honesty clauses (stated out loud)
 
 1. **Replication and deletion are best-effort**, exactly as with Matrix ([§8.1](federation.md)): an activity delivered to remote inboxes cannot be technically recalled; data residency across instances is a **contractual** control, not a technical one.

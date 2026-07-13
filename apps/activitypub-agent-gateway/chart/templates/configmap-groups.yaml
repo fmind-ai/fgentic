@@ -1,0 +1,18 @@
+{{- if .Values.groups.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "activitypub-agent-gateway.fullname" . }}-groups
+  labels:
+    {{- include "activitypub-agent-gateway.labels" . | nindent 4 }}
+data:
+  # WHICH Matrix collaboration rooms are exposed as ActivityPub Group actors (issue #217). Remote
+  # actors follow and post to these; an @agent mention routes through the governed A2A path.
+  groups.yaml: |
+    schemaVersion: 1
+    groups:
+      {{- range $id, $ref := .Values.groups.rooms }}
+      {{ $id }}:
+        {{- toYaml $ref | nindent 8 }}
+      {{- end }}
+{{- end }}

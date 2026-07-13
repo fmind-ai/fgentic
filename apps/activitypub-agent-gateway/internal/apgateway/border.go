@@ -75,37 +75,63 @@ func (b *Border) Authorize(ctx context.Context, req *http.Request, body []byte, 
 		return BorderDecision{Allowed: false, Reason: decision.Reason, Digest: decision.Digest}
 	}
 
-	// Object integrity (optional): the transport hop is authenticated, but an integrity proof binds
-	// the object itself. When required, a missing or invalid proof — or a proof whose key controller
-	// is not the actor — denies before any A2A call.
-	if b.integrity != nil {
-		var doc map[string]any
-		if err := json.Unmarshal(body, &doc); err != nil {
-			return BorderDecision{Allowed: false, Reason: "malformed_object", Digest: decision.Digest}
-		}
-		controller, err := b.integrity.VerifyDocument(ctx, doc)
-		if err != nil {
-			return BorderDecision{Allowed: false, Reason: objectIntegrityReason(err), Digest: decision.Digest}
-		}
-		if controller != actorURI {
-			return BorderDecision{Allowed: false, Reason: "object_actor_mismatch", Digest: decision.Digest}
-		}
+	if o := b.VerifyObject(ctx, body, actorURI, decision.Digest); !o.Allowed {
+		return o
 	}
+	return b.ReserveBudget(actorURI, decision.Digest)
+}
 
-	// Token-budget admission (optional): reserve this delegation's token ceiling from the verified
-	// actor's and domain's git-configured pools before any A2A call. Deny-by-default when the
-	// allowlisted domain has no budget; reject when either pool is exhausted (reservation ≠ spend).
-	if b.reserver != nil {
-		grant, ok := b.store.Budget(actorURI)
-		if !ok {
-			return BorderDecision{Allowed: false, Reason: "no_budget", Digest: decision.Digest, BudgetOutcome: "rejected"}
-		}
-		if !b.reserver.Reserve(actorURI, actorDomain(actorURI), grant.Reservation, grant.ActorPool, grant.DomainPool) {
-			return BorderDecision{Allowed: false, Reason: "over_budget", Digest: decision.Digest, BudgetOutcome: "rejected"}
-		}
-		return BorderDecision{Allowed: true, Reason: decision.Reason, Digest: decision.Digest, BudgetOutcome: "reserved"}
+// VerifyTransport runs ONLY the transport-hop checks — signature, actor-key binding, and the
+// allowlist — with no object-integrity or budget step. It admits non-delegating activities such as a
+// Group Follow, which must be allowlist-gated but neither carry a per-object proof nor spend budget.
+func (b *Border) VerifyTransport(ctx context.Context, req *http.Request, body []byte, actorURI string) BorderDecision {
+	result, err := b.verifier.Verify(ctx, req, body)
+	if err != nil {
+		return BorderDecision{Allowed: false, Reason: signatureReason(err), Digest: "none"}
 	}
-	return BorderDecision{Allowed: true, Reason: decision.Reason, Digest: decision.Digest}
+	if result.Owner != actorURI {
+		return BorderDecision{Allowed: false, Reason: "actor_key_mismatch", Digest: "none"}
+	}
+	decision := b.store.Admit(result.Owner)
+	return BorderDecision{Allowed: decision.Allowed, Reason: decision.Reason, Digest: decision.Digest}
+}
+
+// VerifyObject runs the optional FEP-8b32 object-integrity check on an already-transport-verified
+// body, binding the proof's key controller to actorURI. It is a no-op (allow) when integrity is
+// disabled. digest is the policy digest carried from the transport decision.
+func (b *Border) VerifyObject(ctx context.Context, body []byte, actorURI, digest string) BorderDecision {
+	if b.integrity == nil {
+		return BorderDecision{Allowed: true, Reason: "allowlisted", Digest: digest}
+	}
+	var doc map[string]any
+	if err := json.Unmarshal(body, &doc); err != nil {
+		return BorderDecision{Allowed: false, Reason: "malformed_object", Digest: digest}
+	}
+	controller, err := b.integrity.VerifyDocument(ctx, doc)
+	if err != nil {
+		return BorderDecision{Allowed: false, Reason: objectIntegrityReason(err), Digest: digest}
+	}
+	if controller != actorURI {
+		return BorderDecision{Allowed: false, Reason: "object_actor_mismatch", Digest: digest}
+	}
+	return BorderDecision{Allowed: true, Reason: "allowlisted", Digest: digest}
+}
+
+// ReserveBudget runs the optional per-actor/domain token-budget reservation for a delegation. It is a
+// no-op (allow) when budgets are disabled; otherwise it denies deny-by-default (no budget) or over
+// budget before any A2A call. A reservation gates admission and is never consumption (D8).
+func (b *Border) ReserveBudget(actorURI, digest string) BorderDecision {
+	if b.reserver == nil {
+		return BorderDecision{Allowed: true, Reason: "allowlisted", Digest: digest}
+	}
+	grant, ok := b.store.Budget(actorURI)
+	if !ok {
+		return BorderDecision{Allowed: false, Reason: "no_budget", Digest: digest, BudgetOutcome: "rejected"}
+	}
+	if !b.reserver.Reserve(actorURI, actorDomain(actorURI), grant.Reservation, grant.ActorPool, grant.DomainPool) {
+		return BorderDecision{Allowed: false, Reason: "over_budget", Digest: digest, BudgetOutcome: "rejected"}
+	}
+	return BorderDecision{Allowed: true, Reason: "allowlisted", Digest: digest, BudgetOutcome: "reserved"}
 }
 
 // actorDomain extracts the lowercased host of an actor URI for the per-domain budget key. A

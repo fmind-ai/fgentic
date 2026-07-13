@@ -44,6 +44,17 @@ agents:
     name: docs-qa
     description: Answers architecture and operations questions from local Fgentic documentation.
 
+# Collaboration Groups (issue #217): expose designated rooms as ActivityPub Group actors that remote
+# Fediverse actors can follow and post to, with Announce fan-out and governed @agent routing. Needs
+# integrity.enabled (signing key for the actor publicKey + signed delivery) and policy.enabled (the
+# F3/F4/F5 border on inbound group traffic). DISABLED here so the chart installs standalone.
+groups:
+  enabled: false
+  rooms:
+    collab:
+      name: Fgentic collaboration
+      description: Cross-organization agent collaboration room.
+
 # The git-reloadable federation policy border (issue #211). When enabled, every inbound activity
 # must pass HTTP-Signature verification and this allowlist before any A2A call. The allowlist is a
 # ConfigMap projected by the namespace-neutral Component (component/) — mounted as a directory so

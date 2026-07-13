@@ -37,3 +37,4 @@ check_package internal/httpsig 75
 check_package internal/policy 90
 check_package internal/integrity 85
 check_package internal/budget 90
+check_package internal/delivery 80
