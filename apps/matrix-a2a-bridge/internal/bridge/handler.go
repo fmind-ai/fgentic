@@ -104,7 +104,8 @@ type delegationAuditResult struct {
 	contextID        string
 	taskID           string
 	replyEventID     id.EventID
-	canceledBy       string // room member who canceled a long task (#98); empty otherwise
+	canceledBy       string   // room member who canceled a long task (#98); empty otherwise
+	activated        []string // A2A extensions the remote echoed as activated (#114); empty for local
 }
 
 // Bridge orchestrates the @mention -> A2A -> reply flow for one appservice.
@@ -600,6 +601,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 	audit.terminalStage = "message_result"
 	audit.contextID = orDefault(res.ContextID, contextID)
 	audit.taskID = res.TaskID
+	audit.activated = res.ActivatedExtensions // extension set the remote echoed on message/send (#114)
 	if res.ContextID != "" {
 		if err := b.store.SetContext(ctx, evt.RoomID.String(), localpart, res.ContextID); err != nil {
 			b.log.Error("store context", "room", evt.RoomID, "ghost", localpart, "err", err)
@@ -611,6 +613,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 		terminalAudit.contextID = orDefault(terminalAudit.contextID, contextID)
 		terminalAudit.dedupVerdict = audit.dedupVerdict
 		terminalAudit.rateLimitVerdict = audit.rateLimitVerdict
+		terminalAudit.activated = res.ActivatedExtensions // negotiated once on message/send, not per poll
 		audit = terminalAudit
 		return
 	}
@@ -903,6 +906,7 @@ func (b *Bridge) logDelegationAudit(
 		"terminal_stage", result.terminalStage,
 		"terminal_reason", result.terminalReason,
 		"canceled_by", result.canceledBy,
+		"a2a_activated_extensions", strings.Join(result.activated, ","),
 		"duration_ms", result.duration.Milliseconds(),
 		"dedup_verdict", string(result.dedupVerdict),
 		"rate_limit_verdict", string(result.rateLimitVerdict),

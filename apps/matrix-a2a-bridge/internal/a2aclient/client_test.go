@@ -3,6 +3,7 @@ package a2aclient
 import (
 	"context"
 	"net/http"
+	"reflect"
 	"testing"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -145,7 +146,7 @@ func TestToResult(t *testing.T) {
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := toResult(tt.in); got != tt.want {
+			if got := toResult(tt.in); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("toResult() = %+v, want %+v", got, tt.want)
 			}
 		})

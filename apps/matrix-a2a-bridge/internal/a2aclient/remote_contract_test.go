@@ -34,17 +34,18 @@ const remoteFixturePath = "/remote-agent"
 type remoteContractFixture struct {
 	mu sync.Mutex
 
-	server       *httptest.Server
-	key          *ecdsa.PrivateKey
-	identity     CardIdentity
-	baseCard     *a2a.AgentCard
-	cardBody     []byte
-	contentType  string
-	etag         string
-	lastModified string
-	cacheControl string
-	return304    bool
-	cardStatus   int
+	server         *httptest.Server
+	key            *ecdsa.PrivateKey
+	identity       CardIdentity
+	baseCard       *a2a.AgentCard
+	cardBody       []byte
+	contentType    string
+	etag           string
+	lastModified   string
+	cacheControl   string
+	return304      bool
+	cardStatus     int
+	echoExtensions bool
 
 	cardHeaders []http.Header
 	callHeaders []http.Header
@@ -58,11 +59,12 @@ func newRemoteContractFixture(
 ) (*remoteContractFixture, *Client, Target) {
 	t.Helper()
 	fixture := &remoteContractFixture{
-		key:          newTestSigningKey(t),
-		contentType:  "application/a2a+json; charset=utf-8",
-		etag:         `"card-v1"`,
-		lastModified: "Sat, 11 Jul 2026 08:00:00 GMT",
-		cacheControl: "public, max-age=600",
+		key:            newTestSigningKey(t),
+		contentType:    "application/a2a+json; charset=utf-8",
+		etag:           `"card-v1"`,
+		lastModified:   "Sat, 11 Jul 2026 08:00:00 GMT",
+		cacheControl:   "public, max-age=600",
+		echoExtensions: true, // model a spec-compliant server echoing activated extensions
 	}
 	fixture.identity = testCardIdentity(t, fixture.key)
 
@@ -81,7 +83,14 @@ func newRemoteContractFixture(
 	mux.HandleFunc(remoteFixturePath, func(w http.ResponseWriter, req *http.Request) {
 		fixture.mu.Lock()
 		fixture.callHeaders = append(fixture.callHeaders, req.Header.Clone())
+		echo := fixture.echoExtensions
 		fixture.mu.Unlock()
+		// A spec-compliant A2A server echoes the extensions it activated back to the caller.
+		if echo {
+			if requested := req.Header.Values(a2a.SvcParamExtensions); len(requested) > 0 {
+				w.Header().Set(a2a.SvcParamExtensions, strings.Join(requested, ", "))
+			}
+		}
 		endpoint.ServeHTTP(w, req)
 	})
 	fixture.server = httptest.NewServer(mux)
@@ -93,7 +102,7 @@ func newRemoteContractFixture(
 	} else {
 		fixture.cardBody = signAgentCard(t, fixture.baseCard, fixture.key, fixture.identity.KeyID, jku, nil, nil)
 	}
-	target, err := NewRemoteTarget(fixture.server.URL+remoteFixturePath, fixture.identity, 4096)
+	target, err := NewRemoteTarget(fixture.server.URL+remoteFixturePath, fixture.identity, 4096, nil)
 	if err != nil {
 		t.Fatalf("NewRemoteTarget: %v", err)
 	}
@@ -340,6 +349,10 @@ func TestRemoteClientSignedRoundTripAndCredentialBoundary(t *testing.T) {
 	}
 	if !result.Terminal || result.Text != "remote ack" || result.ContextID == "" {
 		t.Fatalf("Call result = %+v", result)
+	}
+	// The bridge records what the server echoed as activated (#114), for the delegation audit.
+	if !slices.Contains(result.ActivatedExtensions, TokenBudgetExtensionURI) {
+		t.Fatalf("echoed ActivatedExtensions = %v, want token-budget", result.ActivatedExtensions)
 	}
 	if jkuRequests.Load() != 0 {
 		t.Fatalf("untrusted jku fetched %d times", jkuRequests.Load())
@@ -596,7 +609,7 @@ func TestRemoteCardCannotRedirectSDKThroughAlternateEndpointRepresentation(t *te
 func TestVerifyRemoteCardContractFailures(t *testing.T) {
 	key := newTestSigningKey(t)
 	identity := testCardIdentity(t, key)
-	target, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096)
+	target, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096, nil)
 	if err != nil {
 		t.Fatalf("NewRemoteTarget: %v", err)
 	}
@@ -610,7 +623,7 @@ func TestVerifyRemoteCardContractFailures(t *testing.T) {
 	otherKey := newTestSigningKey(t)
 	otherIdentity := identity
 	otherIdentity.PublicKeyJWK = testPublicJWK(t, otherKey, identity.KeyID)
-	otherTarget, err := NewRemoteTarget(target.String(), otherIdentity, 4096)
+	otherTarget, err := NewRemoteTarget(target.String(), otherIdentity, 4096, nil)
 	if err != nil {
 		t.Fatalf("NewRemoteTarget other key: %v", err)
 	}
@@ -682,10 +695,110 @@ func TestVerifyRemoteCardContractFailures(t *testing.T) {
 	}
 }
 
+func TestVerifyRemoteCardNegotiatesRequiredExtension(t *testing.T) {
+	key := newTestSigningKey(t)
+	identity := testCardIdentity(t, key)
+	extraURI := "https://partner.example/a2a/extensions/quote/v1"
+
+	card := validRemoteCard("https://partner.example/a2a")
+	card.Capabilities.Extensions = append(card.Capabilities.Extensions, a2a.AgentExtension{URI: extraURI, Required: true})
+	raw := signValidAgentCard(t, card, key, identity.KeyID)
+
+	// Unconfigured: a required extension the bridge does not activate fails closed, and does so
+	// with a distinct sentinel so the audit can report a negotiation gap, not a generic mismatch.
+	unconfigured, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096, nil)
+	if err != nil {
+		t.Fatalf("NewRemoteTarget unconfigured: %v", err)
+	}
+	if _, err := verifyRemoteAgentCard(raw, unconfigured); !errors.Is(err, ErrRemoteExtensionUnsupported) {
+		t.Fatalf("unconfigured required extension error = %v, want ErrRemoteExtensionUnsupported", err)
+	}
+	if _, err := verifyRemoteAgentCard(raw, unconfigured); !errors.Is(err, ErrRemoteTargetUntrusted) {
+		t.Fatal("extension-unsupported error must still quarantine as untrusted")
+	}
+
+	// Configured: opting into the extension makes the same required declaration acceptable.
+	configured, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096, []string{extraURI})
+	if err != nil {
+		t.Fatalf("NewRemoteTarget configured: %v", err)
+	}
+	if _, err := verifyRemoteAgentCard(raw, configured); err != nil {
+		t.Fatalf("verifyRemoteAgentCard configured: %v", err)
+	}
+}
+
+func TestRemoteCallActivatesConfiguredExtension(t *testing.T) {
+	fixture, client, _ := newRemoteContractFixture(t, nil, "")
+	extraURI := "https://partner.example/a2a/extensions/quote/v1"
+	card := cloneCardForTest(t, fixture.baseCard)
+	card.Capabilities.Extensions = append(card.Capabilities.Extensions, a2a.AgentExtension{URI: extraURI, Required: true})
+	fixture.setCard(signValidAgentCard(t, card, fixture.key, fixture.identity.KeyID), `"card-ext"`)
+
+	target, err := NewRemoteTarget(fixture.server.URL+remoteFixturePath, fixture.identity, 4096, []string{extraURI})
+	if err != nil {
+		t.Fatalf("NewRemoteTarget: %v", err)
+	}
+	if _, err := client.ResolveAgentCard(t.Context(), target); err != nil {
+		t.Fatalf("ResolveAgentCard: %v", err)
+	}
+	if !client.IsReady(target) {
+		t.Fatal("configured-extension target not ready after verification")
+	}
+	result, err := client.Call(WithUser(t.Context(), "@alice:local.example"), target, "prompt", "")
+	if err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+	if !result.Terminal {
+		t.Fatalf("Call result = %+v", result)
+	}
+	for _, want := range []string{TokenBudgetExtensionURI, extraURI} {
+		if !slices.Contains(result.ActivatedExtensions, want) {
+			t.Fatalf("echoed ActivatedExtensions = %v, missing %q", result.ActivatedExtensions, want)
+		}
+	}
+
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	if len(fixture.callHeaders) != 1 || len(fixture.messages) != 1 {
+		t.Fatalf("calls = %d, messages = %d", len(fixture.callHeaders), len(fixture.messages))
+	}
+	// The activator sends each activated extension as a separate A2A-Extensions header value, so
+	// join the full list rather than reading only the first with Get.
+	header := fixture.callHeaders[0].Values(a2a.SvcParamExtensions)
+	for _, want := range []string{TokenBudgetExtensionURI, extraURI} {
+		if !slices.Contains(header, want) {
+			t.Fatalf("request %s = %v, missing %q", a2a.SvcParamExtensions, header, want)
+		}
+		if !slices.Contains(fixture.messages[0].Extensions, want) {
+			t.Fatalf("message extensions = %v, missing %q", fixture.messages[0].Extensions, want)
+		}
+	}
+}
+
+func TestActivationCaptureRecordsOnlyRequestedExtensions(t *testing.T) {
+	requested := []string{TokenBudgetExtensionURI, "https://partner.example/ext/v1"}
+	capture := &activationCapture{requested: requested}
+	// Server response mixes a requested URI, an unrequested/injected one, comma-joining, and dups.
+	capture.record([]string{
+		"https://partner.example/ext/v1, https://evil.example/injected",
+		TokenBudgetExtensionURI,
+		TokenBudgetExtensionURI,
+	})
+	want := []string{TokenBudgetExtensionURI, "https://partner.example/ext/v1"} // requested order, injected dropped
+	if got := capture.snapshot(); !slices.Equal(got, want) {
+		t.Fatalf("snapshot = %v, want %v (bounded to requested, injected dropped)", got, want)
+	}
+	// A later response echoing only URIs we never requested must not clobber the bounded capture.
+	capture.record([]string{"https://evil.example/only-injected"})
+	if got := capture.snapshot(); !slices.Equal(got, want) {
+		t.Fatalf("snapshot after junk echo = %v, want %v", got, want)
+	}
+}
+
 func TestVerifyRemoteCardAllowsUnknownFieldsOpaqueParamsAndMultipleInterfaces(t *testing.T) {
 	key := newTestSigningKey(t)
 	identity := testCardIdentity(t, key)
-	target, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096)
+	target, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096, nil)
 	if err != nil {
 		t.Fatalf("NewRemoteTarget: %v", err)
 	}
@@ -722,7 +835,7 @@ func TestVerifyRemoteCardAllowsUnknownFieldsOpaqueParamsAndMultipleInterfaces(t 
 func TestVerifyRemoteCardPresenceNormalization(t *testing.T) {
 	key := newTestSigningKey(t)
 	identity := testCardIdentity(t, key)
-	target, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096)
+	target, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096, nil)
 	if err != nil {
 		t.Fatalf("NewRemoteTarget: %v", err)
 	}
@@ -784,7 +897,7 @@ func TestVerifyRemoteCardPresenceNormalization(t *testing.T) {
 func TestVerifyRemoteCardRejectsUnsupportedJWSHeaders(t *testing.T) {
 	key := newTestSigningKey(t)
 	identity := testCardIdentity(t, key)
-	target, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096)
+	target, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096, nil)
 	if err != nil {
 		t.Fatalf("NewRemoteTarget: %v", err)
 	}
@@ -845,7 +958,7 @@ func TestRemoteCardFetchBoundaries(t *testing.T) {
 				w.Header().Set("Content-Type", test.contentType)
 				_, _ = w.Write(test.body)
 			})
-			target, err := NewRemoteTarget(server.URL+"/agent", identity, 4096)
+			target, err := NewRemoteTarget(server.URL+"/agent", identity, 4096, nil)
 			if err != nil {
 				t.Fatalf("NewRemoteTarget: %v", err)
 			}

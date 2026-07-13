@@ -52,10 +52,15 @@ agents:
   # https://fgentic.fmind.ai/a2a/extensions/token-budget/v1 extension on message/send.
   # It is not bridge-observed or hard local model-token accounting. The target timeout is an
   # additional whole-delegation ceiling combined with the global request/task timeouts.
+  # `extensions` (optional, remote only) lists extra A2A extension URIs to activate on top of the
+  # always-on token-budget contract; the bridge sends only those the verified card also declares
+  # and treats the list as its allowlist of `required` card extensions. Add only through review.
   # agent-partner-reviewer:
   #   url: https://agents.partner.example/a2a/reviewer
   #   timeout: 30s
   #   tokenBudget: 4096
+  #   extensions:
+  #     - https://fgentic.fmind.ai/a2a/extensions/skill-quote/v1
   #   cardIdentity:
   #     name: Partner reviewer
   #     organization: Partner Example

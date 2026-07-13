@@ -11,13 +11,16 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/fmind/matrix-a2a-bridge/internal/agentcardjws"
 )
 
 // TokenBudgetExtensionURI identifies Fgentic's A2A extension for a caller-supplied,
-// partner-enforced maximum token budget on one remote delegation.
+// partner-enforced maximum token budget on one remote delegation. It is the always-on base of
+// every remote delegation's activated extension set (docs/bridge.md §6); operators add more
+// through the per-remote `extensions:` config, negotiated against the verified card.
 const TokenBudgetExtensionURI = "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1"
 
 const maxExactJSONInteger = 1<<53 - 1
@@ -50,6 +53,7 @@ type Target struct {
 	expectedKeyID        string
 	publicKey            [65]byte
 	tokenBudget          uint64
+	extensions           []string // sorted, deduped operator-configured extras (excludes token-budget)
 	identityFingerprint  [sha256.Size]byte
 	id                   string
 }
@@ -70,9 +74,16 @@ func NewLocalTarget(agentPath string) (Target, error) {
 }
 
 // NewRemoteTarget validates an exact remote A2A endpoint and its pinned ES256 card identity.
-// tokenBudget is transmitted through TokenBudgetExtensionURI and must be positive.
-func NewRemoteTarget(rawURL string, identity CardIdentity, tokenBudget uint64) (Target, error) {
+// tokenBudget is transmitted through TokenBudgetExtensionURI and must be positive. extensions
+// lists additional A2A extension URIs to activate on top of the always-on token-budget contract;
+// they also form the allowlist of `required: true` card extensions the bridge will accept
+// (docs/bridge.md §6). A change to any of these inputs yields a new opaque ID, forcing re-verify.
+func NewRemoteTarget(rawURL string, identity CardIdentity, tokenBudget uint64, extensions []string) (Target, error) {
 	endpoint, err := NormalizeRemoteURL(rawURL)
+	if err != nil {
+		return Target{}, err
+	}
+	normalizedExtensions, err := normalizeExtensionURIs(extensions)
 	if err != nil {
 		return Target{}, err
 	}
@@ -115,7 +126,10 @@ func NewRemoteTarget(rawURL string, identity CardIdentity, tokenBudget uint64) (
 		base64.RawURLEncoding.EncodeToString(encoded[:]),
 	}, "\x00")
 	fingerprint := sha256.Sum256([]byte(fingerprintInput))
-	idInput := fmt.Sprintf("%x\x00%d", fingerprint, tokenBudget)
+	// Extensions are operational config, not identity: they stay out of identityFingerprint (like
+	// tokenBudget) but fold into the opaque ID so a config change re-verifies the card against the
+	// new required-extension allowlist.
+	idInput := fmt.Sprintf("%x\x00%d\x00%s", fingerprint, tokenBudget, strings.Join(normalizedExtensions, "\x1f"))
 	id := sha256.Sum256([]byte(idInput))
 
 	return Target{
@@ -126,9 +140,43 @@ func NewRemoteTarget(rawURL string, identity CardIdentity, tokenBudget uint64) (
 		expectedKeyID:        identity.KeyID,
 		publicKey:            encoded,
 		tokenBudget:          tokenBudget,
+		extensions:           normalizedExtensions,
 		identityFingerprint:  fingerprint,
 		id:                   "remote:" + hex.EncodeToString(id[:]),
 	}, nil
+}
+
+// normalizeExtensionURIs validates operator-configured extra extension URIs: each must be an
+// absolute https URI, listed at most once, and must not restate the always-on token-budget base
+// contract. The result is sorted so the target ID stays stable regardless of config ordering.
+func normalizeExtensionURIs(raw []string) ([]string, error) {
+	if len(raw) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(raw))
+	normalized := make([]string, 0, len(raw))
+	for _, uri := range raw {
+		if uri == "" || strings.TrimSpace(uri) != uri {
+			return nil, fmt.Errorf("extension URI %q must be non-empty without surrounding whitespace", uri)
+		}
+		if uri == TokenBudgetExtensionURI {
+			return nil, fmt.Errorf("extension %q is always active and must not be listed explicitly", uri)
+		}
+		parsed, err := url.Parse(uri)
+		if err != nil {
+			return nil, fmt.Errorf("parse extension URI %q: %w", uri, err)
+		}
+		if parsed.Scheme != "https" || parsed.Host == "" {
+			return nil, fmt.Errorf("extension URI %q must be an absolute https URI", uri)
+		}
+		if _, dup := seen[uri]; dup {
+			return nil, fmt.Errorf("extension URI %q is listed more than once", uri)
+		}
+		seen[uri] = struct{}{}
+		normalized = append(normalized, uri)
+	}
+	slices.Sort(normalized)
+	return normalized, nil
 }
 
 // String returns the local agent path or normalized exact remote endpoint. Targets reject URL
@@ -163,6 +211,26 @@ func (t Target) SameIdentity(other Target) bool {
 // Local targets return zero because their model budgets are governed by the local gateway.
 func (t Target) TokenBudget() uint64 {
 	return t.tokenBudget
+}
+
+// ActivatedExtensions returns the ordered A2A extension URIs the bridge requests activation for on
+// a remote delegation: the always-on token-budget base contract followed by the operator-configured
+// extras. The remote server ultimately activates only those it also advertises. Local targets
+// activate none — their model budget and capabilities are governed by the local gateway.
+func (t Target) ActivatedExtensions() []string {
+	if !t.IsRemote() {
+		return nil
+	}
+	activated := make([]string, 0, len(t.extensions)+1)
+	activated = append(activated, TokenBudgetExtensionURI)
+	activated = append(activated, t.extensions...)
+	return activated
+}
+
+// activatesExtension reports whether uri is in this target's activated set. It is the allowlist a
+// verified card's `required: true` extensions are checked against before the target is trusted.
+func (t Target) activatesExtension(uri string) bool {
+	return uri == TokenBudgetExtensionURI || slices.Contains(t.extensions, uri)
 }
 
 func (t Target) valid() bool {
