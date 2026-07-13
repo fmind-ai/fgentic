@@ -602,3 +602,78 @@ func TestMatrixProfileWriterUsesStandardProfileAPIs(t *testing.T) {
 		t.Errorf("custom skills = %#v", metadata["skills"])
 	}
 }
+
+func TestMatrixProfileWriterReconcilesRemovedAvatar(t *testing.T) {
+	cases := []struct {
+		name          string
+		currentAvatar string // avatar the ghost already carries on the homeserver
+		wantClear     bool   // whether Apply should PUT an empty avatar_url
+	}{
+		{name: "clears a stale avatar when config removes it", currentAvatar: "mxc://fgentic.fmind.ai/stale", wantClear: true},
+		{name: "no redundant write when already empty", currentAvatar: "", wantClear: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var mu sync.Mutex
+			var avatarPuts []map[string]any
+			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+				w.Header().Set("Content-Type", "application/json")
+				switch {
+				case req.Method == http.MethodGet && req.URL.Path == "/_matrix/client/versions":
+					_, _ = w.Write([]byte(`{"versions":["v1.16"]}`))
+				case req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/register"):
+					_, _ = w.Write([]byte("{}"))
+				case req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/displayname"):
+					_, _ = w.Write([]byte(`{"displayname":""}`))
+				case req.Method == http.MethodGet && strings.HasSuffix(req.URL.Path, "/avatar_url"):
+					_, _ = fmt.Fprintf(w, `{"avatar_url":%q}`, tc.currentAvatar)
+				case req.Method == http.MethodPut && strings.HasSuffix(req.URL.Path, "/avatar_url"):
+					body := make(map[string]any)
+					if err := json.NewDecoder(req.Body).Decode(&body); err != nil {
+						http.Error(w, err.Error(), http.StatusBadRequest)
+						return
+					}
+					mu.Lock()
+					avatarPuts = append(avatarPuts, body)
+					mu.Unlock()
+					_, _ = w.Write([]byte("{}"))
+				case req.Method == http.MethodPut && strings.Contains(req.URL.Path, "/profile/"):
+					_, _ = w.Write([]byte("{}")) // displayname and custom-field writes
+				default:
+					http.Error(w, fmt.Sprintf("unexpected request: %s %s", req.Method, req.URL.Path), http.StatusNotFound)
+				}
+			}))
+			t.Cleanup(server.Close)
+
+			as, err := appservice.CreateFull(appservice.CreateOpts{
+				Registration:     &appservice.Registration{AppToken: "test-token", SenderLocalpart: "a2a-bridge"},
+				HomeserverDomain: ownServer,
+				HomeserverURL:    server.URL,
+			})
+			if err != nil {
+				t.Fatalf("CreateFull: %v", err)
+			}
+			as.HTTPClient = server.Client()
+			as.DefaultHTTPRetries = 0
+			writer := &matrixProfileWriter{as: as, log: slog.Default()}
+			if err := writer.Prepare(t.Context()); err != nil {
+				t.Fatalf("Prepare: %v", err)
+			}
+			// A removed avatarURL leaves the profile's AvatarURL empty.
+			profile := agentProfile{DisplayName: "Kubernetes Specialist", AgentPath: "/api/a2a/kagent/k8s-agent", Status: profileStatusLive}
+			if err := writer.Apply(t.Context(), id.NewUserID("agent-k8s", ownServer), profile); err != nil {
+				t.Fatalf("Apply: %v", err)
+			}
+
+			mu.Lock()
+			puts := slices.Clone(avatarPuts)
+			mu.Unlock()
+			switch {
+			case tc.wantClear && (len(puts) != 1 || puts[0]["avatar_url"] != ""):
+				t.Fatalf("avatar PUTs = %+v, want exactly one clear to empty", puts)
+			case !tc.wantClear && len(puts) != 0:
+				t.Fatalf("avatar PUTs = %+v, want none (idempotent no-op)", puts)
+			}
+		})
+	}
+}

@@ -18,16 +18,19 @@ import (
 )
 
 const (
-	defaultMatrixURL     = "http://synapse:8008"
-	defaultBridgeURL     = "http://bridge:29331"
-	defaultMetricsURL    = "http://bridge:9090/metrics"
-	defaultStubURL       = "http://plain-a2a-agent.plain-agent.svc.cluster.local:8080"
-	defaultServer        = "integration.test"
-	defaultHSToken       = "integration-homeserver-token"
-	username             = "integration-user"
-	password             = "integration-password"
-	ghostLocalpart       = "agent-integration"
-	plainGhostLocalpart  = "agent-plain"
+	defaultMatrixURL    = "http://synapse:8008"
+	defaultBridgeURL    = "http://bridge:29331"
+	defaultMetricsURL   = "http://bridge:9090/metrics"
+	defaultStubURL      = "http://plain-a2a-agent.plain-agent.svc.cluster.local:8080"
+	defaultServer       = "integration.test"
+	defaultHSToken      = "integration-homeserver-token"
+	username            = "integration-user"
+	password            = "integration-password"
+	ghostLocalpart      = "agent-integration"
+	plainGhostLocalpart = "agent-plain"
+	// ghostDisplayName is the local stub AgentCard's Name; the bridge syncs it onto the ghost's
+	// Matrix profile (#89), so a real Synapse profile query must return exactly this.
+	ghostDisplayName     = "Fgentic bridge integration stub"
 	replyText            = "integration reply"
 	plainReplyText       = "plain A2A reply"
 	rateLimitedReplyText = "⚠️ rate limit reached — please retry in a moment."
@@ -120,6 +123,10 @@ func (f fixture) runBasic(ctx context.Context) error {
 		return err
 	}
 	if err := f.waitForJoin(ctx, sess.AccessToken, roomID, ghost); err != nil {
+		return err
+	}
+	// Prove the AgentCard-derived display name against a real Synapse profile endpoint (#89).
+	if err := f.waitForDisplayName(ctx, sess.AccessToken, ghost, ghostDisplayName); err != nil {
 		return err
 	}
 
@@ -375,6 +382,30 @@ func (f fixture) waitForJoin(ctx context.Context, token, roomID, userID string) 
 		}
 		if err := wait(ctx, 250*time.Millisecond); err != nil {
 			return fmt.Errorf("wait for bridge ghost %s to join room: %w", userID, err)
+		}
+	}
+}
+
+// waitForDisplayName polls the ghost's real Synapse profile until its display name matches the
+// AgentCard-derived value, proving the bridge synced the card's Name onto the Matrix profile (#89).
+func (f fixture) waitForDisplayName(ctx context.Context, token, userID, want string) error {
+	endpoint := fmt.Sprintf(
+		"%s/_matrix/client/v3/profile/%s/displayname",
+		f.matrixURL,
+		pathSegment(userID),
+	)
+	for {
+		status, body, err := f.request(ctx, http.MethodGet, endpoint, token, nil)
+		if err == nil && status == http.StatusOK {
+			var profile struct {
+				DisplayName string `json:"displayname"`
+			}
+			if json.Unmarshal(body, &profile) == nil && profile.DisplayName == want {
+				return nil
+			}
+		}
+		if err := wait(ctx, 250*time.Millisecond); err != nil {
+			return fmt.Errorf("wait for ghost %s AgentCard display name %q: %w", userID, want, err)
 		}
 	}
 }
