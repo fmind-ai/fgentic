@@ -1,7 +1,7 @@
 ---
 type: Specification
 title: Model Provider Profiles
-description: Per-cluster model backends behind agentgateway: the Vertex AI default and the self-hosted vLLM profile (D16).
+description: Per-cluster sovereign, EU API, and hyperscaler model backends behind agentgateway (D16).
 ---
 
 # Model Provider Profiles (D16)

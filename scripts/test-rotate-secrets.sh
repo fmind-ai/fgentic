@@ -8,7 +8,7 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 GENERATOR="${SCRIPT_DIR}/gen-secrets.sh"
 ROTATOR="${SCRIPT_DIR}/rotate-secrets.sh"
 
-for command in age-keygen awk date git sha256sum sops yq; do
+for command in age-keygen awk date git kubectl sha256sum sops yq; do
 	if ! command -v "${command}" >/dev/null 2>&1; then
 		echo "error: required test command not found: ${command}" >&2
 		exit 1
@@ -115,6 +115,43 @@ provider_key() {
 	secret_value agentgateway-openai.sops.yaml agentgateway-system openai-secret '.stringData.Authorization // (.data.Authorization | @base64d)'
 }
 
+assert_secret_inventory() {
+	local actual expected
+	actual="$(yq -r '.resources[]' "${FIXTURE_ROOT}/clusters/local/secrets/kustomization.yaml" | sort)"
+	expected="$({
+		for file in "${FIXTURE_ROOT}"/clusters/local/secrets/*.sops.yaml; do
+			basename "${file}"
+		done
+	} | sort)"
+	assert_equal "${actual}" "${expected}" "generated Secret inventory is incomplete"
+	kubectl kustomize "${FIXTURE_ROOT}/clusters/local/secrets" >/dev/null
+}
+
+exercise_provider_generation() { # exercise_provider_generation <provider> <env> <file> <secret>
+	local provider="$1"
+	local key_env="$2"
+	local file="$3"
+	local secret="$4"
+	local value="fixture-${provider}-key-000000000000000000000000"
+	local before
+
+	yq -i ".data.llm_provider = \"${provider}\"" "${FIXTURE_ROOT}/clusters/local/platform-settings.yaml"
+	before="$(sha256sum "${FIXTURE_ROOT}/clusters/local/secrets/kustomization.yaml" | awk '{print $1}')"
+	expect_failure env -u "${key_env}" FGENTIC_SECRET_SET=provider \
+		"${GENERATOR}" fixture.localhost local
+	[ ! -e "${FIXTURE_ROOT}/clusters/local/secrets/${file}" ] || fail "failed ${provider} preflight emitted ciphertext"
+	assert_equal "${before}" \
+		"$(sha256sum "${FIXTURE_ROOT}/clusters/local/secrets/kustomization.yaml" | awk '{print $1}')" \
+		"failed ${provider} preflight changed the Secret inventory"
+
+	env "${key_env}=${value}" FGENTIC_SECRET_SET=provider \
+		"${GENERATOR}" fixture.localhost local >/dev/null
+	assert_equal "${value}" \
+		"$(secret_value "${file}" agentgateway-system "${secret}" '.data.Authorization | @base64d')" \
+		"${provider} Secret does not contain the supplied key"
+	assert_secret_inventory
+}
+
 age-keygen -o "${WORK_DIR}/age.key" >/dev/null 2>&1
 RECIPIENT="$(age-keygen -y "${WORK_DIR}/age.key")"
 printf 'creation_rules:\n  - path_regex: \\.sops\\.ya?ml$\n    encrypted_regex: ^(data|stringData)$\n    age: %s\n' \
@@ -125,12 +162,11 @@ printf '%s\n' \
 	'metadata:' \
 	'  name: platform-settings' \
 	'data:' \
-	'  llm_provider: openai' \
+	'  llm_provider: vertex' \
 	>"${FIXTURE_ROOT}/clusters/local/platform-settings.yaml"
 
 export SOPS_AGE_KEY_FILE="${WORK_DIR}/age.key"
 export FGENTIC_DATA_ROOT="${FIXTURE_ROOT}"
-export OPENAI_API_KEY="fixture-provider-initial-0000000000000000"
 
 "${GENERATOR}" fixture.localhost local >/dev/null
 FGENTIC_SECRET_SET=slack "${GENERATOR}" fixture.localhost local >/dev/null
@@ -142,10 +178,24 @@ expect_failure env -u TELEGRAM_API_ID -u TELEGRAM_API_HASH \
 [ ! -e "${FIXTURE_ROOT}/clusters/local/secrets/mautrix-telegram.sops.yaml" ] || fail "failed Telegram preflight emitted ciphertext"
 TELEGRAM_API_ID=123456 TELEGRAM_API_HASH=00000000000000000000000000000000 \
 	FGENTIC_SECRET_SET=telegram "${GENERATOR}" fixture.localhost local >/dev/null
+assert_secret_inventory
 git -C "${FIXTURE_ROOT}" init -q
 git -C "${FIXTURE_ROOT}" config user.name rotation-fixture
 git -C "${FIXTURE_ROOT}" config user.email rotation-fixture@example.invalid
 commit_fixture "initial encrypted fixture"
+
+# Every API profile must fail before writing without its own key, then emit a namespace-local
+# ciphertext file that the generated Kustomization actually reconciles.
+exercise_provider_generation mistral MISTRAL_API_KEY agentgateway-mistral.sops.yaml mistral-secret
+commit_fixture "add Mistral provider fixture"
+exercise_provider_generation anthropic ANTHROPIC_API_KEY agentgateway-anthropic.sops.yaml anthropic-secret
+commit_fixture "add Anthropic provider fixture"
+exercise_provider_generation openai OPENAI_API_KEY agentgateway-openai.sops.yaml openai-secret
+commit_fixture "add OpenAI provider fixture"
+exercise_provider_generation azure-openai AZURE_OPENAI_API_KEY agentgateway-azure-openai.sops.yaml azure-openai-secret
+commit_fixture "add Azure OpenAI provider fixture"
+yq -i '.data.llm_provider = "openai"' "${FIXTURE_ROOT}/clusters/local/platform-settings.yaml"
+commit_fixture "restore OpenAI provider selection"
 
 # Every precondition fails before staging or changing ciphertext.
 expect_failure "${ROTATOR}" fixture.localhost local unsupported
