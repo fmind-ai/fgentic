@@ -9,10 +9,13 @@ metadata:
     {{- include "matrix-a2a-bridge.labels" . | nindent 4 }}
 spec:
   replicas: {{ .Values.replicaCount }}
-  # Two appservice consumers have independent room queues. Recreate prevents a rollout overlap
-  # from splitting successive events across dispatchers and violating FIFO/context ordering.
+  # Two appservice consumers have independent room queues. A zero-surge rollout deletes the old
+  # pod before creating the new one, preserving FIFO/context ordering without a Recreate migration.
   strategy:
-    type: Recreate
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
   revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
   selector:
     matchLabels:
