@@ -154,6 +154,10 @@ type Client struct {
 	mu           sync.RWMutex
 	cache        map[string]cachedTarget
 	refreshLocks sync.Map
+	// remoteTransports memoizes the per-target mTLS RoundTripper (keyed by target ID) so the card
+	// fetch and the SDK client reuse one connection pool instead of cloning a fresh transport on every
+	// periodic refresh (#244). A cert rotation yields a new target ID and therefore a new entry.
+	remoteTransports sync.Map
 }
 
 // New returns a Client that resolves agents relative to baseURL (e.g. the agentgateway proxy).
@@ -368,9 +372,13 @@ func (c *Client) remoteUserTransport(target Target) http.RoundTripper {
 	if tlsConfig == nil {
 		return c.remoteHTTPClient.Transport
 	}
+	if cached, ok := c.remoteTransports.Load(target.ID()); ok {
+		return cached.(http.RoundTripper)
+	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.TLSClientConfig = tlsConfig
-	return &userTransport{base: transport}
+	shared, _ := c.remoteTransports.LoadOrStore(target.ID(), &userTransport{base: transport})
+	return shared.(http.RoundTripper)
 }
 
 func buildSDKClient(ctx context.Context, card *a2a.AgentCard, httpClient *http.Client, activatedExtensions []string) (*sdk.Client, error) {
