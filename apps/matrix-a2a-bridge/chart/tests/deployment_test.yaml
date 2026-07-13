@@ -61,6 +61,43 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].env[?(@.name == "RATE_LIMIT_BUCKET_CAPACITY")].value
           value: "4096"
+  - it: renders default media byte caps as exact decimal strings
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "MEDIA_MAX_BYTES")].value
+          value: "10485760"
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "MEDIA_MAX_TOTAL_BYTES")].value
+          value: "26214400"
+  - it: preserves zero disablement and custom decimal byte caps
+    set:
+      config.mediaMaxBytes: "0"
+      config.mediaMaxTotalBytes: "123456789"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "MEDIA_MAX_BYTES")].value
+          value: "0"
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "MEDIA_MAX_TOTAL_BYTES")].value
+          value: "123456789"
+  - it: rejects a negative media byte cap before deployment
+    set:
+      config.mediaMaxBytes: "-1"
+    asserts:
+      - failedTemplate:
+          errorMessage: config.mediaMaxBytes must be a non-negative decimal string
+  - it: rejects a fractional media byte cap before deployment
+    set:
+      config.mediaMaxBytes: "1.5"
+    asserts:
+      - failedTemplate:
+          errorMessage: config.mediaMaxBytes must be a non-negative decimal string
+  - it: rejects exponent notation before deployment
+    set:
+      config.mediaMaxTotalBytes: "2.62144e+07"
+    asserts:
+      - failedTemplate:
+          errorMessage: config.mediaMaxTotalBytes must be a non-negative decimal string
   - it: leaves time to drain intake, delegations, and telemetry before pod termination
     asserts:
       - equal:
