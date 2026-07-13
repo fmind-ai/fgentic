@@ -95,6 +95,12 @@ type Result struct {
 	TaskID    string
 	Terminal  bool
 	Failed    bool
+	// InputRequired marks a task paused in TASK_STATE_INPUT_REQUIRED: Text is the agent's question
+	// and the task resumes by re-sending message/send with the same TaskID+ContextID (#116).
+	InputRequired bool
+	// AuthRequired marks a task paused in TASK_STATE_AUTH_REQUIRED. The bridge does not forward
+	// caller credentials, so it terminates the delegation with an honest notice rather than resuming.
+	AuthRequired bool
 	// ActivatedExtensions is the A2A extension set the remote server echoed as activated on this
 	// message/send (the `A2A-Extensions` response header). Empty for local targets or a server that
 	// does not echo; it feeds the delegation audit, never a control decision.
@@ -142,6 +148,19 @@ func New(baseURL, apiKey string, log *slog.Logger) *Client {
 // long-running agents from holding the bridge request open: a non-terminal Task is returned as
 // soon as it exists and the bridge follows it with tasks/get polling.
 func (c *Client) Call(ctx context.Context, target Target, text, contextID string) (Result, error) {
+	return c.send(ctx, target, text, contextID, "")
+}
+
+// Continue resumes a task paused in TASK_STATE_INPUT_REQUIRED by re-sending message/send with the
+// same taskID and contextID (A2A continuation semantics — #116). text is the room member's answer.
+func (c *Client) Continue(ctx context.Context, target Target, text, contextID, taskID string) (Result, error) {
+	return c.send(ctx, target, text, contextID, taskID)
+}
+
+// send is the shared message/send path for a new delegation (Call, taskID empty) and a resumed one
+// (Continue, taskID set). A non-empty taskID is stamped onto the message so the agent continues its
+// existing task rather than starting a fresh one.
+func (c *Client) send(ctx context.Context, target Target, text, contextID, taskID string) (Result, error) {
 	client, err := c.clientFor(ctx, target)
 	if err != nil {
 		return Result{}, err
@@ -161,6 +180,9 @@ func (c *Client) Call(ctx context.Context, target Target, text, contextID string
 	}
 	if contextID != "" {
 		msg.ContextID = contextID // thread the room's conversation so the agent keeps context
+	}
+	if taskID != "" {
+		msg.TaskID = a2a.TaskID(taskID) // continue the existing input-required task (#116)
 	}
 	res, err := client.SendMessage(ctx, &a2a.SendMessageRequest{
 		Message: msg,
@@ -400,15 +422,18 @@ func toResult(res a2a.SendMessageResult) Result {
 
 func taskResult(t *a2a.Task) Result {
 	r := Result{
-		ContextID: t.ContextID,
-		TaskID:    string(t.ID),
-		Terminal:  t.Status.State.Terminal(),
-		Failed:    t.Status.State != a2a.TaskStateCompleted && t.Status.State.Terminal(),
+		ContextID:     t.ContextID,
+		TaskID:        string(t.ID),
+		Terminal:      t.Status.State.Terminal(),
+		Failed:        t.Status.State != a2a.TaskStateCompleted && t.Status.State.Terminal(),
+		InputRequired: t.Status.State == a2a.TaskStateInputRequired,
+		AuthRequired:  t.Status.State == a2a.TaskStateAuthRequired,
 	}
 	if r.Terminal {
 		r.Text = taskText(t)
 	} else if t.Status.Message != nil {
-		r.Text = partsText(t.Status.Message.Parts) // interim status, e.g. "working"
+		// Interim status, e.g. "working"; for input-required this is the agent's question.
+		r.Text = partsText(t.Status.Message.Parts)
 	}
 	return r
 }

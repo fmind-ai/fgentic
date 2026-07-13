@@ -121,6 +121,13 @@ func TestValidateRejectsBadStagingRoom(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsNonPositiveInputWait(t *testing.T) {
+	t.Setenv("INPUT_WAIT_TIMEOUT", "0s")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected error for non-positive INPUT_WAIT_TIMEOUT, got nil")
+	}
+}
+
 // validate is exercised directly: caarlos0/env applies envDefault to empty-set variables, so an
 // empty SERVER_NAME can only reach validate through a struct, never through the environment.
 func TestValidateRejectsEmptyServerName(t *testing.T) {

@@ -52,7 +52,7 @@ func startLongTask(
 	a2aCtx := a2aclient.WithUser(t.Context(), evt.Sender.String())
 	done := make(chan delegationAuditResult, 1)
 	go func() {
-		done <- b.awaitTask(t.Context(), a2aCtx, intent, evt, ref, "agent-k8s", res)
+		done <- b.awaitTask(t.Context(), a2aCtx, intent, evt, ref, "agent-k8s", res, "")
 	}()
 
 	placeholder := id.EventID("$reply-1") // the homeserver stub returns this for the first send

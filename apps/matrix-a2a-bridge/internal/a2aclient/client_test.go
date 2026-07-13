@@ -142,6 +142,23 @@ func TestToResult(t *testing.T) {
 				Failed:   true,
 			},
 		},
+		{
+			name: "input-required task carries the agent's question (#116)",
+			in: &a2a.Task{
+				ID:        "task-4",
+				ContextID: "ctx-4",
+				Status: a2a.TaskStatus{
+					State:   a2a.TaskStateInputRequired,
+					Message: a2a.NewMessage(a2a.MessageRoleAgent, a2a.NewTextPart("which namespace?")),
+				},
+			},
+			want: Result{Text: "which namespace?", ContextID: "ctx-4", TaskID: "task-4", InputRequired: true},
+		},
+		{
+			name: "auth-required task is non-terminal and flagged (#116)",
+			in:   &a2a.Task{ID: "task-5", Status: a2a.TaskStatus{State: a2a.TaskStateAuthRequired}},
+			want: Result{TaskID: "task-5", AuthRequired: true},
+		},
 	}
 
 	for _, tt := range tests {

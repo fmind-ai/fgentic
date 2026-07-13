@@ -23,7 +23,7 @@ func runLongTask(t *testing.T, b *Bridge, intent *appservice.IntentAPI, evt *eve
 	t.Helper()
 	b.pollWait = func(context.Context, time.Duration) error { return nil }
 	a2aCtx := a2aclient.WithUser(t.Context(), evt.Sender.String())
-	return b.awaitTask(t.Context(), a2aCtx, intent, evt, ref, "agent-k8s", res)
+	return b.awaitTask(t.Context(), a2aCtx, intent, evt, ref, "agent-k8s", res, "")
 }
 
 func TestThreadedProgressPostsBoundedDedupedUpdates(t *testing.T) {

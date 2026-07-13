@@ -100,6 +100,10 @@ func (*cardSequenceClient) Call(context.Context, a2aclient.Target, string, strin
 	return a2aclient.Result{}, errors.New("unexpected A2A delegation")
 }
 
+func (*cardSequenceClient) Continue(context.Context, a2aclient.Target, string, string, string) (a2aclient.Result, error) {
+	return a2aclient.Result{}, errors.New("unexpected A2A continuation")
+}
+
 func (*cardSequenceClient) PollTask(context.Context, a2aclient.Target, string) (a2aclient.Result, error) {
 	return a2aclient.Result{}, errors.New("unexpected A2A task poll")
 }

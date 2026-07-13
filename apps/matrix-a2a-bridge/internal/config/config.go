@@ -66,6 +66,10 @@ type Config struct {
 	// polls via tasks/get (SPEC §6).
 	RequestTimeout time.Duration `env:"REQUEST_TIMEOUT" envDefault:"60s"`
 	TaskTimeout    time.Duration `env:"TASK_TIMEOUT" envDefault:"10m"`
+	// InputWaitTimeout bounds how long a task paused in TASK_STATE_INPUT_REQUIRED waits for the
+	// original sender's threaded reply before the bridge drops it (#116). Separate from TaskTimeout:
+	// the poll clock does not burn while a human is thinking, so this is its own budget.
+	InputWaitTimeout time.Duration `env:"INPUT_WAIT_TIMEOUT" envDefault:"10m"`
 	// ShutdownTimeout is the graceful dispatcher-drain budget after Matrix intake stops. When it
 	// expires, the runtime context is cancelled so running jobs terminate and queued jobs audit as
 	// shutdown drops before process resources are released.
@@ -160,6 +164,9 @@ func (c Config) validate() error {
 	}
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("SHUTDOWN_TIMEOUT must be positive")
+	}
+	if c.InputWaitTimeout <= 0 {
+		return fmt.Errorf("INPUT_WAIT_TIMEOUT must be positive")
 	}
 	if c.Concurrency < 1 {
 		return fmt.Errorf("CONCURRENCY must be >= 1")
