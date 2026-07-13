@@ -155,6 +155,35 @@ emit_once() { # emit_once <file> <content>: bootstrap data must never rotate imp
 	echo "wrote (encrypted bootstrap): ${file}"
 }
 
+sync_kustomization() {
+	local LC_ALL=C
+	local file kustomization tmp
+	local -a secret_files=()
+	# An explicit resource inventory keeps an empty reference environment buildable while ensuring
+	# newly generated ciphertext is actually reconciled. The list contains filenames only; no
+	# decrypted material or provider values cross this boundary.
+	for file in "${DIR}"/*.sops.yaml; do
+		[ -e "${file}" ] || continue
+		secret_files+=("$(basename "${file}")")
+	done
+
+	kustomization="${DIR}/kustomization.yaml"
+	tmp="$(mktemp "${DIR}/.kustomization.XXXXXX")"
+	{
+		printf '%s\n' \
+			'apiVersion: kustomize.config.k8s.io/v1beta1' \
+			'kind: Kustomization'
+		if [ "${#secret_files[@]}" -eq 0 ]; then
+			printf '%s\n' 'resources: []'
+		else
+			printf '%s\n' 'resources:'
+			printf '  - %s\n' "${secret_files[@]}"
+		fi
+	} >"${tmp}"
+	chmod 0644 "${tmp}"
+	mv -f "${tmp}" "${kustomization}"
+}
+
 PG_SYNAPSE="${PG_SYNAPSE:-$(openssl rand -hex 24)}"
 PG_MAS="${PG_MAS:-$(openssl rand -hex 24)}"
 PG_BRIDGE="${PG_BRIDGE:-$(openssl rand -hex 24)}"
@@ -615,4 +644,5 @@ EOF
 	emit mautrix-telegram.sops.yaml "${TELEGRAM_SECRETS}"
 fi
 
+sync_kustomization
 echo "Done. Secret set ${SECRET_SET} for server_name=${SERVER_NAME} (files skipped above were kept as-is)."

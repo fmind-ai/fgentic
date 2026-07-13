@@ -19,7 +19,7 @@ Each optional rotation changes the network's scoped database password plus AS/HS
 
 Rotation is not offboarding. Before deleting an optional bridge ciphertext, replace `../../infra/bridges/<network>/cluster` with its sibling `cluster-offboard` component and verify CNPG has applied `NOLOGIN`, cleared the role password, and removed the network's HBA pair. Query only booleans and never print `rolpassword`. Remove the temporary component and ciphertext only in a second reconciliation; deleting a Secret does not revoke a database login.
 
-The generator reads `llm_provider` from that environment's `platform-settings.yaml`. Vertex uses ambient GCP credentials (or the cluster-only local ADC helper), while self-hosted vLLM is cluster-internal; neither needs a model API-key Secret. API providers require exactly one matching environment variable and produce one provider-scoped Secret:
+The generator reads `llm_provider` from that environment's `platform-settings.yaml`. Vertex uses ambient GCP credentials (or the cluster-only local ADC helper), while self-hosted vLLM is cluster-internal; neither needs a model API-key Secret. API providers require exactly one matching environment variable and produce one provider-scoped Secret. Generation also rewrites the cluster Secret directory's `kustomization.yaml` with every encrypted filename; review and commit that inventory with the ciphertext so Flux reconciles newly added provider and optional-network Secrets.
 
 | Profile        | Environment variable   | Encrypted output                      | Kubernetes Secret     |
 | -------------- | ---------------------- | ------------------------------------- | --------------------- |
