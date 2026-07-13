@@ -3,6 +3,8 @@
 # The active kubectl context must point at a reconciled clusters/demo installation.
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly ROOT_DIR
 readonly SERVER_NAME="fgentic.localhost"
 readonly MAS_ADMIN_CLIENT_ID="01KX8D3M0AD3M0ADM1NC13NT01"
 readonly MATRIX_URL="https://matrix.${SERVER_NAME}"
