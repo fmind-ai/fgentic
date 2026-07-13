@@ -87,6 +87,12 @@ type Config struct {
 	// RateLimitBucketCapacity independently caps each sender/room invocation/notice bucket map.
 	RateLimitBucketCapacity int `env:"RATE_LIMIT_BUCKET_CAPACITY" envDefault:"4096"`
 
+	// CancelModeratorPowerLevel is the room power level a member who did NOT start a delegation must
+	// hold to cancel it by reacting to its placeholder (❌). The original delegating sender may always
+	// cancel their own task regardless of power level. 50 is the Matrix moderator convention; raise it
+	// to restrict cancellation to admins, or lower it toward 0 to let any room member cancel.
+	CancelModeratorPowerLevel int `env:"CANCEL_MODERATOR_POWER_LEVEL" envDefault:"50"`
+
 	LogLevel  string `env:"LOG_LEVEL" envDefault:"info"`
 	LogFormat string `env:"LOG_FORMAT" envDefault:"json"`
 }
@@ -154,6 +160,9 @@ func (c Config) validate() error {
 	}
 	if c.RateLimitBucketCapacity < 1 {
 		return fmt.Errorf("RATE_LIMIT_BUCKET_CAPACITY must be >= 1")
+	}
+	if c.CancelModeratorPowerLevel < 0 {
+		return fmt.Errorf("CANCEL_MODERATOR_POWER_LEVEL must be >= 0")
 	}
 	if _, err := c.SlogLevel(); err != nil {
 		return err

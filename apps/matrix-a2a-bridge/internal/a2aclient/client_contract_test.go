@@ -266,6 +266,64 @@ func TestClientContract_WorkingTaskCanBePolledToCompletion(t *testing.T) {
 	}
 }
 
+// cancelableExecutor cooperates with tasks/cancel by emitting a terminal canceled status update
+// (mirroring a2a-go's own cancel test). A no-op Execute keeps the test free of a live execution
+// goroutine, so the server's cancel path has nothing to block on.
+type cancelableExecutor struct{}
+
+func (cancelableExecutor) Execute(context.Context, *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	return func(func(a2a.Event, error) bool) {}
+}
+
+func (cancelableExecutor) Cancel(_ context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateCanceled, nil), nil)
+	}
+}
+
+func TestClientContract_CancelTaskStopsRunningTask(t *testing.T) {
+	recorder := &contractRecorder{}
+	store := taskstore.NewInMemory(nil)
+	// Seed a working task directly rather than driving a blocking Execute, mirroring a2a-go's own
+	// cancel test: there is no live execution goroutine for the server's cancel path to deadlock on.
+	task := &a2a.Task{
+		ID:        a2a.NewTaskID(),
+		ContextID: a2a.NewContextID(),
+		Status:    a2a.TaskStatus{State: a2a.TaskStateWorking},
+	}
+	if _, err := store.Create(t.Context(), task); err != nil {
+		t.Fatalf("seed working task: %v", err)
+	}
+	client := contractServer(t, cancelableExecutor{}, store, recorder)
+
+	if err := client.CancelTask(t.Context(), contractTarget(t), string(task.ID)); err != nil {
+		t.Fatalf("CancelTask: %v", err)
+	}
+
+	// tasks/cancel drives the task terminal over the real SDK wire: a subsequent poll must report it
+	// is no longer running (its canceled state was stored by the agent's execution manager).
+	result, err := client.PollTask(t.Context(), contractTarget(t), string(task.ID))
+	if err != nil {
+		t.Fatalf("PollTask after cancel: %v", err)
+	}
+	if !result.Terminal {
+		t.Fatalf("task after cancel = %+v, want terminal (canceled)", result)
+	}
+}
+
+func TestClientContract_CancelTaskErrorIsContextualized(t *testing.T) {
+	recorder := &contractRecorder{}
+	client := contractServer(t, cancelableExecutor{}, taskstore.NewInMemory(nil), recorder)
+
+	err := client.CancelTask(t.Context(), contractTarget(t), "missing-task")
+	if err == nil {
+		t.Fatal("CancelTask of an unknown task succeeded, want a protocol error")
+	}
+	if want := "a2a tasks/cancel missing-task on " + contractAgentPath; !strings.Contains(err.Error(), want) {
+		t.Fatalf("CancelTask error = %q, want context %q", err, want)
+	}
+}
+
 func TestClientContract_ExecutorErrorIsContextualized(t *testing.T) {
 	recorder := &contractRecorder{}
 	executor := executorFunc(func(context.Context, *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {

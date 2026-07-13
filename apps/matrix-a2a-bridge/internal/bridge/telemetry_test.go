@@ -29,6 +29,10 @@ func (*tracingA2AClient) PollTask(context.Context, a2aclient.Target, string) (a2
 	return a2aclient.Result{}, fmt.Errorf("unexpected task poll")
 }
 
+func (*tracingA2AClient) CancelTask(context.Context, a2aclient.Target, string) error {
+	return fmt.Errorf("unexpected task cancel")
+}
+
 func (*tracingA2AClient) ResolveAgentCard(context.Context, a2aclient.Target) (*a2a.AgentCard, error) {
 	return nil, fmt.Errorf("unexpected AgentCard resolution")
 }
