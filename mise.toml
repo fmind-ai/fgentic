@@ -107,6 +107,7 @@ depends = [
   "check:admission-policies",
   "check:mcp-governance",
   "check:audit-attribution",
+  "check:postgres-audit",
   "check:secret-rotation",
   "check:supply-chain",
   "check:agent-zoo",
@@ -199,6 +200,10 @@ run = "bash scripts/test-mcp-governance.sh"
 description = "Test the content-free attribution evidence collector with offline fixtures"
 run = "bash scripts/test-audit-attribution.sh"
 
+[tasks."check:postgres-audit"]
+description = "Validate the DDL/ROLE-only pgAudit configuration and SQL-suppressed JSON projection"
+run = "bash scripts/test-postgres-audit.sh"
+
 [tasks."check:secret-rotation"]
 description = "Test selective SOPS rotation and cross-consumer invariants with offline fixtures"
 run = "bash scripts/test-rotate-secrets.sh"
@@ -250,6 +255,10 @@ run = "bash scripts/test-admission-policies.sh --runtime"
 [tasks."test:mcp-governance"]
 description = "Exercise MCP authentication, tool filtering, backend routing, and content-free audit records"
 run = "bash scripts/test-mcp-governance.sh --runtime"
+
+[tasks."test:postgres-audit"]
+description = "Exercise pgAudit and CNPG JSON stdout in an isolated disposable kind cluster"
+run = "bash scripts/test-postgres-audit.sh --runtime"
 
 [tasks."test:mautrix-bridges"]
 description = "Validate exact pinned mautrix images without contacting external networks"

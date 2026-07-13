@@ -14,6 +14,7 @@ description: Metrics, traces, dashboards, and the LLM token-burn alert across th
 1. **LLM budget (§9.5):** the provider-neutral `system_model_token_type:agentgateway_gen_ai_client_token_usage_sum:increase15m` recording rule preserves provider/model/token-type dimensions, while `LLMTokenBurnHigh` aggregates every profile against the per-cluster `llm_usage_budget_15m` threshold in tokens. This is a token guard, not a currency-cost dashboard. The repository has no versioned model cost catalog, provider billing export, or deterministic model-request-to-task correlation, so exact per-task currency cost is explicitly unavailable; see the [attribution runbook](audit.md).
 1. **Self-hosted model health:** the central `vllm` PodMonitor scrapes `/metrics` on the serving engine's internal OpenAI API port. Runtime acceptance requires both an `up` target and non-empty vLLM request metrics after a chat; the agentgateway token histogram remains the provider-neutral budget signal.
 1. NetworkPolicies (§9.6) already admit the `monitoring` namespace everywhere (D14).
+1. **Database audit (§9.7):** CloudNativePG emits content-suppressed pgAudit `DDL`/`ROLE` records as structured JSON stdout. They remain node-runtime logs today and are an explicit selected stream for the future opt-in log pipeline in #157, not a durable store by themselves.
 
 ## 9.2 Trace data plane
 
@@ -35,3 +36,11 @@ Storage choices are deployment policy, not an application dependency:
 The Collector-to-Jaeger hop is unencrypted inside the cluster and constrained by NetworkPolicy. A deployment whose threat model does not trust its pod network must enable OTLP TLS/mTLS or a service-mesh identity layer before carrying sensitive span attributes. Prompts and response bodies must not be recorded as span attributes by default.
 
 `mise run test:tracing` renders the pinned charts, starts their exact images in an isolated Docker network, submits a synthetic OTLP span through the Collector, and queries it through the Grafana-provisioned Jaeger datasource. That proves the backend path and datasource contract without claiming cross-component trace continuity. Full acceptance for #35 still requires one installed-cluster mention whose bridge, gateway, agent, and model spans share a trace ID. No Jaeger Ingress or HTTPRoute is enabled.
+
+## 9.7 Database audit stream
+
+The shared CNPG cluster enables pgAudit through four operator-managed parameters: `pgaudit.log=ddl, role`, with catalog-only noise, SQL statement text, and parameters disabled. CloudNativePG manages `shared_preload_libraries` and the extension lifecycle for every connectable database, then emits each parsed record with `logger=pgaudit`, `msg=record`, and typed fields under `record.audit`. Normal Synapse and application `READ`/`WRITE` traffic is not audited, so ordinary platform activity does not become a high-volume content stream.
+
+`scripts/lib/postgres-audit.jq` is the reviewed minimal SQL/payload-suppressed projection for operators and #157: it retains time, pod, database/session role, database, session ID, class, command, statement IDs, and object type/name while dropping statement and parameter fields. Those retained identifiers remain sensitive operational metadata. Pod stdout has no repository-defined retention or access layer. The future log pipeline must select that projection, enforce its own retention/authentication/TLS controls, and keep debug and ordinary PostgreSQL records out; until then, no durable pgAudit claim is made.
+
+`pg_stat_statements` is deliberately deferred. Although CNPG can manage it, query statistics are a distinct performance-observability feature with sizing, access, reset, query-text, and retention decisions; enabling it is neither free nor required to establish the DDL/ROLE audit boundary.
