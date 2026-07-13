@@ -31,3 +31,17 @@ app.kubernetes.io/instance: {{ .Release.Name }}
 {{- default "default" .Values.serviceAccount.name -}}
 {{- end -}}
 {{- end -}}
+
+{{/*
+Render an externally configurable byte count without passing Helm's floating-point notation to
+the bridge. Requiring a decimal string also makes a malformed value fail at render time, before a
+Deployment can enter CrashLoopBackOff.
+*/}}
+{{- define "matrix-a2a-bridge.nonNegativeDecimal" -}}
+{{- $name := index . 0 -}}
+{{- $value := printf "%v" (index . 1) -}}
+{{- if not (regexMatch "^[0-9]+$" $value) -}}
+{{- fail (printf "%s must be a non-negative decimal string" $name) -}}
+{{- end -}}
+{{- $value -}}
+{{- end -}}
