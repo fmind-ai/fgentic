@@ -10,6 +10,9 @@
 {{- if and .Values.groups.enabled (or (not .Values.integrity.enabled) (not .Values.policy.enabled)) }}
 {{- fail "groups.enabled needs integrity.enabled (signing key) and policy.enabled (border)" }}
 {{- end }}
+{{- if and .Values.statusFeed.enabled (or (not .Values.integrity.enabled) (not .Values.policy.enabled)) }}
+{{- fail "statusFeed.enabled needs integrity.enabled (signing key) and policy.enabled (border)" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -113,6 +116,14 @@ spec:
             {{- if .Values.groups.enabled }}
             - name: GROUPS_PATH
               value: /etc/activitypub-agent-gateway/groups/groups.yaml
+            {{- end }}
+            {{- if .Values.statusFeed.enabled }}
+            - name: STATUS_FEED_ENABLED
+              value: "true"
+            - name: STATUS_WINDOW
+              value: {{ .Values.statusFeed.window | quote }}
+            - name: STATUS_MAX_PER_WINDOW
+              value: {{ .Values.statusFeed.maxPerWindow | quote }}
             {{- end }}
           volumeMounts:
             - name: agents

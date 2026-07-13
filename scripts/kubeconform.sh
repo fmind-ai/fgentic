@@ -87,6 +87,7 @@ if [ -d apps/activitypub-agent-gateway/chart ]; then
     --set integrity.requireInbound=true \
     --set budget.enabled=true \
     --set groups.enabled=true \
+    --set statusFeed.enabled=true \
     --set metrics.podMonitor.enabled=true \
     | "${KUBECONFORM[@]}"
   # Schema-validate its self-contained deploy unit (Namespace + HelmRelease) through Flux envsubst.

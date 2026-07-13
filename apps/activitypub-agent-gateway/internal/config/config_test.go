@@ -88,8 +88,23 @@ func TestValidateRejectsBadInput(t *testing.T) {
 		},
 		"groups no key": func(c *Config) { c.GroupsPath = "/g"; c.IntegrityKeyPath = ""; c.PolicyPath = "/p" },
 		"groups no pol": func(c *Config) { c.GroupsPath = "/g"; c.IntegrityKeyPath = "/k"; c.PolicyPath = "" },
-		"bad level":     func(c *Config) { c.LogLevel = "loud" },
-		"bad format":    func(c *Config) { c.LogFormat = "xml" },
+		"status no key": func(c *Config) { c.StatusFeedEnabled = true; c.IntegrityKeyPath = ""; c.PolicyPath = "/p" },
+		"status no pol": func(c *Config) { c.StatusFeedEnabled = true; c.IntegrityKeyPath = "/k"; c.PolicyPath = "" },
+		"status window": func(c *Config) {
+			c.StatusFeedEnabled = true
+			c.IntegrityKeyPath = "/k"
+			c.PolicyPath = "/p"
+			c.StatusWindow = 0
+		},
+		"status max": func(c *Config) {
+			c.StatusFeedEnabled = true
+			c.IntegrityKeyPath = "/k"
+			c.PolicyPath = "/p"
+			c.StatusWindow = time.Minute
+			c.StatusMaxPerWindow = 0
+		},
+		"bad level":  func(c *Config) { c.LogLevel = "loud" },
+		"bad format": func(c *Config) { c.LogFormat = "xml" },
 	}
 	for name, mutate := range tests {
 		t.Run(name, func(t *testing.T) {
