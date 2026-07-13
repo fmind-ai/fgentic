@@ -346,16 +346,31 @@ func (c *Client) clientFor(ctx context.Context, target Target) (*sdk.Client, err
 	return client, nil
 }
 
-func (c *Client) remoteSDKHTTPClient(targetID string, generation uint64) *http.Client {
+func (c *Client) remoteSDKHTTPClient(target Target, generation uint64) *http.Client {
 	return &http.Client{
 		Transport: &generationTransport{
-			base:       c.remoteHTTPClient.Transport,
+			base:       c.remoteUserTransport(target),
 			client:     c,
-			targetID:   targetID,
+			targetID:   target.ID(),
 			generation: generation,
 		},
 		CheckRedirect: c.remoteHTTPClient.CheckRedirect,
 	}
+}
+
+// remoteUserTransport returns the RoundTripper for dialing a remote target. Without configured mTLS
+// it reuses the shared remote transport (a userTransport with no API key), preserving existing
+// behavior. With mTLS (#244) it wraps a per-target http.Transport — cloned from DefaultTransport to
+// keep its timeouts/proxy behavior — pinned to the mapping's client certificate and optional server
+// roots, in its own userTransport that likewise carries no local gateway credential.
+func (c *Client) remoteUserTransport(target Target) http.RoundTripper {
+	tlsConfig := target.clientTLSConfig()
+	if tlsConfig == nil {
+		return c.remoteHTTPClient.Transport
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = tlsConfig
+	return &userTransport{base: transport}
 }
 
 func buildSDKClient(ctx context.Context, card *a2a.AgentCard, httpClient *http.Client, activatedExtensions []string) (*sdk.Client, error) {
