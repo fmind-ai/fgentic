@@ -8,7 +8,7 @@ description: Cross-organization design: Matrix federation for the collaboration 
 
 Design position: **Matrix federation for the collaboration plane (humans + agents in shared rooms), A2A for the delegation plane (direct org-to-org machine calls)** — they compose rather than compete, and Fgentic ships both:
 
-The production operator workflow is the bilateral [partner federation onboarding runbook](federation-onboarding.md). Its public preflight checks reachability and discovery only; allowlists, room policy, A2A authorization, and contractual controls require separate operator evidence.
+The production operator workflow is the bilateral [partner federation onboarding runbook](federation-onboarding.md). Its public preflight checks reachability and discovery only; allowlists, room policy, A2A authorization, and contractual controls require separate operator evidence. The complementary [partner federation offboarding runbook](federation-offboarding.md) revokes a partner across every plane in safe order, with the content-free evidence each step leaves.
 
 ### 8.1 What Matrix federation gives — stated honestly
 

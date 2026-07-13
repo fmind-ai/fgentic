@@ -162,7 +162,7 @@ Run a rotation rehearsal before production and at the agreed interval:
 
 On a suspected compromise, either organization's security owner may suspend the affected room/route first and investigate second. Preserve content-free event IDs, policy digests, key IDs, Git revisions, and timestamps according to the agreement.
 
-Offboard in this order:
+Offboard in this order (the dedicated [offboarding runbook](federation-offboarding.md) expands each plane's exact mechanism, evidence, partial revocation, and re-admission):
 
 1. Stop new agent invocations and revoke the partner's transport identity and quota entry.
 1. Remove bridge sender grants, public A2A routes, and Signed AgentCard discovery.
