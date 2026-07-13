@@ -61,8 +61,53 @@ jobs:
           # Leave time for diagnostics and teardown when the injected image never becomes ready.
           FGENTIC_DEMO_TIMEOUT: ${{ inputs.fault_injection == 'bad-model-image' && '5m' || '14m' }}
         run: mise run demo:up
+      - name: Verify live quota accounting
+        id: quota_usage
+        if: steps.demo_up.outcome == 'success'
+        continue-on-error: true
+        run: |
+          kubeconfig="${RUNNER_TEMP}/fgentic-demo-quota-kubeconfig"
+          trap 'rm -f "${kubeconfig}"' EXIT
+          k3d kubeconfig get "${FGENTIC_DEMO_CLUSTER}" >"${kubeconfig}"
+          export KUBECONFIG="${kubeconfig}"
+
+          deadline=$((SECONDS + 60))
+          quotas='{"items":[]}'
+          while ((SECONDS < deadline)); do
+            quotas="$(kubectl get resourcequota --all-namespaces --output json)"
+            if jq -e '
+              (.items | length) == 12 and
+              all(.items[];
+                .metadata.name == "compute-budget" and
+                (.status.hard | keys | sort) ==
+                  ["limits.cpu", "limits.memory", "pods", "requests.cpu", "requests.memory"] and
+                (.status.used | keys | sort) ==
+                  ["limits.cpu", "limits.memory", "pods", "requests.cpu", "requests.memory"])
+            ' <<<"${quotas}" >/dev/null; then
+              break
+            fi
+            sleep 2
+          done
+          jq -e '
+            (.items | length) == 12 and
+            all(.items[];
+              .metadata.name == "compute-budget" and
+              (.status.hard | length) == 5 and
+              (.status.used | length) == 5)
+          ' <<<"${quotas}" >/dev/null || {
+            kubectl describe resourcequota --all-namespaces >&2
+            exit 1
+          }
+          jq -r '
+            .items | sort_by(.metadata.namespace)[] |
+            [.metadata.namespace, .status.used.pods, .status.used."requests.cpu",
+              .status.used."requests.memory", .status.used."limits.cpu",
+              .status.used."limits.memory"] | @tsv
+          ' <<<"${quotas}"
       - name: Collect failed demo diagnostics
-        if: always() && steps.demo_up.outcome != 'success'
+        if: >-
+          always() &&
+          (steps.demo_up.outcome != 'success' || steps.quota_usage.outcome == 'failure')
         run: bash scripts/collect-smoke-diagnostics.sh demo-up
       - name: Tear down the demo
         id: demo_down
@@ -76,8 +121,9 @@ jobs:
         if: always()
         run: |
           if [[ "${{ steps.demo_up.outcome }}" != "success" \
+            || "${{ steps.quota_usage.outcome }}" != "success" \
             || "${{ steps.demo_down.outcome }}" != "success" ]]; then
-            echo "demo:up=${{ steps.demo_up.outcome }} demo:down=${{ steps.demo_down.outcome }}" >&2
+            echo "demo:up=${{ steps.demo_up.outcome }} quota=${{ steps.quota_usage.outcome }} demo:down=${{ steps.demo_down.outcome }}" >&2
             exit 1
           fi
       - name: Preserve demo diagnostics
