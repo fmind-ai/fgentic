@@ -24,6 +24,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 
 - [Production Installation](production.md) - Flux-reconciled production path with SOPS secrets and acceptance gates
 - [Partner Federation Onboarding](federation-onboarding.md) - bilateral checklist to federate with a partner org
+- [Partner Federation Offboarding](federation-offboarding.md) - bilateral checklist to revoke a partner across every plane
 - [Delegation Attribution Audit](audit.md) - proving who invoked which agent, when, over which model path
 - [Slack Interop Walkthrough](interop-slack.md) - enabling the opt-in mautrix-slack unit
 - [Bridge Performance Evidence](performance.md) - dated load-sanity evidence for §12.5
