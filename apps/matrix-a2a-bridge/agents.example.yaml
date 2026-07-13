@@ -61,11 +61,16 @@ agents:
   # `maxCost` (optional, remote only) is the highest per-skill credit-unit price the bridge will
   # pay this remote; the verified card must then advertise a skill-quote within it or the delegation
   # fails closed (quote_over_budget). Credit-units are bilateral accounting units, not currency.
+  # `allowMedia` (optional, remote only) opts this mapping into moving file bytes across the org
+  # boundary in either direction (#115). Omitted/false keeps the boundary closed to files: inbound
+  # room files are refused and the remote's artifact bytes are withheld. Files still pass the global
+  # MEDIA_MIME_ALLOWLIST + size caps regardless. Local agents always move media (in-cluster).
   # agent-partner-reviewer:
   #   url: https://agents.partner.example/a2a/reviewer
   #   timeout: 30s
   #   tokenBudget: 4096
   #   maxCost: 8192
+  #   allowMedia: true
   #   extensions:
   #     - https://fgentic.fmind.ai/a2a/extensions/skill-quote/v1
   #   cardIdentity:

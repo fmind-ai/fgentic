@@ -121,6 +121,81 @@ func TestValidateRejectsBadStagingRoom(t *testing.T) {
 	}
 }
 
+func TestLoadMediaDefaults(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MediaMaxBytes != 10*1024*1024 {
+		t.Errorf("MediaMaxBytes = %d, want 10 MiB", cfg.MediaMaxBytes)
+	}
+	if cfg.MediaMaxTotalBytes != 25*1024*1024 {
+		t.Errorf("MediaMaxTotalBytes = %d, want 25 MiB", cfg.MediaMaxTotalBytes)
+	}
+	if len(cfg.MediaMIMEAllowlist) == 0 {
+		t.Fatal("default MediaMIMEAllowlist must be non-empty so the demo round-trip works")
+	}
+	found := false
+	for _, m := range cfg.MediaMIMEAllowlist {
+		if m == "text/csv" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("default allowlist should include text/csv, got %v", cfg.MediaMIMEAllowlist)
+	}
+}
+
+func TestLoadMediaDisableViaZeroCap(t *testing.T) {
+	// MEDIA_MAX_BYTES=0 disables the media path even though the default allowlist stays populated.
+	t.Setenv("MEDIA_MAX_BYTES", "0")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.MediaMaxBytes != 0 {
+		t.Fatalf("MediaMaxBytes = %d, want 0", cfg.MediaMaxBytes)
+	}
+}
+
+func TestLoadMediaCustomAllowlist(t *testing.T) {
+	t.Setenv("MEDIA_MIME_ALLOWLIST", "text/csv,application/pdf")
+	t.Setenv("MEDIA_MAX_BYTES", "2048")
+	t.Setenv("MEDIA_MAX_TOTAL_BYTES", "4096")
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(cfg.MediaMIMEAllowlist) != 2 || cfg.MediaMaxBytes != 2048 || cfg.MediaMaxTotalBytes != 4096 {
+		t.Fatalf("media override not applied: %#v", cfg.MediaMIMEAllowlist)
+	}
+}
+
+func TestValidateRejectsBadMediaPolicy(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+	}{
+		{name: "wildcard mime", env: map[string]string{"MEDIA_MIME_ALLOWLIST": "text/*"}},
+		{name: "malformed mime", env: map[string]string{"MEDIA_MIME_ALLOWLIST": "notamime"}},
+		{
+			name: "total below per-file",
+			env:  map[string]string{"MEDIA_MAX_BYTES": "1000", "MEDIA_MAX_TOTAL_BYTES": "500"},
+		},
+		{name: "negative per-file", env: map[string]string{"MEDIA_MAX_BYTES": "-1"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for k, v := range tt.env {
+				t.Setenv(k, v)
+			}
+			if _, err := Load(); err == nil {
+				t.Fatal("Load accepted an invalid media policy")
+			}
+		})
+	}
+}
+
 func TestValidateRejectsNonPositiveInputWait(t *testing.T) {
 	t.Setenv("INPUT_WAIT_TIMEOUT", "0s")
 	if _, err := Load(); err == nil {

@@ -324,7 +324,7 @@ func TestRemoteClientSignedRoundTripAndCredentialBoundary(t *testing.T) {
 	if client.IsReady(target) {
 		t.Fatal("remote target ready before card verification")
 	}
-	if _, err := client.Call(t.Context(), target, "must not leave", ""); !errors.Is(err, ErrRemoteTargetUntrusted) {
+	if _, err := client.Call(t.Context(), target, "must not leave", "", nil); !errors.Is(err, ErrRemoteTargetUntrusted) {
 		t.Fatalf("Call before verification error = %v", err)
 	}
 	fixture.mu.Lock()
@@ -343,7 +343,7 @@ func TestRemoteClientSignedRoundTripAndCredentialBoundary(t *testing.T) {
 	card.Name = "caller mutation must not affect cached client"
 
 	ctx := WithUser(t.Context(), "@alice:local.example")
-	result, err := client.Call(ctx, target, "remote prompt", "")
+	result, err := client.Call(ctx, target, "remote prompt", "", nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -393,6 +393,46 @@ func TestRemoteClientSignedRoundTripAndCredentialBoundary(t *testing.T) {
 	}
 	if got := string(budgetJSON); got != `{"maxTokens":4096}` {
 		t.Fatalf("token budget metadata = %s", got)
+	}
+}
+
+// TestRemoteCallWithMediaKeepsCredentialBoundary extends the credential-isolation contract to the
+// media path (#115): a file forwarded to a verified remote rides as a raw part, but the outbound
+// request still carries no local gateway credential — only the asserted X-User-Id. The bridge's
+// Matrix media access token lives on a different HTTP client entirely and never reaches A2A.
+func TestRemoteCallWithMediaKeepsCredentialBoundary(t *testing.T) {
+	fixture, client, target := newRemoteContractFixture(t, nil, "")
+	if _, err := client.ResolveAgentCard(t.Context(), target); err != nil {
+		t.Fatalf("ResolveAgentCard: %v", err)
+	}
+	ctx := WithUser(t.Context(), "@alice:local.example")
+	files := []InboundFile{{Name: "in.csv", MIMEType: "text/csv", Bytes: []byte("a,b\n1,2")}}
+	if _, err := client.Call(ctx, target, "process attached", "", files); err != nil {
+		t.Fatalf("Call: %v", err)
+	}
+
+	fixture.mu.Lock()
+	defer fixture.mu.Unlock()
+	if len(fixture.callHeaders) != 1 || len(fixture.messages) != 1 {
+		t.Fatalf("calls = %d, messages = %d", len(fixture.callHeaders), len(fixture.messages))
+	}
+	if got := fixture.callHeaders[0].Get("Authorization"); got != "" {
+		t.Fatalf("remote media call Authorization = %q, want empty", got)
+	}
+	if got := fixture.callHeaders[0].Get(userHeader); got != "@alice:local.example" {
+		t.Fatalf("remote media call %s = %q", userHeader, got)
+	}
+	var sawFile bool
+	for _, p := range fixture.messages[0].Parts {
+		if raw := p.Raw(); len(raw) > 0 {
+			sawFile = true
+			if p.Filename != "in.csv" || string(raw) != "a,b\n1,2" {
+				t.Fatalf("forwarded raw part = (%q, %q)", p.Filename, string(raw))
+			}
+		}
+	}
+	if !sawFile {
+		t.Fatal("forwarded message carried no raw file part")
 	}
 }
 
@@ -494,7 +534,7 @@ func TestRemoteVerifiedReplacementInvalidatesCopiedSDKClient(t *testing.T) {
 	if _, err := oldClient.SendMessage(t.Context(), &a2a.SendMessageRequest{Message: message}); !errors.Is(err, ErrRemoteTargetUntrusted) {
 		t.Fatalf("old generation SendMessage error = %v", err)
 	}
-	if _, err := client.Call(t.Context(), target, "current generation", ""); err != nil {
+	if _, err := client.Call(t.Context(), target, "current generation", "", nil); err != nil {
 		t.Fatalf("current generation Call: %v", err)
 	}
 }
@@ -521,7 +561,7 @@ func TestRemoteCardConcurrentRefreshAndCallsRemainAtomic(t *testing.T) {
 		}()
 		go func() {
 			defer wait.Done()
-			result, err := client.Call(t.Context(), target, "concurrent prompt", "")
+			result, err := client.Call(t.Context(), target, "concurrent prompt", "", nil)
 			if err != nil {
 				errorsSeen <- err
 				return
@@ -562,7 +602,7 @@ func TestRemoteCardTamperQuarantinesAndRecoversWithoutValidators(t *testing.T) {
 	if strings.Contains(err.Error(), marker) || strings.Contains(logs.String(), marker) {
 		t.Fatal("untrusted card content leaked into diagnostics")
 	}
-	if _, err := client.Call(t.Context(), target, "must not run", ""); !errors.Is(err, ErrRemoteTargetUntrusted) {
+	if _, err := client.Call(t.Context(), target, "must not run", "", nil); !errors.Is(err, ErrRemoteTargetUntrusted) {
 		t.Fatalf("quarantined Call error = %v", err)
 	}
 	fixture.mu.Lock()
@@ -596,7 +636,7 @@ func TestRemoteCardCannotRedirectSDKThroughAlternateEndpointRepresentation(t *te
 	if _, err := client.ResolveAgentCard(t.Context(), target); !errors.Is(err, ErrRemoteTargetUntrusted) {
 		t.Fatalf("ResolveAgentCard alternate endpoint error = %v", err)
 	}
-	if _, err := client.Call(t.Context(), target, "must not run", ""); !errors.Is(err, ErrRemoteTargetUntrusted) {
+	if _, err := client.Call(t.Context(), target, "must not run", "", nil); !errors.Is(err, ErrRemoteTargetUntrusted) {
 		t.Fatalf("Call alternate endpoint error = %v", err)
 	}
 	fixture.mu.Lock()
@@ -744,7 +784,7 @@ func TestRemoteCallActivatesConfiguredExtension(t *testing.T) {
 	if !client.IsReady(target) {
 		t.Fatal("configured-extension target not ready after verification")
 	}
-	result, err := client.Call(WithUser(t.Context(), "@alice:local.example"), target, "prompt", "")
+	result, err := client.Call(WithUser(t.Context(), "@alice:local.example"), target, "prompt", "", nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -997,7 +1037,7 @@ func TestRemoteTargetErrorsAreStable(t *testing.T) {
 	if _, err := client.ResolveAgentCard(t.Context(), Target{}); err == nil {
 		t.Fatal("ResolveAgentCard accepted zero target")
 	}
-	if _, err := client.Call(t.Context(), Target{}, "prompt", ""); err == nil {
+	if _, err := client.Call(t.Context(), Target{}, "prompt", "", nil); err == nil {
 		t.Fatal("Call accepted zero target")
 	}
 	if _, err := client.PollTask(t.Context(), Target{}, "task"); err == nil {

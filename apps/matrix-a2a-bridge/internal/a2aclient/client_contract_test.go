@@ -144,14 +144,14 @@ func TestClientContract_MessageContextAttributionAndWireVersion(t *testing.T) {
 	client := contractServer(t, executor, taskstore.NewInMemory(nil), recorder)
 	ctx := WithUser(t.Context(), "@alice:fgentic.example")
 
-	first, err := client.Call(ctx, contractTarget(t), "first prompt", "")
+	first, err := client.Call(ctx, contractTarget(t), "first prompt", "", nil)
 	if err != nil {
 		t.Fatalf("first Call: %v", err)
 	}
 	if !first.Terminal || first.Text != "ack" || first.ContextID == "" {
 		t.Fatalf("first Call result = %+v, want terminal ack with a context ID", first)
 	}
-	second, err := client.Call(ctx, contractTarget(t), "second prompt", first.ContextID)
+	second, err := client.Call(ctx, contractTarget(t), "second prompt", first.ContextID, nil)
 	if err != nil {
 		t.Fatalf("second Call: %v", err)
 	}
@@ -209,7 +209,7 @@ func TestClientContract_TerminalTask(t *testing.T) {
 	})
 	client := contractServer(t, executor, taskstore.NewInMemory(nil), recorder)
 
-	result, err := client.Call(t.Context(), contractTarget(t), "run task", "")
+	result, err := client.Call(t.Context(), contractTarget(t), "run task", "", nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -241,7 +241,7 @@ func TestClientContract_WorkingTaskCanBePolledToCompletion(t *testing.T) {
 	})
 	client := contractServer(t, executor, store, recorder)
 
-	working, err := client.Call(t.Context(), contractTarget(t), "long task", "")
+	working, err := client.Call(t.Context(), contractTarget(t), "long task", "", nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -333,7 +333,7 @@ func TestClientContract_ExecutorErrorIsContextualized(t *testing.T) {
 	})
 	client := contractServer(t, executor, taskstore.NewInMemory(nil), recorder)
 
-	_, err := client.Call(t.Context(), contractTarget(t), "fail", "")
+	_, err := client.Call(t.Context(), contractTarget(t), "fail", "", nil)
 	if err == nil {
 		t.Fatal("Call succeeded, want protocol error")
 	}
@@ -351,7 +351,7 @@ func TestClientContract_EmptyMessageCrossesWire(t *testing.T) {
 	})
 	client := contractServer(t, executor, taskstore.NewInMemory(nil), recorder)
 
-	result, err := client.Call(t.Context(), contractTarget(t), "return no content", "")
+	result, err := client.Call(t.Context(), contractTarget(t), "return no content", "", nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -376,7 +376,7 @@ func TestClientContract_CallHonorsDeadline(t *testing.T) {
 	defer cancel()
 	callDone := make(chan error, 1)
 	go func() {
-		_, err := client.Call(ctx, contractTarget(t), "wait forever", "")
+		_, err := client.Call(ctx, contractTarget(t), "wait forever", "", nil)
 		callDone <- err
 	}()
 

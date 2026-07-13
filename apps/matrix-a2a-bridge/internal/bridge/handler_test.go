@@ -1218,6 +1218,8 @@ type scriptedA2AClient struct {
 	continueText      string
 	continueTaskID    string
 	continueContextID string
+
+	callFiles []a2aclient.InboundFile // inbound files forwarded on the last Call (#115)
 }
 
 func (c *scriptedA2AClient) ResolveAgentCard(_ context.Context, target a2aclient.Target) (*a2a.AgentCard, error) {
@@ -1228,9 +1230,10 @@ func (c *scriptedA2AClient) ResolveAgentCard(_ context.Context, target a2aclient
 	return c.card, c.cardErr
 }
 
-func (c *scriptedA2AClient) Call(_ context.Context, _ a2aclient.Target, text, _ string) (a2aclient.Result, error) {
+func (c *scriptedA2AClient) Call(_ context.Context, _ a2aclient.Target, text, _ string, files []a2aclient.InboundFile) (a2aclient.Result, error) {
 	c.callCount++
 	c.callText = text
+	c.callFiles = files
 	return c.callResult, c.callErr
 }
 
@@ -1553,7 +1556,7 @@ func TestAwaitTaskRetriesTransientRealWireFailureWithCappedBackoff(t *testing.T)
 	if err != nil {
 		t.Fatalf("NewLocalTarget: %v", err)
 	}
-	working, err := client.Call(t.Context(), target, "long task", "")
+	working, err := client.Call(t.Context(), target, "long task", "", nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
@@ -2086,7 +2089,7 @@ type deadlineA2AClient struct {
 	remaining time.Duration
 }
 
-func (c *deadlineA2AClient) Call(ctx context.Context, _ a2aclient.Target, _, _ string) (a2aclient.Result, error) {
+func (c *deadlineA2AClient) Call(ctx context.Context, _ a2aclient.Target, _, _ string, _ []a2aclient.InboundFile) (a2aclient.Result, error) {
 	deadline, ok := ctx.Deadline()
 	if !ok {
 		return a2aclient.Result{}, errors.New("A2A call has no deadline")
@@ -2097,7 +2100,7 @@ func (c *deadlineA2AClient) Call(ctx context.Context, _ a2aclient.Target, _, _ s
 }
 
 func (c *deadlineA2AClient) Continue(ctx context.Context, target a2aclient.Target, text, contextID, _ string) (a2aclient.Result, error) {
-	return c.Call(ctx, target, text, contextID)
+	return c.Call(ctx, target, text, contextID, nil)
 }
 
 func (*deadlineA2AClient) PollTask(context.Context, a2aclient.Target, string) (a2aclient.Result, error) {

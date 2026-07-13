@@ -44,13 +44,14 @@ type AgentRef struct {
 	// "@ops-*:partner.example"). Empty means: any user on an allowed server.
 	AllowedSenders []string `yaml:"allowedSenders,omitempty"`
 
-	senderRes []*regexp.Regexp // compiled AllowedSenders
-	avatar    id.ContentURI
-	target    a2aclient.Target
-	timeout   time.Duration
-	maxCost   uint64 // per-remote credit-unit ceiling on the verified skill quote (0 = no gate)
-	dev       bool   // stage:dev — invocable only in configured staging rooms (#128)
-	mappingID string
+	senderRes  []*regexp.Regexp // compiled AllowedSenders
+	avatar     id.ContentURI
+	target     a2aclient.Target
+	timeout    time.Duration
+	maxCost    uint64 // per-remote credit-unit ceiling on the verified skill quote (0 = no gate)
+	dev        bool   // stage:dev — invocable only in configured staging rooms (#128)
+	allowMedia bool   // remote opt-in to move file bytes across the org boundary (#115)
+	mappingID  string
 }
 
 // agentConfig is the on-disk shape. Runtime code only receives an AgentRef containing a
@@ -77,6 +78,11 @@ type agentConfig struct {
 	// the verified card must advertise a skill quote within it or the delegation fails closed with
 	// quote_over_budget (docs/federation.md). Remote targets only; omitted means no cost gate.
 	MaxCost *uint64 `yaml:"maxCost,omitempty"`
+	// AllowMedia opts a remote mapping into moving file bytes across the org boundary in either
+	// direction (#115). Omitted or false keeps the boundary closed to files: inbound room files are
+	// refused and the remote's artifact bytes are withheld from the room. Remote targets only — local
+	// media is governed solely by the global MIME/size policy.
+	AllowMedia *bool `yaml:"allowMedia,omitempty"`
 
 	AllowedServers []string `yaml:"allowedServers,omitempty"`
 	AllowedSenders []string `yaml:"allowedSenders,omitempty"`
@@ -125,6 +131,13 @@ func (a *AgentRef) MaxCost() uint64 {
 // configured staging rooms (#128). The default (unset) stage is `prod`, which is unrestricted.
 func (a *AgentRef) IsDev() bool {
 	return a.dev
+}
+
+// AllowsMedia reports whether this remote mapping opted into moving file bytes across the org
+// boundary (#115). It is only consulted for remote targets; local media is governed by the global
+// MIME/size policy, so a local mapping's value is not meaningful.
+func (a *AgentRef) AllowsMedia() bool {
+	return a.allowMedia
 }
 
 // MappingID binds a mapping to its route, pinned signer, token budget, and timeout. Profile
@@ -229,8 +242,8 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 		if namespace == "" || name == "" {
 			return nil, fmt.Errorf("agent %q: both namespace and name are required for a local target", ghost)
 		}
-		if cfg.Timeout != nil || cfg.TokenBudget != nil || cfg.CardIdentity != nil || len(cfg.Extensions) > 0 || cfg.MaxCost != nil {
-			return nil, fmt.Errorf("agent %q: timeout, tokenBudget, cardIdentity, extensions, and maxCost are only valid for a url target", ghost)
+		if cfg.Timeout != nil || cfg.TokenBudget != nil || cfg.CardIdentity != nil || len(cfg.Extensions) > 0 || cfg.MaxCost != nil || cfg.AllowMedia != nil {
+			return nil, fmt.Errorf("agent %q: timeout, tokenBudget, cardIdentity, extensions, maxCost, and allowMedia are only valid for a url target", ghost)
 		}
 		ref.target, err = a2aclient.NewLocalTarget(fmt.Sprintf("/api/a2a/%s/%s", namespace, name))
 	} else {
@@ -241,6 +254,7 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 			}
 			ref.maxCost = *cfg.MaxCost
 		}
+		ref.allowMedia = cfg.AllowMedia != nil && *cfg.AllowMedia
 		// The expected signed-card name is the safe profile fallback before discovery succeeds.
 		if cfg.CardIdentity != nil {
 			ref.Name = cfg.CardIdentity.Name
@@ -255,7 +269,7 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 	if err := ref.compileSenders(ghost); err != nil {
 		return nil, err
 	}
-	ref.mappingID = mappingID(ref.target, ref.timeout, ref.maxCost, ref.dev)
+	ref.mappingID = mappingID(ref.target, ref.timeout, ref.maxCost, ref.dev, ref.allowMedia)
 	return ref, nil
 }
 
@@ -334,10 +348,10 @@ func compileCardIdentity(cfg *cardIdentityConfig) (a2aclient.CardIdentity, error
 	}, nil
 }
 
-func mappingID(target a2aclient.Target, timeout time.Duration, maxCost uint64, dev bool) string {
+func mappingID(target a2aclient.Target, timeout time.Duration, maxCost uint64, dev, allowMedia bool) string {
 	identity := target.IdentityFingerprint()
 	sum := sha256.Sum256([]byte(fmt.Sprintf(
-		"%s\x00%x\x00%d\x00%d\x00%d\x00%t", target.ID(), identity, target.TokenBudget(), timeout, maxCost, dev,
+		"%s\x00%x\x00%d\x00%d\x00%d\x00%t\x00%t", target.ID(), identity, target.TokenBudget(), timeout, maxCost, dev, allowMedia,
 	)))
 	return hex.EncodeToString(sum[:])
 }

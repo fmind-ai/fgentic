@@ -31,11 +31,12 @@ const (
 	// pollErrorBudget tolerates transient tasks/get failures before giving up on a task.
 	pollErrorBudget = 3
 
-	workingText      = "⏳ working on it…"
-	emptyReplyText   = "(the agent returned no content)"
-	rateLimitedText  = "⚠️ rate limit reached — please retry in a moment."
-	policyDeniedText = "⚠️ you are not allowed to invoke this agent — ask an operator to review its sender allowlist."
-	stageDeniedText  = "⚠️ this agent is a staging (dev) build and can only be invoked in its designated staging room."
+	workingText          = "⏳ working on it…"
+	emptyReplyText       = "(the agent returned no content)"
+	rateLimitedText      = "⚠️ rate limit reached — please retry in a moment."
+	policyDeniedText     = "⚠️ you are not allowed to invoke this agent — ask an operator to review its sender allowlist."
+	stageDeniedText      = "⚠️ this agent is a staging (dev) build and can only be invoked in its designated staging room."
+	mediaInputDeniedText = "⚠️ the attached file was refused by the media policy (type, size, encryption, or a partner opt-out) — nothing was sent to the agent."
 
 	provenanceStart = "--- BEGIN FGENTIC BRIDGE PROVENANCE ---"
 	provenanceEnd   = "--- END FGENTIC BRIDGE PROVENANCE ---"
@@ -82,7 +83,7 @@ type targetResolution struct {
 }
 
 type a2aClient interface {
-	Call(ctx context.Context, target a2aclient.Target, text, contextID string) (a2aclient.Result, error)
+	Call(ctx context.Context, target a2aclient.Target, text, contextID string, files []a2aclient.InboundFile) (a2aclient.Result, error)
 	Continue(ctx context.Context, target a2aclient.Target, text, contextID, taskID string) (a2aclient.Result, error)
 	PollTask(ctx context.Context, target a2aclient.Target, taskID string) (a2aclient.Result, error)
 	CancelTask(ctx context.Context, target a2aclient.Target, taskID string) error
@@ -109,6 +110,9 @@ type delegationAuditResult struct {
 	replyEventID     id.EventID
 	canceledBy       string   // room member who canceled a long task (#98); empty otherwise
 	activated        []string // A2A extensions the remote echoed as activated (#114); empty for local
+	mediaIn          int      // files forwarded from the room to the agent (#115)
+	mediaOut         int      // agent artifact files posted into the room (#115)
+	mediaRejected    int      // files withheld in either direction by the media policy (#115)
 }
 
 // Bridge orchestrates the @mention -> A2A -> reply flow for one appservice.
@@ -134,6 +138,7 @@ type Bridge struct {
 	profileWriter      ghostProfileWriter
 	inflight           *inflightRegistry
 	openTasks          *openTaskRegistry   // input-required delegations awaiting a reply (#116)
+	media              mediaPolicy         // MIME/size gate for files in both directions (#115)
 	stagingRooms       map[string]struct{} // rooms where stage:dev agents may be invoked (#128)
 	tracer             trace.Tracer
 	watchWG            sync.WaitGroup
@@ -169,6 +174,7 @@ func New(cfg config.Config, as *appservice.AppService, agents *AgentMap, client 
 		pollWait:           waitForPoll,
 		inflight:           newInflightRegistry(),
 		openTasks:          newOpenTaskRegistry(),
+		media:              newMediaPolicy(cfg),
 		stagingRooms:       stagingRoomSet(cfg.StagingRooms),
 		tracer:             otel.Tracer(tracerName),
 	}
@@ -242,20 +248,26 @@ func (b *Bridge) HandleMessage(ctx context.Context, evt *event.Event) {
 		return // ignore our own bot/ghost messages — otherwise replies would loop
 	}
 	msg := evt.Content.AsMessage()
-	// m.notice is bot output by Matrix convention (our ghosts reply with it); never treating it
-	// as a delegating message breaks agent-to-agent reply loops (SPEC §4 F8).
-	if msg == nil || msg.MsgType != event.MsgText {
+	if msg == nil {
 		return
 	}
-	// A threaded reply answering a paused agent question resumes that task instead of starting a new
-	// delegation (#116); an ordinary message falls through to the mention path below.
-	if b.handleThreadContinuation(ctx, evt, msg) {
-		return
-	}
-	if isAgentDirectoryCommand(msg.Body) {
-		if b.markEventProcessed(ctx, evt) != dedupVerdictDuplicate {
-			b.handleAgentDirectory(ctx, evt)
+	// m.notice is bot output by Matrix convention (our ghosts reply with it); never treating it as a
+	// delegating message breaks agent-to-agent reply loops (SPEC §4 F8). A media message that mentions
+	// an agent IS a delegation carrying an inbound file (#115); every other non-text type is ignored.
+	switch {
+	case msg.MsgType == event.MsgText:
+		// A threaded reply answering a paused agent question resumes that task instead of starting a
+		// new delegation (#116); an ordinary message falls through to the mention path below.
+		if b.handleThreadContinuation(ctx, evt, msg) {
+			return
 		}
+		if isAgentDirectoryCommand(msg.Body) {
+			if b.markEventProcessed(ctx, evt) != dedupVerdictDuplicate {
+				b.handleAgentDirectory(ctx, evt)
+			}
+			return
+		}
+	case !msg.MsgType.IsMedia():
 		return
 	}
 	targets := b.resolveTargets(evt, msg)
@@ -622,7 +634,9 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 	delegationsTotal.WithLabelValues(open.localpart, outcomeOK).Inc()
 	audit.outcome = outcomeOK
 	audit.terminalReason = "completed"
-	b.editReply(ctx, intent, reply.RoomID, open.placeholder, orDefault(res.Text, emptyReplyText))
+	_, out, rejected := b.deliverReply(ctx, intent, reply, open.placeholder, open.localpart, ref, res)
+	audit.mediaOut = out
+	audit.mediaRejected += rejected
 	b.log.Info("resumed and completed delegation", "ghost", open.localpart, "agent", ref.Path(), "room", reply.RoomID)
 }
 
@@ -863,6 +877,24 @@ func (b *Bridge) dispatchWithDedupVerdict(
 	if err != nil {
 		b.log.Error("load context, starting fresh thread", "room", evt.RoomID, "ghost", localpart, "err", err)
 	}
+
+	// Resolve any file the mention carries into A2A parts (#115). A referenced file that fails policy
+	// fails the whole delegation closed: post a bounded notice and never spend the A2A call.
+	inboundFiles, inRejected, mediaOK := b.collectInboundMedia(ctx, intent, evt, ref)
+	if !mediaOK {
+		delegationsTotal.WithLabelValues(localpart, outcomeDenied).Inc()
+		audit.outcome = outcomeDenied
+		audit.terminalStage = "media_admission"
+		audit.terminalReason = "media_input_rejected"
+		audit.mediaRejected = inRejected
+		b.log.Warn("refusing delegation: attached file failed media policy", "ghost", localpart, "room", evt.RoomID)
+		if b.allowNotice(sender, evt.RoomID, localpart) {
+			audit.replyEventID = b.postReply(ctx, intent, evt, mediaInputDeniedText)
+		}
+		return
+	}
+	audit.mediaIn = len(inboundFiles)
+
 	audit.terminalStage = "message_send"
 	audit.a2aAttempted = true
 	audit.a2aUserID = evt.Sender.String()
@@ -877,7 +909,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 	callCtx, cancel := context.WithTimeout(a2aCtx, b.cfg.RequestTimeout)
 	callStarted := time.Now()
 	span.AddEvent("a2a.message.send")
-	res, err := b.client.Call(callCtx, ref.Target(), provenancePrompt(evt, prompt), contextID)
+	res, err := b.client.Call(callCtx, ref.Target(), provenancePrompt(evt, prompt), contextID, inboundFiles)
 	cancel()
 	a2aLatency.WithLabelValues(localpart).Observe(time.Since(callStarted).Seconds())
 	if err != nil {
@@ -915,6 +947,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 		terminalAudit.dedupVerdict = audit.dedupVerdict
 		terminalAudit.rateLimitVerdict = audit.rateLimitVerdict
 		terminalAudit.activated = res.ActivatedExtensions // negotiated once on message/send, not per poll
+		terminalAudit.mediaIn = audit.mediaIn             // inbound files were forwarded on the initial send
 		audit = terminalAudit
 		return
 	}
@@ -930,7 +963,10 @@ func (b *Bridge) dispatchWithDedupVerdict(
 	delegationsTotal.WithLabelValues(localpart, outcomeOK).Inc()
 	audit.outcome = outcomeOK
 	audit.terminalReason = "completed"
-	audit.replyEventID = b.postReply(ctx, intent, evt, orDefault(res.Text, emptyReplyText))
+	replyID, out, rejected := b.deliverReply(ctx, intent, evt, "", localpart, ref, res)
+	audit.replyEventID = replyID
+	audit.mediaOut = out
+	audit.mediaRejected += rejected
 	b.log.Info("delegated to agent", "ghost", localpart, "agent", ref.Path(), "room", evt.RoomID)
 }
 
@@ -1201,7 +1237,9 @@ func (b *Bridge) awaitTask(
 			delegationsTotal.WithLabelValues(localpart, outcomeOK).Inc()
 			audit.outcome = outcomeOK
 			audit.terminalReason = "completed"
-			b.editReply(ctx, intent, evt.RoomID, placeholder, orDefault(polled.Text, emptyReplyText))
+			_, out, rejected := b.deliverReply(ctx, intent, evt, placeholder, localpart, ref, polled)
+			audit.mediaOut = out
+			audit.mediaRejected += rejected
 			b.log.Info("delegated to agent (long task)", "ghost", localpart, "agent", ref.Path(), "room", evt.RoomID)
 			return audit
 		}
@@ -1382,6 +1420,9 @@ func (b *Bridge) logDelegationAudit(
 		"terminal_stage", result.terminalStage,
 		"terminal_reason", result.terminalReason,
 		"canceled_by", result.canceledBy,
+		"media_in", result.mediaIn,
+		"media_out", result.mediaOut,
+		"media_rejected", result.mediaRejected,
 		"a2a_activated_extensions", strings.Join(result.activated, ","),
 		"duration_ms", result.duration.Milliseconds(),
 		"dedup_verdict", string(result.dedupVerdict),

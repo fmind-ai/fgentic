@@ -11,7 +11,7 @@ import (
 
 // A2AClient is the existing bridge client surface needed by the harness.
 type A2AClient interface {
-	Call(context.Context, a2aclient.Target, string, string) (a2aclient.Result, error)
+	Call(context.Context, a2aclient.Target, string, string, []a2aclient.InboundFile) (a2aclient.Result, error)
 	PollTask(context.Context, a2aclient.Target, string) (a2aclient.Result, error)
 }
 
@@ -131,7 +131,7 @@ func (r *Runner) callScenario(ctx context.Context, scenario Scenario, pollInterv
 	if err != nil {
 		return "", fmt.Errorf("build local A2A target: %w", err)
 	}
-	result, err := r.a2a.Call(ctx, target, scenario.Prompt, "")
+	result, err := r.a2a.Call(ctx, target, scenario.Prompt, "", nil)
 	if err != nil {
 		return "", err
 	}

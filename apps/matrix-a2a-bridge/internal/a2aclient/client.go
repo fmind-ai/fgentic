@@ -7,6 +7,7 @@ package a2aclient
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -105,6 +106,39 @@ type Result struct {
 	// message/send (the `A2A-Extensions` response header). Empty for local targets or a server that
 	// does not echo; it feeds the delegation audit, never a control decision.
 	ActivatedExtensions []string
+	// Files, Data, and Links are the non-text content the agent produced (#115): raw byte parts
+	// (candidate Matrix media uploads), structured data parts pre-rendered as compact JSON, and URL
+	// parts kept as untrusted labeled links the bridge never fetches server-side. They carry no
+	// policy decision — the bridge applies its MIME/size gate before anything reaches a room.
+	Files []ResultFile
+	Data  []string
+	Links []ResultLink
+}
+
+// ResultFile is one raw-bytes part the agent emitted (an A2A Raw part), a candidate for upload to the
+// Matrix content repository. Name and MIMEType are the agent's self-declared metadata and are treated
+// as untrusted hints, not verified facts.
+type ResultFile struct {
+	Name     string
+	MIMEType string
+	Bytes    []byte
+}
+
+// ResultLink is one URL part the agent emitted. The bridge surfaces it as a labeled untrusted link
+// and never dereferences it server-side (an agent-controlled URL is an SSRF vector).
+type ResultLink struct {
+	Label    string
+	URL      string
+	MIMEType string
+}
+
+// InboundFile is a room-attached file the bridge forwards to an agent as an A2A Raw part (#115). The
+// caller (the bridge) is responsible for having applied its media policy before constructing these;
+// the client transports the bytes verbatim.
+type InboundFile struct {
+	Name     string
+	MIMEType string
+	Bytes    []byte
 }
 
 // Client dials local A2A agents under a common base URL and remote agents at their exact,
@@ -147,26 +181,35 @@ func New(baseURL, apiKey string, log *slog.Logger) *Client {
 // conversation. ReturnImmediately keeps
 // long-running agents from holding the bridge request open: a non-terminal Task is returned as
 // soon as it exists and the bridge follows it with tasks/get polling.
-func (c *Client) Call(ctx context.Context, target Target, text, contextID string) (Result, error) {
-	return c.send(ctx, target, text, contextID, "")
+func (c *Client) Call(ctx context.Context, target Target, text, contextID string, files []InboundFile) (Result, error) {
+	return c.send(ctx, target, text, contextID, "", files)
 }
 
 // Continue resumes a task paused in TASK_STATE_INPUT_REQUIRED by re-sending message/send with the
 // same taskID and contextID (A2A continuation semantics — #116). text is the room member's answer.
 func (c *Client) Continue(ctx context.Context, target Target, text, contextID, taskID string) (Result, error) {
-	return c.send(ctx, target, text, contextID, taskID)
+	return c.send(ctx, target, text, contextID, taskID, nil)
 }
 
 // send is the shared message/send path for a new delegation (Call, taskID empty) and a resumed one
 // (Continue, taskID set). A non-empty taskID is stamped onto the message so the agent continues its
-// existing task rather than starting a fresh one.
-func (c *Client) send(ctx context.Context, target Target, text, contextID, taskID string) (Result, error) {
+// existing task rather than starting a fresh one. files, when present, ride as A2A Raw parts (#115);
+// the bridge gates them by its media policy before they reach here.
+func (c *Client) send(ctx context.Context, target Target, text, contextID, taskID string, files []InboundFile) (Result, error) {
 	client, err := c.clientFor(ctx, target)
 	if err != nil {
 		return Result{}, err
 	}
 	var capture *activationCapture
-	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(text))
+	parts := make([]*a2a.Part, 0, 1+len(files))
+	parts = append(parts, a2a.NewTextPart(text))
+	for _, f := range files {
+		part := a2a.NewRawPart(f.Bytes)
+		part.Filename = f.Name
+		part.MediaType = f.MIMEType
+		parts = append(parts, part)
+	}
+	msg := a2a.NewMessage(a2a.MessageRoleUser, parts...)
 	if target.IsRemote() {
 		// Request the negotiated extension set (token-budget base + configured extras); the SDK
 		// activator drops any the card does not advertise. Token-budget is the only one carrying
@@ -412,7 +455,9 @@ func parseExtensionHeader(headerValues []string) []string {
 func toResult(res a2a.SendMessageResult) Result {
 	switch v := res.(type) {
 	case *a2a.Message:
-		return Result{Text: partsText(v.Parts), ContextID: v.ContextID, Terminal: true}
+		r := Result{Text: partsText(v.Parts), ContextID: v.ContextID, Terminal: true}
+		r.Files, r.Data, r.Links = extractParts(v.Parts)
+		return r
 	case *a2a.Task:
 		return taskResult(v)
 	default:
@@ -431,11 +476,40 @@ func taskResult(t *a2a.Task) Result {
 	}
 	if r.Terminal {
 		r.Text = taskText(t)
+		// A finished task's file/data/link products live in its artifacts (SPEC §6): extract them for
+		// the bridge to post as media, deliberately not from status/history (those are working turns).
+		for _, a := range t.Artifacts {
+			files, data, links := extractParts(a.Parts)
+			r.Files = append(r.Files, files...)
+			r.Data = append(r.Data, data...)
+			r.Links = append(r.Links, links...)
+		}
 	} else if t.Status.Message != nil {
 		// Interim status, e.g. "working"; for input-required this is the agent's question.
 		r.Text = partsText(t.Status.Message.Parts)
 	}
 	return r
+}
+
+// extractParts splits a part list into the bridge's non-text content buckets (#115): Raw parts become
+// candidate media files, URL parts become untrusted links (never fetched), and Data parts are
+// rendered to compact JSON for a fenced code block. Text parts are ignored here — text is handled by
+// partsText/taskText. A part matches at most one bucket, tested Raw→URL→Data so a Raw part with an
+// incidental empty URL is still treated as a file.
+func extractParts(parts a2a.ContentParts) (files []ResultFile, data []string, links []ResultLink) {
+	for _, p := range parts {
+		switch {
+		case len(p.Raw()) > 0:
+			files = append(files, ResultFile{Name: p.Filename, MIMEType: p.MediaType, Bytes: p.Raw()})
+		case p.URL() != "":
+			links = append(links, ResultLink{Label: p.Filename, URL: string(p.URL()), MIMEType: p.MediaType})
+		case p.Data() != nil:
+			if encoded, err := json.Marshal(p.Data()); err == nil {
+				data = append(data, string(encoded))
+			}
+		}
+	}
+	return files, data, links
 }
 
 // taskText extracts human-readable text from a finished task: the produced artifacts first,

@@ -96,7 +96,7 @@ func (c *cardSequenceClient) ResolveAgentCard(_ context.Context, target a2aclien
 	return response.card, response.err
 }
 
-func (*cardSequenceClient) Call(context.Context, a2aclient.Target, string, string) (a2aclient.Result, error) {
+func (*cardSequenceClient) Call(context.Context, a2aclient.Target, string, string, []a2aclient.InboundFile) (a2aclient.Result, error) {
 	return a2aclient.Result{}, errors.New("unexpected A2A delegation")
 }
 
