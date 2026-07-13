@@ -1,0 +1,63 @@
+apiVersion: audit.k8s.io/v1
+kind: Policy
+omitManagedFields: true
+omitStages:
+  - RequestReceived
+rules:
+  # Metadata retains the API principal and object reference without persisting Secret, ConfigMap,
+  # policy, or agent bodies. list/watch traffic is deliberately omitted for the constrained local
+  # reference; one-object reads and security-relevant writes remain attributable.
+  - level: Metadata
+    verbs:
+      - create
+      - update
+      - patch
+      - delete
+      - deletecollection
+    resources:
+      - group: ""
+        resources:
+          - secrets
+          - configmaps
+          - pods/exec
+      - group: networking.k8s.io
+        resources:
+          - networkpolicies
+      - group: kagent.dev
+        resources:
+          - agents
+      - group: helm.toolkit.fluxcd.io
+        resources:
+          - helmreleases
+      - group: kustomize.toolkit.fluxcd.io
+        resources:
+          - kustomizations
+      - group: admissionregistration.k8s.io
+        resources:
+          - validatingadmissionpolicies
+          - validatingadmissionpolicybindings
+  - level: Metadata
+    verbs:
+      - get
+    resources:
+      - group: ""
+        resources:
+          - secrets
+          - configmaps
+      - group: networking.k8s.io
+        resources:
+          - networkpolicies
+      - group: kagent.dev
+        resources:
+          - agents
+      - group: helm.toolkit.fluxcd.io
+        resources:
+          - helmreleases
+      - group: kustomize.toolkit.fluxcd.io
+        resources:
+          - kustomizations
+      - group: admissionregistration.k8s.io
+        resources:
+          - validatingadmissionpolicies
+          - validatingadmissionpolicybindings
+  - level: None

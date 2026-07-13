@@ -4,6 +4,7 @@
 render_k3d_config() {
 	local output="$1"
 	local eviction_hard="memory.available<100Mi,nodefs.available<1Gi,imagefs.available<1Gi,nodefs.inodesFree<5%,imagefs.inodesFree<5%"
+	local audit_policy="k3d-audit-policy.yaml"
 
 	# Disposable evaluation clusters pull several large pinned images onto one node. Keep Kubelet
 	# from evicting healthy workloads at its percentage-based disk default while preserving an
@@ -22,4 +23,9 @@ render_k3d_config() {
         .ports[1].port = (strenv(FED_LOOPBACK) + ":443:443")
       ' "${output}"
 	fi
+
+	# k3d resolves a relative `files.source` beside the rendered config, not beside the process's
+	# working directory. Keep disposable demo/federation configs self-contained without baking a
+	# repository-specific absolute path into them.
+	cp "${ROOT_DIR}/infra/${audit_policy}" "$(dirname -- "${output}")/${audit_policy}"
 }
