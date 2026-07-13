@@ -167,6 +167,21 @@ func (c *Client) PollTask(ctx context.Context, target Target, taskID string) (Re
 	return taskResult(task), nil
 }
 
+// CancelTask asks the agent to stop a task previously returned by Call (tasks/cancel). It is
+// best-effort: the bridge stops polling and reports the cancellation to the room regardless, but a
+// successful call also releases the agent's own resources and halts token burn at the source. Like
+// Call/PollTask it routes local targets through agentgateway and pinned remotes to their exact URL.
+func (c *Client) CancelTask(ctx context.Context, target Target, taskID string) error {
+	client, err := c.clientFor(ctx, target)
+	if err != nil {
+		return err
+	}
+	if _, err := client.CancelTask(ctx, &a2a.CancelTaskRequest{ID: a2a.TaskID(taskID)}); err != nil {
+		return fmt.Errorf("a2a tasks/cancel %s on %s: %w", taskID, target.String(), err)
+	}
+	return nil
+}
+
 // ResolveAgentCard fetches the current public AgentCard for target. Local targets deliberately
 // bypass the SDK-client cache. Remote cards are installed only after their pinned identity,
 // endpoint, extension contract, and detached JWS signature have all been verified.

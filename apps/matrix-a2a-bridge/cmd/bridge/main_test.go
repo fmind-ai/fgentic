@@ -27,7 +27,7 @@ func testLogger() *slog.Logger {
 func TestEventProcessorPreservesDeliveryOrder(t *testing.T) {
 	as := appservice.Create()
 	handler := func(context.Context, *event.Event) {}
-	processor := newEventProcessor(as, handler, handler)
+	processor := newEventProcessor(as, handler, handler, handler)
 	if processor.ExecMode != appservice.Sync {
 		t.Fatalf("event processor mode = %v, want synchronous delivery", processor.ExecMode)
 	}
@@ -44,7 +44,7 @@ func TestEventProcessorDrainWaitsForAcceptedHandlers(t *testing.T) {
 		close(started)
 		<-release
 	}
-	processor := newEventProcessor(as, handler, func(context.Context, *event.Event) {})
+	processor := newEventProcessor(as, handler, func(context.Context, *event.Event) {}, func(context.Context, *event.Event) {})
 	processor.Start(t.Context())
 	defer processor.Stop()
 	as.Events <- &event.Event{Type: event.EventMessage}

@@ -113,7 +113,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 		return fmt.Errorf("start bridge: %w", err)
 	}
 
-	ep := newEventProcessor(as, br.HandleMessage, br.HandleMembership)
+	ep := newEventProcessor(as, br.HandleMessage, br.HandleMembership, br.HandleReaction)
 	ep.Start(runtimeCtx)
 
 	// Prometheus metrics on a side port (docs/observability.md §9.3), never on the appservice listener.
@@ -323,7 +323,7 @@ func (ep *drainingEventProcessor) Drain(ctx context.Context) error {
 
 func newEventProcessor(
 	as *appservice.AppService,
-	messageHandler, membershipHandler appservice.EventHandler,
+	messageHandler, membershipHandler, reactionHandler appservice.EventHandler,
 ) *drainingEventProcessor {
 	ep := appservice.NewEventProcessor(as)
 	// The bridge handlers only classify/enqueue ordinary messages. Running them synchronously
@@ -333,6 +333,9 @@ func newEventProcessor(
 	ep.On(event.EventMessage, messageHandler)
 	// Invites to the bot/ghosts must be accepted for Synapse to deliver room traffic at all.
 	ep.On(event.StateMember, membershipHandler)
+	// Reactions are only inspected as a cancel gesture on an in-flight task placeholder (#98); the
+	// handler never invokes an agent, so running it in event order is cheap and non-blocking.
+	ep.On(event.EventReaction, reactionHandler)
 	barrier := &event.Event{Type: shutdownBarrierEventType}
 	drained := make(chan struct{})
 	ep.On(shutdownBarrierEventType, func(_ context.Context, evt *event.Event) {

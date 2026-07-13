@@ -47,4 +47,5 @@ const (
 	outcomeShutdown    = "shutdown"     // target did not start before dispatcher shutdown
 	outcomeTimeout     = "timeout"      // long task exceeded TASK_TIMEOUT
 	outcomeLost        = "lost"         // tasks/get error budget exhausted
+	outcomeCanceled    = "canceled"     // long task canceled from the room (#98)
 )

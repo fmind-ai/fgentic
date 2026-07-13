@@ -1201,6 +1201,9 @@ type scriptedA2AClient struct {
 	polls       []scriptedPoll
 	pollPaths   []string
 	pollTasks   []string
+	cancelPaths []string
+	cancelTasks []string
+	cancelErr   error
 	remoteReady bool
 }
 
@@ -1227,6 +1230,12 @@ func (c *scriptedA2AClient) PollTask(_ context.Context, target a2aclient.Target,
 	next := c.polls[0]
 	c.polls = c.polls[1:]
 	return next.result, next.err
+}
+
+func (c *scriptedA2AClient) CancelTask(_ context.Context, target a2aclient.Target, taskID string) error {
+	c.cancelPaths = append(c.cancelPaths, target.String())
+	c.cancelTasks = append(c.cancelTasks, taskID)
+	return c.cancelErr
 }
 
 func (c *scriptedA2AClient) IsReady(target a2aclient.Target) bool {
@@ -1730,6 +1739,10 @@ func (c *deadlineA2AClient) Call(ctx context.Context, _ a2aclient.Target, _, _ s
 
 func (*deadlineA2AClient) PollTask(context.Context, a2aclient.Target, string) (a2aclient.Result, error) {
 	return a2aclient.Result{}, errors.New("unexpected A2A task poll")
+}
+
+func (*deadlineA2AClient) CancelTask(context.Context, a2aclient.Target, string) error {
+	return errors.New("unexpected A2A task cancel")
 }
 
 func (*deadlineA2AClient) ResolveAgentCard(context.Context, a2aclient.Target) (*a2a.AgentCard, error) {

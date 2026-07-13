@@ -83,6 +83,7 @@ type targetResolution struct {
 type a2aClient interface {
 	Call(ctx context.Context, target a2aclient.Target, text, contextID string) (a2aclient.Result, error)
 	PollTask(ctx context.Context, target a2aclient.Target, taskID string) (a2aclient.Result, error)
+	CancelTask(ctx context.Context, target a2aclient.Target, taskID string) error
 	ResolveAgentCard(ctx context.Context, target a2aclient.Target) (*a2a.AgentCard, error)
 	IsReady(target a2aclient.Target) bool
 }
@@ -103,6 +104,7 @@ type delegationAuditResult struct {
 	contextID        string
 	taskID           string
 	replyEventID     id.EventID
+	canceledBy       string // room member who canceled a long task (#98); empty otherwise
 }
 
 // Bridge orchestrates the @mention -> A2A -> reply flow for one appservice.
@@ -126,6 +128,7 @@ type Bridge struct {
 	pollWait           pollWaitFunc
 	profiles           *profileStore
 	profileWriter      ghostProfileWriter
+	inflight           *inflightRegistry
 	tracer             trace.Tracer
 	watchWG            sync.WaitGroup
 	watchCancel        context.CancelFunc
@@ -158,6 +161,7 @@ func New(cfg config.Config, as *appservice.AppService, agents *AgentMap, client 
 		pollInitial:        pollInitial,
 		pollMax:            pollMax,
 		pollWait:           waitForPoll,
+		inflight:           newInflightRegistry(),
 		tracer:             otel.Tracer(tracerName),
 	}
 	bridge.profiles = newProfileStore(agents.Entries())
@@ -718,9 +722,28 @@ func (b *Bridge) awaitTask(
 	pollCtx, cancel := context.WithTimeout(a2aCtx, b.cfg.TaskTimeout)
 	defer cancel()
 
+	// Register the running task so a room member can cancel it by reacting to the placeholder (#98).
+	// A missing placeholder (its post failed) leaves nothing to react to, so there is nothing to track.
+	var task *inflightTask
+	if placeholder != "" {
+		task = &inflightTask{
+			room:           evt.RoomID,
+			placeholder:    placeholder,
+			taskID:         res.TaskID,
+			originalSender: evt.Sender,
+			target:         ref.Target(),
+			cancelPoll:     cancel,
+		}
+		b.inflight.register(task)
+		defer b.inflight.unregister(placeholder)
+	}
+
 	delay, pollErrors := b.pollInitial, 0
 	for {
 		if err := b.pollWait(pollCtx, delay); err != nil {
+			if who := taskCanceler(task); who != "" {
+				return b.finishCanceled(ctx, a2aCtx, intent, evt, ref, localpart, placeholder, res.TaskID, who, audit)
+			}
 			trace.SpanFromContext(ctx).RecordError(err)
 			delegationsTotal.WithLabelValues(localpart, outcomeTimeout).Inc()
 			audit.outcome = outcomeTimeout
@@ -736,6 +759,9 @@ func (b *Bridge) awaitTask(
 		trace.SpanFromContext(ctx).AddEvent("a2a.task.poll")
 		polled, err := b.client.PollTask(pollCtx, ref.Target(), res.TaskID)
 		if err != nil {
+			if who := taskCanceler(task); who != "" {
+				return b.finishCanceled(ctx, a2aCtx, intent, evt, ref, localpart, placeholder, res.TaskID, who, audit)
+			}
 			trace.SpanFromContext(ctx).RecordError(err)
 			if errors.Is(err, a2aclient.ErrRemoteTargetUntrusted) {
 				delegationsTotal.WithLabelValues(localpart, outcomeDenied).Inc()
@@ -783,6 +809,52 @@ func (b *Bridge) awaitTask(
 	}
 }
 
+// taskCanceler reports the room member who canceled a tracked long task, or empty when the task is
+// untracked (no placeholder) or still running. It disambiguates a room-initiated cancel from an
+// ordinary poll timeout or shutdown, which share the same context-cancellation signal.
+func taskCanceler(task *inflightTask) id.UserID {
+	if task == nil {
+		return ""
+	}
+	return task.canceler()
+}
+
+// finishCanceled completes a delegation that a room member canceled (#98): ask the agent to stop
+// (best-effort tasks/cancel, so token burn halts at the source), edit the placeholder into a
+// content-free "canceled by" notice, and audit who canceled. The poll context is already dead, so
+// the agent-side cancel runs on a fresh deadline off the still-live delegation context, which keeps
+// the A2A user attribution and any per-remote ceiling.
+func (b *Bridge) finishCanceled(
+	ctx, a2aCtx context.Context,
+	intent *appservice.IntentAPI,
+	evt *event.Event,
+	ref *AgentRef,
+	localpart string,
+	placeholder id.EventID,
+	taskID string,
+	canceledBy id.UserID,
+	audit delegationAuditResult,
+) delegationAuditResult {
+	trace.SpanFromContext(ctx).AddEvent("a2a.task.cancel")
+	cancelCtx, cancel := context.WithTimeout(a2aCtx, b.cfg.RequestTimeout)
+	if err := b.client.CancelTask(cancelCtx, ref.Target(), taskID); err != nil {
+		// Best-effort: the room cancel is honored regardless, but a failed agent-side stop means
+		// the agent may keep working, so it is worth a warning.
+		b.log.Warn("agent-side task cancel failed", "task", taskID, "agent", ref.Path(), "err", err)
+	}
+	cancel()
+
+	delegationsTotal.WithLabelValues(localpart, outcomeCanceled).Inc()
+	audit.outcome = outcomeCanceled
+	audit.terminalStage = "task_cancel"
+	audit.terminalReason = "canceled_by_room"
+	audit.canceledBy = canceledBy.String()
+	b.editReply(ctx, intent, evt.RoomID, placeholder, fmt.Sprintf("🛑 canceled by %s.", canceledBy))
+	b.log.Info("canceled long task from room",
+		"ghost", localpart, "agent", ref.Path(), "room", evt.RoomID, "canceled_by", canceledBy)
+	return audit
+}
+
 // logDelegationAudit emits exactly one terminal record per resolved target. Message and prompt
 // content are deliberately absent: Matrix remains the source of record for content, while this
 // record provides the structured joins needed to follow identity and usage across systems.
@@ -814,6 +886,7 @@ func (b *Bridge) logDelegationAudit(
 		"outcome", result.outcome,
 		"terminal_stage", result.terminalStage,
 		"terminal_reason", result.terminalReason,
+		"canceled_by", result.canceledBy,
 		"duration_ms", result.duration.Milliseconds(),
 		"dedup_verdict", string(result.dedupVerdict),
 		"rate_limit_verdict", string(result.rateLimitVerdict),

@@ -104,6 +104,10 @@ func (*cardSequenceClient) PollTask(context.Context, a2aclient.Target, string) (
 	return a2aclient.Result{}, errors.New("unexpected A2A task poll")
 }
 
+func (*cardSequenceClient) CancelTask(context.Context, a2aclient.Target, string) error {
+	return errors.New("unexpected A2A task cancel")
+}
+
 func (c *cardSequenceClient) IsReady(target a2aclient.Target) bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
