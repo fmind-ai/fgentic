@@ -117,6 +117,12 @@ jobs:
         id: network
         continue-on-error: true
         run: mise run test:network-policies:kind
+      - name: Verify namespace quota enforcement
+        id: quota
+        continue-on-error: true
+        env:
+          KIND_CLUSTER_NAME: fgentic-smoke-quota
+        run: mise run test:resource-quotas
       - name: Record policy results
         if: always()
         run: |
@@ -126,6 +132,7 @@ jobs:
           mcp=${{ steps.mcp.outcome }}
           tracing=${{ steps.tracing.outcome }}
           network=${{ steps.network.outcome }}
+          quota=${{ steps.quota.outcome }}
           EOF
       - name: Enforce policy result
         if: always()
@@ -133,7 +140,8 @@ jobs:
           if [[ "${{ steps.a2a.outcome }}" != "success" \
             || "${{ steps.mcp.outcome }}" != "success" \
             || "${{ steps.tracing.outcome }}" != "success" \
-            || "${{ steps.network.outcome }}" != "success" ]]; then
+            || "${{ steps.network.outcome }}" != "success" \
+            || "${{ steps.quota.outcome }}" != "success" ]]; then
             cat "${NETWORK_POLICY_DIAGNOSTICS_DIR}/workflow-results.txt" >&2
             exit 1
           fi

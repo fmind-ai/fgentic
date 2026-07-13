@@ -99,6 +99,33 @@ For the optional GKE reference, apply [`infra/terraform/bootstrap/`](../infra/te
 
 Flux reconciles the DAG in dependency order: namespaces and secrets; controllers and observability; gateway, Postgres, and agentgateway; Matrix, Keycloak, kagent, and monitors; then the bridge. Inspect `flux get kustomizations` and `flux get helmreleases -A`; debug the first non-Ready layer instead of applying a workload around Flux.
 
+## Bound namespace compute
+
+The namespaces layer creates a `compute-budget` ResourceQuota and `container-defaults` LimitRange before any application workload. The quota caps aggregate Pods and CPU/memory requests and limits; it does not reserve that capacity. The LimitRange adds a 25m/64Mi request and 500m/512Mi limit only where a container omits the corresponding field, so reviewed workload-specific values remain authoritative and every admitted Pod is accounted.
+
+Namespaces use three coarse profiles rather than one independently tuned setting per component:
+
+| Profile   | Namespaces                                                                                                                                      | Local/demo/federation: pods · requests · limits | GCP reference: pods · requests · limits |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | --------------------------------------- |
+| `small`   | `cert-manager`, `gateway`, `cnpg-system`, `postgres`, `keycloak`, `agentgateway-system`, `bridge`, `bridges`; dormant `activitypub` deploy unit | 12 · 2 CPU/4 GiB · 8 CPU/8 GiB                  | 24 · 4 CPU/8 GiB · 12 CPU/16 GiB        |
+| `core`    | `matrix`, `kagent`, `monitoring`; federation-only `matrix-b`, `matrix-c`                                                                        | 24 · 4 CPU/8 GiB · 16 CPU/16 GiB                | 32 · 8 CPU/16 GiB · 24 CPU/24 GiB       |
+| `compute` | `models`                                                                                                                                        | 8 · 4 CPU/8 GiB · 8 CPU/12 GiB                  | 16 · 8 CPU/16 GiB · 16 CPU/24 GiB       |
+
+All 15 repository-managed Namespace manifests carry one quota and one LimitRange: 12 shared namespaces, the federation-only `matrix-b` and `matrix-c`, and the dormant self-contained `activitypub` deploy unit. The effective federation component omits `bridge`, `bridges`, and `monitoring` together with their admission objects, then adds both secondary homeservers, so its reconciled sets remain exactly aligned at 11 Namespaces, quotas, and LimitRanges. The bootstrap-critical cert-manager and CNPG operators retain complete explicit resources plus generous `small` rollout headroom. Kubernetes and Flux system namespaces are outside these owned layers and remain unmodified.
+
+The 2026-07-13 pinned-render audit found complete workload resources on kagent and the sample agents, the bridge and optional external bridges, model runtimes, and the primary Postgres, Keycloak, gateway, agentgateway, and observability containers. It also found deliberate or chart-owned gaps: ESS supplies requests and memory limits but no CPU limits; monitoring sidecars, exporters, operator hook Jobs, and some operator-generated helpers omit one or more fields. The namespace defaults cover those generated containers without duplicating fragile third-party chart internals. Cert-manager's four components and the agentgateway controller were corrected to explicit resources because their charts expose stable top-level values.
+
+These are generous initial ceilings, not measured steady-state targets. Tighten only after capturing `kubectl describe quota -A` during normal traffic and a full rolling upgrade, retaining explicit rollout and failure-recovery headroom. Change the three profile values in `clusters/<env>/platform-settings.yaml`; do not patch individual ResourceQuota objects. Workload-level limits and HA/PDB sizing remain the responsibility of [#61](https://github.com/fmind-ai/fgentic/issues/61); namespace quotas complement that work by bounding aggregate blast radius.
+
+Run the offline mapping/substitution contract on every change and the negative admission proof on an isolated cluster:
+
+```bash
+mise run check:resource-quotas
+mise run test:resource-quotas
+```
+
+The runtime test creates its own no-port kind cluster and kubeconfig, starts one agent Deployment, scales it past a two-Pod ceiling, and requires the ReplicaSet's `FailedCreate` event to name `compute-budget`. After a real Flux rollout, require every Kustomization and HelmRelease Ready, inspect `kubectl describe quota -A`, and repeat representative rollouts before treating static ceilings as target-cluster acceptance.
+
 ## Provision the administrator and room
 
 Run the supported interactive bootstrap after every layer is Ready:

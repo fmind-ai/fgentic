@@ -46,6 +46,13 @@ spec:
   sourceRef:
     kind: GitRepository
     name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true
 ---
 # Observability (SPEC §9): kube-prometheus-stack + platform monitors. Early in the DAG — other
 # layers reference its CRDs (PodMonitor) and NetworkPolicies already admit `monitoring` (D14).

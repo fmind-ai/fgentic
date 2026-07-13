@@ -308,6 +308,19 @@ wait_for_platform() {
 	return 1
 }
 
+render_bootstrap_namespaces() {
+	local namespace_layer="${SNAPSHOT_DIR}/infra/namespaces"
+	if [ "${PROFILE}" = "federation" ]; then
+		namespace_layer="${SNAPSHOT_DIR}/infra/federation/namespace-layer"
+	fi
+
+	# Secrets and the local CA need their target Namespaces before Flux starts. Apply only those
+	# cluster-scoped objects here: the early Flux namespace layer owns quotas and LimitRanges after
+	# platform-settings substitution, before any dependent workload can reconcile.
+	kubectl kustomize "${namespace_layer}" |
+		yq 'select(.kind == "Namespace")'
+}
+
 demo_up() {
 	for command in base64 curl docker git jq k3d kubectl flux yq openssl rg tar; do
 		require_command "${command}"
@@ -371,11 +384,7 @@ demo_up() {
 	# Match the production Flux DAG: admission must protect the first managed Namespace creation,
 	# not only later updates. These cluster-scoped objects have no namespace/CRD dependency.
 	kubectl apply --server-side --kustomize "${SNAPSHOT_DIR}/infra/policies" >/dev/null
-	kubectl apply --kustomize "${SNAPSHOT_DIR}/infra/namespaces" >/dev/null
-	if [ "${PROFILE}" = "federation" ]; then
-		kubectl apply --filename \
-			"${SNAPSHOT_DIR}/infra/federation/namespaces/namespace.yaml" >/dev/null
-	fi
+	render_bootstrap_namespaces | kubectl apply --filename - >/dev/null
 	"${ROOT_DIR}/scripts/local-ca.sh"
 	create_ephemeral_secrets
 	apply_source_server

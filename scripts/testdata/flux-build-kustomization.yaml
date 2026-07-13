@@ -26,3 +26,22 @@ spec:
       openai_host: api.openai.com
       azure_openai_resource: not-configured
       llm_usage_budget_15m: "100000"
+      quota_default_request_cpu: 25m
+      quota_default_request_memory: 64Mi
+      quota_default_limit_cpu: 500m
+      quota_default_limit_memory: 512Mi
+      quota_small_pods: "24"
+      quota_small_requests_cpu: "4"
+      quota_small_requests_memory: 8Gi
+      quota_small_limits_cpu: "12"
+      quota_small_limits_memory: 16Gi
+      quota_core_pods: "32"
+      quota_core_requests_cpu: "8"
+      quota_core_requests_memory: 16Gi
+      quota_core_limits_cpu: "24"
+      quota_core_limits_memory: 24Gi
+      quota_compute_pods: "16"
+      quota_compute_requests_cpu: "8"
+      quota_compute_requests_memory: 16Gi
+      quota_compute_limits_cpu: "16"
+      quota_compute_limits_memory: 24Gi

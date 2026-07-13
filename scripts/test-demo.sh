@@ -141,6 +141,51 @@ rg --fixed-strings \
 	echo 'error: demo bootstrap does not install admission before namespaces' >&2
 	exit 1
 }
+rg --fixed-strings 'render_bootstrap_namespaces | kubectl apply --filename -' \
+	"${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null || {
+	echo 'error: demo bootstrap does not apply the rendered Namespace-only stream' >&2
+	exit 1
+}
+(
+	# Exercise the exact lifecycle helper, not a parallel test-only composition. Bootstrap creates
+	# only the Namespaces needed by CA/secrets; Flux later owns substituted quota admission.
+	# shellcheck source=scripts/lib/demo-cluster.sh
+	source "${ROOT_DIR}/scripts/lib/demo-cluster.sh"
+	SNAPSHOT_DIR="${ROOT_DIR}"
+	PROFILE=demo
+	render_bootstrap_namespaces >"${WORK_DIR}/demo-bootstrap-namespaces.yaml"
+	PROFILE=federation
+	render_bootstrap_namespaces >"${WORK_DIR}/federation-bootstrap-namespaces.yaml"
+)
+for stream in demo-bootstrap-namespaces.yaml federation-bootstrap-namespaces.yaml; do
+	if rg --fixed-strings '${quota_' "${WORK_DIR}/${stream}" >/dev/null; then
+		echo "error: ${stream} contains unresolved quota substitution" >&2
+		exit 1
+	fi
+	yq eval-all --exit-status -o=json \
+		'[select(.kind != "Namespace")] | length == 0' "${WORK_DIR}/${stream}" >/dev/null || {
+		echo "error: ${stream} contains a non-Namespace bootstrap object" >&2
+		exit 1
+	}
+done
+demo_bootstrap_names="$(
+	yq eval-all -o=json '[select(.kind == "Namespace") | .metadata.name] | sort' \
+		"${WORK_DIR}/demo-bootstrap-namespaces.yaml" | jq --compact-output .
+)"
+[ "${demo_bootstrap_names}" = \
+	'["agentgateway-system","bridge","bridges","cert-manager","cnpg-system","gateway","kagent","keycloak","matrix","models","monitoring","postgres"]' ] || {
+	echo "error: demo bootstrap Namespace set drifted: ${demo_bootstrap_names}" >&2
+	exit 1
+}
+federation_bootstrap_names="$(
+	yq eval-all -o=json '[select(.kind == "Namespace") | .metadata.name] | sort' \
+		"${WORK_DIR}/federation-bootstrap-namespaces.yaml" | jq --compact-output .
+)"
+[ "${federation_bootstrap_names}" = \
+	'["agentgateway-system","cert-manager","cnpg-system","gateway","kagent","keycloak","matrix","matrix-b","matrix-c","models","postgres"]' ] || {
+	echo "error: federation bootstrap Namespace set drifted: ${federation_bootstrap_names}" >&2
+	exit 1
+}
 rg --fixed-strings 'scripts/test-admission-policies.sh" --runtime' \
 	"${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null || {
 	echo 'error: demo acceptance omits the admission runtime contract' >&2

@@ -41,6 +41,14 @@ yq -e '
   ([.jobs.policy.steps[] | select(.run == "mise run test:tracing")] | length) > 0 and
   ([.jobs.policy.steps[] | select(.run == "mise run test:network-policies:kind")] | length) > 0 and
   ([.jobs.policy.steps[] |
+    select(.run == "mise run test:resource-quotas" and .id == "quota" and
+      ."continue-on-error" == true and .env.KIND_CLUSTER_NAME == "fgentic-smoke-quota")] |
+    length) == 1 and
+  ([.jobs.policy.steps[] | select(.name == "Record policy results") |
+    select((.run // "") | contains("quota=${{ steps.quota.outcome }}"))] | length) == 1 and
+  ([.jobs.policy.steps[] | select(.name == "Enforce policy result") |
+    select((.run // "") | contains("steps.quota.outcome"))] | length) == 1 and
+  ([.jobs.policy.steps[] |
     select(.uses == "actions/upload-artifact@v7" and (.if | contains("failure")))] |
     length) > 0 and
   .jobs.report.needs[0] == "demo" and .jobs.report.needs[1] == "policy" and
