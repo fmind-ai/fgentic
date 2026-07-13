@@ -708,7 +708,10 @@ func (b *Bridge) awaitTask(
 	localpart string,
 	res a2aclient.Result,
 ) delegationAuditResult {
-	placeholder := b.postReply(ctx, intent, evt, orDefault(res.Text, workingText))
+	// Keep the root event unambiguously non-terminal. Provider status text is untrusted working
+	// state and belongs in the progress thread; using it as the root lets observers mistake an
+	// in-flight task for a completed reply before the terminal edit arrives.
+	placeholder := b.postReply(ctx, intent, evt, workingText)
 	audit := delegationAuditResult{
 		outcome:          outcomeError,
 		terminalStage:    "task_poll",
@@ -741,6 +744,7 @@ func (b *Bridge) awaitTask(
 		b.inflight.register(task)
 		defer b.inflight.unregister(placeholder)
 		progress.root = placeholder // thread working-state updates under the placeholder (#118)
+		b.surface(ctx, intent, evt.RoomID, &progress, res.Text)
 		if b.cfg.PinInFlightTasks {
 			b.pinPlaceholder(ctx, intent, evt.RoomID, placeholder)
 			// Unpin on any terminal state, on a fresh bounded context so a canceled/shutdown ctx

@@ -68,10 +68,14 @@ replacement_fixture() {
 	local replacement_sender="${3:-${sender}}"
 	local replaced_event_id="${4:-\$reply}"
 	local replacement_msgtype="${5:-m.notice}"
+	local placeholder_body="${6:---- BEGIN FGENTIC BRIDGE PROVENANCE ---
+untrusted request
+--- END UNTRUSTED MATRIX CONTENT ---}"
 	jq --null-input --compact-output --arg body "${body}" --arg sender "${sender}" \
 		--arg replacement_sender "${replacement_sender}" \
 		--arg replaced_event_id "${replaced_event_id}" \
-		--arg replacement_msgtype "${replacement_msgtype}" '{
+		--arg replacement_msgtype "${replacement_msgtype}" \
+		--arg placeholder_body "${placeholder_body}" '{
       events_before: [],
       events_after: [
         {
@@ -80,7 +84,7 @@ replacement_fixture() {
           sender: $sender,
           content: {
             msgtype: "m.notice",
-            body: "--- BEGIN FGENTIC BRIDGE PROVENANCE ---\nuntrusted request\n--- END UNTRUSTED MATRIX CONTENT ---",
+            body: $placeholder_body,
             "m.relates_to": {"m.in_reply_to": {event_id: "$probe"}}
           }
         },
@@ -538,10 +542,19 @@ if reply_fixture '--- BEGIN FGENTIC BRIDGE PROVENANCE ---' |
 	echo 'error: demo reply predicate accepted the streaming provenance envelope' >&2
 	exit 1
 fi
+if replacement_fixture '⚠️ agent failed after starting.' \
+	'@agent-docs-qa:fgentic.localhost' '@agent-docs-qa:fgentic.localhost' \
+	'$reply' 'm.notice' 'Processing request' |
+	reply_fixture_matches vertex google/gemini-2.5-flash; then
+	echo 'error: demo reply predicate accepted a placeholder before a terminal failure' >&2
+	exit 1
+fi
 for rejected_reply in \
 	'⚠️ could not reach agent "agent-docs-qa" — see the bridge logs.' \
+	'🛑 canceled by @alice:fgentic.localhost.' \
 	'⏳ working on it…' \
-	'(the agent returned no content)'; do
+	'(the agent returned no content)' \
+	'   '; do
 	if reply_fixture "${rejected_reply}" |
 		reply_fixture_matches vertex google/gemini-2.5-flash; then
 		echo "error: demo reply predicate accepted a non-success notice: ${rejected_reply}" >&2
