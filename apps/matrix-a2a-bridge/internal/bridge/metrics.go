@@ -38,14 +38,15 @@ var (
 
 // Outcome labels for fgentic_delegations_total.
 const (
-	outcomeOK          = "ok"
-	outcomeFailed      = "failed"       // agent task ended failed/canceled/rejected
-	outcomeError       = "error"        // A2A transport/protocol error
-	outcomeRateLimited = "rate_limited" // D7 budget rejection
-	outcomeDenied      = "denied"       // sender policy rejection before A2A
-	outcomeQueueFull   = "queue_full"   // bounded dispatcher rejected before admission
-	outcomeShutdown    = "shutdown"     // target did not start before dispatcher shutdown
-	outcomeTimeout     = "timeout"      // long task exceeded TASK_TIMEOUT
-	outcomeLost        = "lost"         // tasks/get error budget exhausted
-	outcomeCanceled    = "canceled"     // long task canceled from the room (#98)
+	outcomeOK            = "ok"
+	outcomeFailed        = "failed"         // agent task ended failed/canceled/rejected
+	outcomeError         = "error"          // A2A transport/protocol error
+	outcomeRateLimited   = "rate_limited"   // D7 budget rejection
+	outcomeDenied        = "denied"         // sender policy rejection before A2A
+	outcomeQueueFull     = "queue_full"     // bounded dispatcher rejected before admission
+	outcomeShutdown      = "shutdown"       // target did not start before dispatcher shutdown
+	outcomeTimeout       = "timeout"        // long task exceeded TASK_TIMEOUT
+	outcomeLost          = "lost"           // tasks/get error budget exhausted
+	outcomeCanceled      = "canceled"       // long task canceled from the room (#98)
+	outcomeInputRequired = "input_required" // task paused awaiting a threaded reply (#116)
 )

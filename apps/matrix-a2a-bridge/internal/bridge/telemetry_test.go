@@ -25,6 +25,10 @@ func (c *tracingA2AClient) Call(ctx context.Context, _ a2aclient.Target, _, _ st
 	return a2aclient.Result{Text: "traced reply", Terminal: true}, nil
 }
 
+func (c *tracingA2AClient) Continue(ctx context.Context, target a2aclient.Target, text, contextID, _ string) (a2aclient.Result, error) {
+	return c.Call(ctx, target, text, contextID)
+}
+
 func (*tracingA2AClient) PollTask(context.Context, a2aclient.Target, string) (a2aclient.Result, error) {
 	return a2aclient.Result{}, fmt.Errorf("unexpected task poll")
 }

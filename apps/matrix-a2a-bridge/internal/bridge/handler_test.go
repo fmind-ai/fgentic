@@ -136,9 +136,12 @@ agents:
 		RequestTimeout:           time.Second,
 		AgentsReloadInterval:     time.Hour,
 		AgentCardRefreshInterval: time.Hour,
+		InputWaitTimeout:         time.Minute,
 	}
 	as := &appservice.AppService{Registration: &appservice.Registration{SenderLocalpart: "a2a-bridge"}}
-	return New(cfg, as, agents, nil, state.NewMemory(), slog.Default())
+	b := New(cfg, as, agents, nil, state.NewMemory(), slog.Default())
+	b.runCtx = t.Context() // delegations run under the process context; canceled when the test ends
+	return b
 }
 
 func msgEvent(sender id.UserID, body string, mentions ...id.UserID) (*event.Event, *event.MessageEventContent) {
@@ -1208,6 +1211,13 @@ type scriptedA2AClient struct {
 	cancelErr    error
 	remoteReady  bool
 	quoteVerdict a2aclient.QuoteVerdict // zero value QuoteNotApplicable admits by default
+
+	continueResult    a2aclient.Result // returned by Continue (#116)
+	continueErr       error
+	continueCount     int
+	continueText      string
+	continueTaskID    string
+	continueContextID string
 }
 
 func (c *scriptedA2AClient) ResolveAgentCard(_ context.Context, target a2aclient.Target) (*a2a.AgentCard, error) {
@@ -1222,6 +1232,14 @@ func (c *scriptedA2AClient) Call(_ context.Context, _ a2aclient.Target, text, _ 
 	c.callCount++
 	c.callText = text
 	return c.callResult, c.callErr
+}
+
+func (c *scriptedA2AClient) Continue(_ context.Context, _ a2aclient.Target, text, contextID, taskID string) (a2aclient.Result, error) {
+	c.continueCount++
+	c.continueText = text
+	c.continueTaskID = taskID
+	c.continueContextID = contextID
+	return c.continueResult, c.continueErr
 }
 
 func (c *scriptedA2AClient) PollTask(_ context.Context, target a2aclient.Target, taskID string) (a2aclient.Result, error) {
@@ -1477,7 +1495,7 @@ func TestAwaitTaskPollsWithCappedBackoffAndEmptyReplyFallback(t *testing.T) {
 	audit := b.awaitTask(t.Context(), t.Context(), intent, evt, ref, "agent-k8s", a2aclient.Result{
 		Text:   "preparing",
 		TaskID: "task-1",
-	})
+	}, "")
 
 	if want := []time.Duration{5 * time.Second, 8 * time.Second, 8 * time.Second}; !slices.Equal(waits, want) {
 		t.Fatalf("poll waits = %v, want %v", waits, want)
@@ -1566,7 +1584,7 @@ func TestAwaitTaskRetriesTransientRealWireFailureWithCappedBackoff(t *testing.T)
 		return nil
 	}
 
-	audit := b.awaitTask(t.Context(), t.Context(), intent, evt, ref, "agent-k8s", working)
+	audit := b.awaitTask(t.Context(), t.Context(), intent, evt, ref, "agent-k8s", working, "")
 
 	if want := []time.Duration{5 * time.Second, 8 * time.Second, 8 * time.Second}; !slices.Equal(waits, want) {
 		t.Fatalf("poll waits = %v, want %v", waits, want)
@@ -1590,7 +1608,7 @@ func TestAwaitTaskTimeoutIsDeterministic(t *testing.T) {
 		return ctx.Err()
 	}
 
-	audit := b.awaitTask(t.Context(), t.Context(), intent, evt, ref, "agent-k8s", a2aclient.Result{TaskID: "task-timeout"})
+	audit := b.awaitTask(t.Context(), t.Context(), intent, evt, ref, "agent-k8s", a2aclient.Result{TaskID: "task-timeout"}, "")
 
 	if len(client.pollTasks) != 0 {
 		t.Fatalf("PollTask calls = %d, want none after timeout", len(client.pollTasks))
@@ -1767,6 +1785,220 @@ func TestDispatchEnforcesStagingRoomBoundary(t *testing.T) {
 	}
 }
 
+func messageBodyContains(r *matrixRecorder, substr string) bool {
+	for _, e := range r.snapshot() {
+		if strings.Contains(e.Body, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+func threadReply(sender id.UserID, root id.EventID, body string) (*event.Event, *event.MessageEventContent) {
+	msg := &event.MessageEventContent{
+		MsgType:   event.MsgText,
+		Body:      body,
+		RelatesTo: &event.RelatesTo{Type: event.RelThread, EventID: root},
+	}
+	evt := &event.Event{Sender: sender, RoomID: "!room:" + ownServer, Content: event.Content{Parsed: msg}}
+	return evt, msg
+}
+
+func TestAwaitTaskPausesOnInputRequired(t *testing.T) {
+	b, intent, evt, ref, recorder := pollingHarness(t, &scriptedA2AClient{})
+	res := a2aclient.Result{TaskID: "task-1", ContextID: "ctx-1", InputRequired: true, Text: "which namespace?"}
+	audit := b.awaitTask(t.Context(), t.Context(), intent, evt, ref, "agent-k8s", res, "")
+
+	if audit.outcome != outcomeInputRequired || audit.terminalStage != "task_input" ||
+		audit.terminalReason != "awaiting_input" || audit.taskID != "task-1" {
+		t.Fatalf("pause audit = %+v", audit)
+	}
+	_, owner, ok := b.openTasks.owner(audit.replyEventID)
+	if !ok || owner != evt.Sender {
+		t.Fatalf("open-task owner = %q (present=%v), want %s", owner, ok, evt.Sender)
+	}
+	if !messageBodyContains(recorder, "which namespace?") {
+		t.Fatal("agent question not surfaced to the room")
+	}
+}
+
+func TestAwaitTaskStopsOnAuthRequiredWithoutRelay(t *testing.T) {
+	b, intent, evt, ref, recorder := pollingHarness(t, &scriptedA2AClient{})
+	res := a2aclient.Result{TaskID: "task-2", AuthRequired: true}
+	audit := b.awaitTask(t.Context(), t.Context(), intent, evt, ref, "agent-k8s", res, "")
+
+	if audit.outcome != outcomeFailed || audit.terminalStage != "task_auth" ||
+		audit.terminalReason != "auth_required_not_forwarded" {
+		t.Fatalf("auth audit = %+v", audit)
+	}
+	if _, _, ok := b.openTasks.owner(audit.replyEventID); ok {
+		t.Fatal("auth-required must not register a resumable open task (no credential relay)")
+	}
+	if !messageBodyContains(recorder, "does not forward") {
+		t.Fatal("honest auth notice not posted")
+	}
+}
+
+func TestThreadContinuationGatesToOriginalSender(t *testing.T) {
+	b, _, origin, ref, recorder := pollingHarness(t, &scriptedA2AClient{continueResult: a2aclient.Result{Text: "ok", Terminal: true}})
+	// The wrong-sender denial posts as the bot; pre-register it so the harness serves the notice.
+	botIntent := b.as.BotIntent()
+	botIntent.Registered = true
+	if err := b.as.StateStore.SetMembership(t.Context(), origin.RoomID, botIntent.UserID, event.MembershipJoin); err != nil {
+		t.Fatalf("SetMembership: %v", err)
+	}
+	placeholder := id.EventID("$placeholder")
+	open := &openTask{
+		origin: origin, placeholder: placeholder, localpart: "agent-k8s", ref: ref,
+		taskID: "task-3", contextID: "ctx-3", sender: b.agents.IdentifySender(origin.Sender),
+	}
+	b.openTasks.register(open, b.cfg.InputWaitTimeout, func() { b.expireOpenTask(open) })
+
+	// A wrong sender is refused and never consumes the pending answer slot.
+	wrong, wrongMsg := threadReply(id.NewUserID("mallory", ownServer), placeholder, "wrong answer")
+	wrong.ID = "$wrong"
+	if !b.handleThreadContinuation(t.Context(), wrong, wrongMsg) {
+		t.Fatal("wrong-sender thread reply not consumed as a continuation attempt")
+	}
+	if _, _, ok := b.openTasks.owner(placeholder); !ok {
+		t.Fatal("wrong-sender reply consumed the open task")
+	}
+	if !messageBodyContains(recorder, "only the person who started") {
+		t.Fatal("wrong-sender denial notice not posted")
+	}
+
+	// The original sender's reply claims the task (the resume itself is covered separately).
+	right, rightMsg := threadReply(origin.Sender, placeholder, "kube-system")
+	right.ID = "$answer"
+	b.runCtx = t.Context()
+	if !b.handleThreadContinuation(t.Context(), right, rightMsg) {
+		t.Fatal("owner thread reply not consumed")
+	}
+	if _, _, ok := b.openTasks.owner(placeholder); ok {
+		t.Fatal("owner reply did not claim the open task")
+	}
+	b.dispatcher.Wait()
+}
+
+func TestContinueOpenTaskResumesAndCompletes(t *testing.T) {
+	client := &scriptedA2AClient{continueResult: a2aclient.Result{Text: "created the pod", Terminal: true, ContextID: "ctx-4"}}
+	b, _, origin, ref, recorder := pollingHarness(t, client)
+	var output strings.Builder
+	setBridgeLogOutput(b, &output)
+	placeholder := id.EventID("$placeholder")
+	open := &openTask{
+		origin: origin, placeholder: placeholder, localpart: "agent-k8s", ref: ref,
+		taskID: "task-4", contextID: "ctx-4", sender: b.agents.IdentifySender(origin.Sender),
+	}
+	b.openTasks.register(open, b.cfg.InputWaitTimeout, func() { b.expireOpenTask(open) })
+
+	reply, _ := threadReply(origin.Sender, placeholder, "kube-system")
+	reply.ID = "$answer"
+	b.continueOpenTask(t.Context(), reply, open, "kube-system")
+
+	if client.continueCount != 1 || client.continueTaskID != "task-4" || client.continueContextID != "ctx-4" {
+		t.Fatalf("Continue = count %d taskID %q contextID %q", client.continueCount, client.continueTaskID, client.continueContextID)
+	}
+	// The answer lands as an m.replace edit of the same placeholder, one coherent thread.
+	if !messageBodyContains(recorder, "created the pod") {
+		t.Fatal("final answer not edited into the placeholder")
+	}
+	audits := auditRecords(t, output.String())
+	if len(audits) != 1 || audits[0]["outcome"] != outcomeOK ||
+		audits[0]["terminal_reason"] != "completed" || audits[0]["a2a_task_id"] != "task-4" {
+		t.Fatalf("continuation audit = %#v", audits)
+	}
+}
+
+func TestExpireOpenTaskDropsPausedTask(t *testing.T) {
+	b, _, origin, ref, recorder := pollingHarness(t, &scriptedA2AClient{})
+	var output strings.Builder
+	setBridgeLogOutput(b, &output)
+	b.runCtx = t.Context()
+	placeholder := id.EventID("$placeholder")
+	open := &openTask{
+		origin: origin, placeholder: placeholder, localpart: "agent-k8s", ref: ref,
+		taskID: "task-5", contextID: "ctx-5", sender: b.agents.IdentifySender(origin.Sender),
+	}
+	b.openTasks.register(open, b.cfg.InputWaitTimeout, func() { b.expireOpenTask(open) })
+
+	b.expireOpenTask(open)
+	if _, _, ok := b.openTasks.owner(placeholder); ok {
+		t.Fatal("expiry did not drop the open task")
+	}
+	if !messageBodyContains(recorder, "no reply within") {
+		t.Fatal("stale notice not posted on expiry")
+	}
+	audits := auditRecords(t, output.String())
+	if len(audits) != 1 || audits[0]["outcome"] != outcomeTimeout || audits[0]["terminal_reason"] != "input_wait_timeout" {
+		t.Fatalf("expiry audit = %#v", audits)
+	}
+	// A second expiry is a no-op (the claim already fired).
+	b.expireOpenTask(open)
+	if got := auditRecords(t, output.String()); len(got) != 1 {
+		t.Fatalf("double expiry emitted %d audits, want 1", len(got))
+	}
+}
+
+func TestThreadContinuationRebindsRoom(t *testing.T) {
+	b, _, origin, ref, _ := pollingHarness(t, &scriptedA2AClient{})
+	placeholder := id.EventID("$ph-rebind")
+	open := &openTask{
+		origin: origin, placeholder: placeholder, localpart: "agent-k8s", ref: ref,
+		taskID: "t", contextID: "c", sender: b.agents.IdentifySender(origin.Sender),
+	}
+	b.openTasks.register(open, b.cfg.InputWaitTimeout, func() { b.expireOpenTask(open) })
+
+	// The owner replies threaded under the placeholder ID but from a different room: not a
+	// continuation here, and it must not resume the task elsewhere.
+	reply, replyMsg := threadReply(origin.Sender, placeholder, "answer")
+	reply.RoomID = "!elsewhere:" + ownServer
+	reply.ID = "$elsewhere"
+	if b.handleThreadContinuation(t.Context(), reply, replyMsg) {
+		t.Fatal("a cross-room reply was consumed as a continuation")
+	}
+	if _, _, ok := b.openTasks.owner(placeholder); !ok {
+		t.Fatal("cross-room reply consumed the open task")
+	}
+}
+
+func TestContinueOpenTaskReappliesCostGate(t *testing.T) {
+	yaml := strings.Replace(validRemoteAgentsYAML, "    tokenBudget: 8192\n", "    tokenBudget: 8192\n    maxCost: 5\n", 1)
+	agents, err := LoadAgents(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	ref, _ := agents.Lookup("agent-remote")
+	client := &scriptedA2AClient{remoteReady: true, quoteVerdict: a2aclient.QuoteOverBudget}
+	b, _, origin, _, _ := pollingHarness(t, client)
+	b.agents = agents
+	var output strings.Builder
+	setBridgeLogOutput(b, &output)
+	intent := b.as.Intent(id.NewUserID("agent-remote", ownServer))
+	intent.Registered = true
+	if err := b.as.StateStore.SetMembership(t.Context(), origin.RoomID, intent.UserID, event.MembershipJoin); err != nil {
+		t.Fatalf("SetMembership: %v", err)
+	}
+
+	open := &openTask{
+		origin: origin, placeholder: "$ph-cost", localpart: "agent-remote", ref: ref,
+		taskID: "t", contextID: "c", sender: b.agents.IdentifySender(origin.Sender),
+	}
+	b.openTasks.register(open, b.cfg.InputWaitTimeout, func() { b.expireOpenTask(open) })
+
+	reply, _ := threadReply(origin.Sender, "$ph-cost", "the answer")
+	reply.ID = "$answer"
+	b.continueOpenTask(t.Context(), reply, open, "the answer")
+
+	if client.continueCount != 0 {
+		t.Fatalf("resume dispatched despite an over-budget quote: continueCount = %d", client.continueCount)
+	}
+	audits := auditRecords(t, output.String())
+	if len(audits) != 1 || audits[0]["outcome"] != outcomeDenied || audits[0]["terminal_reason"] != "quote_over_budget" {
+		t.Fatalf("cost-gate audit = %#v", audits)
+	}
+}
+
 func TestDispatchClassifiesTrustRevocationAtTransportBoundary(t *testing.T) {
 	client := &scriptedA2AClient{
 		callErr:     fmt.Errorf("remote transport refused request: %w", a2aclient.ErrRemoteTargetUntrusted),
@@ -1833,7 +2065,7 @@ func TestAwaitTaskStopsImmediatelyWhenRemoteTrustIsRevoked(t *testing.T) {
 
 	audit := b.awaitTask(t.Context(), t.Context(), intent, evt, ref, "agent-remote", a2aclient.Result{
 		TaskID: "task-remote",
-	})
+	}, "")
 
 	if len(client.pollTasks) != 1 {
 		t.Fatalf("PollTask calls = %d, want one", len(client.pollTasks))
@@ -1862,6 +2094,10 @@ func (c *deadlineA2AClient) Call(ctx context.Context, _ a2aclient.Target, _, _ s
 	c.remaining = time.Until(deadline)
 	<-ctx.Done()
 	return a2aclient.Result{}, ctx.Err()
+}
+
+func (c *deadlineA2AClient) Continue(ctx context.Context, target a2aclient.Target, text, contextID, _ string) (a2aclient.Result, error) {
+	return c.Call(ctx, target, text, contextID)
 }
 
 func (*deadlineA2AClient) PollTask(context.Context, a2aclient.Target, string) (a2aclient.Result, error) {

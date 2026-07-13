@@ -83,6 +83,7 @@ type targetResolution struct {
 
 type a2aClient interface {
 	Call(ctx context.Context, target a2aclient.Target, text, contextID string) (a2aclient.Result, error)
+	Continue(ctx context.Context, target a2aclient.Target, text, contextID, taskID string) (a2aclient.Result, error)
 	PollTask(ctx context.Context, target a2aclient.Target, taskID string) (a2aclient.Result, error)
 	CancelTask(ctx context.Context, target a2aclient.Target, taskID string) error
 	ResolveAgentCard(ctx context.Context, target a2aclient.Target) (*a2a.AgentCard, error)
@@ -132,6 +133,7 @@ type Bridge struct {
 	profiles           *profileStore
 	profileWriter      ghostProfileWriter
 	inflight           *inflightRegistry
+	openTasks          *openTaskRegistry   // input-required delegations awaiting a reply (#116)
 	stagingRooms       map[string]struct{} // rooms where stage:dev agents may be invoked (#128)
 	tracer             trace.Tracer
 	watchWG            sync.WaitGroup
@@ -166,6 +168,7 @@ func New(cfg config.Config, as *appservice.AppService, agents *AgentMap, client 
 		pollMax:            pollMax,
 		pollWait:           waitForPoll,
 		inflight:           newInflightRegistry(),
+		openTasks:          newOpenTaskRegistry(),
 		stagingRooms:       stagingRoomSet(cfg.StagingRooms),
 		tracer:             otel.Tracer(tracerName),
 	}
@@ -242,6 +245,11 @@ func (b *Bridge) HandleMessage(ctx context.Context, evt *event.Event) {
 	// m.notice is bot output by Matrix convention (our ghosts reply with it); never treating it
 	// as a delegating message breaks agent-to-agent reply loops (SPEC §4 F8).
 	if msg == nil || msg.MsgType != event.MsgText {
+		return
+	}
+	// A threaded reply answering a paused agent question resumes that task instead of starting a new
+	// delegation (#116); an ordinary message falls through to the mention path below.
+	if b.handleThreadContinuation(ctx, evt, msg) {
 		return
 	}
 	if isAgentDirectoryCommand(msg.Body) {
@@ -398,6 +406,238 @@ func (b *Bridge) HandleMembership(ctx context.Context, evt *event.Event) {
 		return
 	}
 	b.log.Info("accepted room invite", "user", target, "room", evt.RoomID)
+}
+
+// handleThreadContinuation routes a threaded reply answering a paused agent question (#116) back
+// into its task. It returns true when the message was consumed as a continuation — answered, refused
+// as a wrong sender, or de-duplicated — and false for an ordinary message that follows the mention
+// path. GetThreadParent tolerates a nil m.relates_to.
+func (b *Bridge) handleThreadContinuation(ctx context.Context, evt *event.Event, msg *event.MessageEventContent) bool {
+	root := msg.RelatesTo.GetThreadParent()
+	if root == "" {
+		return false
+	}
+	room, owner, ok := b.openTasks.owner(root)
+	if !ok || evt.RoomID != room {
+		// Not a reply under a paused task's placeholder in this room. Re-binding the room stops a
+		// reply threaded under a foreign-room placeholder ID from resuming a task elsewhere.
+		return false
+	}
+	// Only the original delegating sender may answer. A wrong-sender reply is refused once and never
+	// consumes the pending answer slot, so the owner can still respond.
+	if evt.Sender != owner {
+		if b.markEventProcessed(ctx, evt) != dedupVerdictDuplicate {
+			b.postThreadContinuationDenied(ctx, evt)
+		}
+		return true
+	}
+	if b.markEventProcessed(ctx, evt) == dedupVerdictDuplicate {
+		return true
+	}
+	open, claimed := b.openTasks.claim(root)
+	if !claimed {
+		return true // expired or resumed between the owner check and the claim
+	}
+	msg.RemoveReplyFallback()
+	answer := strings.TrimSpace(msg.Body)
+	if answer == "" {
+		answer = "(the sender replied with no text)"
+	}
+	b.enqueueContinuation(evt, open, answer)
+	return true
+}
+
+// postThreadContinuationDenied tells a non-owner, once and content-free, that only the original
+// requester may answer a pending agent question, on the notice rate-limit plane (D7).
+func (b *Bridge) postThreadContinuationDenied(ctx context.Context, evt *event.Event) {
+	sender := b.agents.IdentifySender(evt.Sender)
+	if !b.allowNotice(sender, evt.RoomID, "input-continuation") {
+		return
+	}
+	intent := b.as.BotIntent()
+	if intent == nil {
+		return
+	}
+	if err := intent.EnsureRegistered(ctx); err != nil {
+		b.log.Error("register bot for continuation denial", "err", err)
+		return
+	}
+	if err := intent.EnsureJoined(ctx, evt.RoomID); err != nil {
+		b.log.Error("join bot for continuation denial", "room", evt.RoomID, "err", err)
+		return
+	}
+	b.postReply(ctx, intent, evt, "⚠️ only the person who started this task can answer the agent's question.")
+}
+
+// enqueueContinuation schedules a resumed task on the per-room dispatcher so it keeps FIFO order and
+// the concurrency cap. A full queue or a stopping dispatcher cannot resume it, so its placeholder is
+// edited to an honest dropped notice with a terminal audit.
+func (b *Bridge) enqueueContinuation(evt *event.Event, open *openTask, answer string) {
+	result := b.dispatcher.Enqueue(
+		b.runCtx,
+		evt.RoomID,
+		func(ctx context.Context) { b.continueOpenTask(ctx, evt, open, answer) },
+		func() { b.abandonContinuation(evt, open, "shutdown_queued_dropped", outcomeShutdown) },
+	)
+	switch result {
+	case enqueueAccepted:
+		return
+	case enqueueStopped:
+		b.abandonContinuation(evt, open, "shutdown_enqueue_rejected", outcomeShutdown)
+	default:
+		b.abandonContinuation(evt, open, result.terminalReason(), outcomeQueueFull)
+	}
+}
+
+// abandonContinuation drops a resumed task that never dispatched (queue full or shutdown), editing
+// its placeholder and auditing the terminal reason against the answering reply.
+func (b *Bridge) abandonContinuation(evt *event.Event, open *openTask, reason, outcome string) {
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(b.runCtx), b.cfg.RequestTimeout)
+	defer cancel()
+	intent := b.as.Intent(id.NewUserID(open.localpart, b.cfg.ServerName))
+	b.editReply(ctx, intent, open.origin.RoomID, open.placeholder,
+		fmt.Sprintf("⚠️ could not resume agent %q's task — please start again.", open.localpart))
+	delegationsTotal.WithLabelValues(open.localpart, outcome).Inc()
+	b.logDelegationAudit(evt, open.ref, open.localpart, b.agents.IdentifySender(evt.Sender), delegationAuditResult{
+		outcome:          outcome,
+		terminalStage:    "queue",
+		terminalReason:   reason,
+		dedupVerdict:     dedupVerdictAccepted,
+		rateLimitVerdict: rateLimitVerdictNotChecked,
+		taskID:           open.taskID,
+		contextID:        open.contextID,
+		replyEventID:     open.placeholder,
+	})
+}
+
+// continueOpenTask resumes a paused task with the sender's answer. It re-validates the mapping,
+// sender policy, remote trust, and rate limits at resume time (config may have changed while paused),
+// then message/sends the answer with the same taskID+contextID and follows the reused placeholder to
+// a terminal state (or another pause). A rate-limited answer re-registers the task so it can retry.
+func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open *openTask, answer string) {
+	inflightDelegations.Inc()
+	defer inflightDelegations.Dec()
+	started := time.Now()
+
+	currentSender, ref, ok := b.agents.SnapshotSenderTarget(open.origin.Sender, open.localpart)
+	if !ok || !ref.SameTarget(open.ref) {
+		b.finishContinuation(ctx, reply, open, currentSender, started, "admission", "agent_mapping_changed", "the agent it was waiting on changed")
+		return
+	}
+	if !ref.AllowsSender(currentSender, b.cfg.ServerName) {
+		b.finishContinuation(ctx, reply, open, currentSender, started, "admission", "sender_policy_rejected", "you are no longer allowed to invoke this agent")
+		return
+	}
+	// Re-apply the stage (#128) and cost (#142) admission gates: a resumed turn is a fresh
+	// invocation, so a stage or price change while paused must still fail closed.
+	if ref.IsDev() && !b.isStagingRoom(reply.RoomID) {
+		b.finishContinuation(ctx, reply, open, currentSender, started, "admission", "stage_policy_rejected", "the agent is now confined to staging rooms")
+		return
+	}
+	if ref.Target().IsRemote() && (b.client == nil || !b.client.IsReady(ref.Target())) {
+		b.finishContinuation(ctx, reply, open, currentSender, started, "agent_card", "agent_card_untrusted", "trust in the agent changed")
+		return
+	}
+	if ref.Target().IsRemote() && ref.MaxCost() > 0 && b.client != nil {
+		switch b.client.QuoteAdmission(ref.Target(), ref.MaxCost()) {
+		case a2aclient.QuoteOverBudget, a2aclient.QuoteMissing:
+			b.finishContinuation(ctx, reply, open, currentSender, started, "admission", "quote_over_budget", "the agent's price now exceeds the configured budget")
+			return
+		}
+	}
+	if !b.senderLimits.Allow(currentSender.rateLimitKey(open.localpart)) || !b.roomLimits.Allow(reply.RoomID.String()) {
+		// Re-register (fresh budget) so a rate-limited answer is retried, not lost.
+		b.openTasks.register(open, b.cfg.InputWaitTimeout, func() { b.expireOpenTask(open) })
+		intent := b.as.Intent(id.NewUserID(open.localpart, b.cfg.ServerName))
+		if b.allowNotice(currentSender, reply.RoomID, open.localpart) {
+			b.postReply(ctx, intent, reply, rateLimitedText)
+		}
+		delegationsTotal.WithLabelValues(open.localpart, outcomeRateLimited).Inc()
+		b.logDelegationAudit(reply, ref, open.localpart, currentSender, delegationAuditResult{
+			outcome: outcomeRateLimited, terminalStage: "admission", terminalReason: "rate_limit_rejected",
+			a2aAttempted: false, dedupVerdict: dedupVerdictAccepted, rateLimitVerdict: rateLimitVerdictRejected,
+			taskID: open.taskID, contextID: open.contextID, replyEventID: open.placeholder, duration: time.Since(started),
+		})
+		return
+	}
+
+	intent := b.as.Intent(id.NewUserID(open.localpart, b.cfg.ServerName))
+	audit := delegationAuditResult{
+		outcome: outcomeError, terminalStage: "message_send", terminalReason: "dispatch_failed",
+		a2aAttempted: true, a2aUserID: reply.Sender.String(), contextID: open.contextID, taskID: open.taskID,
+		replyEventID: open.placeholder, dedupVerdict: dedupVerdictAccepted, rateLimitVerdict: rateLimitVerdictAllowed,
+	}
+	defer func() {
+		audit.duration = time.Since(started)
+		b.logDelegationAudit(reply, ref, open.localpart, currentSender, audit)
+	}()
+
+	a2aCtx := a2aclient.WithUser(ctx, reply.Sender.String())
+	cancelDelegation := func() {}
+	if ref.Timeout() > 0 {
+		a2aCtx, cancelDelegation = context.WithTimeout(a2aCtx, ref.Timeout())
+	}
+	defer cancelDelegation()
+	callCtx, cancel := context.WithTimeout(a2aCtx, b.cfg.RequestTimeout)
+	res, err := b.client.Continue(callCtx, ref.Target(), provenancePrompt(reply, answer), open.contextID, open.taskID)
+	cancel()
+	if err != nil {
+		if errors.Is(err, a2aclient.ErrRemoteTargetUntrusted) {
+			delegationsTotal.WithLabelValues(open.localpart, outcomeDenied).Inc()
+			audit.outcome = outcomeDenied
+			audit.terminalStage = "agent_card"
+			audit.terminalReason = "agent_card_untrusted"
+			audit.a2aAttempted = false
+			b.editReply(ctx, intent, reply.RoomID, open.placeholder, fmt.Sprintf("⚠️ lost trust in agent %q — the task was stopped.", open.localpart))
+			return
+		}
+		delegationsTotal.WithLabelValues(open.localpart, outcomeError).Inc()
+		audit.terminalReason = "a2a_call_failed"
+		b.log.Error("a2a continuation failed", "agent", ref.Path(), "room", reply.RoomID, "err", err)
+		b.editReply(ctx, intent, reply.RoomID, open.placeholder, fmt.Sprintf("⚠️ could not reach agent %q — see the bridge logs.", open.localpart))
+		return
+	}
+	audit.terminalStage = "message_result"
+	audit.contextID = orDefault(res.ContextID, open.contextID)
+	audit.taskID = orDefault(res.TaskID, open.taskID)
+	if res.ContextID != "" {
+		if err := b.store.SetContext(ctx, reply.RoomID.String(), open.localpart, res.ContextID); err != nil {
+			b.log.Error("store context", "room", reply.RoomID, "ghost", open.localpart, "err", err)
+		}
+	}
+	if !res.Terminal {
+		terminalAudit := b.awaitTask(ctx, a2aCtx, intent, reply, ref, open.localpart, res, open.placeholder)
+		terminalAudit.dedupVerdict = audit.dedupVerdict
+		terminalAudit.rateLimitVerdict = audit.rateLimitVerdict
+		audit = terminalAudit
+		return
+	}
+	if res.Failed {
+		delegationsTotal.WithLabelValues(open.localpart, outcomeFailed).Inc()
+		audit.outcome = outcomeFailed
+		audit.terminalReason = "agent_failed"
+		b.editReply(ctx, intent, reply.RoomID, open.placeholder, fmt.Sprintf("⚠️ agent %q could not complete the task — see the bridge logs.", open.localpart))
+		return
+	}
+	delegationsTotal.WithLabelValues(open.localpart, outcomeOK).Inc()
+	audit.outcome = outcomeOK
+	audit.terminalReason = "completed"
+	b.editReply(ctx, intent, reply.RoomID, open.placeholder, orDefault(res.Text, emptyReplyText))
+	b.log.Info("resumed and completed delegation", "ghost", open.localpart, "agent", ref.Path(), "room", reply.RoomID)
+}
+
+// finishContinuation edits the placeholder and audits a fail-closed resume refusal. Every refusal
+// is a denial that never reached A2A, so the outcome and a2a_attempted are fixed; stage and reason
+// name which admission gate rejected the resume.
+func (b *Bridge) finishContinuation(ctx context.Context, reply *event.Event, open *openTask, sender senderIdentity, started time.Time, stage, reason, roomMsg string) {
+	intent := b.as.Intent(id.NewUserID(open.localpart, b.cfg.ServerName))
+	b.editReply(ctx, intent, open.origin.RoomID, open.placeholder, fmt.Sprintf("⚠️ could not resume the task — %s.", roomMsg))
+	delegationsTotal.WithLabelValues(open.localpart, outcomeDenied).Inc()
+	b.logDelegationAudit(reply, open.ref, open.localpart, sender, delegationAuditResult{
+		outcome: outcomeDenied, terminalStage: stage, terminalReason: reason, a2aAttempted: false,
+		dedupVerdict: dedupVerdictAccepted, rateLimitVerdict: rateLimitVerdictNotChecked,
+		taskID: open.taskID, contextID: open.contextID, replyEventID: open.placeholder, duration: time.Since(started),
+	})
 }
 
 func (b *Bridge) dispatchResolvedTarget(
@@ -670,7 +910,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 	}
 
 	if !res.Terminal {
-		terminalAudit := b.awaitTask(ctx, a2aCtx, intent, evt, ref, localpart, res)
+		terminalAudit := b.awaitTask(ctx, a2aCtx, intent, evt, ref, localpart, res, "")
 		terminalAudit.contextID = orDefault(terminalAudit.contextID, contextID)
 		terminalAudit.dedupVerdict = audit.dedupVerdict
 		terminalAudit.rateLimitVerdict = audit.rateLimitVerdict
@@ -828,11 +1068,15 @@ func (b *Bridge) awaitTask(
 	ref *AgentRef,
 	localpart string,
 	res a2aclient.Result,
+	placeholder id.EventID,
 ) delegationAuditResult {
 	// Keep the root event unambiguously non-terminal. Provider status text is untrusted working
 	// state and belongs in the progress thread; using it as the root lets observers mistake an
-	// in-flight task for a completed reply before the terminal edit arrives.
-	placeholder := b.postReply(ctx, intent, evt, workingText)
+	// in-flight task for a completed reply before the terminal edit arrives. A resumed task (#116)
+	// passes its existing placeholder so the Q&A stays in one thread.
+	if placeholder == "" {
+		placeholder = b.postReply(ctx, intent, evt, workingText)
+	}
 	audit := delegationAuditResult{
 		outcome:          outcomeError,
 		terminalStage:    "task_poll",
@@ -844,6 +1088,15 @@ func (b *Bridge) awaitTask(
 		contextID:        res.ContextID,
 		taskID:           res.TaskID,
 		replyEventID:     placeholder,
+	}
+
+	// The first result can already be paused (the agent needs input or auth before doing any work).
+	// Handle it before the polling machinery so the question is not also surfaced as working progress.
+	if res.AuthRequired {
+		return b.finishAuthRequired(ctx, intent, evt, localpart, placeholder, audit)
+	}
+	if res.InputRequired && placeholder != "" {
+		return b.pauseForInput(ctx, intent, evt, ref, localpart, placeholder, res, audit)
 	}
 
 	pollCtx, cancel := context.WithTimeout(a2aCtx, b.cfg.TaskTimeout)
@@ -926,6 +1179,12 @@ func (b *Bridge) awaitTask(
 			return audit
 		}
 		pollErrors = 0
+		if polled.AuthRequired {
+			return b.finishAuthRequired(ctx, intent, evt, localpart, placeholder, audit)
+		}
+		if polled.InputRequired && placeholder != "" {
+			return b.pauseForInput(ctx, intent, evt, ref, localpart, placeholder, polled, audit)
+		}
 		if polled.Terminal {
 			audit.terminalStage = "task_result"
 			audit.contextID = orDefault(polled.ContextID, res.ContextID)
@@ -951,6 +1210,98 @@ func (b *Bridge) awaitTask(
 			b.surface(ctx, intent, evt.RoomID, &progress, polled.Text)
 		}
 	}
+}
+
+// pauseForInput surfaces the agent's question in the placeholder thread and registers the task as
+// open, releasing the dispatcher worker while the original sender composes a reply (#116) — so a
+// paused task never holds a room's FIFO. The task resumes when that sender replies in the thread
+// (continueOpenTask) or is dropped when InputWaitTimeout elapses (expireOpenTask). The audit is a
+// non-terminal `input_required` outcome linked to the eventual resume by taskID + contextID.
+func (b *Bridge) pauseForInput(
+	ctx context.Context,
+	intent *appservice.IntentAPI,
+	evt *event.Event,
+	ref *AgentRef,
+	localpart string,
+	placeholder id.EventID,
+	res a2aclient.Result,
+	audit delegationAuditResult,
+) delegationAuditResult {
+	question := orDefault(strings.TrimSpace(res.Text), "The agent needs more information to continue.")
+	b.editReply(ctx, intent, evt.RoomID, placeholder,
+		fmt.Sprintf("❓ %s\n\n(reply in this thread within %s to continue)", question, b.cfg.InputWaitTimeout))
+	open := &openTask{
+		origin:      evt,
+		placeholder: placeholder,
+		localpart:   localpart,
+		ref:         ref,
+		taskID:      orDefault(res.TaskID, audit.taskID),
+		contextID:   orDefault(res.ContextID, audit.contextID),
+		sender:      b.agents.IdentifySender(evt.Sender),
+	}
+	b.openTasks.register(open, b.cfg.InputWaitTimeout, func() { b.expireOpenTask(open) })
+
+	delegationsTotal.WithLabelValues(localpart, outcomeInputRequired).Inc()
+	audit.outcome = outcomeInputRequired
+	audit.terminalStage = "task_input"
+	audit.terminalReason = "awaiting_input"
+	audit.taskID = open.taskID
+	audit.contextID = open.contextID
+	audit.replyEventID = placeholder
+	b.log.Info("delegation paused awaiting a threaded reply",
+		"ghost", localpart, "room", evt.RoomID, "task", open.taskID)
+	return audit
+}
+
+// finishAuthRequired terminates a task that entered TASK_STATE_AUTH_REQUIRED. The bridge does not
+// forward caller credentials to agents (docs/security.md), so it stops honestly instead of relaying
+// anything or pausing for a human to supply a secret in a room.
+func (b *Bridge) finishAuthRequired(
+	ctx context.Context,
+	intent *appservice.IntentAPI,
+	evt *event.Event,
+	localpart string,
+	placeholder id.EventID,
+	audit delegationAuditResult,
+) delegationAuditResult {
+	delegationsTotal.WithLabelValues(localpart, outcomeFailed).Inc()
+	audit.outcome = outcomeFailed
+	audit.terminalStage = "task_auth"
+	audit.terminalReason = "auth_required_not_forwarded"
+	b.editReply(ctx, intent, evt.RoomID, placeholder,
+		fmt.Sprintf("⚠️ agent %q needs authorization the platform does not forward — the task was stopped.", localpart))
+	b.log.Warn("stopping task: agent requires unforwarded authorization",
+		"ghost", localpart, "room", evt.RoomID)
+	return audit
+}
+
+// expireOpenTask drops a paused task whose InputWaitTimeout elapsed with no reply, editing the
+// placeholder into an honest stale notice and emitting a terminal timeout audit. The claim makes
+// expiry and an answering reply mutually exclusive.
+func (b *Bridge) expireOpenTask(open *openTask) {
+	if _, ok := b.openTasks.claim(open.placeholder); !ok {
+		return // already resumed or dropped
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(b.runCtx), b.cfg.RequestTimeout)
+	defer cancel()
+	intent := b.as.Intent(id.NewUserID(open.localpart, b.cfg.ServerName))
+	b.editReply(ctx, intent, open.origin.RoomID, open.placeholder,
+		fmt.Sprintf("⌛ agent %q got no reply within %s — the task was dropped.", open.localpart, b.cfg.InputWaitTimeout))
+	delegationsTotal.WithLabelValues(open.localpart, outcomeTimeout).Inc()
+	b.logDelegationAudit(open.origin, open.ref, open.localpart, open.sender, delegationAuditResult{
+		outcome:          outcomeTimeout,
+		terminalStage:    "task_input",
+		terminalReason:   "input_wait_timeout",
+		a2aAttempted:     true,
+		a2aUserID:        open.origin.Sender.String(),
+		taskID:           open.taskID,
+		contextID:        open.contextID,
+		replyEventID:     open.placeholder,
+		dedupVerdict:     dedupVerdictAccepted,
+		rateLimitVerdict: rateLimitVerdictAllowed,
+	})
+	b.log.Info("dropped paused delegation after input wait timeout",
+		"ghost", open.localpart, "room", open.origin.RoomID, "task", open.taskID)
 }
 
 // taskCanceler reports the room member who canceled a tracked long task, or empty when the task is
