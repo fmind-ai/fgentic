@@ -34,6 +34,11 @@ data:
       agent-integration:
         namespace: kagent
         name: integration-agent
+      # Available (same served agent) but sender-denied, so the !agents directory must exclude it.
+      agent-restricted:
+        namespace: kagent
+        name: integration-agent
+        allowedSenders: ["@nobody:integration.test"]
       agent-plain:
         url: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080/api/a2a/remote-agent
         timeout: 5s

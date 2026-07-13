@@ -18,16 +18,24 @@ import (
 )
 
 const (
-	defaultMatrixURL     = "http://synapse:8008"
-	defaultBridgeURL     = "http://bridge:29331"
-	defaultMetricsURL    = "http://bridge:9090/metrics"
-	defaultStubURL       = "http://plain-a2a-agent.plain-agent.svc.cluster.local:8080"
-	defaultServer        = "integration.test"
-	defaultHSToken       = "integration-homeserver-token"
-	username             = "integration-user"
-	password             = "integration-password"
-	ghostLocalpart       = "agent-integration"
-	plainGhostLocalpart  = "agent-plain"
+	defaultMatrixURL    = "http://synapse:8008"
+	defaultBridgeURL    = "http://bridge:29331"
+	defaultMetricsURL   = "http://bridge:9090/metrics"
+	defaultStubURL      = "http://plain-a2a-agent.plain-agent.svc.cluster.local:8080"
+	defaultServer       = "integration.test"
+	defaultHSToken      = "integration-homeserver-token"
+	username            = "integration-user"
+	password            = "integration-password"
+	ghostLocalpart      = "agent-integration"
+	plainGhostLocalpart = "agent-plain"
+	botLocalpart        = "a2a-bridge"
+	// restrictedGhostLocalpart is mapped but sender-denied to the driver user, so the !agents
+	// directory must exclude it (#90).
+	restrictedGhostLocalpart = "agent-restricted"
+	directoryCommand         = "!agents"
+	// ghostDisplayName is the local stub AgentCard's Name; the bridge syncs it onto the ghost's
+	// Matrix profile (#89), so a real Synapse profile query must return exactly this.
+	ghostDisplayName     = "Fgentic bridge integration stub"
 	replyText            = "integration reply"
 	plainReplyText       = "plain A2A reply"
 	rateLimitedReplyText = "⚠️ rate limit reached — please retry in a moment."
@@ -120,6 +128,30 @@ func (f fixture) runBasic(ctx context.Context) error {
 		return err
 	}
 	if err := f.waitForJoin(ctx, sess.AccessToken, roomID, ghost); err != nil {
+		return err
+	}
+	// Prove the AgentCard-derived display name against a real Synapse profile endpoint (#89).
+	if err := f.waitForDisplayName(ctx, sess.AccessToken, ghost, ghostDisplayName); err != nil {
+		return err
+	}
+
+	// Discover invocable agents via !agents (#90): the bot notice must list the allowed ghost and
+	// exclude the sender-denied mapping, and the discovered ghost then drives the mention path below.
+	bot := "@" + botLocalpart + ":" + f.server
+	if err := f.invite(ctx, sess.AccessToken, roomID, bot); err != nil {
+		return err
+	}
+	if err := f.waitForJoin(ctx, sess.AccessToken, roomID, bot); err != nil {
+		return err
+	}
+	if _, err := f.sendMessageTxn(ctx, sess.AccessToken, roomID, "integration-directory",
+		// m.mentions is a non-pointer field, so an empty array is required — a nil slice serializes
+		// to "user_ids": null, which Synapse rejects as M_BAD_JSON.
+		messageContent{Body: directoryCommand, MsgType: "m.text", Mentions: mentions{UserIDs: []string{}}}); err != nil {
+		return err
+	}
+	restricted := "@" + restrictedGhostLocalpart + ":" + f.server
+	if err := f.waitForDirectoryNotice(ctx, sess.AccessToken, roomID, bot, ghost, restricted); err != nil {
 		return err
 	}
 
@@ -375,6 +407,62 @@ func (f fixture) waitForJoin(ctx context.Context, token, roomID, userID string) 
 		}
 		if err := wait(ctx, 250*time.Millisecond); err != nil {
 			return fmt.Errorf("wait for bridge ghost %s to join room: %w", userID, err)
+		}
+	}
+}
+
+// waitForDisplayName polls the ghost's real Synapse profile until its display name matches the
+// AgentCard-derived value, proving the bridge synced the card's Name onto the Matrix profile (#89).
+func (f fixture) waitForDisplayName(ctx context.Context, token, userID, want string) error {
+	endpoint := fmt.Sprintf(
+		"%s/_matrix/client/v3/profile/%s/displayname",
+		f.matrixURL,
+		pathSegment(userID),
+	)
+	for {
+		status, body, err := f.request(ctx, http.MethodGet, endpoint, token, nil)
+		if err == nil && status == http.StatusOK {
+			var profile struct {
+				DisplayName string `json:"displayname"`
+			}
+			if json.Unmarshal(body, &profile) == nil && profile.DisplayName == want {
+				return nil
+			}
+		}
+		if err := wait(ctx, 250*time.Millisecond); err != nil {
+			return fmt.Errorf("wait for ghost %s AgentCard display name %q: %w", userID, want, err)
+		}
+	}
+}
+
+// waitForDirectoryNotice polls the room until the bot posts an m.notice directory that lists
+// mustContain (an allowed ghost, proving discovery) and never mustExclude (a denied mapping) (#90).
+func (f fixture) waitForDirectoryNotice(ctx context.Context, token, roomID, bot, mustContain, mustExclude string) error {
+	for {
+		events, err := f.roomMessages(ctx, token, roomID)
+		if err == nil {
+			for _, evt := range events {
+				if evt.Type != "m.room.message" || evt.Sender != bot {
+					continue
+				}
+				var content struct {
+					MsgType string `json:"msgtype"`
+					Body    string `json:"body"`
+				}
+				if json.Unmarshal(evt.Content, &content) != nil || content.MsgType != "m.notice" {
+					continue
+				}
+				if !strings.Contains(content.Body, mustContain) {
+					continue
+				}
+				if strings.Contains(content.Body, mustExclude) {
+					return fmt.Errorf("agent directory notice leaked denied mapping %q: %s", mustExclude, content.Body)
+				}
+				return nil
+			}
+		}
+		if err := wait(ctx, 250*time.Millisecond); err != nil {
+			return fmt.Errorf("wait for agent directory notice listing %q: %w", mustContain, err)
 		}
 	}
 }

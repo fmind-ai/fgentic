@@ -219,10 +219,11 @@ func (w *matrixProfileWriter) Apply(ctx context.Context, ghost id.UserID, profil
 	if err := intent.SetDisplayName(ctx, profile.DisplayName); err != nil {
 		errs = append(errs, fmt.Errorf("set display name for %s: %w", ghost, err))
 	}
-	if !profile.AvatarURL.IsEmpty() {
-		if err := intent.SetAvatarURL(ctx, profile.AvatarURL); err != nil {
-			errs = append(errs, fmt.Errorf("set avatar for %s: %w", ghost, err))
-		}
+	// Reconcile the avatar to the configured state. intent.SetAvatarURL reads the ghost's current
+	// avatar and is a no-op when unchanged, so passing the empty URI of a removed avatarURL clears
+	// stale Matrix avatar state without clobbering or issuing a redundant write (#89).
+	if err := intent.SetAvatarURL(ctx, profile.AvatarURL); err != nil {
+		errs = append(errs, fmt.Errorf("set avatar for %s: %w", ghost, err))
 	}
 	if w.customProfileFields {
 		metadata := struct {
