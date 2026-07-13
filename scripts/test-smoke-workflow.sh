@@ -21,6 +21,7 @@ yq -e '
   .concurrency."cancel-in-progress" == false and
   .jobs.demo."timeout-minutes" < 20 and
   .jobs.policy."timeout-minutes" < 20 and
+  .jobs.policy.env.K3D_AUDIT_CLUSTER_NAME == "fgentic-smoke-api-audit" and
   (.jobs.demo | has("needs") | not) and
   (.jobs.policy | has("needs") | not) and
   ([.jobs.demo.steps[] | select(.uses == "actions/cache@v6")] | length) > 0 and
@@ -56,6 +57,16 @@ yq -e '
     select((.run // "") | contains("quota=${{ steps.quota.outcome }}"))] | length) == 1 and
   ([.jobs.policy.steps[] | select(.name == "Enforce policy result") |
     select((.run // "") | contains("steps.quota.outcome"))] | length) == 1 and
+  ([.jobs.policy.steps[] |
+    select(.id == "kubernetes_audit" and
+      ."continue-on-error" == true and
+      .run == "mise run test:kubernetes-audit")] | length) == 1 and
+  ([.jobs.policy.steps[] |
+    select(((.run // "") | contains("kubernetes_audit=${{ steps.kubernetes_audit.outcome }}")))] |
+    length) == 1 and
+  ([.jobs.policy.steps[] |
+    select(((.run // "") | contains("steps.kubernetes_audit.outcome }}\" != \"success\"")))] |
+    length) == 1 and
   ([.jobs.policy.steps[] |
     select(.uses == "actions/upload-artifact@v7" and (.if | contains("failure")))] |
     length) > 0 and

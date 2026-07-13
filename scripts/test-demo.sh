@@ -231,6 +231,18 @@ rg --fixed-strings 'local CA certificate not found' "${WORK_DIR}/seed-startup.tx
         select(.arg == "--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<1Gi,imagefs.available<1Gi,nodefs.inodesFree<5%,imagefs.inodesFree<5%") |
         (.nodeFilters | ((length == 1) and (.[0] == "server:*")))' \
 			"${WORK_DIR}/${config}" "${config} omits the disposable-cluster eviction floor"
+		audit_policy_source="$(yq -er '.files[] |
+      select(.destination == "/etc/fgentic/audit-policy.yaml") | .source' \
+			"${WORK_DIR}/${config}")"
+		[[ "${audit_policy_source}" != /* ]] || {
+			echo "error: ${config} embeds a host-specific audit-policy path" >&2
+			exit 1
+		}
+		cmp "${ROOT_DIR}/infra/k3d-audit-policy.yaml" \
+			"${WORK_DIR}/${audit_policy_source}" >/dev/null || {
+			echo "error: ${config} has no resolvable audit-policy source" >&2
+			exit 1
+		}
 	done
 	assert_yq '.ports[0].port == "127.0.0.1:80:80" and .ports[1].port == "127.0.0.1:443:443"' \
 		"${WORK_DIR}/demo-k3d.yaml" 'demo ingress ports changed'

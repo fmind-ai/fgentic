@@ -11,6 +11,18 @@ metadata:
 servers: 1
 agents: 0
 image: rancher/k3s:v1.35.5-k3s1
+files:
+  # k3d copies both files before k3s starts. The marker creates the log directory without a
+  # host bind mount, so audit records stay inside the disposable node container.
+  - source: k3d-audit-policy.yaml
+    destination: /etc/fgentic/audit-policy.yaml
+    nodeFilters:
+      - server:*
+  - source: |
+      managed by infra/k3d-config.yaml
+    destination: /var/log/kubernetes/audit/.fgentic-managed
+    nodeFilters:
+      - server:*
 ports:
   - port: 127.0.0.1:80:80
     nodeFilters:
@@ -24,6 +36,24 @@ options:
       # Disable k3s's bundled Traefik + servicelb; we install our own Traefik (Gateway API)
       # and use k3d's loadbalancer, matching the GKE Gateway API path.
       - arg: --disable=traefik
+        nodeFilters:
+          - server:*
+      # Keep a request/response-body-suppressed trail for selected high-signal objects. Metadata
+      # is deliberate: Request/RequestResponse would persist Secret and ConfigMap bodies.
+      - arg: --kube-apiserver-arg=audit-policy-file=/etc/fgentic/audit-policy.yaml
+        nodeFilters:
+          - server:*
+      - arg: --kube-apiserver-arg=audit-log-path=/var/log/kubernetes/audit/audit.log
+        nodeFilters:
+          - server:*
+      # At most the current 10 MiB file plus three backups; age also expires stale backups.
+      - arg: --kube-apiserver-arg=audit-log-maxsize=10
+        nodeFilters:
+          - server:*
+      - arg: --kube-apiserver-arg=audit-log-maxbackup=3
+        nodeFilters:
+          - server:*
+      - arg: --kube-apiserver-arg=audit-log-maxage=7
         nodeFilters:
           - server:*
       # Tolerate user-namespace/rootless hosts (ChromeOS crostini, rootless Docker) where the

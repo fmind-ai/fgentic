@@ -134,12 +134,13 @@ jobs:
           retention-days: 14
 
   policy:
-    name: Authorization, traces, and NetworkPolicy conformance
+    name: Authorization, API audit, traces, and NetworkPolicy conformance
     runs-on: ubuntu-latest
     timeout-minutes: 19
     env:
       NETWORK_POLICY_DIAGNOSTICS_DIR: ${{ github.workspace }}/.agents/tmp/policy-diagnostics
       KIND_CLUSTER_NAME: fgentic-smoke-policy
+      K3D_AUDIT_CLUSTER_NAME: fgentic-smoke-api-audit
     steps:
       - name: Checkout repository
         uses: actions/checkout@v7
@@ -167,6 +168,10 @@ jobs:
         env:
           KIND_CLUSTER_NAME: fgentic-smoke-quota
         run: mise run test:resource-quotas
+      - name: Verify Kubernetes API audit and rotation
+        id: kubernetes_audit
+        continue-on-error: true
+        run: mise run test:kubernetes-audit
       - name: Record policy results
         if: always()
         run: |
@@ -177,6 +182,7 @@ jobs:
           tracing=${{ steps.tracing.outcome }}
           network=${{ steps.network.outcome }}
           quota=${{ steps.quota.outcome }}
+          kubernetes_audit=${{ steps.kubernetes_audit.outcome }}
           EOF
       - name: Enforce policy result
         if: always()
@@ -185,7 +191,8 @@ jobs:
             || "${{ steps.mcp.outcome }}" != "success" \
             || "${{ steps.tracing.outcome }}" != "success" \
             || "${{ steps.network.outcome }}" != "success" \
-            || "${{ steps.quota.outcome }}" != "success" ]]; then
+            || "${{ steps.quota.outcome }}" != "success" \
+            || "${{ steps.kubernetes_audit.outcome }}" != "success" ]]; then
             cat "${NETWORK_POLICY_DIAGNOSTICS_DIR}/workflow-results.txt" >&2
             exit 1
           fi

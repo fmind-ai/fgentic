@@ -15,6 +15,7 @@ description: Metrics, traces, dashboards, and the LLM token-burn alert across th
 1. **Self-hosted model health:** the central `vllm` PodMonitor scrapes `/metrics` on the serving engine's internal OpenAI API port. Runtime acceptance requires both an `up` target and non-empty vLLM request metrics after a chat; the agentgateway token histogram remains the provider-neutral budget signal.
 1. NetworkPolicies (§9.6) already admit the `monitoring` namespace everywhere (D14).
 1. **Database audit (§9.7):** CloudNativePG emits content-suppressed pgAudit `DDL`/`ROLE` records as structured JSON stdout. They remain node-runtime logs today and are an explicit selected stream for the future opt-in log pipeline in #157, not a durable store by themselves.
+1. **Kubernetes API audit (§9.8):** local k3d writes selected request/response-body-suppressed API Metadata events to a size/backup/age-bounded node file. GKE uses its managed Cloud Audit Logs path instead. Neither is ingested by the current reference, so #157 owns transport, access, and durable retention.
 
 ## 9.2 Trace data plane
 
@@ -44,3 +45,9 @@ The shared CNPG cluster enables pgAudit through four operator-managed parameters
 `scripts/lib/postgres-audit.jq` is the reviewed minimal SQL/payload-suppressed projection for operators and #157: it retains time, pod, database/session role, database, session ID, class, command, statement IDs, and object type/name while dropping statement and parameter fields. Those retained identifiers remain sensitive operational metadata. Pod stdout has no repository-defined retention or access layer. The future log pipeline must select that projection, enforce its own retention/authentication/TLS controls, and keep debug and ordinary PostgreSQL records out; until then, no durable pgAudit claim is made.
 
 `pg_stat_statements` is deliberately deferred. Although CNPG can manage it, query statistics are a distinct performance-observability feature with sizing, access, reset, query-text, and retention decisions; enabling it is neither free nor required to establish the DDL/ROLE audit boundary.
+
+## 9.8 Kubernetes API audit stream
+
+The local profile's input contract for #157 is `/var/log/kubernetes/audit/audit.log` plus its rotated siblings inside each k3d server node. `infra/k3d-audit-policy.yaml` admits only high-signal `Metadata` records and captures no Kubernetes object body. Request URIs remain sensitive and can expose `pods/exec` command arguments. A future collector must select that path explicitly, preserve body suppression, restrict query access, and test retention; it must not broaden the API policy or scrape arbitrary node logs as part of this handoff. Deleting the local cluster deletes the current evidence.
+
+GKE writes Kubernetes API evidence through managed Cloud Audit Logs, not the local node path. Production routing must use Cloud Logging sinks and IAM with separately approved retention and Data Access settings. The repository does not deploy or spend on that cloud path automatically.

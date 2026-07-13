@@ -1,7 +1,7 @@
 ---
 type: Runbook
 title: Delegation Attribution Audit
-description: Evidence chains for one Matrix delegation plus SQL-suppressed PostgreSQL schema and role changes.
+description: Evidence chains for Matrix delegation, database changes, and Kubernetes control-plane actions.
 ---
 
 # Delegation Attribution Audit
@@ -232,6 +232,42 @@ kubectl -n postgres logs "pod/${PRIMARY}" --container postgres --since=15m \
 
 The selected records expose the database/session role, database, session ID, `DDL`/`ROLE` class, command, and object metadata. That metadata remains operationally sensitive and requires restricted access. ROLE records commonly have no object name, so the target role cannot be inferred from `object_name`. The raw CNPG record must hold `<not logged>` in both `.record.audit.statement` and `.record.audit.parameter`; normal `READ`/`WRITE` traffic is absent by configuration. `mise run check:postgres-audit` checks that contract offline, while `mise run test:postgres-audit` creates its own disposable kind cluster and proves it against the digest-pinned operand without touching the shared cluster.
 
+### Kubernetes control-plane changes on local k3d
+
+The local reference writes selected Kubernetes API events to `/var/log/kubernetes/audit/audit.log` inside `k3d-fgentic-server-0`. This query answers which API principal changed the bridge's governed route map or a bridge Secret without copying either object's body into the audit trail:
+
+```bash
+docker exec k3d-fgentic-server-0 sh -c \
+  'cat /var/log/kubernetes/audit/audit.log /var/log/kubernetes/audit/audit-*.log 2>/dev/null' \
+  | jq -c '
+      select(
+        .stage == "ResponseComplete" and
+        (.responseStatus.code // 0) >= 200 and
+        (.responseStatus.code // 0) < 300 and
+        (.verb == "create" or .verb == "update" or .verb == "patch" or .verb == "delete") and
+        .objectRef.namespace == "bridge" and
+        (
+          (.objectRef.resource == "configmaps" and
+            .objectRef.name == "matrix-a2a-bridge-agents") or
+          .objectRef.resource == "secrets"
+        )
+      )
+      | {
+          time: .requestReceivedTimestamp,
+          principal: .user.username,
+          groups: .user.groups,
+          verb,
+          resource: .objectRef.resource,
+          name: .objectRef.name,
+          response_code: .responseStatus.code,
+          source_ips: .sourceIPs
+        }'
+```
+
+The agent mapping is the `bridge/matrix-a2a-bridge-agents` **ConfigMap**, not a Secret. Registration, database, and API credentials remain namespace-local Secrets. A direct local `kubectl` call records its client-certificate principal; a Flux reconciliation records `system:serviceaccount:flux-system:kustomize-controller`. The latter proves which in-cluster controller applied the object, not which person authored the Git change—use the reviewed commit history for human authorship and the API record for reconciliation time/outcome. The successful-2xx filter means the result describes applied changes rather than rejected attempts. Metadata logging proves the verb, target, API identity, source, and response status; it intentionally cannot reconstruct a Secret/ConfigMap body or object diff.
+
+The policy also records one-object `get` reads and writes for NetworkPolicies, kagent Agents, HelmReleases, Flux Kustomizations, ValidatingAdmissionPolicies/bindings, plus `pods/exec`. It drops list/watch and all unmatched traffic. Kubernetes `Metadata` is **body-suppressed, not content-free**: the event retains `requestURI`, and a `pods/exec` URI can include every `command=` argument. Never pass a credential or other sensitive value in exec arguments; treat access to this log as privileged and require #157 to preserve that boundary. `mise run check:kubernetes-audit` verifies the allowlist and canonical rotation flags; `mise run test:kubernetes-audit` creates an isolated no-port k3d cluster, proves an actual rotated sibling under a 1 MiB test override, patches and reads a Secret, and proves that the Secret sentinel and request/response bodies are absent. It never touches the shared `fgentic` cluster.
+
 ### Prometheus aggregates
 
 In one terminal, run:
@@ -261,6 +297,7 @@ Retention is part of the evidence claim. A query returning nothing after its ret
 | Matrix events                | No Synapse message-retention policy is configured. Upstream Synapse disables message-retention enforcement by default, so ordinary room events are not age-purged by a server policy. Redaction and client caches have separate semantics.                                                                                 | Configure Synapse `retention` through `infra/matrix/helmrelease.yaml` only with privacy/legal approval. The [Synapse configuration manual](https://element-hq.github.io/synapse/latest/usage/configuration/config_documentation.html#retention) documents the default and purge jobs. |
 | Bridge audit logs            | A dedicated `slog` child logger emits JSON stdout with `log_stream=audit`; application diagnostics have no such marker. Kubernetes/pod log availability is node-runtime dependent and is not a durable compliance archive. The 24-hour `bridge_processed_events` pruning window is deduplication state, not log retention. | Ship only records matching both `log_stream=audit` and `audit_schema=fgentic.delegation.v1` to an access-controlled immutable sink before claiming durable retention. Never enable prompt/body capture in that pipeline.                                                              |
 | kagent sessions and tasks    | Persistent Postgres rows; Fgentic config declares no session/task TTL. Deletion or database loss is therefore the only current expiry.                                                                                                                                                                                     | Establish a kagent deletion policy before production. CloudNativePG backup catalog retention is `30d` in `infra/postgres/cluster.yaml`, so deleted data may remain in protected backups until expiry.                                                                                 |
+| Kubernetes API (local k3d)   | Selected request/response-body-suppressed Metadata events exist only in `/var/log/kubernetes/audit/` inside each k3d server node. Request URIs remain sensitive; list/watch and unmatched resources are absent. Cluster deletion removes the trail.                                                                        | Rotation starts at 10 MiB, retains at most three backups, and expires old backups after seven days. Issue #157 may collect this path only through its restricted, authenticated log pipeline; no durable retention is claimed today.                                                  |
 | PostgreSQL DDL/ROLE audit    | CNPG emits structured pgAudit records to pod stdout only. `pgaudit.log=ddl, role`; catalog-only traffic, SQL text, parameters, and normal reads/writes are disabled. This is best-effort logging, not transactional proof.                                                                                                 | Kubernetes/node log rotation determines current availability. Issue #157 must select only the minimal SQL/payload-suppressed projection into its restricted queryable store before durable retention can be claimed.                                                                  |
 | agentgateway request logs    | JSON stdout only; `infra/agentgateway/parameters.yaml` configures format/level but no durable logging database or export.                                                                                                                                                                                                  | Configure an approved log export and its own retention. Keep prompt/completion logging disabled unless separately authorized.                                                                                                                                                         |
 | Prometheus                   | `7d` in `infra/observability/helmrelease.yaml`.                                                                                                                                                                                                                                                                            | Change `prometheus.prometheusSpec.retention`; size storage and privacy impact before increasing it.                                                                                                                                                                                   |
@@ -269,7 +306,7 @@ Retention is part of the evidence claim. A query returning nothing after its ret
 
 MXIDs, room IDs, event IDs, and task IDs are personal or linkable operational data. Restrict bridge, kagent, gateway, Prometheus, and Kubernetes log access accordingly. The evidence collector requires read access across namespaces; it is an operator tool, not an end-user endpoint.
 
-The optional VictoriaLogs sink remains deliberately deferred rather than appearing as a dormant `HelmRelease`: this repository has no per-overlay log-storage opt-in that renders zero resources by default, and a suspended release would still add platform footprint. A future opt-in component must source-verify and immutably pin its chart and images; define namespace isolation, NetworkPolicy, disabled service-account token mounting, resource limits, PVC/backup posture, retention, authentication, and TLS; and select only the bridge/MCP audit markers plus the minimal pgAudit projection above. Until that component and a live retention/access test exist, the reference platform makes no durable-log claim and the bridge has no runtime dependency on a log backend.
+The optional VictoriaLogs sink remains deliberately deferred rather than appearing as a dormant `HelmRelease`: this repository has no per-overlay log-storage opt-in that renders zero resources by default, and a suspended release would still add platform footprint. A future opt-in component must source-verify and immutably pin its chart and images; define namespace isolation, NetworkPolicy, disabled service-account token mounting, resource limits, PVC/backup posture, retention, authentication, and TLS; and select only the bridge/MCP audit markers, the local request/response-body-suppressed Kubernetes API stream, plus the minimal pgAudit projection above. Until that component and a live retention/access test exist, the reference platform makes no durable-log claim and the bridge has no runtime dependency on a log backend.
 
 ## What is not attributable
 
@@ -292,6 +329,7 @@ Run the app tests before deploying the audited bridge:
 
 ```bash
 mise run check:audit-attribution
+mise run check:kubernetes-audit
 mise run check:postgres-audit
 mise run test
 ```
