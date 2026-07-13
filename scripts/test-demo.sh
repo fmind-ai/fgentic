@@ -35,6 +35,19 @@ assert_yq() {
 }
 
 bash -n "${DEMO_SOURCES[@]}" "${ROOT_DIR}/scripts/seed-demo.sh"
+if (
+	cd "${WORK_DIR}"
+	env -u ROOT_DIR FGENTIC_CA_DIR="${WORK_DIR}/missing-ca" \
+		"${ROOT_DIR}/scripts/seed-demo.sh"
+) >"${WORK_DIR}/seed-startup.txt" 2>&1; then
+	echo 'error: demo seeder unexpectedly started without a local CA' >&2
+	exit 1
+fi
+rg --fixed-strings 'local CA certificate not found' "${WORK_DIR}/seed-startup.txt" >/dev/null || {
+	echo 'error: demo seeder failed before validating its local CA dependency' >&2
+	cat "${WORK_DIR}/seed-startup.txt" >&2
+	exit 1
+}
 (
 	# Validate the generated cluster config without creating a cluster. Both disposable profiles
 	# need the explicit disk floor; only federation moves ingress to its alternate loopback.
