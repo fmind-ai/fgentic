@@ -64,6 +64,10 @@ type agentConfig struct {
 	Timeout      *time.Duration      `yaml:"timeout,omitempty"`
 	TokenBudget  *uint64             `yaml:"tokenBudget,omitempty"`
 	CardIdentity *cardIdentityConfig `yaml:"cardIdentity,omitempty"`
+	// Extensions lists additional A2A extension URIs to activate on top of the always-on
+	// token-budget contract, and doubles as the allowlist of `required: true` card extensions the
+	// bridge will accept (docs/bridge.md §6). Remote targets only.
+	Extensions []string `yaml:"extensions,omitempty"`
 
 	AllowedServers []string `yaml:"allowedServers,omitempty"`
 	AllowedSenders []string `yaml:"allowedSenders,omitempty"`
@@ -204,8 +208,8 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 		if namespace == "" || name == "" {
 			return nil, fmt.Errorf("agent %q: both namespace and name are required for a local target", ghost)
 		}
-		if cfg.Timeout != nil || cfg.TokenBudget != nil || cfg.CardIdentity != nil {
-			return nil, fmt.Errorf("agent %q: timeout, tokenBudget, and cardIdentity are only valid for a url target", ghost)
+		if cfg.Timeout != nil || cfg.TokenBudget != nil || cfg.CardIdentity != nil || len(cfg.Extensions) > 0 {
+			return nil, fmt.Errorf("agent %q: timeout, tokenBudget, cardIdentity, and extensions are only valid for a url target", ghost)
 		}
 		ref.target, err = a2aclient.NewLocalTarget(fmt.Sprintf("/api/a2a/%s/%s", namespace, name))
 	} else {
@@ -240,7 +244,7 @@ func compileRemoteTarget(cfg *agentConfig) (a2aclient.Target, time.Duration, err
 	if err != nil {
 		return a2aclient.Target{}, 0, err
 	}
-	target, err := a2aclient.NewRemoteTarget(rawURL, identity, *cfg.TokenBudget)
+	target, err := a2aclient.NewRemoteTarget(rawURL, identity, *cfg.TokenBudget, cfg.Extensions)
 	if err != nil {
 		return a2aclient.Target{}, 0, err
 	}

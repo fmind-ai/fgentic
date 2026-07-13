@@ -293,7 +293,7 @@ func (b *Bridge) syncProfile(ctx context.Context, entry AgentEntry) error {
 		case untrusted:
 			profile = b.profiles.rejectedRefresh(entry)
 			if previous.Status != profileStatusRejected {
-				b.logAgentCardAudit(entry, "rejected", "agent_card_untrusted")
+				b.logAgentCardAudit(entry, "rejected", agentCardRejectReason(err))
 			}
 			b.log.Error("remote agent card rejected; target quarantined",
 				"ghost", entry.Ghost, "agent", entry.Ref.Path(), "profile_status", profile.Status, "err", err)
@@ -358,6 +358,16 @@ func agentRequestTimeout(ref *AgentRef, global time.Duration) time.Duration {
 	return global
 }
 
+// agentCardRejectReason distinguishes a required-extension negotiation gap from other trust
+// failures, so operators can tell "the card demands a capability we are not configured to
+// activate" apart from a signature, identity, or endpoint mismatch (docs/bridge.md §6).
+func agentCardRejectReason(err error) string {
+	if errors.Is(err, a2aclient.ErrRemoteExtensionUnsupported) {
+		return "agent_card_extension_unsupported"
+	}
+	return "agent_card_untrusted"
+}
+
 func (b *Bridge) logAgentCardAudit(entry AgentEntry, outcome, reason string) {
 	b.auditLog.Info(
 		"remote agent card audit",
@@ -419,7 +429,7 @@ func (b *Bridge) preflightRemoteAgents(ctx context.Context, entries []AgentEntry
 		_, err := b.verifyRemoteCard(ctx, entry)
 		if err != nil {
 			if errors.Is(err, a2aclient.ErrRemoteTargetUntrusted) {
-				b.logAgentCardAudit(entry, "rejected", "agent_card_untrusted")
+				b.logAgentCardAudit(entry, "rejected", agentCardRejectReason(err))
 			}
 			failures = append(failures, fmt.Errorf("verify remote AgentCard for %s: %w", entry.Ghost, err))
 		}

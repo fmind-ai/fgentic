@@ -56,6 +56,33 @@ func TestAgentsSchemaRejectsUnknownMajor(t *testing.T) {
 	}
 }
 
+func TestAgentsSchemaExtensions(t *testing.T) {
+	schema := compileAgentsSchema(t)
+	key := "publicKey: {kty: EC, crv: P-256, " +
+		"x: axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY, y: T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU}"
+	remote := func(extensions string) []byte {
+		return []byte("schemaVersion: 1\nagents:\n  agent-remote:\n    url: https://partner.example/a2a\n" +
+			"    timeout: 12s\n    tokenBudget: 8192\n" + extensions +
+			"    cardIdentity:\n      name: Partner\n      organization: Partner Corp\n      keyID: k1\n      " + key + "\n")
+	}
+	valid := remote("    extensions: [https://fgentic.fmind.ai/a2a/extensions/skill-quote/v1]\n")
+	if err := schema.Validate(yamlInstance(t, valid)); err != nil {
+		t.Fatalf("valid remote+extensions rejected: %v", err)
+	}
+	rejects := map[string][]byte{
+		"non-https extension": remote("    extensions: [http://partner.example/ext]\n"),
+		"extensions on local target": []byte("schemaVersion: 1\nagents:\n  agent-k8s:\n    namespace: kagent\n" +
+			"    name: k8s\n    extensions: [https://fgentic.fmind.ai/a2a/extensions/skill-quote/v1]\n"),
+	}
+	for name, document := range rejects {
+		t.Run(name, func(t *testing.T) {
+			if err := schema.Validate(yamlInstance(t, document)); err == nil {
+				t.Fatal("schema accepted invalid extensions config")
+			}
+		})
+	}
+}
+
 func compileAgentsSchema(t *testing.T) *jsonschema.Schema {
 	t.Helper()
 	compiler := jsonschema.NewCompiler()

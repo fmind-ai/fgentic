@@ -363,6 +363,66 @@ func TestRemoteCardTrustFailureQuarantinesAndRemovesDirectoryEntry(t *testing.T)
 	}
 }
 
+func TestAgentCardRejectReasonDistinguishesExtensionGap(t *testing.T) {
+	extErr := fmt.Errorf("card requires unsupported extension: %w", a2aclient.ErrRemoteExtensionUnsupported)
+	if got := agentCardRejectReason(extErr); got != "agent_card_extension_unsupported" {
+		t.Fatalf("extension gap reason = %q", got)
+	}
+	if got := agentCardRejectReason(fmt.Errorf("bad signature: %w", a2aclient.ErrRemoteTargetUntrusted)); got != "agent_card_untrusted" {
+		t.Fatalf("generic trust failure reason = %q", got)
+	}
+}
+
+func TestRemoteExtensionGapAuditsDistinctReason(t *testing.T) {
+	agents, err := LoadAgents(writeTemp(t, validRemoteAgentsYAML))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	client := &cardSequenceClient{responses: []cardResponse{{
+		err: fmt.Errorf("card requires unsupported extension: %w", a2aclient.ErrRemoteExtensionUnsupported),
+	}}}
+	cfg := config.Config{
+		ServerName: ownServer, GhostPrefix: "agent-", Concurrency: 1,
+		RequestTimeout: time.Second, AgentsReloadInterval: time.Hour,
+		AgentCardRefreshInterval: time.Hour,
+		SenderRatePerMinute:      60, SenderRateBurst: 10, RoomRatePerMinute: 60, RoomRateBurst: 10,
+		RateLimitBucketCapacity: testRateLimitBucketCapacity,
+	}
+	as := &appservice.AppService{Registration: &appservice.Registration{SenderLocalpart: "a2a-bridge"}}
+	b := New(cfg, as, agents, client, state.NewMemory(), slog.Default())
+	b.profileWriter = nil
+	var output strings.Builder
+	setBridgeLogOutput(b, &output)
+
+	if err := b.syncProfilesChecked(t.Context(), agents.Entries(), true); !errors.Is(err, a2aclient.ErrRemoteExtensionUnsupported) {
+		t.Fatalf("sync err = %v, want ErrRemoteExtensionUnsupported", err)
+	}
+	if got := agentCardAuditReason(t, output.String()); got != "agent_card_extension_unsupported" {
+		t.Fatalf("agent card audit reason = %q, want agent_card_extension_unsupported", got)
+	}
+}
+
+// agentCardAuditReason returns the reason of the single agent-card audit record in the captured log.
+func agentCardAuditReason(t *testing.T, output string) string {
+	t.Helper()
+	var reason string
+	found := 0
+	for _, line := range strings.Split(strings.TrimSpace(output), "\n") {
+		var record map[string]any
+		if err := json.Unmarshal([]byte(line), &record); err != nil {
+			t.Fatalf("decode log record: %v", err)
+		}
+		if record["audit_schema"] == "fgentic.agent_card.v1" {
+			found++
+			reason, _ = record["reason"].(string)
+		}
+	}
+	if found != 1 {
+		t.Fatalf("agent card audit records = %d, want 1", found)
+	}
+	return reason
+}
+
 func TestStartFailsClosedForUnverifiedRemoteTarget(t *testing.T) {
 	agents, err := LoadAgents(writeTemp(t, validRemoteAgentsYAML))
 	if err != nil {

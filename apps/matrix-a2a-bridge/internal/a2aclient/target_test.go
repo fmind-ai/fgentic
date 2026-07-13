@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"slices"
 	"testing"
 )
 
@@ -62,11 +63,11 @@ func TestTargetValidationAndIdentity(t *testing.T) {
 		t.Fatalf("local target = %+v", local)
 	}
 
-	first, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096)
+	first, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096, nil)
 	if err != nil {
 		t.Fatalf("NewRemoteTarget: %v", err)
 	}
-	second, err := NewRemoteTarget("https://partner.example/a2a", identity, 8192)
+	second, err := NewRemoteTarget("https://partner.example/a2a", identity, 8192, nil)
 	if err != nil {
 		t.Fatalf("NewRemoteTarget second budget: %v", err)
 	}
@@ -78,6 +79,75 @@ func TestTargetValidationAndIdentity(t *testing.T) {
 	}
 	if first.ID() == second.ID() {
 		t.Fatal("token budget did not change the routing/cache ID")
+	}
+}
+
+func TestRemoteTargetActivatedExtensions(t *testing.T) {
+	identity := testCardIdentity(t, newTestSigningKey(t))
+
+	local, err := NewLocalTarget("/api/a2a/kagent/k8s-agent")
+	if err != nil {
+		t.Fatalf("NewLocalTarget: %v", err)
+	}
+	if got := local.ActivatedExtensions(); got != nil {
+		t.Fatalf("local ActivatedExtensions() = %v, want nil", got)
+	}
+
+	base, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096, nil)
+	if err != nil {
+		t.Fatalf("NewRemoteTarget base: %v", err)
+	}
+	if got := base.ActivatedExtensions(); len(got) != 1 || got[0] != TokenBudgetExtensionURI {
+		t.Fatalf("base ActivatedExtensions() = %v, want only token-budget", got)
+	}
+
+	// Config order must not affect the negotiated set or the derived identity: extras are sorted.
+	quote := "https://fgentic.fmind.ai/a2a/extensions/skill-quote/v1"
+	receipt := "https://fgentic.fmind.ai/a2a/extensions/usage-receipt/v1"
+	withExtras, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096, []string{receipt, quote})
+	if err != nil {
+		t.Fatalf("NewRemoteTarget with extensions: %v", err)
+	}
+	want := []string{TokenBudgetExtensionURI, quote, receipt}
+	if got := withExtras.ActivatedExtensions(); !slices.Equal(got, want) {
+		t.Fatalf("ActivatedExtensions() = %v, want %v (token-budget first, extras sorted)", got, want)
+	}
+	if !withExtras.activatesExtension(quote) || withExtras.activatesExtension("https://other.example/x") {
+		t.Fatal("activatesExtension did not track the configured allowlist")
+	}
+
+	// Extensions are operational config, not identity: same pin, different opaque ID.
+	if !base.SameIdentity(withExtras) {
+		t.Fatal("extensions changed the pinned remote identity")
+	}
+	if base.ID() == withExtras.ID() {
+		t.Fatal("extensions did not change the routing/cache ID")
+	}
+	reordered, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096, []string{quote, receipt})
+	if err != nil {
+		t.Fatalf("NewRemoteTarget reordered: %v", err)
+	}
+	if reordered.ID() != withExtras.ID() {
+		t.Fatal("extension ordering must not affect the target ID")
+	}
+}
+
+func TestNewRemoteTargetRejectsInvalidExtensions(t *testing.T) {
+	identity := testCardIdentity(t, newTestSigningKey(t))
+	cases := map[string][]string{
+		"empty":        {""},
+		"whitespace":   {" https://partner.example/ext "},
+		"token-budget": {TokenBudgetExtensionURI},
+		"http-scheme":  {"http://partner.example/ext"},
+		"no-host":      {"https:///ext"},
+		"duplicate":    {"https://partner.example/ext", "https://partner.example/ext"},
+	}
+	for name, extensions := range cases {
+		t.Run(name, func(t *testing.T) {
+			if _, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096, extensions); err == nil {
+				t.Fatalf("NewRemoteTarget accepted invalid extensions %q", extensions)
+			}
+		})
 	}
 }
 
@@ -120,7 +190,7 @@ func TestNewRemoteTargetRejectsUnsafeURLs(t *testing.T) {
 		"http://[fe80::1%25eth0]/a2a",
 	} {
 		t.Run(raw, func(t *testing.T) {
-			if _, err := NewRemoteTarget(raw, identity, 4096); err == nil {
+			if _, err := NewRemoteTarget(raw, identity, 4096, nil); err == nil {
 				t.Fatalf("NewRemoteTarget(%q) succeeded", raw)
 			}
 		})
@@ -139,7 +209,7 @@ func TestNewRemoteTargetAllowsDevelopmentAndClusterHTTP(t *testing.T) {
 		"http://partner-agent.localhost:8080/a2a",
 	} {
 		t.Run(raw, func(t *testing.T) {
-			if _, err := NewRemoteTarget(raw, identity, 4096); err != nil {
+			if _, err := NewRemoteTarget(raw, identity, 4096, nil); err != nil {
 				t.Fatalf("NewRemoteTarget(%q): %v", raw, err)
 			}
 		})
@@ -204,14 +274,14 @@ func TestNewRemoteTargetRejectsInvalidTrustMaterialWithoutPanicking(t *testing.T
 		},
 	}
 	for index, identity := range cases {
-		if _, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096); err == nil {
+		if _, err := NewRemoteTarget("https://partner.example/a2a", identity, 4096, nil); err == nil {
 			t.Errorf("case %d accepted invalid trust material", index)
 		}
 	}
-	if _, err := NewRemoteTarget("https://partner.example/a2a", valid, 0); err == nil {
+	if _, err := NewRemoteTarget("https://partner.example/a2a", valid, 0, nil); err == nil {
 		t.Fatal("zero token budget accepted")
 	}
-	if _, err := NewRemoteTarget("https://partner.example/a2a", valid, maxExactJSONInteger+1); err == nil {
+	if _, err := NewRemoteTarget("https://partner.example/a2a", valid, maxExactJSONInteger+1, nil); err == nil {
 		t.Fatal("inexact JSON token budget accepted")
 	}
 }

@@ -28,6 +28,12 @@ const (
 // material implicitly: startup and periodic profile refresh own that network boundary.
 var ErrRemoteTargetUntrusted = errors.New("remote A2A target has no verified AgentCard")
 
+// ErrRemoteExtensionUnsupported marks a verified card that declares a `required: true` A2A
+// extension the bridge is not configured to activate. It wraps ErrRemoteTargetUntrusted so every
+// fail-closed path still quarantines the target, while giving the audit a distinct terminal reason
+// (a negotiation gap, not a signature or identity mismatch — docs/bridge.md §6).
+var ErrRemoteExtensionUnsupported = fmt.Errorf("%w: required A2A extension is not activated", ErrRemoteTargetUntrusted)
+
 type cachedTarget struct {
 	client       *sdk.Client
 	card         *a2a.AgentCard
@@ -73,7 +79,7 @@ func (c *Client) resolveRemoteAgentCard(ctx context.Context, target Target) (*a2
 			return nil, fmt.Errorf("close remote AgentCard response %s: %w", cardURL, err)
 		}
 		if !previous.ready || previous.card == nil || previous.client == nil {
-			return nil, c.quarantineRemote(target, "server returned 304 without a verified cached card")
+			return nil, c.quarantineRemote(target, errors.New("server returned 304 without a verified cached card"))
 		}
 		if etag := resp.Header.Get("ETag"); etag != "" {
 			previous.etag = etag
@@ -89,7 +95,7 @@ func (c *Client) resolveRemoteAgentCard(ctx context.Context, target Target) (*a2
 	if resp.StatusCode != http.StatusOK {
 		closeErr := resp.Body.Close()
 		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
-			trustErr := c.quarantineRemote(target, "card was withdrawn with HTTP %d", resp.StatusCode)
+			trustErr := c.quarantineRemote(target, fmt.Errorf("card was withdrawn with HTTP %d", resp.StatusCode))
 			if closeErr != nil {
 				return nil, errors.Join(trustErr, fmt.Errorf("close withdrawn remote AgentCard response: %w", closeErr))
 			}
@@ -105,13 +111,13 @@ func (c *Client) resolveRemoteAgentCard(ctx context.Context, target Target) (*a2
 		if err := resp.Body.Close(); err != nil {
 			return nil, fmt.Errorf("close oversized remote AgentCard response %s: %w", cardURL, err)
 		}
-		return nil, c.quarantineRemote(target, "card exceeds %d bytes", maxAgentCardBytes)
+		return nil, c.quarantineRemote(target, fmt.Errorf("card exceeds %d bytes", maxAgentCardBytes))
 	}
 	if !isJSONMediaType(resp.Header.Get("Content-Type")) {
 		if err := resp.Body.Close(); err != nil {
 			return nil, fmt.Errorf("close non-JSON remote AgentCard response %s: %w", cardURL, err)
 		}
-		return nil, c.quarantineRemote(target, "card response is not JSON")
+		return nil, c.quarantineRemote(target, errors.New("card response is not JSON"))
 	}
 
 	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxAgentCardBytes+1))
@@ -123,17 +129,18 @@ func (c *Client) resolveRemoteAgentCard(ctx context.Context, target Target) (*a2
 		return nil, fmt.Errorf("close remote AgentCard response %s: %w", cardURL, closeErr)
 	}
 	if len(raw) > maxAgentCardBytes {
-		return nil, c.quarantineRemote(target, "card exceeds %d bytes", maxAgentCardBytes)
+		return nil, c.quarantineRemote(target, fmt.Errorf("card exceeds %d bytes", maxAgentCardBytes))
 	}
 
 	card, err := verifyRemoteAgentCard(raw, target)
 	if err != nil {
-		return nil, c.quarantineRemote(target, "%v", err)
+		// err may wrap ErrRemoteExtensionUnsupported; quarantineRemote preserves it for the audit.
+		return nil, c.quarantineRemote(target, err)
 	}
 	generation := nextGeneration(previous.generation)
-	client, err := buildSDKClient(ctx, card, c.remoteSDKHTTPClient(target.ID(), generation), true)
+	client, err := buildSDKClient(ctx, card, c.remoteSDKHTTPClient(target.ID(), generation), target.ActivatedExtensions())
 	if err != nil {
-		return nil, c.quarantineRemote(target, "build client from verified card: %v", err)
+		return nil, c.quarantineRemote(target, fmt.Errorf("build client from verified card: %w", err))
 	}
 
 	installed := cachedTarget{
@@ -162,13 +169,16 @@ func (c *Client) refreshLock(targetID string) *sync.Mutex {
 	return value.(*sync.Mutex)
 }
 
-func (c *Client) quarantineRemote(target Target, format string, args ...any) error {
-	reason := fmt.Sprintf(format, args...)
+// quarantineRemote drops any cached client for target and returns a trust error wrapping cause.
+// The returned error always satisfies errors.Is(err, ErrRemoteTargetUntrusted); a cause that
+// itself wraps a more specific sentinel (e.g. ErrRemoteExtensionUnsupported) stays inspectable so
+// the audit can report a distinct terminal reason.
+func (c *Client) quarantineRemote(target Target, cause error) error {
 	c.mu.Lock()
 	c.cache[target.ID()] = cachedTarget{generation: nextGeneration(c.cache[target.ID()].generation)}
 	c.mu.Unlock()
-	c.log.Warn("quarantined remote a2a agent", "target", target.String(), "reason", reason)
-	return fmt.Errorf("%w: %s: %s", ErrRemoteTargetUntrusted, target.String(), reason)
+	c.log.Warn("quarantined remote a2a agent", "target", target.String(), "reason", cause.Error())
+	return fmt.Errorf("%w: %s: %w", ErrRemoteTargetUntrusted, target.String(), cause)
 }
 
 func nextGeneration(current uint64) uint64 {
@@ -295,18 +305,21 @@ func validateRemoteCardContract(card *a2a.AgentCard, target Target) error {
 	// Never let SDK transport selection follow an unrelated endpoint merely because it was
 	// covered by the same card signature.
 	card.SupportedInterfaces = matches
+	// Extension negotiation (docs/bridge.md §6): the token-budget base contract must be present,
+	// and any card-declared `required: true` extension the bridge is not configured to activate
+	// fails closed with a distinct, inspectable trust error.
 	foundTokenBudget := false
 	for _, extension := range card.Capabilities.Extensions {
 		if extension.URI == TokenBudgetExtensionURI {
 			foundTokenBudget = true
 			continue
 		}
-		if extension.Required {
-			return fmt.Errorf("card requires an unsupported A2A extension")
+		if extension.Required && !target.activatesExtension(extension.URI) {
+			return fmt.Errorf("card requires unsupported A2A extension %q: %w", extension.URI, ErrRemoteExtensionUnsupported)
 		}
 	}
-	if foundTokenBudget {
-		return nil
+	if !foundTokenBudget {
+		return fmt.Errorf("card does not advertise the required token-budget extension")
 	}
-	return fmt.Errorf("card does not advertise the required token-budget extension")
+	return nil
 }

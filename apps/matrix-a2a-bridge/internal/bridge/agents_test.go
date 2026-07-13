@@ -10,6 +10,8 @@ import (
 	"time"
 
 	"maunium.net/go/mautrix/id"
+
+	"github.com/fmind/matrix-a2a-bridge/internal/a2aclient"
 )
 
 const validRemoteAgentsYAML = `agents:
@@ -281,6 +283,44 @@ func TestLoadAgentsRemoteTarget(t *testing.T) {
 	}
 	if ref.MappingID() == "" {
 		t.Error("MappingID() is empty")
+	}
+}
+
+func TestLoadAgentsRemoteExtensions(t *testing.T) {
+	const quoteURI = "https://fgentic.fmind.ai/a2a/extensions/skill-quote/v1"
+	yaml := strings.Replace(
+		validRemoteAgentsYAML,
+		"    tokenBudget: 8192\n",
+		"    tokenBudget: 8192\n    extensions:\n      - "+quoteURI+"\n",
+		1,
+	)
+	agents, err := LoadAgents(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	ref, ok := agents.Lookup("agent-remote")
+	if !ok {
+		t.Fatal("agent-remote not found")
+	}
+	activated := ref.Target().ActivatedExtensions()
+	want := []string{a2aclient.TokenBudgetExtensionURI, quoteURI}
+	if len(activated) != len(want) || activated[0] != want[0] || activated[1] != want[1] {
+		t.Fatalf("ActivatedExtensions() = %v, want %v", activated, want)
+	}
+	// A configuration change to the activated set must re-key the mapping so the card re-verifies.
+	base, _ := LoadAgents(writeTemp(t, validRemoteAgentsYAML))
+	baseRef, _ := base.Lookup("agent-remote")
+	if ref.MappingID() == baseRef.MappingID() {
+		t.Fatal("adding extensions did not change the mapping ID")
+	}
+}
+
+func TestLoadAgentsRejectsExtensionsOnLocalTarget(t *testing.T) {
+	yaml := "agents:\n  agent-k8s:\n    namespace: kagent\n    name: k8s-agent\n" +
+		"    extensions:\n      - https://fgentic.fmind.ai/a2a/extensions/skill-quote/v1\n"
+	_, err := LoadAgents(writeTemp(t, yaml))
+	if err == nil || !strings.Contains(err.Error(), "only valid for a url target") {
+		t.Fatalf("LoadAgents local+extensions err = %v", err)
 	}
 }
 

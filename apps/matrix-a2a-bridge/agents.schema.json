@@ -51,6 +51,12 @@
         },
         "tokenBudget": { "type": "integer", "minimum": 1 },
         "cardIdentity": { "$ref": "#/$defs/cardIdentity" },
+        "extensions": {
+          "description": "Additional A2A extension URIs to activate on a remote delegation, beyond the always-on token-budget contract. Also the allowlist of required card extensions the bridge accepts.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "format": "uri", "pattern": "^https://" }
+        },
         "allowedServers": {
           "type": "array",
           "uniqueItems": true,
@@ -70,7 +76,8 @@
               { "required": ["url"] },
               { "required": ["timeout"] },
               { "required": ["tokenBudget"] },
-              { "required": ["cardIdentity"] }
+              { "required": ["cardIdentity"] },
+              { "required": ["extensions"] }
             ]
           }
         },

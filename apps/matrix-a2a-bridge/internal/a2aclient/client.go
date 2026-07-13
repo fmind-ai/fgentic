@@ -74,7 +74,15 @@ func (t *userTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// The bridge owns the client span, while this boundary injects its W3C context into both
 	// JSON-RPC and REST requests produced by the A2A SDK.
 	otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
-	return t.base.RoundTrip(req)
+	resp, err := t.base.RoundTrip(req)
+	// Record which extensions the server echoed as activated (A2A-Extensions response header) so a
+	// remote delegation can audit what negotiation settled on. Best-effort and observation-only.
+	if err == nil && resp != nil {
+		if capture := activationCaptureFrom(req.Context()); capture != nil {
+			capture.record(resp.Header.Values(a2a.SvcParamExtensions))
+		}
+	}
+	return resp, err
 }
 
 // Result is the bridge-shaped outcome of an A2A call: the extracted reply text, the contextId
@@ -87,6 +95,10 @@ type Result struct {
 	TaskID    string
 	Terminal  bool
 	Failed    bool
+	// ActivatedExtensions is the A2A extension set the remote server echoed as activated on this
+	// message/send (the `A2A-Extensions` response header). Empty for local targets or a server that
+	// does not echo; it feeds the delegation audit, never a control decision.
+	ActivatedExtensions []string
 }
 
 // Client dials local A2A agents under a common base URL and remote agents at their exact,
@@ -134,12 +146,18 @@ func (c *Client) Call(ctx context.Context, target Target, text, contextID string
 	if err != nil {
 		return Result{}, err
 	}
+	var capture *activationCapture
 	msg := a2a.NewMessage(a2a.MessageRoleUser, a2a.NewTextPart(text))
 	if target.IsRemote() {
-		msg.Extensions = []string{TokenBudgetExtensionURI}
+		// Request the negotiated extension set (token-budget base + configured extras); the SDK
+		// activator drops any the card does not advertise. Token-budget is the only one carrying
+		// request metadata today — data-only extensions ride the signed card, not the message.
+		activated := target.ActivatedExtensions()
+		msg.Extensions = activated
 		msg.Metadata = map[string]any{
 			TokenBudgetExtensionURI: map[string]any{"maxTokens": target.TokenBudget()},
 		}
+		ctx, capture = withActivationCapture(ctx, activated)
 	}
 	if contextID != "" {
 		msg.ContextID = contextID // thread the room's conversation so the agent keeps context
@@ -151,7 +169,11 @@ func (c *Client) Call(ctx context.Context, target Target, text, contextID string
 	if err != nil {
 		return Result{}, fmt.Errorf("a2a message/send to %s: %w", target.String(), err)
 	}
-	return toResult(res), nil
+	result := toResult(res)
+	if capture != nil {
+		result.ActivatedExtensions = capture.snapshot()
+	}
+	return result, nil
 }
 
 // PollTask fetches the current state of a task previously returned by Call (tasks/get).
@@ -241,7 +263,9 @@ func (c *Client) clientFor(ctx context.Context, target Target) (*sdk.Client, err
 	if err != nil {
 		return nil, err
 	}
-	client, err := buildSDKClient(ctx, card, c.localHTTPClient, false)
+	// Local targets activate no extensions: their token budget and capabilities are governed by the
+	// local gateway, not a partner-enforced request contract.
+	client, err := buildSDKClient(ctx, card, c.localHTTPClient, nil)
 	if err != nil {
 		return nil, fmt.Errorf("build a2a client for %s: %w", target.String(), err)
 	}
@@ -269,15 +293,97 @@ func (c *Client) remoteSDKHTTPClient(targetID string, generation uint64) *http.C
 	}
 }
 
-func buildSDKClient(ctx context.Context, card *a2a.AgentCard, httpClient *http.Client, activateBudget bool) (*sdk.Client, error) {
+func buildSDKClient(ctx context.Context, card *a2a.AgentCard, httpClient *http.Client, activatedExtensions []string) (*sdk.Client, error) {
 	options := []sdk.FactoryOption{
 		sdk.WithJSONRPCTransport(httpClient),
 		sdk.WithRESTTransport(httpClient),
 	}
-	if activateBudget {
-		options = append(options, sdk.WithCallInterceptors(a2aext.NewActivator(TokenBudgetExtensionURI)))
+	if len(activatedExtensions) > 0 {
+		// The activator sends A2A-Extensions for exactly the intersection of this set and the card's
+		// declared extensions, so activating a superset is safe.
+		options = append(options, sdk.WithCallInterceptors(a2aext.NewActivator(activatedExtensions...)))
 	}
 	return sdk.NewFromCard(ctx, card, options...)
+}
+
+// activationCapture collects the A2A-Extensions a remote server echoed as activated on the most
+// recent response for one message/send, so the delegation audit can record it. It is shared across
+// the transport boundary through the call context and is safe for concurrent access.
+type activationCapture struct {
+	requested []string // the set the bridge requested; bounds and filters what may be recorded
+	mu        sync.Mutex
+	set       []string
+}
+
+// record keeps only the extensions the bridge actually requested that the server also echoed, in
+// deterministic requested order. The response header is not covered by the card signature, so this
+// bounds the audit field to a known small set and drops any server-injected or oversized URIs
+// rather than trusting the wire (docs/bridge.md §6).
+func (a *activationCapture) record(headerValues []string) {
+	echoed := parseExtensionHeader(headerValues)
+	if len(echoed) == 0 {
+		return
+	}
+	echoedSet := make(map[string]struct{}, len(echoed))
+	for _, uri := range echoed {
+		echoedSet[uri] = struct{}{}
+	}
+	confirmed := make([]string, 0, len(a.requested))
+	for _, uri := range a.requested {
+		if _, ok := echoedSet[uri]; ok {
+			confirmed = append(confirmed, uri)
+		}
+	}
+	if len(confirmed) == 0 {
+		return // nothing we requested was confirmed; keep any earlier non-empty capture
+	}
+	a.mu.Lock()
+	a.set = confirmed
+	a.mu.Unlock()
+}
+
+func (a *activationCapture) snapshot() []string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if len(a.set) == 0 {
+		return nil
+	}
+	return append([]string(nil), a.set...)
+}
+
+type activationCaptureKey struct{}
+
+// withActivationCapture attaches a fresh capture to ctx, bounded to the requested extension set.
+// Each call gets its own, so concurrent delegations never cross-contaminate their activation sets.
+func withActivationCapture(ctx context.Context, requested []string) (context.Context, *activationCapture) {
+	capture := &activationCapture{requested: requested}
+	return context.WithValue(ctx, activationCaptureKey{}, capture), capture
+}
+
+func activationCaptureFrom(ctx context.Context) *activationCapture {
+	capture, _ := ctx.Value(activationCaptureKey{}).(*activationCapture)
+	return capture
+}
+
+// parseExtensionHeader splits comma-separated and multi-valued A2A-Extensions header values into a
+// de-duplicated, order-preserving URI list.
+func parseExtensionHeader(headerValues []string) []string {
+	seen := make(map[string]struct{})
+	var uris []string
+	for _, value := range headerValues {
+		for _, part := range strings.Split(value, ",") {
+			uri := strings.TrimSpace(part)
+			if uri == "" {
+				continue
+			}
+			if _, dup := seen[uri]; dup {
+				continue
+			}
+			seen[uri] = struct{}{}
+			uris = append(uris, uri)
+		}
+	}
+	return uris
 }
 
 // toResult maps a SendMessageResult (a *a2a.Message or *a2a.Task sum type) to a Result.
