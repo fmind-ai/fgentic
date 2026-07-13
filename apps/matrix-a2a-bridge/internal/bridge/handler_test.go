@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"iter"
 	"log/slog"
 	"net/http"
@@ -1235,12 +1236,14 @@ func (c *scriptedA2AClient) IsReady(target a2aclient.Target) bool {
 type matrixRecorder struct {
 	mu     sync.Mutex
 	events []event.MessageEventContent
+	raw    [][]byte // verbatim request bodies, so tests can inspect mixins the struct drops
 }
 
-func (r *matrixRecorder) append(content event.MessageEventContent) id.EventID {
+func (r *matrixRecorder) append(content event.MessageEventContent, raw []byte) id.EventID {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.events = append(r.events, content)
+	r.raw = append(r.raw, slices.Clone(raw))
 	return id.EventID(fmt.Sprintf("$reply-%d", len(r.events)))
 }
 
@@ -1248,6 +1251,21 @@ func (r *matrixRecorder) snapshot() []event.MessageEventContent {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.events)
+}
+
+// rawSnapshot returns each sent event body parsed as a generic map, exposing raw content blocks
+// (like the MSC3955 mixin) that the typed MessageEventContent decode silently discards.
+func (r *matrixRecorder) rawSnapshot(t *testing.T) []map[string]any {
+	t.Helper()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	out := make([]map[string]any, len(r.raw))
+	for i, body := range r.raw {
+		if err := json.Unmarshal(body, &out[i]); err != nil {
+			t.Fatalf("decode raw Matrix event %d: %v", i, err)
+		}
+	}
+	return out
 }
 
 func pollingHarness(
@@ -1261,13 +1279,19 @@ func pollingHarness(
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case req.Method == http.MethodPut && strings.Contains(req.URL.Path, "/send/m.room.message/"):
+			body, err := io.ReadAll(req.Body)
+			if err != nil {
+				t.Errorf("read Matrix event body: %v", err)
+				http.Error(w, "unreadable event", http.StatusBadRequest)
+				return
+			}
 			var content event.MessageEventContent
-			if err := json.NewDecoder(req.Body).Decode(&content); err != nil {
+			if err := json.Unmarshal(body, &content); err != nil {
 				t.Errorf("decode Matrix event: %v", err)
 				http.Error(w, "invalid event", http.StatusBadRequest)
 				return
 			}
-			if err := json.NewEncoder(w).Encode(map[string]id.EventID{"event_id": recorder.append(content)}); err != nil {
+			if err := json.NewEncoder(w).Encode(map[string]id.EventID{"event_id": recorder.append(content, body)}); err != nil {
 				t.Errorf("encode Matrix response: %v", err)
 			}
 		case req.Method == http.MethodPut && strings.Contains(req.URL.Path, "/typing/"):
@@ -1756,5 +1780,89 @@ func assertEdit(t *testing.T, content event.MessageEventContent, want string) {
 	}
 	if content.NewContent == nil || content.NewContent.Body != want {
 		t.Fatalf("edit content = %+v, want body %q", content.NewContent, want)
+	}
+}
+
+// TestAutomatedContentMixinGolden pins the exact wire bytes of an automated reply and edit. The
+// mixin rides under the MSC3955 unstable prefix (org.matrix.msc1767.automated, per the MSC's own
+// "Unstable prefix" section) alongside an untouched m.notice; any drift in reply content shape
+// breaks these fixtures deterministically.
+func TestAutomatedContentMixinGolden(t *testing.T) {
+	reply := &event.MessageEventContent{MsgType: event.MsgNotice, Body: "done"}
+	reply.SetReply(&event.Event{ID: "$orig", Sender: id.NewUserID("alice", ownServer)})
+
+	edit := &event.MessageEventContent{MsgType: event.MsgNotice, Body: "updated"}
+	edit.SetEdit("$placeholder")
+
+	tests := []struct {
+		name    string
+		content *event.MessageEventContent
+		golden  string
+	}{
+		{
+			name:    "reply",
+			content: reply,
+			golden:  `{"body":"done","m.mentions":{"user_ids":["@alice:fgentic.fmind.ai"]},"m.relates_to":{"m.in_reply_to":{"event_id":"$orig"}},"msgtype":"m.notice","org.matrix.msc1767.automated":true}`,
+		},
+		{
+			name:    "edit",
+			content: edit,
+			golden:  `{"body":"* updated","m.mentions":{},"m.new_content":{"body":"updated","msgtype":"m.notice","org.matrix.msc1767.automated":true},"m.relates_to":{"event_id":"$placeholder","rel_type":"m.replace"},"msgtype":"m.notice","org.matrix.msc1767.automated":true}`,
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := json.Marshal(automatedContent(tc.content))
+			if err != nil {
+				t.Fatalf("marshal automated content: %v", err)
+			}
+			if string(got) != tc.golden {
+				t.Fatalf("automated content mismatch:\n got: %s\nwant: %s", got, tc.golden)
+			}
+		})
+	}
+}
+
+// TestRepliesCarryAutomatedMixin proves the mixin is stamped on the real send path for both a
+// posted reply and an m.replace edit, and that the edit keeps the marker inside m.new_content so
+// edit-aware clients still see it after applying the replacement.
+func TestRepliesCarryAutomatedMixin(t *testing.T) {
+	b, intent, evt, _, recorder := pollingHarness(t, nil)
+
+	replyID := b.postReply(t.Context(), intent, evt, "hello")
+	if replyID == "" {
+		t.Fatal("postReply returned no event id")
+	}
+	b.editReply(t.Context(), intent, evt.RoomID, replyID, "updated")
+
+	raw := recorder.rawSnapshot(t)
+	if len(raw) != 2 {
+		t.Fatalf("sent events = %d, want post + edit", len(raw))
+	}
+
+	post := raw[0]
+	if post["msgtype"] != string(event.MsgNotice) {
+		t.Errorf("post msgtype = %v, want m.notice", post["msgtype"])
+	}
+	if post[automatedMixinKey] != true {
+		t.Errorf("post reply missing %s mixin: %v", automatedMixinKey, post)
+	}
+
+	edit := raw[1]
+	if edit["msgtype"] != string(event.MsgNotice) {
+		t.Errorf("edit msgtype = %v, want m.notice", edit["msgtype"])
+	}
+	if edit[automatedMixinKey] != true {
+		t.Errorf("edit missing top-level %s mixin: %v", automatedMixinKey, edit)
+	}
+	newContent, ok := edit[newContentKey].(map[string]any)
+	if !ok {
+		t.Fatalf("edit missing %s block: %v", newContentKey, edit)
+	}
+	if newContent[automatedMixinKey] != true {
+		t.Errorf("edit replacement missing %s mixin: %v", automatedMixinKey, newContent)
+	}
+	if newContent["msgtype"] != string(event.MsgNotice) {
+		t.Errorf("edit replacement msgtype = %v, want m.notice", newContent["msgtype"])
 	}
 }
