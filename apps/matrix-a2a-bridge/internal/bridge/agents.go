@@ -48,6 +48,7 @@ type AgentRef struct {
 	avatar    id.ContentURI
 	target    a2aclient.Target
 	timeout   time.Duration
+	maxCost   uint64 // per-remote credit-unit ceiling on the verified skill quote (0 = no gate)
 	mappingID string
 }
 
@@ -68,6 +69,10 @@ type agentConfig struct {
 	// token-budget contract, and doubles as the allowlist of `required: true` card extensions the
 	// bridge will accept (docs/bridge.md §6). Remote targets only.
 	Extensions []string `yaml:"extensions,omitempty"`
+	// MaxCost is the highest per-skill credit-unit price the bridge will pay this remote. When set,
+	// the verified card must advertise a skill quote within it or the delegation fails closed with
+	// quote_over_budget (docs/federation.md). Remote targets only; omitted means no cost gate.
+	MaxCost *uint64 `yaml:"maxCost,omitempty"`
 
 	AllowedServers []string `yaml:"allowedServers,omitempty"`
 	AllowedSenders []string `yaml:"allowedSenders,omitempty"`
@@ -104,6 +109,12 @@ func (a *AgentRef) Target() a2aclient.Target {
 // continue to use the bridge-wide request/task timeouts.
 func (a *AgentRef) Timeout() time.Duration {
 	return a.timeout
+}
+
+// MaxCost returns the per-remote credit-unit ceiling enforced against the verified skill quote, or
+// zero when no cost gate is configured (docs/federation.md).
+func (a *AgentRef) MaxCost() uint64 {
+	return a.maxCost
 }
 
 // MappingID binds a mapping to its route, pinned signer, token budget, and timeout. Profile
@@ -208,12 +219,18 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 		if namespace == "" || name == "" {
 			return nil, fmt.Errorf("agent %q: both namespace and name are required for a local target", ghost)
 		}
-		if cfg.Timeout != nil || cfg.TokenBudget != nil || cfg.CardIdentity != nil || len(cfg.Extensions) > 0 {
-			return nil, fmt.Errorf("agent %q: timeout, tokenBudget, cardIdentity, and extensions are only valid for a url target", ghost)
+		if cfg.Timeout != nil || cfg.TokenBudget != nil || cfg.CardIdentity != nil || len(cfg.Extensions) > 0 || cfg.MaxCost != nil {
+			return nil, fmt.Errorf("agent %q: timeout, tokenBudget, cardIdentity, extensions, and maxCost are only valid for a url target", ghost)
 		}
 		ref.target, err = a2aclient.NewLocalTarget(fmt.Sprintf("/api/a2a/%s/%s", namespace, name))
 	} else {
 		ref.target, ref.timeout, err = compileRemoteTarget(cfg)
+		if cfg.MaxCost != nil {
+			if *cfg.MaxCost == 0 {
+				return nil, fmt.Errorf("agent %q: maxCost must be positive when set", ghost)
+			}
+			ref.maxCost = *cfg.MaxCost
+		}
 		// The expected signed-card name is the safe profile fallback before discovery succeeds.
 		if cfg.CardIdentity != nil {
 			ref.Name = cfg.CardIdentity.Name
@@ -225,7 +242,7 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 	if err := ref.compileSenders(ghost); err != nil {
 		return nil, err
 	}
-	ref.mappingID = mappingID(ref.target, ref.timeout)
+	ref.mappingID = mappingID(ref.target, ref.timeout, ref.maxCost)
 	return ref, nil
 }
 
@@ -289,10 +306,10 @@ func compileCardIdentity(cfg *cardIdentityConfig) (a2aclient.CardIdentity, error
 	}, nil
 }
 
-func mappingID(target a2aclient.Target, timeout time.Duration) string {
+func mappingID(target a2aclient.Target, timeout time.Duration, maxCost uint64) string {
 	identity := target.IdentityFingerprint()
 	sum := sha256.Sum256([]byte(fmt.Sprintf(
-		"%s\x00%x\x00%d\x00%d", target.ID(), identity, target.TokenBudget(), timeout,
+		"%s\x00%x\x00%d\x00%d\x00%d", target.ID(), identity, target.TokenBudget(), timeout, maxCost,
 	)))
 	return hex.EncodeToString(sum[:])
 }

@@ -34,6 +34,18 @@ jq -e '
   .publicJwk.key_ops == ["verify"] and (.publicJwk | has("d") | not)
 ' "${WORK_DIR}/agent-card-bundle.json" >/dev/null ||
 	fail 'AgentCard signer did not emit the exact public ES256 contract'
+# The verified card exposes the per-skill quote inside the signature (#142): a re-sign after a quote
+# change therefore yields a new signature atomically, and the price is tamper-evident for free.
+jq -e '
+  .capabilities.extensions
+  | map(select(.uri == "https://fgentic.fmind.ai/a2a/extensions/skill-quote/v1")) as $quoteExts
+  | ($quoteExts | length) >= 1
+  and all($quoteExts[];
+    (.params.quotes | length) >= 1
+    and all(.params.quotes[];
+      (.price | type) == "number" and .price >= 0 and .price == (.price | floor)))
+' "${WORK_DIR}/signed-agent-card.json" >/dev/null ||
+	fail 'signed AgentCard does not expose a well-formed per-skill quote inside its verified signature'
 protected="$(jq -er '.agentCard.signatures[0].protected' \
 	"${WORK_DIR}/agent-card-bundle.json" | tr '_-' '/+')"
 case "$((${#protected} % 4))" in

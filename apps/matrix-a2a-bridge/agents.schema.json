@@ -57,6 +57,11 @@
           "uniqueItems": true,
           "items": { "type": "string", "format": "uri", "pattern": "^https://" }
         },
+        "maxCost": {
+          "description": "Highest per-skill credit-unit price the bridge will pay this remote. When set, the verified card must advertise a skill quote within it or the delegation fails closed (quote_over_budget). Credit-units are bilateral accounting units, not currency.",
+          "type": "integer",
+          "minimum": 1
+        },
         "allowedServers": {
           "type": "array",
           "uniqueItems": true,
@@ -77,7 +82,8 @@
               { "required": ["timeout"] },
               { "required": ["tokenBudget"] },
               { "required": ["cardIdentity"] },
-              { "required": ["extensions"] }
+              { "required": ["extensions"] },
+              { "required": ["maxCost"] }
             ]
           }
         },

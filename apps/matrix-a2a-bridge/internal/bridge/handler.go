@@ -86,6 +86,7 @@ type a2aClient interface {
 	CancelTask(ctx context.Context, target a2aclient.Target, taskID string) error
 	ResolveAgentCard(ctx context.Context, target a2aclient.Target) (*a2a.AgentCard, error)
 	IsReady(target a2aclient.Target) bool
+	QuoteAdmission(target a2aclient.Target, maxCost uint64) a2aclient.QuoteVerdict
 }
 
 type pollWaitFunc func(context.Context, time.Duration) error
@@ -407,7 +408,43 @@ func (b *Bridge) dispatchResolvedTarget(
 		b.refuseUntrustedTarget(evt, ref, localpart, sender, dedupVerdict)
 		return
 	}
+	// Cost admission (#142): a configured per-remote maxCost refuses a delegation whose verified
+	// skill quote is over budget or missing, before spending a limiter token or dispatching A2A.
+	if ref.Target().IsRemote() && ref.MaxCost() > 0 && b.client != nil {
+		switch b.client.QuoteAdmission(ref.Target(), ref.MaxCost()) {
+		case a2aclient.QuoteOverBudget, a2aclient.QuoteMissing:
+			b.refuseOverBudget(evt, ref, localpart, sender, dedupVerdict)
+			return
+		}
+	}
 	b.dispatchWithDedupVerdict(ctx, evt, ref, localpart, prompt, sender, dedupVerdict)
+}
+
+// refuseOverBudget fails a delegation closed because the remote's verified skill quote exceeds the
+// configured maxCost (or is missing). It is an economic refusal, distinct from a trust failure: the
+// card is trusted, but the price is not, so it never spends a limiter token or reaches A2A (#142).
+func (b *Bridge) refuseOverBudget(
+	evt *event.Event,
+	ref *AgentRef,
+	localpart string,
+	sender senderIdentity,
+	dedupVerdict auditDedupVerdict,
+) {
+	delegationsTotal.WithLabelValues(localpart, outcomeDenied).Inc()
+	b.log.Warn(
+		"refusing delegation whose remote skill quote exceeds the configured budget",
+		"ghost", localpart,
+		"agent", ref.Path(),
+		"max_cost", ref.MaxCost(),
+	)
+	b.logDelegationAudit(evt, ref, localpart, sender, delegationAuditResult{
+		outcome:          outcomeDenied,
+		terminalStage:    "admission",
+		terminalReason:   "quote_over_budget",
+		dedupVerdict:     dedupVerdict,
+		rateLimitVerdict: rateLimitVerdictNotChecked,
+		a2aAttempted:     false,
+	})
 }
 
 // revalidateSender applies the current origin map at dispatch time. Once a queued event is
