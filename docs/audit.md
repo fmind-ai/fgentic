@@ -1,7 +1,7 @@
 ---
 type: Runbook
 title: Delegation Attribution Audit
-description: Evidence chain proving who invoked which agent, when, and over which model path for one Matrix delegation.
+description: Evidence chains for one Matrix delegation plus SQL-suppressed PostgreSQL schema and role changes.
 ---
 
 # Delegation Attribution Audit
@@ -31,8 +31,11 @@ Matrix event_id
 | kagent session store | Session `id`, `user_id`, `agent_id`; task `id`, `contextId`, state/timestamp; `kagent_user_id`, `kagent_invocation_id`, `kagent_usage_metadata`                                                                                              | kagent persisted the asserted user under the same context and task. Task usage metadata is the exact per-task token evidence emitted by the agent runtime.                                                                                                                                            |
 | agentgateway logs    | Request time, route, provider, requested/response model, HTTP status, input/output tokens                                                                                                                                                    | A model request crossed the governed egress path. The current kagent model call does not propagate Matrix, context, task, or invocation identity, so time/model/token matching is corroboration only.                                                                                                 |
 | Prometheus           | `fgentic_delegations_total{ghost,outcome}` and `agentgateway_gen_ai_client_token_usage_sum` with provider/model/token dimensions                                                                                                             | Aggregate delegation and model consumption. Identity, room, context, and task labels are deliberately excluded to avoid personal-data and cardinality hazards.                                                                                                                                        |
+| PostgreSQL / pgAudit | CNPG JSON stdout with `logger=pgaudit`, `msg=record`, database/session role, and `record.audit` class, command, object type/name, and statement IDs                                                                                          | A `DDL` or `ROLE` operation reached PostgreSQL under one database session role. This is an independent database-change hop, not a join to the Matrix delegation; SQL text and parameters are explicitly suppressed.                                                                                   |
 
 The bridge sends `X-User-Id: <sender_mxid>` on A2A AgentCard, `message/send`, and `tasks/get` requests. The in-process contract test `TestClientContract_MessageContextAttributionAndWireVersion` is the wire-level proof. kagent 0.9.11 reads this header in its [unsecure authenticator](https://github.com/kagent-dev/kagent/blob/v0.9.11/go/core/internal/httpserver/auth/authn.go), then persists it with the context/session. Its runtime explicitly marks that identity as unauthenticated. NetworkPolicy is therefore the compensating boundary described in the [threat model](security.md).
+
+The PostgreSQL row is deliberately orthogonal to the delegation chain. It can corroborate a schema or privilege change performed by a service/database role, but it carries no Matrix event, task, workload, or human identity and must not be presented as delegation attribution.
 
 ## ActivityPub transport evidence chain
 
@@ -216,6 +219,19 @@ kubectl -n agentgateway-system logs deploy/agentgateway-proxy --since=15m \
 
 Match the task completion window, provider/model, and token counts. Never call that match unique when requests overlap: the current log has no Matrix event ID, MXID, A2A context/task ID, or kagent invocation ID. Agentgateway documents the default [LLM token metrics and request logs](https://agentgateway.dev/docs/kubernetes/latest/llm/observability/); its optional per-user accounting requires gateway authentication that this kagent model path does not currently use.
 
+### PostgreSQL DDL/ROLE records
+
+CloudNativePG creates the pgAudit extension in every connectable database and converts its CSV records into JSON stdout. Query the current primary from a repository checkout so the committed minimal projection removes statement and parameter fields even if configuration drifts:
+
+```bash
+PRIMARY="$(kubectl -n postgres get cluster platform-pg \
+  -o jsonpath='{.status.currentPrimary}')"
+kubectl -n postgres logs "pod/${PRIMARY}" --container postgres --since=15m \
+  | jq -c -f scripts/lib/postgres-audit.jq
+```
+
+The selected records expose the database/session role, database, session ID, `DDL`/`ROLE` class, command, and object metadata. That metadata remains operationally sensitive and requires restricted access. ROLE records commonly have no object name, so the target role cannot be inferred from `object_name`. The raw CNPG record must hold `<not logged>` in both `.record.audit.statement` and `.record.audit.parameter`; normal `READ`/`WRITE` traffic is absent by configuration. `mise run check:postgres-audit` checks that contract offline, while `mise run test:postgres-audit` creates its own disposable kind cluster and proves it against the digest-pinned operand without touching the shared cluster.
+
 ### Prometheus aggregates
 
 In one terminal, run:
@@ -245,6 +261,7 @@ Retention is part of the evidence claim. A query returning nothing after its ret
 | Matrix events                | No Synapse message-retention policy is configured. Upstream Synapse disables message-retention enforcement by default, so ordinary room events are not age-purged by a server policy. Redaction and client caches have separate semantics.                                                                                 | Configure Synapse `retention` through `infra/matrix/helmrelease.yaml` only with privacy/legal approval. The [Synapse configuration manual](https://element-hq.github.io/synapse/latest/usage/configuration/config_documentation.html#retention) documents the default and purge jobs. |
 | Bridge audit logs            | A dedicated `slog` child logger emits JSON stdout with `log_stream=audit`; application diagnostics have no such marker. Kubernetes/pod log availability is node-runtime dependent and is not a durable compliance archive. The 24-hour `bridge_processed_events` pruning window is deduplication state, not log retention. | Ship only records matching both `log_stream=audit` and `audit_schema=fgentic.delegation.v1` to an access-controlled immutable sink before claiming durable retention. Never enable prompt/body capture in that pipeline.                                                              |
 | kagent sessions and tasks    | Persistent Postgres rows; Fgentic config declares no session/task TTL. Deletion or database loss is therefore the only current expiry.                                                                                                                                                                                     | Establish a kagent deletion policy before production. CloudNativePG backup catalog retention is `30d` in `infra/postgres/cluster.yaml`, so deleted data may remain in protected backups until expiry.                                                                                 |
+| PostgreSQL DDL/ROLE audit    | CNPG emits structured pgAudit records to pod stdout only. `pgaudit.log=ddl, role`; catalog-only traffic, SQL text, parameters, and normal reads/writes are disabled. This is best-effort logging, not transactional proof.                                                                                                 | Kubernetes/node log rotation determines current availability. Issue #157 must select only the minimal SQL/payload-suppressed projection into its restricted queryable store before durable retention can be claimed.                                                                  |
 | agentgateway request logs    | JSON stdout only; `infra/agentgateway/parameters.yaml` configures format/level but no durable logging database or export.                                                                                                                                                                                                  | Configure an approved log export and its own retention. Keep prompt/completion logging disabled unless separately authorized.                                                                                                                                                         |
 | Prometheus                   | `7d` in `infra/observability/helmrelease.yaml`.                                                                                                                                                                                                                                                                            | Change `prometheus.prometheusSpec.retention`; size storage and privacy impact before increasing it.                                                                                                                                                                                   |
 | Evidence bundle from script  | Caller-managed JSON containing MXID and room/event identifiers but no message content.                                                                                                                                                                                                                                     | Store it only in the review case, restrict access, set case-specific retention, and delete it through the case process. Do not commit it.                                                                                                                                             |
@@ -252,7 +269,7 @@ Retention is part of the evidence claim. A query returning nothing after its ret
 
 MXIDs, room IDs, event IDs, and task IDs are personal or linkable operational data. Restrict bridge, kagent, gateway, Prometheus, and Kubernetes log access accordingly. The evidence collector requires read access across namespaces; it is an operator tool, not an end-user endpoint.
 
-The optional VictoriaLogs sink remains deliberately deferred rather than appearing as a dormant `HelmRelease`: this repository has no per-overlay log-storage opt-in that renders zero resources by default, and a suspended release would still add platform footprint. A future opt-in component must source-verify and immutably pin its chart and images; define namespace isolation, NetworkPolicy, disabled service-account token mounting, resource limits, PVC/backup posture, retention, authentication, and TLS; and select only the two audit markers above. Until that component and a live retention/access test exist, the reference platform makes no durable-log claim and the bridge has no runtime dependency on a log backend.
+The optional VictoriaLogs sink remains deliberately deferred rather than appearing as a dormant `HelmRelease`: this repository has no per-overlay log-storage opt-in that renders zero resources by default, and a suspended release would still add platform footprint. A future opt-in component must source-verify and immutably pin its chart and images; define namespace isolation, NetworkPolicy, disabled service-account token mounting, resource limits, PVC/backup posture, retention, authentication, and TLS; and select only the bridge/MCP audit markers plus the minimal pgAudit projection above. Until that component and a live retention/access test exist, the reference platform makes no durable-log claim and the bridge has no runtime dependency on a log backend.
 
 ## What is not attributable
 
@@ -265,6 +282,7 @@ The optional VictoriaLogs sink remains deliberately deferred rather than appeari
 1. **Currency cost is not currently evidence-backed per task.** kagent records exact task tokens. Agentgateway can compute realized currency cost when a versioned cost catalog is configured, but this repository currently has no such catalog and no task correlation on the model request. Provider invoices aggregate independently. Report tokens and state currency cost as unavailable; do not multiply by an unversioned price copied from a website.
 1. **Requested semantics disappear if Matrix content disappears.** The audit record proves event, room, and target, not the prompt body. If the Matrix event is redacted/purged and no authorized case capture exists, a reviewer can still prove that an agent was invoked but not reconstruct the requested instruction.
 1. **Successful work is distinct from a delivered reply.** The kagent task can complete even when the Matrix reply fails. Require a non-empty `reply_event_id`, and query that Matrix event when reply delivery is material.
+1. **pgAudit is not a transaction ledger or human identity.** It records a statement when PostgreSQL executes it, even if the transaction later rolls back, and the standard logging path can lose a record before durable export. The database role is a session principal, not proof of one workload or person; the trail is not trustworthy against a hostile superuser who can change settings or logging. ROLE records may omit the target object name, while row reads/writes are intentionally outside the selected class.
 
 Any mismatch between bridge sender/header, context/session, task/user, or task ID invalidates the attribution claim. Preserve the raw records, stop the review, and investigate for bypass, stale logs, version drift, or tampering. Future distributed tracing can make the gateway join deterministic, but it must propagate a non-forgeable, privacy-reviewed correlation context rather than treating the current header as authentication.
 
@@ -274,6 +292,7 @@ Run the app tests before deploying the audited bridge:
 
 ```bash
 mise run check:audit-attribution
+mise run check:postgres-audit
 mise run test
 ```
 

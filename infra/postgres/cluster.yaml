@@ -37,6 +37,14 @@ spec:
   # CONNECT to PUBLIC by default, so an `all all` HBA rule would let one tenant authenticate to
   # another tenant's database even when schema ownership later blocks normal reads.
   postgresql:
+    # CloudNativePG detects pgaudit.* parameters, manages the preload library/extension in every
+    # connectable database, and converts its CSV records to structured JSON stdout. Audit only
+    # schema and privilege changes; suppress SQL text and parameters because both may hold content.
+    parameters:
+      pgaudit.log: "ddl, role"
+      pgaudit.log_catalog: "off"
+      pgaudit.log_parameter: "off"
+      pgaudit.log_statement: "off"
     pg_hba:
       - hostssl synapse synapse all scram-sha-256
       - hostssl mas mas all scram-sha-256
