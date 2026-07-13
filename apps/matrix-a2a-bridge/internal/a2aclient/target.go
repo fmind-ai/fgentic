@@ -4,6 +4,8 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"encoding/hex"
 	"fmt"
@@ -55,7 +57,36 @@ type Target struct {
 	tokenBudget          uint64
 	extensions           []string // sorted, deduped operator-configured extras (excludes token-budget)
 	identityFingerprint  [sha256.Size]byte
+	tls                  *remoteTLS // client-cert material for A2A v1.0 mTLS; nil when unconfigured (#244)
 	id                   string
+}
+
+// remoteTLS is the transport-layer mutual-authentication material for a remote target (#244): the
+// bridge's client certificate presented to the partner, plus optional pinned server roots. It is
+// operational config (like extensions and token budget), not card identity, so it stays out of
+// identityFingerprint but folds into the opaque target ID through its fingerprint — a cert rotation
+// therefore re-verifies the card and re-keys any queued delegation.
+type remoteTLS struct {
+	certificate tls.Certificate
+	roots       *x509.CertPool // pinned server roots; nil defers to the system trust store
+	fingerprint string         // stable hash of the client-cert material, folded into the target ID
+}
+
+// RemoteOption customises a remote Target beyond its required identity and budget. Existing callers
+// pass none; mTLS is opted in through WithClientTLS so the constructor signature stays stable (#244).
+type RemoteOption func(*remoteConfig)
+
+type remoteConfig struct {
+	tls *remoteTLS
+}
+
+// WithClientTLS pins the client certificate the bridge presents to a remote A2A endpoint for mTLS,
+// with optional server roots that replace the system trust store. fingerprint is a stable digest of
+// the certificate material so rotating the cert re-keys the target and forces card re-verification.
+func WithClientTLS(certificate tls.Certificate, roots *x509.CertPool, fingerprint string) RemoteOption {
+	return func(c *remoteConfig) {
+		c.tls = &remoteTLS{certificate: certificate, roots: roots, fingerprint: fingerprint}
+	}
 }
 
 // NewLocalTarget validates a path served beneath Client's configured A2A base URL.
@@ -78,7 +109,7 @@ func NewLocalTarget(agentPath string) (Target, error) {
 // lists additional A2A extension URIs to activate on top of the always-on token-budget contract;
 // they also form the allowlist of `required: true` card extensions the bridge will accept
 // (docs/bridge.md §6). A change to any of these inputs yields a new opaque ID, forcing re-verify.
-func NewRemoteTarget(rawURL string, identity CardIdentity, tokenBudget uint64, extensions []string) (Target, error) {
+func NewRemoteTarget(rawURL string, identity CardIdentity, tokenBudget uint64, extensions []string, opts ...RemoteOption) (Target, error) {
 	endpoint, err := NormalizeRemoteURL(rawURL)
 	if err != nil {
 		return Target{}, err
@@ -86,6 +117,10 @@ func NewRemoteTarget(rawURL string, identity CardIdentity, tokenBudget uint64, e
 	normalizedExtensions, err := normalizeExtensionURIs(extensions)
 	if err != nil {
 		return Target{}, err
+	}
+	var cfg remoteConfig
+	for _, opt := range opts {
+		opt(&cfg)
 	}
 	if identity.Name == "" || identity.Name != strings.TrimSpace(identity.Name) {
 		return Target{}, fmt.Errorf("remote card identity name must not be empty")
@@ -129,7 +164,11 @@ func NewRemoteTarget(rawURL string, identity CardIdentity, tokenBudget uint64, e
 	// Extensions are operational config, not identity: they stay out of identityFingerprint (like
 	// tokenBudget) but fold into the opaque ID so a config change re-verifies the card against the
 	// new required-extension allowlist.
-	idInput := fmt.Sprintf("%x\x00%d\x00%s", fingerprint, tokenBudget, strings.Join(normalizedExtensions, "\x1f"))
+	mtlsFingerprint := ""
+	if cfg.tls != nil {
+		mtlsFingerprint = cfg.tls.fingerprint
+	}
+	idInput := fmt.Sprintf("%x\x00%d\x00%s\x00%s", fingerprint, tokenBudget, strings.Join(normalizedExtensions, "\x1f"), mtlsFingerprint)
 	id := sha256.Sum256([]byte(idInput))
 
 	return Target{
@@ -142,6 +181,7 @@ func NewRemoteTarget(rawURL string, identity CardIdentity, tokenBudget uint64, e
 		tokenBudget:          tokenBudget,
 		extensions:           normalizedExtensions,
 		identityFingerprint:  fingerprint,
+		tls:                  cfg.tls,
 		id:                   "remote:" + hex.EncodeToString(id[:]),
 	}, nil
 }
@@ -231,6 +271,26 @@ func (t Target) ActivatedExtensions() []string {
 // verified card's `required: true` extensions are checked against before the target is trusted.
 func (t Target) activatesExtension(uri string) bool {
 	return uri == TokenBudgetExtensionURI || slices.Contains(t.extensions, uri)
+}
+
+// requiresClientCert reports whether this remote mapping configured mTLS client-cert material (#244).
+func (t Target) requiresClientCert() bool {
+	return t.tls != nil
+}
+
+// clientTLSConfig returns the *tls.Config the bridge dials this remote target with, or nil when no
+// client certificate is configured (the caller then uses the default transport). It presents the
+// pinned client certificate and, when configured, restricts server trust to the pinned roots. TLS 1.2
+// is the floor (#244).
+func (t Target) clientTLSConfig() *tls.Config {
+	if t.tls == nil {
+		return nil
+	}
+	return &tls.Config{
+		Certificates: []tls.Certificate{t.tls.certificate},
+		RootCAs:      t.tls.roots,
+		MinVersion:   tls.VersionTLS12,
+	}
 }
 
 func (t Target) valid() bool {

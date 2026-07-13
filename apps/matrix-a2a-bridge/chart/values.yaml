@@ -159,3 +159,16 @@ revisionHistoryLimit: 3
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# Extra pod volumes and container mounts, e.g. to project a SOPS-managed mTLS client-cert Secret at
+# the paths a remote mapping's `mtls:` block references (#244). Example:
+#   extraVolumes:
+#     - name: mtls-partner-reviewer
+#       secret:
+#         secretName: bridge-mtls-partner-reviewer
+#   extraVolumeMounts:
+#     - name: mtls-partner-reviewer
+#       mountPath: /etc/matrix-a2a-bridge/mtls/partner-reviewer
+#       readOnly: true
+extraVolumes: []
+extraVolumeMounts: []
