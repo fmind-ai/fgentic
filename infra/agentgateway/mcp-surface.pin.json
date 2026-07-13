@@ -1,0 +1,288 @@
+{
+  "schemaVersion": 1,
+  "servers": [
+    {
+      "name": "kagent-tools",
+      "provenance": {
+        "image": "ghcr.io/kagent-dev/kagent/tools:0.2.1@sha256:50b431281d3e32666f27a292962fd486aabaac157083a844d037c12137e353aa",
+        "command": [
+          "/tool-server"
+        ],
+        "arguments": [
+          "--port",
+          "8084",
+          "--metrics-port",
+          "8085",
+          "--tools=k8s",
+          "--read-only"
+        ],
+        "discovery": {
+          "url": "http://kagent-tools.kagent:8084/mcp",
+          "protocol": "STREAMABLE_HTTP"
+        },
+        "backend": {
+          "host": "kagent-tools.kagent.svc.cluster.local",
+          "port": 8084,
+          "path": "/mcp",
+          "protocol": "StreamableHTTP"
+        }
+      },
+      "initialize": {
+        "sha256": "428aafe996546f9f5e4aa85956f63b4806216fbd1c2fb28af9c8b5aab6f7d966",
+        "object": {
+          "capabilities": {
+            "tools": {
+              "listChanged": true
+            }
+          },
+          "protocolVersion": "2025-06-18",
+          "serverInfo": {
+            "name": "kagent-tools-server",
+            "version": "0.2.1"
+          }
+        }
+      },
+      "tools": {
+        "supported": true,
+        "entries": [
+          {
+            "identity": "k8s_describe_resource",
+            "sha256": "ebfb531902a2e16ee3b02bd77a35c520628ddd97f79893ec3f99776ba040aca8",
+            "object": {
+              "annotations": {
+                "destructiveHint": true,
+                "openWorldHint": true
+              },
+              "description": "Describe a Kubernetes resource in detail",
+              "inputSchema": {
+                "properties": {
+                  "namespace": {
+                    "description": "Namespace of the resource (optional)",
+                    "type": "string"
+                  },
+                  "resource_name": {
+                    "description": "Name of the resource",
+                    "type": "string"
+                  },
+                  "resource_type": {
+                    "description": "Type of resource (deployment, service, pod, node, etc.)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "resource_type",
+                  "resource_name"
+                ],
+                "type": "object"
+              },
+              "name": "k8s_describe_resource"
+            }
+          },
+          {
+            "identity": "k8s_generate_resource",
+            "sha256": "05ce5fcaeb8f6de240737991543cca0a31fa5304310662f87473dc94df5a881d",
+            "object": {
+              "annotations": {
+                "destructiveHint": true,
+                "openWorldHint": true
+              },
+              "description": "Generate a Kubernetes resource YAML from a description",
+              "inputSchema": {
+                "properties": {
+                  "resource_description": {
+                    "description": "Detailed description of the resource to generate",
+                    "type": "string"
+                  },
+                  "resource_type": {
+                    "description": "Type of resource to generate (argo_analysis_template, argo_rollout, gateway_api_gateway, gateway_api_gateway_class, gateway_api_grpc_route, gateway_api_http_route, gateway_api_reference_grant, istio_auth_policy, istio_virtual_service)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "resource_description",
+                  "resource_type"
+                ],
+                "type": "object"
+              },
+              "name": "k8s_generate_resource"
+            }
+          },
+          {
+            "identity": "k8s_get_available_api_resources",
+            "sha256": "69ad617d7e09fe8e60cd7af9246dcd7ada775446f3ee36ec4d3d1890da485adc",
+            "object": {
+              "annotations": {
+                "destructiveHint": true,
+                "openWorldHint": true
+              },
+              "description": "Get available Kubernetes API resources",
+              "inputSchema": {
+                "type": "object"
+              },
+              "name": "k8s_get_available_api_resources"
+            }
+          },
+          {
+            "identity": "k8s_get_cluster_configuration",
+            "sha256": "69e3357b762fdf40146ececdca8e4ac750c1ac274598b3fe71a645110b5d68f9",
+            "object": {
+              "annotations": {
+                "destructiveHint": true,
+                "openWorldHint": true
+              },
+              "description": "Get cluster configuration details",
+              "inputSchema": {
+                "type": "object"
+              },
+              "name": "k8s_get_cluster_configuration"
+            }
+          },
+          {
+            "identity": "k8s_get_events",
+            "sha256": "3d704822f4b3423a2d435c45710f7f068f5ea1455db4ec093f66acb784b29fbf",
+            "object": {
+              "annotations": {
+                "destructiveHint": true,
+                "openWorldHint": true
+              },
+              "description": "Get events from a Kubernetes namespace",
+              "inputSchema": {
+                "properties": {
+                  "namespace": {
+                    "description": "Namespace to get events from (default: default)",
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              },
+              "name": "k8s_get_events"
+            }
+          },
+          {
+            "identity": "k8s_get_pod_logs",
+            "sha256": "54f19d2ee96e2b9be4cf143ef99b4a5f0136023278f150afba1f0aa44d65cb61",
+            "object": {
+              "annotations": {
+                "destructiveHint": true,
+                "openWorldHint": true
+              },
+              "description": "Get logs from a Kubernetes pod",
+              "inputSchema": {
+                "properties": {
+                  "container": {
+                    "description": "Container name (for multi-container pods)",
+                    "type": "string"
+                  },
+                  "namespace": {
+                    "description": "Namespace of the pod (default: default)",
+                    "type": "string"
+                  },
+                  "pod_name": {
+                    "description": "Name of the pod",
+                    "type": "string"
+                  },
+                  "tail_lines": {
+                    "description": "Number of lines to show from the end (default: 50)",
+                    "type": "number"
+                  }
+                },
+                "required": [
+                  "pod_name"
+                ],
+                "type": "object"
+              },
+              "name": "k8s_get_pod_logs"
+            }
+          },
+          {
+            "identity": "k8s_get_resource_yaml",
+            "sha256": "ef118ab1f5f5aad9d8a9f61d3ed0fbd4bb65263260de4d14d94f8ac1e29cb0d1",
+            "object": {
+              "annotations": {
+                "destructiveHint": true,
+                "openWorldHint": true
+              },
+              "description": "Get the YAML representation of a Kubernetes resource",
+              "inputSchema": {
+                "properties": {
+                  "namespace": {
+                    "description": "Namespace of the resource (optional)",
+                    "type": "string"
+                  },
+                  "resource_name": {
+                    "description": "Name of the resource",
+                    "type": "string"
+                  },
+                  "resource_type": {
+                    "description": "Type of resource",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "resource_type",
+                  "resource_name"
+                ],
+                "type": "object"
+              },
+              "name": "k8s_get_resource_yaml"
+            }
+          },
+          {
+            "identity": "k8s_get_resources",
+            "sha256": "e82cf36e034fe2270eea4840c6f067d640a9713339603396f4579337fcdb29fa",
+            "object": {
+              "annotations": {
+                "destructiveHint": true,
+                "openWorldHint": true
+              },
+              "description": "Get Kubernetes resources using kubectl",
+              "inputSchema": {
+                "properties": {
+                  "all_namespaces": {
+                    "description": "Query all namespaces (true/false)",
+                    "type": "string"
+                  },
+                  "namespace": {
+                    "description": "Namespace to query (optional)",
+                    "type": "string"
+                  },
+                  "output": {
+                    "default": "wide",
+                    "description": "Output format (json, yaml, wide)",
+                    "type": "string"
+                  },
+                  "resource_name": {
+                    "description": "Name of specific resource (optional)",
+                    "type": "string"
+                  },
+                  "resource_type": {
+                    "description": "Type of resource (pod, service, deployment, etc.)",
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "resource_type"
+                ],
+                "type": "object"
+              },
+              "name": "k8s_get_resources"
+            }
+          }
+        ]
+      },
+      "prompts": {
+        "supported": false,
+        "entries": []
+      },
+      "resources": {
+        "supported": false,
+        "entries": []
+      },
+      "resourceTemplates": {
+        "supported": false,
+        "entries": []
+      },
+      "surfaceSha256": "7289a1a07ef3a6410ea67776a7daef52f1b1de19801330960ce9a697017c52b4"
+    }
+  ]
+}

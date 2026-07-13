@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Prove that kagent's managed agents use agentgateway for MCP, that platform-helper's credential
-# and five-tool allowlist fail closed, and that tool-call audit records contain identity/operation
-# metadata without arguments or results. --runtime uses only disposable Docker containers.
+# Prove that kagent's managed agents use agentgateway for MCP, that every backend matches its
+# reviewed execution/routing/surface pin, that platform-helper's five-tool allowlist fails closed,
+# and that audit records omit arguments and results. --runtime uses disposable Docker containers.
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
+pin_path="${REPO_ROOT}/infra/agentgateway/mcp-surface.pin.json"
 runtime=false
 
 case "${1:-}" in
@@ -38,7 +39,7 @@ assert_contains() {
 	[[ "$1" == *"$2"* ]] || fail "$3: missing '$2'"
 }
 
-for command in flux helm jq kubeconform yq; do
+for command in flux go helm jq kubeconform rg yq; do
 	command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
 done
 
@@ -49,12 +50,36 @@ cleanup_static() {
 trap cleanup_static EXIT
 
 echo "==> Validating governed MCP manifests"
+"${REPO_ROOT}/scripts/pin-mcp.sh" check --pin "${pin_path}"
+(
+	cd "${REPO_ROOT}/apps/matrix-a2a-bridge"
+	go test ./internal/mcppin ./cmd/pin-mcp \
+		-run '^(TestCompareReportsInitializeInstructionDrift|TestCompareReportsRecursiveDescriptionAndSchemaDrift|TestUpdateCheckAndVerify)$' \
+		-count=1
+)
 flux build kustomization cluster-overlay-validation \
 	--path "${REPO_ROOT}/infra/agentgateway" \
 	--kustomization-file "${REPO_ROOT}/scripts/testdata/flux-build-kustomization.yaml" \
 	--dry-run \
 	--in-memory-build \
 	--strict-substitute >"${tmp_dir}/agentgateway.yaml"
+
+rendered_backends="$({
+	yq eval-all -N -r '
+      select(.kind == "AgentgatewayBackend" and .spec.mcp != null)
+      | .metadata.name
+    ' "${tmp_dir}/agentgateway.yaml" | sort
+})"
+pinned_backends="$(jq -r '.servers[].name' "${pin_path}" | sort)"
+assert_equal "${rendered_backends}" "${pinned_backends}" "complete MCP backend pin coverage"
+rendered_targets="$({
+	yq eval-all -N -r '
+      select(.kind == "AgentgatewayBackend" and .spec.mcp != null)
+      | .spec.mcp.targets[].name
+    ' "${tmp_dir}/agentgateway.yaml" | sort
+})"
+assert_equal "${rendered_targets}" "${pinned_backends}" "complete MCP target pin coverage"
+assert_equal "$(jq -r '.servers | length' "${pin_path}")" "1" "MCP pin server count"
 
 for resource in mcp-backend.yaml mcp-route.yaml mcp-authorization.yaml mcp-audit.yaml; do
 	yq -e ".resources | contains([\"${resource}\"])" \
@@ -71,6 +96,16 @@ assert_equal "$({
 })" \
 	"kagent-tools.kagent.svc.cluster.local|8084|/mcp|StreamableHTTP" \
 	"MCP backend target"
+assert_equal "$({
+	yq eval-all -N -o=json -I=0 '
+      select(.kind == "AgentgatewayBackend" and .metadata.name == "kagent-tools")
+      | .spec.mcp.targets[]
+      | select(.name == "kagent-tools")
+      | .static
+    ' "${tmp_dir}/agentgateway.yaml" | jq -Sc .
+})" \
+	"$(jq -Sc '.servers[0].provenance.backend' "${pin_path}")" \
+	"pinned MCP backend routing"
 assert_equal "$({
 	yq eval-all -N -r '
       select(.kind == "HTTPRoute" and .metadata.name == "kagent-tools-mcp")
@@ -106,14 +141,16 @@ assert_equal "$({
 assert_contains "${traffic_expression}" 'apiKey.agent == "platform-helper"' "per-agent authentication"
 assert_contains "${traffic_expression}" 'request.path == "/mcp"' "MCP path authorization"
 assert_contains "${traffic_expression}" 'request.method in ["POST", "GET", "DELETE"]' "MCP method authorization"
-for tool in \
-	k8s_get_resources \
-	k8s_describe_resource \
-	k8s_get_events \
-	k8s_get_resource_yaml \
-	k8s_get_pod_logs; do
+expected_tools=$'k8s_describe_resource\nk8s_get_events\nk8s_get_pod_logs\nk8s_get_resource_yaml\nk8s_get_resources'
+for tool in ${expected_tools}; do
 	assert_contains "${mcp_expression}" "\"${tool}\"" "MCP tool allowlist"
+	jq -e --arg tool "${tool}" '
+      .servers[0].tools.supported and
+      (.servers[0].tools.entries | any(.identity == $tool))
+    ' "${pin_path}" >/dev/null || fail "governed tool ${tool} is absent from the raw surface pin"
 done
+policy_tools="$(printf '%s' "${mcp_expression}" | rg -o '"k8s_[a-z_]+"' | tr -d '"' | sort -u)"
+assert_equal "${policy_tools}" "${expected_tools}" "exact MCP policy tool set"
 
 assert_equal "$({
 	yq eval-all -N -r '
@@ -187,6 +224,14 @@ assert_equal "$({
 	"platform-helper MCP credential reference"
 assert_equal "$({
 	yq eval-all -N -r '
+      select(.kind == "Agent" and .metadata.name == "platform-helper")
+      | .spec.declarative.tools[]
+      | select(.type == "McpServer")
+      | .mcpServer.toolNames[]
+    ' "${tmp_dir}/kagent-infra.yaml" | sort
+})" "${expected_tools}" "platform-helper MCP tool set"
+assert_equal "$({
+	yq eval-all -N -r '
       select(.kind == "NetworkPolicy" and .metadata.name == "agent-zoo-egress")
       | [.spec.egress[].ports[]?.port] | map(select(. == 8084)) | length
     ' "${tmp_dir}/kagent-infra.yaml"
@@ -225,6 +270,35 @@ yq -o=yaml '.spec.values' "${REPO_ROOT}/infra/kagent/helmrelease.yaml" \
 		--version "${kagent_version}" \
 		--namespace kagent \
 		--values - >"${tmp_dir}/kagent-chart.yaml"
+flux build kustomization cluster-overlay-validation \
+	--path "${REPO_ROOT}/clusters/federation" \
+	--kustomization-file "${REPO_ROOT}/scripts/testdata/flux-build-kustomization.yaml" \
+	--dry-run \
+	--in-memory-build \
+	--strict-substitute \
+	--recursive \
+	--local-sources GitRepository/flux-system/flux-system="${REPO_ROOT}" \
+	>"${tmp_dir}/federation.yaml"
+assert_equal "$({
+	yq eval-all -N -r '
+      [select(.kind == "AgentgatewayBackend" and .spec.mcp != null)] | length
+    ' "${tmp_dir}/federation.yaml"
+})" "0" "federation profile MCP backend count"
+yq eval-all -N -o=yaml '
+    select(.kind == "HelmRelease" and .metadata.name == "kagent") | .spec.values
+  ' "${tmp_dir}/federation.yaml" \
+	| helm template kagent "${kagent_repository}/kagent" \
+		--version "${kagent_version}" \
+		--namespace kagent \
+		--values - >"${tmp_dir}/federation-kagent-chart.yaml"
+assert_equal "$({
+	yq eval-all -N -r '
+      [select(
+        (.kind == "Deployment" and .metadata.name == "kagent-tools") or
+        (.kind == "RemoteMCPServer" and .metadata.name == "kagent-tool-server")
+      )] | length
+    ' "${tmp_dir}/federation-kagent-chart.yaml"
+})" "0" "federation profile MCP server surface count"
 assert_equal "$({
 	yq eval-all -N -r '
       select(.kind == "ConfigMap" and .metadata.name == "kagent-controller")
@@ -237,6 +311,86 @@ assert_equal "$({
       | .spec.url
     ' "${tmp_dir}/kagent-chart.yaml"
 })" "http://kagent-tools.kagent:8084/mcp" "controller discovery endpoint"
+assert_equal "$({
+	yq eval-all -N -r '
+      [select(.kind == "RemoteMCPServer")] | length
+    ' "${tmp_dir}/kagent-chart.yaml"
+})" "1" "complete MCP discovery-server coverage"
+assert_equal "$({
+	yq eval-all -N -o=json -I=0 '
+      select(.kind == "RemoteMCPServer" and .metadata.name == "kagent-tool-server")
+      | {"url": .spec.url, "protocol": (.spec.protocol // "STREAMABLE_HTTP")}
+    ' "${tmp_dir}/kagent-chart.yaml" | jq -Sc .
+})" \
+	"$(jq -Sc '.servers[0].provenance.discovery' "${pin_path}")" \
+	"pinned MCP discovery routing"
+
+tool_deployment_count="$({
+	yq eval-all -N -r '
+      [select(.kind == "Deployment" and .metadata.name == "kagent-tools")] | length
+    ' "${tmp_dir}/kagent-chart.yaml"
+})"
+assert_equal "${tool_deployment_count}" "1" "kagent-tools Deployment count"
+tool_image="$({
+	yq eval-all -N -r '
+      select(.kind == "Deployment" and .metadata.name == "kagent-tools")
+      | .spec.template.spec.containers[] | select(.name == "tools") | .image
+    ' "${tmp_dir}/kagent-chart.yaml"
+})"
+tool_command="$({
+	yq eval-all -N -o=json -I=0 '
+      select(.kind == "Deployment" and .metadata.name == "kagent-tools")
+      | .spec.template.spec.containers[] | select(.name == "tools") | .command
+    ' "${tmp_dir}/kagent-chart.yaml"
+})"
+tool_arguments="$({
+	yq eval-all -N -o=json -I=0 '
+      select(.kind == "Deployment" and .metadata.name == "kagent-tools")
+      | .spec.template.spec.containers[] | select(.name == "tools") | .args
+    ' "${tmp_dir}/kagent-chart.yaml"
+})"
+tool_selector="$({
+	yq eval-all -N -o=json -I=0 '
+      select(.kind == "Deployment" and .metadata.name == "kagent-tools")
+      | .spec.selector.matchLabels
+    ' "${tmp_dir}/kagent-chart.yaml" | jq -Sc .
+})"
+service_selector="$({
+	yq eval-all -N -o=json -I=0 '
+      select(.kind == "Service" and .metadata.name == "kagent-tools")
+      | .spec.selector
+    ' "${tmp_dir}/kagent-chart.yaml" | jq -Sc .
+})"
+assert_equal "${tool_image}" "$(jq -r '.servers[0].provenance.image' "${pin_path}")" \
+	"pinned MCP image"
+assert_contains "${tool_image}" "@sha256:" "immutable MCP image"
+assert_equal "${tool_command}" "$(jq -c '.servers[0].provenance.command' "${pin_path}")" \
+	"pinned MCP command"
+assert_equal "${tool_arguments}" "$(jq -c '.servers[0].provenance.arguments' "${pin_path}")" \
+	"pinned MCP arguments"
+assert_equal "${service_selector}" "${tool_selector}" "MCP Service selects pinned Deployment"
+assert_equal "$({
+	yq eval-all -N -o=json -I=0 '
+      select(
+        .kind == "Deployment" or .kind == "StatefulSet" or
+        .kind == "DaemonSet" or .kind == "Job"
+      )
+      | {"kind": .kind, "name": .metadata.name, "labels": .spec.template.metadata.labels}
+    ' "${tmp_dir}/kagent-chart.yaml" \
+		| jq -s --argjson selector "${service_selector}" '
+          [.[] | select(
+            .labels as $labels
+            | all($selector | to_entries[]; $labels[.key] == .value)
+          )] | length
+        '
+})" "1" "MCP Service selects exactly one rendered workload"
+assert_equal "$({
+	yq eval-all -N -r '
+      select(.kind == "Service" and .metadata.name == "kagent-tools")
+      | .spec.ports[] | select(.name == "tools")
+      | [.port, .targetPort, .protocol] | join("|")
+    ' "${tmp_dir}/kagent-chart.yaml"
+})" "8084|8084|TCP" "MCP Service port mapping"
 
 if ! ${runtime}; then
 	echo "MCP governance manifest contract passed"
@@ -253,16 +407,17 @@ gateway_image="${AGENTGATEWAY_IMAGE:-cr.agentgateway.dev/agentgateway:${gateway_
 tools_image="$({
 	yq eval-all -N -r '
       select(.kind == "Deployment" and .metadata.name == "kagent-tools")
-      | .spec.template.spec.containers[0].image
+      | .spec.template.spec.containers[] | select(.name == "tools") | .image
     ' "${tmp_dir}/kagent-chart.yaml"
 })"
 network="fgentic-mcp-governance-$RANDOM-$$"
 gateway_container="${network}-gateway"
 tools_container="${network}-tools"
+pin_container="${network}-pin-tools"
 runtime_dir="$(mktemp -d)"
 
 cleanup_runtime() {
-	docker rm -f "${gateway_container}" "${tools_container}" >/dev/null 2>&1 || true
+	docker rm -f "${gateway_container}" "${tools_container}" "${pin_container}" >/dev/null 2>&1 || true
 	docker network rm "${network}" >/dev/null 2>&1 || true
 	rm -rf "${runtime_dir}"
 	cleanup_static
@@ -312,6 +467,23 @@ binds:
 EOF
 
 docker network create "${network}" >/dev/null
+mapfile -t pinned_command < <(jq -r '.servers[0].provenance.command[]' "${pin_path}")
+mapfile -t pinned_arguments < <(jq -r '.servers[0].provenance.arguments[]' "${pin_path}")
+docker run --rm --name "${pin_container}" --network "${network}" \
+	-p 127.0.0.1::8084 -d --entrypoint "${pinned_command[0]}" \
+	"${tools_image}" "${pinned_command[@]:1}" "${pinned_arguments[@]}" >/dev/null
+for _ in {1..50}; do
+	docker logs "${pin_container}" 2>&1 | rg -q 'Running KAgent Tools Server' && break
+	sleep 0.2
+done
+pin_port="$(docker port "${pin_container}" 8084/tcp 2>/dev/null \
+	| sed -n 's/.*:\([0-9][0-9]*\)$/\1/p' | head -1)"
+[ -n "${pin_port}" ] || fail "read-only MCP server did not publish its pin-verification port"
+"${REPO_ROOT}/scripts/pin-mcp.sh" verify \
+	--name kagent-tools \
+	--endpoint "http://127.0.0.1:${pin_port}/mcp" \
+	--pin "${pin_path}"
+docker rm -f "${pin_container}" >/dev/null
 # Deliberately start the fixture without --read-only. The gateway test must hide/reject the
 # write-capable tools even if an upstream configuration regression exposes them.
 docker run --rm --name "${tools_container}" --network "${network}" -d \

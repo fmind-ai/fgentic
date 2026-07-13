@@ -74,6 +74,10 @@ spec:
         - default
     kagent-tools:
       tools:
+        image:
+          # Pin executable code as well as the advertised MCP surface: either can rug-pull a
+          # reviewed backend when only a mutable tag is trusted.
+          tag: 0.2.1@sha256:50b431281d3e32666f27a292962fd486aabaac157083a844d037c12137e353aa
         enabledTools:
           - k8s
         args:
