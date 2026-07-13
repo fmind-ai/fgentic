@@ -8,7 +8,7 @@ metadata:
 
 # Observability
 
-kube-prometheus-stack lives in ns `monitoring` (`infra/observability/`); the platform-specific monitors and rules are the **dependent** `observability-monitors` layer (`infra/observability/monitors/` — split because PodMonitor/PrometheusRule CRDs must exist first). Spec: SPEC §9 → [docs/observability.md](../../../docs/observability.md). Traces & audit are M5 — not built yet.
+kube-prometheus-stack lives in ns `monitoring` (`infra/observability/`); the platform-specific monitors and rules are the **dependent** `observability-monitors` layer (`infra/observability/monitors/` — split because PodMonitor/PrometheusRule CRDs must exist first). Spec: SPEC §9 → [docs/observability.md](../../../docs/observability.md). The trace backend, bridge spans, propagation, and audit records are implemented; issue #35 still owns installed-cluster proof that gateway, agent, and model spans continue the bridge trace.
 
 ## Access
 
@@ -20,6 +20,13 @@ kube-prometheus-stack lives in ns `monitoring` (`infra/observability/`); the pla
 1. **Bridge**: `fgentic_delegations_total` (+ the rest of the bridge's Prometheus side-port) — delegation volume, outcomes, rate-limit hits.
 1. **agentgateway GenAI**: prefixed `agentgateway_gen_ai_*`; token metering is `agentgateway_gen_ai_client_token_usage_sum` — the platform's cost signal, labeled per model/route.
 1. **Cost alert**: `LLMTokenBurnHigh` (`infra/observability/monitors/cost-alert.yaml`) fires on sustained token burn (>100k/15m default, configured by `llm_usage_budget_15m` in platform-settings). `system_model_token_type:agentgateway_gen_ai_client_token_usage_sum:increase15m` keeps the provider/model/token-type breakdown for dashboards. Cost is the #1 failure mode (D7/D8): if you change rate limits or add automation that can invoke agents, check this alert still bounds the blast radius and run `mise run check:prometheus`.
+
+## Tracing and audit
+
+1. **Bridge span:** each admitted delegation emits one content-free `fgentic.delegation` span covering queue dequeue, A2A send/poll, and Matrix reply. `OTEL_EXPORTER_OTLP_ENDPOINT` enables the OTLP/HTTP exporter; an unset endpoint keeps standalone development tracing-free.
+1. **Propagation:** the bridge injects the active W3C `traceparent` into A2A HTTP requests. The reference deployment points both the bridge and agentgateway tracing policy at the central Collector.
+1. **Audit:** terminal delegation paths emit the stable, content-free `fgentic.delegation.v1` schema through the dedicated `log_stream=audit` logger. The reference deployment does not ship a log database.
+1. **Validation boundary:** `mise --cd apps/matrix-a2a-bridge run test` proves bridge span lifecycle and exact outbound propagation. `mise run test:tracing` proves only the Collector → Jaeger → Grafana datasource path with a synthetic span. Neither proves cross-component continuity; issue #35 requires one installed-cluster mention whose bridge, gateway, agent, and model spans share a trace ID.
 
 ## Investigating
 
