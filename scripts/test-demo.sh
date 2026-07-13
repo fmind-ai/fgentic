@@ -50,6 +50,7 @@ reply_fixture() {
 		--arg msgtype "${msgtype}" '{
       events_before: [],
       events_after: [{
+        event_id: "$reply",
         type: "m.room.message",
         sender: $sender,
         content: {
@@ -61,9 +62,48 @@ reply_fixture() {
     }'
 }
 
+replacement_fixture() {
+	local body="$1"
+	local sender="${2:-@agent-docs-qa:fgentic.localhost}"
+	local replacement_sender="${3:-${sender}}"
+	local replaced_event_id="${4:-\$reply}"
+	local replacement_msgtype="${5:-m.notice}"
+	jq --null-input --compact-output --arg body "${body}" --arg sender "${sender}" \
+		--arg replacement_sender "${replacement_sender}" \
+		--arg replaced_event_id "${replaced_event_id}" \
+		--arg replacement_msgtype "${replacement_msgtype}" '{
+      events_before: [],
+      events_after: [
+        {
+          event_id: "$reply",
+          type: "m.room.message",
+          sender: $sender,
+          content: {
+            msgtype: "m.notice",
+            body: "--- BEGIN FGENTIC BRIDGE PROVENANCE ---\nuntrusted request\n--- END UNTRUSTED MATRIX CONTENT ---",
+            "m.relates_to": {"m.in_reply_to": {event_id: "$probe"}}
+          }
+        },
+        {
+          event_id: "$replacement",
+          type: "m.room.message",
+          sender: $replacement_sender,
+          content: {
+            msgtype: "m.notice",
+            body: ("* " + $body),
+            "m.new_content": {msgtype: $replacement_msgtype, body: $body},
+            "m.relates_to": {rel_type: "m.replace", event_id: $replaced_event_id}
+          }
+        }
+      ]
+    }'
+}
+
 reply_fixture_matches() {
+	local provider="${1:-demo}"
+	local model="${2:-fgentic-demo}"
 	jq --exit-status --arg sender '@agent-docs-qa:fgentic.localhost' --arg event_id '$probe' \
-		--arg provider demo --arg model fgentic-demo \
+		--arg provider "${provider}" --arg model "${model}" \
 		--arg expected_demo_reply "${EXPECTED_DEMO_REPLY}" \
 		--from-file "${REPLY_FILTER}" >/dev/null
 }
@@ -466,11 +506,44 @@ reply_fixture "${EXPECTED_DEMO_REPLY}" | reply_fixture_matches || {
 	echo 'error: demo reply predicate rejected the exact deterministic model response' >&2
 	exit 1
 }
+replacement_fixture "${EXPECTED_DEMO_REPLY}" | reply_fixture_matches || {
+	echo 'error: demo reply predicate rejected the streamed Matrix replacement response' >&2
+	exit 1
+}
+replacement_fixture 'A useful model response.' |
+	reply_fixture_matches vertex google/gemini-2.5-flash || {
+	echo 'error: demo reply predicate rejected a successful configured-model replacement' >&2
+	exit 1
+}
+if replacement_fixture "${EXPECTED_DEMO_REPLY}" \
+	'@agent-docs-qa:fgentic.localhost' '@agent-scribe:fgentic.localhost' |
+	reply_fixture_matches; then
+	echo 'error: demo reply predicate accepted a replacement from the wrong ghost' >&2
+	exit 1
+fi
+if replacement_fixture "${EXPECTED_DEMO_REPLY}" \
+	'@agent-docs-qa:fgentic.localhost' '@agent-docs-qa:fgentic.localhost' '$other' |
+	reply_fixture_matches; then
+	echo 'error: demo reply predicate accepted a replacement for another event' >&2
+	exit 1
+fi
+if replacement_fixture "${EXPECTED_DEMO_REPLY}" \
+	'@agent-docs-qa:fgentic.localhost' '@agent-docs-qa:fgentic.localhost' '$reply' 'm.text' |
+	reply_fixture_matches; then
+	echo 'error: demo reply predicate accepted a replacement with the wrong message type' >&2
+	exit 1
+fi
+if reply_fixture '--- BEGIN FGENTIC BRIDGE PROVENANCE ---' |
+	reply_fixture_matches vertex google/gemini-2.5-flash; then
+	echo 'error: demo reply predicate accepted the streaming provenance envelope' >&2
+	exit 1
+fi
 for rejected_reply in \
 	'⚠️ could not reach agent "agent-docs-qa" — see the bridge logs.' \
 	'⏳ working on it…' \
 	'(the agent returned no content)'; do
-	if reply_fixture "${rejected_reply}" | reply_fixture_matches; then
+	if reply_fixture "${rejected_reply}" |
+		reply_fixture_matches vertex google/gemini-2.5-flash; then
 		echo "error: demo reply predicate accepted a non-success notice: ${rejected_reply}" >&2
 		exit 1
 	fi
