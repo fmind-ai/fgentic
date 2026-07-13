@@ -104,6 +104,7 @@ depends = [
   "check:dashboards",
   "check:reference-grants",
   "check:a2a-authorization",
+  "check:admission-policies",
   "check:mcp-governance",
   "check:audit-attribution",
   "check:secret-rotation",
@@ -186,6 +187,10 @@ run = "bash scripts/check-reference-grants.sh && bash scripts/test-reference-gra
 description = "Validate the fail-closed A2A API-key and CEL authorization contract"
 run = "bash scripts/test-a2a-authorization.sh"
 
+[tasks."check:admission-policies"]
+description = "Validate the fail-closed Kubernetes admission policy and Flux bootstrap contract"
+run = "bash scripts/test-admission-policies.sh"
+
 [tasks."check:mcp-governance"]
 description = "Validate the fail-closed per-agent MCP route, tool allowlist, and audit contract"
 run = "bash scripts/test-mcp-governance.sh"
@@ -237,6 +242,10 @@ run = "bash scripts/test-network-policies-kind.sh"
 [tasks."test:a2a-authorization"]
 description = "Exercise unauthorized and authorized requests against the pinned agentgateway runtime"
 run = "bash scripts/test-a2a-authorization.sh --runtime"
+
+[tasks."test:admission-policies"]
+description = "Exercise admission denials on an explicitly selected disposable/local cluster"
+run = "bash scripts/test-admission-policies.sh --runtime"
 
 [tasks."test:mcp-governance"]
 description = "Exercise MCP authentication, tool filtering, backend routing, and content-free audit records"

@@ -35,6 +35,17 @@ assert_yq() {
 }
 
 bash -n "${DEMO_SOURCES[@]}" "${ROOT_DIR}/scripts/seed-demo.sh"
+rg --fixed-strings \
+	'kubectl apply --server-side --kustomize "${SNAPSHOT_DIR}/infra/policies"' \
+	"${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null || {
+	echo 'error: demo bootstrap does not install admission before namespaces' >&2
+	exit 1
+}
+rg --fixed-strings 'scripts/test-admission-policies.sh" --runtime' \
+	"${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null || {
+	echo 'error: demo acceptance omits the admission runtime contract' >&2
+	exit 1
+}
 if (
 	cd "${WORK_DIR}"
 	env -u ROOT_DIR FGENTIC_CA_DIR="${WORK_DIR}/missing-ca" \

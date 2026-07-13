@@ -5,6 +5,9 @@ kind: Namespace
 metadata:
   name: activitypub
   labels:
+    fgentic.dev/managed: "true"
+    # The pre-publication deploy tag is rewritten to a digest only when CD publishes the image.
+    fgentic.dev/image-policy: audit
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
