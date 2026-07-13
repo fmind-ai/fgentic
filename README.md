@@ -84,7 +84,7 @@ mise install
 mise run demo:up
 ```
 
-The final output is the Element URL, `@alice:fgentic.localhost`, its generated password, and the seeded `#lobby:fgentic.localhost` room. The mapped ghosts are already members and the welcome mention has received a reply. The command does not mutate the checkout, commit, push, or need a GitHub account; its random credentials live only in the `fgentic-demo` cluster. Set `FGENTIC_DEMO_CACHE_DIR` to a persistent directory to reuse BuildKit layers across repeated installs. Remove only that evaluation cluster with `mise run demo:down`.
+The final output is the Element URL, `@alice:fgentic.localhost`, its generated password, and the seeded `#lobby:fgentic.localhost` room. Every mapped ghost is already a member and has replied to its own seeded transport probe. The command does not mutate the checkout, commit, push, or need a GitHub account; its random credentials live only in the `fgentic-demo` cluster. Set `FGENTIC_DEMO_CACHE_DIR` to a persistent directory to reuse BuildKit layers across repeated installs. Remove only that evaluation cluster with `mise run demo:down`.
 
 Choose the model boundary before using non-demo data:
 

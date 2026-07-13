@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Idempotently seed the evaluation user, lobby, mapped ghosts, welcome mention, and reply proof.
+# Idempotently seed the evaluation user, lobby, mapped ghosts, and one reply proof per agent.
 # The active kubectl context must point at a reconciled clusters/demo installation.
 set -euo pipefail
 
@@ -9,7 +9,10 @@ readonly SERVER_NAME="fgentic.localhost"
 readonly MAS_ADMIN_CLIENT_ID="01KX8D3M0AD3M0ADM1NC13NT01"
 readonly MATRIX_URL="https://matrix.${SERVER_NAME}"
 readonly AUTH_URL="https://auth.${SERVER_NAME}"
+readonly EXPECTED_DEMO_REPLY="Fgentic's deterministic evaluation model is working through agentgateway and kagent."
 readonly CA_CERT="${FGENTIC_CA_DIR:-${HOME}/.local/share/fgentic/local-ca}/ca.crt"
+readonly REPLY_FILTER="${ROOT_DIR}/scripts/lib/demo-reply.jq"
+readonly SEED_STATE_FILTER="${ROOT_DIR}/scripts/lib/demo-seed-state.jq"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo-seed.XXXXXX")"
 readonly WORK_DIR
 
@@ -91,6 +94,28 @@ lobby_has_canonical_alias() {
 		jq -e --arg alias "${room_alias}" '.alias == $alias' "${OUTPUT}" >/dev/null
 }
 
+probe_has_reply() {
+	local ghost="$1"
+	local event_id="$2"
+	local encoded_event context
+	encoded_event="$(jq --null-input --raw-output --arg value "${event_id}" '$value | @uri')"
+	context="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
+		--header "Authorization: Bearer ${MATRIX_TOKEN}" \
+		"${MATRIX_URL}/_matrix/client/v3/rooms/${encoded_room}/context/${encoded_event}?limit=50")" || return 1
+	jq -e --arg sender "@${ghost}:${SERVER_NAME}" --arg event_id "${event_id}" \
+		--arg provider "${LLM_PROVIDER}" --arg model "${LLM_MODEL}" \
+		--arg expected_demo_reply "${EXPECTED_DEMO_REPLY}" \
+		--from-file "${REPLY_FILTER}" <<<"${context}" >/dev/null
+}
+
+all_probes_have_replies() {
+	local ghost event_id
+	for ghost in "${GHOSTS[@]}"; do
+		event_id="$(jq -er --arg ghost "${ghost}" '.[$ghost]' <<<"${PROBE_EVENT_IDS}")" || return 1
+		probe_has_reply "${ghost}" "${event_id}" || return 1
+	done
+}
+
 retire_legacy_lobby_alias() {
 	local room_id="$1"
 	local encoded_room status
@@ -117,6 +142,10 @@ LLM_PROVIDER="$(kubectl --namespace flux-system get configmap platform-settings 
 	--output 'go-template={{index .data "llm_provider"}}')"
 LLM_MODEL="$(kubectl --namespace flux-system get configmap platform-settings \
 	--output 'go-template={{index .data "llm_model"}}')"
+SOURCE_REVISION="$(kubectl --namespace flux-system get gitrepository flux-system \
+	--output jsonpath='{.status.artifact.revision}')"
+[[ "${SOURCE_REVISION}" =~ ^main@sha1:[0-9a-f]{40}$ ]] ||
+	die "Flux source has no valid reconciled artifact revision: ${SOURCE_REVISION:-none}"
 OUTPUT="${WORK_DIR}/response.json"
 
 token_response="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
@@ -245,38 +274,67 @@ encoded_marker="$(jq --null-input --raw-output --arg value "${marker_type}" '$va
 status="$(request_status "${OUTPUT}" \
 	--header "Authorization: Bearer ${MATRIX_TOKEN}" \
 	"${MATRIX_URL}/_matrix/client/v3/rooms/${encoded_room}/state/${encoded_marker}")"
-first_ghost="${GHOSTS[0]}"
-first_mxid="@${first_ghost}:${SERVER_NAME}"
 should_seed=true
-event_id=""
+PROBE_EVENT_IDS='{}'
+ghosts_json="$(printf '%s\n' "${GHOSTS[@]}" | jq --raw-input --slurp --compact-output 'split("\n")[:-1]')"
 if [ "${status}" = "200" ]; then
 	marker_document="$(<"${OUTPUT}")"
-	event_id="$(jq -r '.welcome_event_id // empty' <<<"${marker_document}")"
 	if jq -e --arg provider "${LLM_PROVIDER}" --arg model "${LLM_MODEL}" \
-		'.version == 1 and .provider == $provider and .model == $model and
-     (.welcome_event_id | type == "string" and length > 0)' \
+		--arg source_revision "${SOURCE_REVISION}" \
+		--argjson ghosts "${ghosts_json}" \
+		--from-file "${SEED_STATE_FILTER}" \
 		<<<"${marker_document}" >/dev/null; then
+		PROBE_EVENT_IDS="$(jq --compact-output '.probe_event_ids' <<<"${marker_document}")"
 		should_seed=false
 	fi
 elif [ "${status}" != "404" ]; then
 	die "could not read demo seed state (HTTP ${status})"
 fi
 
+if [ "${should_seed}" = false ] && ! all_probes_have_replies; then
+	echo 'Refreshing stale demo agent reply proofs.' >&2
+	should_seed=true
+fi
+
 if [ "${should_seed}" = true ]; then
-	message_document="$(jq --null-input --compact-output --arg mxid "${first_mxid}" '{
-    msgtype: "m.text",
-    body: ("Welcome to Fgentic. Try " + $mxid + " confirm that the evaluation path works."),
-    "m.mentions": {user_ids: [$mxid]}
-  }')"
-	status="$(request_status "${OUTPUT}" --request PUT \
-		--header "Authorization: Bearer ${MATRIX_TOKEN}" \
-		--header 'Content-Type: application/json' --data "${message_document}" \
-		"${MATRIX_URL}/_matrix/client/v3/rooms/${encoded_room}/send/m.room.message/demo-$$")"
-	[ "${status}" = "200" ] || die "could not post the demo welcome message (HTTP ${status})"
-	event_id="$(jq -er '.event_id' "${OUTPUT}")"
-	seed_state="$(jq --null-input --compact-output --arg event_id "${event_id}" \
+	PROBE_EVENT_IDS='{}'
+	probe_index=0
+	for ghost in "${GHOSTS[@]}"; do
+		probe_index=$((probe_index + 1))
+		ghost_mxid="@${ghost}:${SERVER_NAME}"
+		message_document="$(jq --null-input --compact-output --arg mxid "${ghost_mxid}" '{
+      msgtype: "m.text",
+      body: ("Fgentic evaluation probe: " + $mxid + " confirm that the evaluation path works."),
+      "m.mentions": {user_ids: [$mxid]}
+    }')"
+		status="$(request_status "${OUTPUT}" --request PUT \
+			--header "Authorization: Bearer ${MATRIX_TOKEN}" \
+			--header 'Content-Type: application/json' --data "${message_document}" \
+			"${MATRIX_URL}/_matrix/client/v3/rooms/${encoded_room}/send/m.room.message/demo-${probe_index}-$$")"
+		[ "${status}" = "200" ] || die "could not post the ${ghost_mxid} demo probe (HTTP ${status})"
+		event_id="$(jq -er '.event_id' "${OUTPUT}")"
+		PROBE_EVENT_IDS="$(jq --compact-output --arg ghost "${ghost}" --arg event_id "${event_id}" \
+			'. + {($ghost): $event_id}' <<<"${PROBE_EVENT_IDS}")"
+	done
+fi
+
+deadline=$((SECONDS + 120))
+all_replied=false
+while ((SECONDS < deadline)); do
+	if all_probes_have_replies; then
+		all_replied=true
+		break
+	fi
+	sleep 2
+done
+[ "${all_replied}" = true ] || die "not every mapped demo agent returned a successful reply within 2 minutes"
+
+if [ "${should_seed}" = true ]; then
+	seed_state="$(jq --null-input --compact-output --argjson probe_event_ids "${PROBE_EVENT_IDS}" \
 		--arg provider "${LLM_PROVIDER}" --arg model "${LLM_MODEL}" \
-		'{version: 1, welcome_event_id: $event_id, provider: $provider, model: $model}')"
+		--arg source_revision "${SOURCE_REVISION}" \
+		'{version: 2, probe_event_ids: $probe_event_ids, provider: $provider, model: $model,
+      source_revision: $source_revision}')"
 	status="$(request_status "${OUTPUT}" --request PUT \
 		--header "Authorization: Bearer ${MATRIX_TOKEN}" \
 		--header 'Content-Type: application/json' \
@@ -284,24 +342,6 @@ if [ "${should_seed}" = true ]; then
 		"${MATRIX_URL}/_matrix/client/v3/rooms/${encoded_room}/state/${encoded_marker}")"
 	[ "${status}" = "200" ] || die "could not record demo seed state (HTTP ${status})"
 fi
-
-deadline=$((SECONDS + 120))
-while ((SECONDS < deadline)); do
-	messages="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
-		--header "Authorization: Bearer ${MATRIX_TOKEN}" \
-		"${MATRIX_URL}/_matrix/client/v3/rooms/${encoded_room}/messages?dir=b&limit=30")"
-	if jq -e --arg sender "${first_mxid}" --arg event_id "${event_id}" \
-		'.chunk[] | select(
-      .type == "m.room.message" and
-      .sender == $sender and
-      .content."m.relates_to"."m.in_reply_to".event_id == $event_id
-    )' \
-		<<<"${messages}" >/dev/null; then
-		break
-	fi
-	sleep 2
-done
-((SECONDS < deadline)) || die "the seeded agent mention did not receive a reply within 2 minutes"
 
 # The seeder session is disposable; the human logs in separately with the printed password.
 curl --silent --show-error --cacert "${CA_CERT}" --request POST \

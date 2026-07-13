@@ -7,6 +7,14 @@ readonly ROOT_DIR
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo-check.XXXXXX")"
 readonly WORK_DIR
 readonly DEMO="${ROOT_DIR}/scripts/demo.sh"
+readonly REPLY_FILTER="${ROOT_DIR}/scripts/lib/demo-reply.jq"
+readonly SEED_STATE_FILTER="${ROOT_DIR}/scripts/lib/demo-seed-state.jq"
+readonly EXPECTED_DEMO_REPLY="Fgentic's deterministic evaluation model is working through agentgateway and kagent."
+readonly -a DEMO_SEED_SOURCES=(
+	"${ROOT_DIR}/scripts/seed-demo.sh"
+	"${REPLY_FILTER}"
+	"${SEED_STATE_FILTER}"
+)
 readonly -a DEMO_SOURCES=(
 	"${DEMO}"
 	"${ROOT_DIR}/scripts/lib.sh"
@@ -32,6 +40,32 @@ assert_yq() {
 		echo "error: ${message}" >&2
 		exit 1
 	}
+}
+
+reply_fixture() {
+	local body="$1"
+	local sender="${2:-@agent-docs-qa:fgentic.localhost}"
+	local msgtype="${3:-m.notice}"
+	jq --null-input --compact-output --arg body "${body}" --arg sender "${sender}" \
+		--arg msgtype "${msgtype}" '{
+      events_before: [],
+      events_after: [{
+        type: "m.room.message",
+        sender: $sender,
+        content: {
+          msgtype: $msgtype,
+          body: $body,
+          "m.relates_to": {"m.in_reply_to": {event_id: "$probe"}}
+        }
+      }]
+    }'
+}
+
+reply_fixture_matches() {
+	jq --exit-status --arg sender '@agent-docs-qa:fgentic.localhost' --arg event_id '$probe' \
+		--arg provider demo --arg model fgentic-demo \
+		--arg expected_demo_reply "${EXPECTED_DEMO_REPLY}" \
+		--from-file "${REPLY_FILTER}" >/dev/null
 }
 
 bash -n "${DEMO_SOURCES[@]}" "${ROOT_DIR}/scripts/seed-demo.sh"
@@ -339,6 +373,64 @@ for contract in \
 	rg --fixed-strings -- "${contract}" "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
 done
 rg --fixed-strings '/api/admin/v1/users' "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
+for contract in \
+	'all_probes_have_replies' \
+	'probe_event_ids' \
+	'/_matrix/client/v3/rooms/${encoded_room}/context/${encoded_event}?limit=50' \
+	'.source_revision == $source_revision' \
+	'Fgentic'"'"'s deterministic evaluation model is working through agentgateway and kagent.' \
+	'.content.msgtype == "m.notice"' \
+	'source_revision: $source_revision'; do
+	rg --fixed-strings -- "${contract}" "${DEMO_SEED_SOURCES[@]}" >/dev/null || {
+		echo "error: demo seeder omits the per-agent reply contract: ${contract}" >&2
+		exit 1
+	}
+done
+if rg --fixed-strings 'first_ghost=' "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null; then
+	echo 'error: demo seeder still proves only the first mapped agent' >&2
+	exit 1
+fi
+if rg --fixed-strings '/send/m.room.message/demo-${ghost}' \
+	"${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null; then
+	echo 'error: demo seeder puts an unescaped ghost localpart in a Matrix transaction path' >&2
+	exit 1
+fi
+
+reply_fixture "${EXPECTED_DEMO_REPLY}" | reply_fixture_matches || {
+	echo 'error: demo reply predicate rejected the exact deterministic model response' >&2
+	exit 1
+}
+for rejected_reply in \
+	'⚠️ could not reach agent "agent-docs-qa" — see the bridge logs.' \
+	'⏳ working on it…' \
+	'(the agent returned no content)'; do
+	if reply_fixture "${rejected_reply}" | reply_fixture_matches; then
+		echo "error: demo reply predicate accepted a non-success notice: ${rejected_reply}" >&2
+		exit 1
+	fi
+done
+if jq --null-input --compact-output '{events_before: [], events_after: []}' |
+	reply_fixture_matches; then
+	echo 'error: demo reply predicate accepted a missing reply' >&2
+	exit 1
+fi
+
+ghosts_json='["agent-docs-qa","agent-platform-helper","agent-scribe"]'
+seed_state='{"version":2,"provider":"demo","model":"fgentic-demo","source_revision":"main@sha1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","probe_event_ids":{"agent-docs-qa":"$1","agent-platform-helper":"$2","agent-scribe":"$3"}}'
+seed_state_matches() {
+	local source_revision="$1"
+	jq --exit-status --arg provider demo --arg model fgentic-demo \
+		--arg source_revision "${source_revision}" --argjson ghosts "${ghosts_json}" \
+		--from-file "${SEED_STATE_FILTER}" >/dev/null <<<"${seed_state}"
+}
+seed_state_matches 'main@sha1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' || {
+	echo 'error: demo seed-state predicate rejected the reconciled source revision' >&2
+	exit 1
+}
+if seed_state_matches 'main@sha1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'; then
+	echo 'error: demo seed-state predicate reused proof from an older source revision' >&2
+	exit 1
+fi
 
 if rg -n 'mas_password_login_enabled|llm_token_budget_15m' \
 	"${ROOT_DIR}/clusters/demo" "${DEMO_SOURCES[@]}"; then
