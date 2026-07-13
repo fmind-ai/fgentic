@@ -131,6 +131,9 @@ spec:
               # symlink, which the bridge polls. A subPath mount would stay frozen forever.
               mountPath: /etc/matrix-a2a-bridge/agents
               readOnly: true
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /_matrix/mau/live
@@ -154,6 +157,9 @@ spec:
         - name: agents
           configMap:
             name: {{ include "matrix-a2a-bridge.fullname" . }}-agents
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}
