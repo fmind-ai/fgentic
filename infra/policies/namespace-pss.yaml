@@ -1,0 +1,62 @@
+# The binding objectSelector is evaluated against both old and new objects. A managed namespace
+# therefore cannot escape by removing its marker, and bootstrap creation is rejected unless the
+# complete PSS profile is already present.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: managed-namespace-pss.fgentic.dev
+  annotations:
+    fgentic.dev/cel-cost: constant; fixed label map lookups only
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [namespaces]
+  validations:
+    - expression: 'has(object.metadata.labels) && "fgentic.dev/managed" in object.metadata.labels && object.metadata.labels["fgentic.dev/managed"] == "true"'
+      message: managed namespaces must retain fgentic.dev/managed=true
+      reason: Forbidden
+    - expression: 'has(object.metadata.labels) && "fgentic.dev/image-policy" in object.metadata.labels && object.metadata.labels["fgentic.dev/image-policy"] in ["audit", "enforce"]'
+      message: managed namespaces must select the audit or enforce image policy
+      reason: Invalid
+    - expression: 'has(object.metadata.labels) && "pod-security.kubernetes.io/enforce" in object.metadata.labels && object.metadata.labels["pod-security.kubernetes.io/enforce"] in ["restricted", "baseline", "privileged"]'
+      message: managed namespaces must declare a valid Pod Security enforce level
+      reason: Invalid
+    - expression: 'has(object.metadata.labels) && "pod-security.kubernetes.io/audit" in object.metadata.labels && object.metadata.labels["pod-security.kubernetes.io/audit"] in ["restricted", "baseline", "privileged"]'
+      message: managed namespaces must declare a valid Pod Security audit level
+      reason: Invalid
+    - expression: 'has(object.metadata.labels) && "pod-security.kubernetes.io/warn" in object.metadata.labels && object.metadata.labels["pod-security.kubernetes.io/warn"] in ["restricted", "baseline", "privileged"]'
+      message: managed namespaces must declare a valid Pod Security warn level
+      reason: Invalid
+    # Absent version labels mean "latest". Pinning an older version would silently weaken the
+    # immutable level labels as Kubernetes evolves the Pod Security Standards.
+    - expression: '!has(object.metadata.labels) || (!("pod-security.kubernetes.io/enforce-version" in object.metadata.labels) && !("pod-security.kubernetes.io/audit-version" in object.metadata.labels) && !("pod-security.kubernetes.io/warn-version" in object.metadata.labels))'
+      message: managed namespaces must use the current Pod Security version
+      reason: Forbidden
+    - expression: 'oldObject == null || !has(oldObject.metadata.labels) || !("fgentic.dev/image-policy" in oldObject.metadata.labels) || oldObject.metadata.labels["fgentic.dev/image-policy"] != "enforce" || (has(object.metadata.labels) && "fgentic.dev/image-policy" in object.metadata.labels && object.metadata.labels["fgentic.dev/image-policy"] == "enforce")'
+      message: a managed namespace cannot downgrade image-policy from enforce to audit
+      reason: Forbidden
+    - expression: 'oldObject == null || !has(oldObject.metadata.labels) || !("pod-security.kubernetes.io/enforce" in oldObject.metadata.labels) || (has(object.metadata.labels) && "pod-security.kubernetes.io/enforce" in object.metadata.labels && object.metadata.labels["pod-security.kubernetes.io/enforce"] == oldObject.metadata.labels["pod-security.kubernetes.io/enforce"])'
+      message: the managed namespace Pod Security enforce level is immutable
+      reason: Forbidden
+    - expression: 'oldObject == null || !has(oldObject.metadata.labels) || !("pod-security.kubernetes.io/audit" in oldObject.metadata.labels) || (has(object.metadata.labels) && "pod-security.kubernetes.io/audit" in object.metadata.labels && object.metadata.labels["pod-security.kubernetes.io/audit"] == oldObject.metadata.labels["pod-security.kubernetes.io/audit"])'
+      message: the managed namespace Pod Security audit level is immutable
+      reason: Forbidden
+    - expression: 'oldObject == null || !has(oldObject.metadata.labels) || !("pod-security.kubernetes.io/warn" in oldObject.metadata.labels) || (has(object.metadata.labels) && "pod-security.kubernetes.io/warn" in object.metadata.labels && object.metadata.labels["pod-security.kubernetes.io/warn"] == oldObject.metadata.labels["pod-security.kubernetes.io/warn"])'
+      message: the managed namespace Pod Security warn level is immutable
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: managed-namespace-pss.fgentic.dev
+spec:
+  policyName: managed-namespace-pss.fgentic.dev
+  validationActions: [Deny, Audit]
+  matchResources:
+    objectSelector:
+      matchLabels:
+        fgentic.dev/managed: "true"

@@ -368,6 +368,9 @@ demo_up() {
 			https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/experimental-install.yaml \
 			>/dev/null
 	fi
+	# Match the production Flux DAG: admission must protect the first managed Namespace creation,
+	# not only later updates. These cluster-scoped objects have no namespace/CRD dependency.
+	kubectl apply --server-side --kustomize "${SNAPSHOT_DIR}/infra/policies" >/dev/null
 	kubectl apply --kustomize "${SNAPSHOT_DIR}/infra/namespaces" >/dev/null
 	if [ "${PROFILE}" = "federation" ]; then
 		kubectl apply --filename \
@@ -380,6 +383,10 @@ demo_up() {
 
 	echo "Reconciling the ${PROFILE} evaluation profile (timeout ${DEMO_TIMEOUT})..."
 	wait_for_platform
+	local admission_context
+	admission_context="$(kubectl config current-context)"
+	ADMISSION_POLICY_CONTEXT="${admission_context}" \
+		"${ROOT_DIR}/scripts/test-admission-policies.sh" --runtime
 	"${ROOT_DIR}/${SEED_SCRIPT}"
 }
 

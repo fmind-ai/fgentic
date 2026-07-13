@@ -1,0 +1,70 @@
+# kagent Agent CRDs are dynamically typed by VAP. Keep validations small and fail closed: every
+# managed Agent uses the one model gateway and the reviewed pod identity, and only platform-helper
+# may receive the reviewed MCP credential/tool subset. Agent-as-tool, pod overrides, and BYO
+# execution are deliberately outside this surface.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: approved-agent-references.fgentic.dev
+  annotations:
+    fgentic.dev/cel-cost: linear in Agent tools, headers, and tool names; no cross-object lookup
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [kagent.dev]
+        apiVersions: [v1alpha2]
+        operations: [CREATE, UPDATE]
+        resources: [agents]
+  validations:
+    - expression: 'has(object.spec.type) && object.spec.type == "Declarative" && has(object.spec.declarative)'
+      message: managed Agents must use the Declarative execution type
+      reason: Forbidden
+    - expression: 'object.metadata.namespace == "kagent"'
+      message: managed Agents must be created only in the kagent namespace
+      reason: Forbidden
+    - expression: 'has(object.spec.declarative.modelConfig) && object.spec.declarative.modelConfig == "agentgateway-model"'
+      message: managed Agents must use modelConfig agentgateway-model
+      reason: Forbidden
+    - expression: "!has(object.spec.allowedNamespaces) && !has(object.spec.skills) && !has(object.spec.sandbox)"
+      message: managed Agents cannot expose cross-namespace Agent tools, legacy skills, or sandbox execution
+      reason: Forbidden
+    - expression: "!has(object.spec.declarative.executeCodeBlocks) || object.spec.declarative.executeCodeBlocks == false"
+      message: managed Agents cannot execute model-generated code blocks
+      reason: Forbidden
+    - expression: '(!has(object.spec.declarative.runtime) || object.spec.declarative.runtime == "python") && !has(object.spec.declarative.memory) && !has(object.spec.declarative.context) && !has(object.spec.declarative.systemMessageFrom)'
+      message: managed Agents cannot select alternate runtimes, model references, or Secret-backed prompts
+      reason: Forbidden
+    - expression: 'has(object.spec.declarative.deployment) && has(object.spec.declarative.deployment.serviceAccountName) && object.spec.declarative.deployment.serviceAccountName == "agent-zoo-runtime" && has(object.spec.declarative.deployment.labels) && "fgentic.dev/agent-zoo" in object.spec.declarative.deployment.labels && object.spec.declarative.deployment.labels["fgentic.dev/agent-zoo"] == "true" && size(object.spec.declarative.deployment.labels) == 1'
+      message: managed Agents must use the reviewed agent-zoo-runtime pod identity
+      reason: Forbidden
+    - expression: "!has(object.spec.declarative.deployment) || (!has(object.spec.declarative.deployment.affinity) && !has(object.spec.declarative.deployment.annotations) && !has(object.spec.declarative.deployment.env) && !has(object.spec.declarative.deployment.extraContainers) && !has(object.spec.declarative.deployment.imagePullPolicy) && !has(object.spec.declarative.deployment.imagePullSecrets) && !has(object.spec.declarative.deployment.imageRegistry) && !has(object.spec.declarative.deployment.nodeSelector) && !has(object.spec.declarative.deployment.podSecurityContext) && !has(object.spec.declarative.deployment.replicas) && !has(object.spec.declarative.deployment.securityContext) && !has(object.spec.declarative.deployment.serviceAccountConfig) && !has(object.spec.declarative.deployment.tolerations) && !has(object.spec.declarative.deployment.volumeMounts) && !has(object.spec.declarative.deployment.volumes))"
+      message: managed Agents cannot override the reviewed pod runtime
+      reason: Forbidden
+    - expression: '!has(object.spec.declarative.tools) || (object.metadata.name == "platform-helper" && size(object.spec.declarative.tools) == 1)'
+      message: only platform-helper may declare exactly one governed tool server
+      reason: Forbidden
+    - expression: '!has(object.spec.declarative.tools) || object.spec.declarative.tools.all(t, has(t.type) && t.type == "McpServer" && has(t.mcpServer) && t.mcpServer.name == "kagent-tool-server" && t.mcpServer.kind == "RemoteMCPServer" && t.mcpServer.apiGroup == "kagent.dev" && (!has(t.mcpServer.namespace) || t.mcpServer.namespace == "kagent"))'
+      message: tool references must target the reviewed kagent-tool-server RemoteMCPServer
+      reason: Forbidden
+    - expression: "!has(object.spec.declarative.tools) || object.spec.declarative.tools.all(t, !has(t.mcpServer.allowedHeaders) && !has(t.mcpServer.requireApproval))"
+      message: tool references cannot propagate request headers or override approval policy
+      reason: Forbidden
+    - expression: '!has(object.spec.declarative.tools) || object.spec.declarative.tools.all(t, has(t.mcpServer.toolNames) && size(t.mcpServer.toolNames) > 0 && t.mcpServer.toolNames.all(n, n in ["k8s_get_resources", "k8s_describe_resource", "k8s_get_events", "k8s_get_resource_yaml", "k8s_get_pod_logs"]))'
+      message: toolNames must be a non-empty subset of the reviewed read-only Kubernetes tools
+      reason: Forbidden
+    - expression: '!has(object.spec.declarative.tools) || object.spec.declarative.tools.all(t, has(t.headersFrom) && size(t.headersFrom) == 1 && t.headersFrom.all(h, h.name == "Authorization" && !has(h.value) && has(h.valueFrom) && h.valueFrom.type == "Secret" && h.valueFrom.name == "platform-helper-mcp-credential" && h.valueFrom.key == "authorization"))'
+      message: platform-helper must use only its reviewed MCP Authorization Secret reference
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: approved-agent-references.fgentic.dev
+spec:
+  policyName: approved-agent-references.fgentic.dev
+  validationActions: [Deny, Audit]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        fgentic.dev/managed: "true"

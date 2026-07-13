@@ -1,0 +1,187 @@
+# Minimal structural fixture for admission tests. Production installs the fuller CRD from the
+# pinned kagent chart; these are exactly the fields read by the VAP expressions.
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: agents.kagent.dev
+spec:
+  group: kagent.dev
+  scope: Namespaced
+  names:
+    plural: agents
+    singular: agent
+    kind: Agent
+    listKind: AgentList
+  versions:
+    - name: v1alpha2
+      served: true
+      storage: true
+      schema:
+        openAPIV3Schema:
+          type: object
+          required: [spec]
+          properties:
+            spec:
+              type: object
+              x-kubernetes-preserve-unknown-fields: true
+              properties:
+                type:
+                  type: string
+                allowedNamespaces:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                skills:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                sandbox:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                declarative:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                  properties:
+                    modelConfig:
+                      type: string
+                    executeCodeBlocks:
+                      type: boolean
+                    runtime:
+                      type: string
+                      default: python
+                    memory:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    context:
+                      type: object
+                      x-kubernetes-preserve-unknown-fields: true
+                    systemMessageFrom:
+                      type: object
+                      properties:
+                        type:
+                          type: string
+                        name:
+                          type: string
+                        key:
+                          type: string
+                    deployment:
+                      type: object
+                      properties:
+                        serviceAccountName:
+                          type: string
+                        labels:
+                          type: object
+                          additionalProperties:
+                            type: string
+                        resources:
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                        affinity:
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                        annotations:
+                          type: object
+                          additionalProperties:
+                            type: string
+                        env:
+                          type: array
+                          items:
+                            type: object
+                            x-kubernetes-preserve-unknown-fields: true
+                        extraContainers:
+                          type: array
+                          items:
+                            type: object
+                            x-kubernetes-preserve-unknown-fields: true
+                        imagePullPolicy:
+                          type: string
+                        imagePullSecrets:
+                          type: array
+                          items:
+                            type: object
+                            x-kubernetes-preserve-unknown-fields: true
+                        imageRegistry:
+                          type: string
+                        nodeSelector:
+                          type: object
+                          additionalProperties:
+                            type: string
+                        podSecurityContext:
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                        replicas:
+                          type: integer
+                        securityContext:
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                        serviceAccountConfig:
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+                        tolerations:
+                          type: array
+                          items:
+                            type: object
+                            x-kubernetes-preserve-unknown-fields: true
+                        volumeMounts:
+                          type: array
+                          items:
+                            type: object
+                            x-kubernetes-preserve-unknown-fields: true
+                        volumes:
+                          type: array
+                          items:
+                            type: object
+                            x-kubernetes-preserve-unknown-fields: true
+                    tools:
+                      type: array
+                      items:
+                        type: object
+                        properties:
+                          type:
+                            type: string
+                          mcpServer:
+                            type: object
+                            properties:
+                              name:
+                                type: string
+                              kind:
+                                type: string
+                              apiGroup:
+                                type: string
+                              namespace:
+                                type: string
+                              allowedHeaders:
+                                type: array
+                                items:
+                                  type: string
+                              requireApproval:
+                                type: array
+                                items:
+                                  type: string
+                              toolNames:
+                                type: array
+                                items:
+                                  type: string
+                          agent:
+                            type: object
+                            properties:
+                              name:
+                                type: string
+                          headersFrom:
+                            type: array
+                            items:
+                              type: object
+                              properties:
+                                name:
+                                  type: string
+                                value:
+                                  type: string
+                                valueFrom:
+                                  type: object
+                                  properties:
+                                    type:
+                                      type: string
+                                    name:
+                                      type: string
+                                    key:
+                                      type: string

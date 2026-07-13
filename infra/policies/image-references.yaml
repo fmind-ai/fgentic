@@ -1,0 +1,102 @@
+# Admission sees the final PodSpec produced by Helm/operators, so this remains effective even when
+# a higher-level controller is not owned by Fgentic. Keep the expressions split by container list:
+# CEL type-checks each Kubernetes list independently and every expression stays linear.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: no-latest-images.fgentic.dev
+  annotations:
+    fgentic.dev/cel-cost: linear per Pod container list; at most two anchored RE2 matches per image
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods, pods/ephemeralcontainers]
+  validations:
+    - expression: 'object.spec.containers.all(c, !c.image.matches("(^|.*/)[^/@]+:latest(@sha256:[0-9a-f]{64})?$"))'
+      message: container images must not use the latest tag
+      reason: Forbidden
+    - expression: 'object.spec.containers.all(c, c.image.matches("@sha256:[0-9a-f]{64}$") || c.image.matches("(^|.*/)[^/@:]+:[^/@:]+$"))'
+      message: container images must use an explicit non-latest tag or immutable sha256 digest
+      reason: Forbidden
+    - expression: '!has(object.spec.initContainers) || object.spec.initContainers.all(c, !c.image.matches("(^|.*/)[^/@]+:latest(@sha256:[0-9a-f]{64})?$"))'
+      message: init container images must not use the latest tag
+      reason: Forbidden
+    - expression: '!has(object.spec.initContainers) || object.spec.initContainers.all(c, c.image.matches("@sha256:[0-9a-f]{64}$") || c.image.matches("(^|.*/)[^/@:]+:[^/@:]+$"))'
+      message: init container images must use an explicit non-latest tag or immutable sha256 digest
+      reason: Forbidden
+    - expression: '!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c, !c.image.matches("(^|.*/)[^/@]+:latest(@sha256:[0-9a-f]{64})?$"))'
+      message: ephemeral container images must not use the latest tag
+      reason: Forbidden
+    - expression: '!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c, c.image.matches("@sha256:[0-9a-f]{64}$") || c.image.matches("(^|.*/)[^/@:]+:[^/@:]+$"))'
+      message: ephemeral container images must use an explicit non-latest tag or immutable sha256 digest
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: no-latest-images.fgentic.dev
+spec:
+  policyName: no-latest-images.fgentic.dev
+  validationActions: [Deny, Audit]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        fgentic.dev/managed: "true"
+---
+# The current upstream Helm charts still emit tag-only references. Warn+Audit makes that debt
+# visible without blocking their next rollout; namespaces whose complete owned workload surface
+# is already digest-pinned opt into Deny with fgentic.dev/image-policy=enforce.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: digest-pinned-images.fgentic.dev
+  annotations:
+    fgentic.dev/cel-cost: linear per Pod container list; one anchored RE2 match per image
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [pods, pods/ephemeralcontainers]
+  validations:
+    - expression: 'object.spec.containers.all(c, c.image.matches("^.+@sha256:[0-9a-f]{64}$"))'
+      message: container images should end in an immutable sha256 digest
+      reason: Forbidden
+    - expression: '!has(object.spec.initContainers) || object.spec.initContainers.all(c, c.image.matches("^.+@sha256:[0-9a-f]{64}$"))'
+      message: init container images should end in an immutable sha256 digest
+      reason: Forbidden
+    - expression: '!has(object.spec.ephemeralContainers) || object.spec.ephemeralContainers.all(c, c.image.matches("^.+@sha256:[0-9a-f]{64}$"))'
+      message: ephemeral container images should end in an immutable sha256 digest
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: digest-pinned-images-audit.fgentic.dev
+spec:
+  policyName: digest-pinned-images.fgentic.dev
+  validationActions: [Warn, Audit]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        fgentic.dev/managed: "true"
+        fgentic.dev/image-policy: audit
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: digest-pinned-images-enforce.fgentic.dev
+spec:
+  policyName: digest-pinned-images.fgentic.dev
+  validationActions: [Deny, Audit]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        fgentic.dev/managed: "true"
+        fgentic.dev/image-policy: enforce

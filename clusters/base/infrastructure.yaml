@@ -11,8 +11,26 @@
 # per-cluster (registration regexes embed the server_name; credentials never span environments),
 # so each overlay declares its own (clusters/<env>/secrets.yaml -> clusters/<env>/secrets/).
 ---
-# Every platform namespace, first and dependency-free: HelmRelease objects and Secrets cannot be
-# created in namespaces that do not exist, and namespace-per-layer creates circular waits.
+# Cluster-scoped admission policy is first and dependency-free. Installing it before namespaces
+# closes the bootstrap gap: the initial managed Namespace objects are admitted under the same PSS
+# and image-profile contract as later updates.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: policies
+  namespace: flux-system
+spec:
+  interval: 30m
+  path: ./infra/policies
+  prune: true
+  wait: true
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+---
+# Every platform namespace, early and otherwise dependency-free: HelmRelease objects and Secrets
+# cannot be created in namespaces that do not exist, and namespace-per-layer creates circular
+# waits. The policy dependency is cluster-scoped and introduces no reverse namespace edge.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -23,6 +41,8 @@ spec:
   path: ./infra/namespaces
   prune: true
   wait: true
+  dependsOn:
+    - name: policies
   sourceRef:
     kind: GitRepository
     name: flux-system
