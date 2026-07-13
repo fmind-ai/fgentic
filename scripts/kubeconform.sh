@@ -85,6 +85,7 @@ if [ -d apps/activitypub-agent-gateway/chart ]; then
     --set policy.enabled=true \
     --set integrity.enabled=true \
     --set integrity.requireInbound=true \
+    --set identity.enabled=true \
     --set budget.enabled=true \
     --set groups.enabled=true \
     --set statusFeed.enabled=true \

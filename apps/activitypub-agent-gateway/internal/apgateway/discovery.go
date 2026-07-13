@@ -27,6 +27,16 @@ type discoveryCard struct {
 	DefaultInputModes  []string       `json:"defaultInputModes"`
 	DefaultOutputModes []string       `json:"defaultOutputModes"`
 	Skills             []any          `json:"skills"`
+	// Identity cross-references the actor's FEP-c390 did:key and publishes the matching P-256 JWK, so
+	// a verifier confirms this A2A face shares the sovereign key of the AP actor (issue #218). Omitted
+	// when the identity anchor is disabled.
+	Identity *cardIdentity `json:"identity,omitempty"`
+}
+
+// cardIdentity is the AgentCard side of the FEP-c390 binding.
+type cardIdentity struct {
+	DID          string         `json:"did"`
+	PublicKeyJWK map[string]any `json:"publicKeyJwk"`
 }
 
 // a2aCardURL is the public URL of a ghost's published A2A AgentCard (served by this gateway).
@@ -43,7 +53,7 @@ func (g *Gateway) a2aEndpoint(ref AgentRef) string {
 // buildAgentCard synthesizes a ghost's A2A AgentCard from its allowlist entry. Streaming is false to
 // match the bridge's deliberate non-streaming delegation model (docs/bridge.md §6).
 func (g *Gateway) buildAgentCard(ghost string, ref AgentRef) discoveryCard {
-	return discoveryCard{
+	card := discoveryCard{
 		ProtocolVersion:    a2a.ProtocolVersion,
 		Name:               ghost,
 		Description:        ref.Description,
@@ -55,6 +65,12 @@ func (g *Gateway) buildAgentCard(ghost string, ref AgentRef) discoveryCard {
 		DefaultOutputModes: []string{"text/plain"},
 		Skills:             []any{},
 	}
+	if g.identity != nil {
+		if jwk, err := g.identity.JWK(); err == nil {
+			card.Identity = &cardIdentity{DID: g.identity.DID(), PublicKeyJWK: jwk}
+		}
+	}
+	return card
 }
 
 // handleAgentCard serves a ghost's synthesized A2A AgentCard. Only allowlisted agents are

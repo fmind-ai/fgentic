@@ -105,6 +105,10 @@ spec:
             - name: INTEGRITY_REQUIRE_INBOUND
               value: {{ .Values.integrity.requireInbound | quote }}
             {{- end }}
+            {{- if .Values.identity.enabled }}
+            - name: IDENTITY_KEY_PATH
+              value: /etc/activitypub-agent-gateway/identity-key/{{ .Values.identity.secretKey }}
+            {{- end }}
             {{- if .Values.budget.enabled }}
             - name: BUDGET_ENABLED
               value: "true"
@@ -141,6 +145,11 @@ spec:
               mountPath: /etc/activitypub-agent-gateway/signing-key
               readOnly: true
             {{- end }}
+            {{- if .Values.identity.enabled }}
+            - name: identity-key
+              mountPath: /etc/activitypub-agent-gateway/identity-key
+              readOnly: true
+            {{- end }}
             {{- if .Values.groups.enabled }}
             - name: groups
               mountPath: /etc/activitypub-agent-gateway/groups
@@ -175,6 +184,12 @@ spec:
         - name: signing-key
           secret:
             secretName: {{ .Values.integrity.secretName }}
+            defaultMode: 0400
+        {{- end }}
+        {{- if .Values.identity.enabled }}
+        - name: identity-key
+          secret:
+            secretName: {{ .Values.identity.secretName }}
             defaultMode: 0400
         {{- end }}
         {{- if .Values.groups.enabled }}

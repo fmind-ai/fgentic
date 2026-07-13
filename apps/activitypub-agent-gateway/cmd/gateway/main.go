@@ -25,6 +25,7 @@ import (
 	"github.com/fmind/activitypub-agent-gateway/internal/config"
 	"github.com/fmind/activitypub-agent-gateway/internal/delivery"
 	"github.com/fmind/activitypub-agent-gateway/internal/httpsig"
+	"github.com/fmind/activitypub-agent-gateway/internal/identity"
 	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
 	"github.com/fmind/activitypub-agent-gateway/internal/policy"
 )
@@ -76,6 +77,17 @@ func run() error {
 		log.Info("object integrity signing enabled", "key", cfg.IntegrityKeyPath, "fragment", signer.KeyFragment())
 	} else {
 		log.Warn("object integrity signing DISABLED (INTEGRITY_KEY_PATH empty) — replies carry no FEP-8b32 proof")
+	}
+
+	// FEP-c390 cross-transport identity (issue #218): a P-256 did:key anchors the AP actor and the
+	// A2A AgentCard to one sovereign key that survives a domain move. Empty disables the binding.
+	if cfg.IdentityKeyPath != "" {
+		idSigner, ierr := identity.LoadSignerFromFile(cfg.IdentityKeyPath)
+		if ierr != nil {
+			return ierr
+		}
+		gateway.UseIdentity(idSigner)
+		log.Info("FEP-c390 identity anchor enabled", "did", idSigner.DID())
 	}
 
 	// The federation policy border. When a policy is configured, every inbound activity must pass

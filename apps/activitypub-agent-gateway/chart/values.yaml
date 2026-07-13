@@ -90,6 +90,15 @@ integrity:
   keyFragment: ed25519-key # verificationMethod = <actorID>#<keyFragment>
   requireInbound: false # require a valid inbound object proof (needs policy.enabled)
 
+# FEP-c390 cross-transport identity (issue #218). When enabled, each actor attaches a
+# VerifiableIdentityStatement bound to a P-256 did:key and its AgentCard publishes the matching JWK,
+# so a verifier confirms both federation faces share one sovereign key that survives a domain move.
+# The key is a SOPS-backed P-256 PKCS#8 PEM. DISABLED here so the chart installs standalone.
+identity:
+  enabled: false
+  secretName: activitypub-agent-gateway-identity-key
+  secretKey: p256.pem
+
 # Per-actor/per-domain token-budget admission (D7/D8, issue #213). When enabled, every inbound
 # delegation reserves its token ceiling from the VERIFIED actor's and domain's pools (declared in the
 # policy.json `budgets` block) before any A2A/LLM call; deny-by-default for an allowlisted-but-

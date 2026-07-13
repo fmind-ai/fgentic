@@ -2,7 +2,7 @@
 [extend]
 useDefault = true
 
-[allowlist]
+[[allowlists]]
 description = "SOPS-encrypted secrets and public key material are safe to commit"
 paths = [
   '''.*\.sops\.ya?ml$''', # age-encrypted Secret payloads (ENC[AES256_GCM,...])
@@ -11,4 +11,11 @@ paths = [
 regexes = [
   '''age1[0-9a-z]{58}''', # age *public* recipients are not secret
   '''ENC\[AES256_GCM.*''', # SOPS ciphertext envelopes
+]
+
+[[allowlists]]
+description = "did:key values are *public* keys (FEP-c390 identity anchors), not secrets"
+regexTarget = "line"
+regexes = [
+  '''did:key:z[1-9A-HJ-NP-Za-km-z]+''',
 ]
