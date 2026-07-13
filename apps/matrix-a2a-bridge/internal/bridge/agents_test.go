@@ -348,6 +348,38 @@ func TestLoadAgentsRemoteMaxCost(t *testing.T) {
 	}
 }
 
+func TestLoadAgentsRemoteAllowMedia(t *testing.T) {
+	yaml := strings.Replace(validRemoteAgentsYAML, "    tokenBudget: 8192\n", "    tokenBudget: 8192\n    allowMedia: true\n", 1)
+	agents, err := LoadAgents(writeTemp(t, yaml))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	ref, ok := agents.Lookup("agent-remote")
+	if !ok {
+		t.Fatal("agent-remote not found")
+	}
+	if !ref.AllowsMedia() {
+		t.Fatal("AllowsMedia() = false, want true")
+	}
+	// The default (omitted) keeps the boundary closed and re-keys the mapping so queued jobs
+	// re-validate under the media opt-in.
+	base, _ := LoadAgents(writeTemp(t, validRemoteAgentsYAML))
+	baseRef, _ := base.Lookup("agent-remote")
+	if baseRef.AllowsMedia() {
+		t.Fatal("default AllowsMedia() = true, want false")
+	}
+	if ref.MappingID() == baseRef.MappingID() {
+		t.Fatal("allowMedia did not change the mapping ID")
+	}
+}
+
+func TestLoadAgentsRejectsLocalAllowMedia(t *testing.T) {
+	local := "agents:\n  agent-k8s:\n    namespace: kagent\n    name: k8s-agent\n    allowMedia: true\n"
+	if _, err := LoadAgents(writeTemp(t, local)); err == nil || !strings.Contains(err.Error(), "only valid for a url target") {
+		t.Fatalf("LoadAgents local+allowMedia err = %v", err)
+	}
+}
+
 func TestLoadAgentsStage(t *testing.T) {
 	agents, err := LoadAgents(writeTemp(t, `agents:
   agent-dev: {namespace: kagent, name: dev-agent, stage: dev}

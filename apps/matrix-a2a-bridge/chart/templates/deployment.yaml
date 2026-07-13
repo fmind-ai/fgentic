@@ -84,6 +84,14 @@ spec:
               value: {{ .Values.config.roomRateBurst | quote }}
             - name: RATE_LIMIT_BUCKET_CAPACITY
               value: {{ .Values.config.rateLimitBucketCapacity | quote }}
+            - name: MEDIA_MAX_BYTES
+              value: {{ .Values.config.mediaMaxBytes | quote }}
+            - name: MEDIA_MAX_TOTAL_BYTES
+              value: {{ .Values.config.mediaMaxTotalBytes | quote }}
+            {{- if .Values.config.mediaMimeAllowlist }}
+            - name: MEDIA_MIME_ALLOWLIST
+              value: {{ join "," .Values.config.mediaMimeAllowlist | quote }}
+            {{- end }}
             {{- if .Values.database.enabled }}
             - name: DATABASE_URL
               valueFrom:

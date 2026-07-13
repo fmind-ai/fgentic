@@ -40,6 +40,13 @@ config:
   # Room IDs where stage:dev agents may be invoked (#128). Empty = every dev agent is
   # deny-by-default everywhere. e.g. ["!staging:fgentic.fmind.ai"].
   stagingRooms: []
+  # Media policy (#115): files between Matrix and A2A. mediaMaxBytes=0 disables the media path
+  # entirely; a positive cap turns it on. mediaMaxBytes caps one file, mediaMaxTotalBytes the summed
+  # bytes of one delegation in each direction. mediaMimeAllowlist is exact type/subtype (no
+  # wildcards); empty here keeps the bridge's built-in default document/image set.
+  mediaMaxBytes: 10485760 # 10 MiB per file; set 0 to disable media
+  mediaMaxTotalBytes: 26214400 # 25 MiB per delegation per direction
+  mediaMimeAllowlist: [] # e.g. ["text/csv","application/pdf","image/png"]; empty = built-in default
 
 # Postgres backing the bridge state (mautrix StateStore + contexts + event dedup — SPEC §5).
 # The Secret holds a full connection URL under `key` (e.g. postgres://bridge:...@platform-pg-rw

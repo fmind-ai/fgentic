@@ -66,6 +66,10 @@
           "type": "integer",
           "minimum": 1
         },
+        "allowMedia": {
+          "description": "Opt this remote mapping into moving file bytes across the org boundary in either direction (#115). Omitted or false keeps the boundary closed to files: inbound room files are refused and the remote's artifact bytes are withheld. Remote targets only; local media is governed solely by the global MIME/size policy.",
+          "type": "boolean"
+        },
         "allowedServers": {
           "type": "array",
           "uniqueItems": true,
@@ -87,7 +91,8 @@
               { "required": ["tokenBudget"] },
               { "required": ["cardIdentity"] },
               { "required": ["extensions"] },
-              { "required": ["maxCost"] }
+              { "required": ["maxCost"] },
+              { "required": ["allowMedia"] }
             ]
           }
         },

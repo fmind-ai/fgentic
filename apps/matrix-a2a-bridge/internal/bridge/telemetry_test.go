@@ -20,13 +20,13 @@ type tracingA2AClient struct {
 	callContext trace.SpanContext
 }
 
-func (c *tracingA2AClient) Call(ctx context.Context, _ a2aclient.Target, _, _ string) (a2aclient.Result, error) {
+func (c *tracingA2AClient) Call(ctx context.Context, _ a2aclient.Target, _, _ string, _ []a2aclient.InboundFile) (a2aclient.Result, error) {
 	c.callContext = trace.SpanContextFromContext(ctx)
 	return a2aclient.Result{Text: "traced reply", Terminal: true}, nil
 }
 
 func (c *tracingA2AClient) Continue(ctx context.Context, target a2aclient.Target, text, contextID, _ string) (a2aclient.Result, error) {
-	return c.Call(ctx, target, text, contextID)
+	return c.Call(ctx, target, text, contextID, nil)
 }
 
 func (*tracingA2AClient) PollTask(context.Context, a2aclient.Target, string) (a2aclient.Result, error) {

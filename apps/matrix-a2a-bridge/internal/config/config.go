@@ -115,6 +115,17 @@ type Config struct {
 	// deny-by-default everywhere, so an unconfigured staging boundary never silently promotes.
 	StagingRooms []string `env:"STAGING_ROOMS" envSeparator:","`
 
+	// Media policy (#115): files flowing either direction between Matrix and A2A are gated by an
+	// exact-match MIME allowlist and byte caps, because documents are a sharper injection/malware
+	// vector than chat text. MediaMaxBytes is the on/off switch: 0 disables the media path entirely
+	// (inbound files are refused, outbound artifact bytes are withheld). It is the cap on a single
+	// file; MediaMaxTotalBytes caps the summed bytes of one delegation in each direction.
+	// MediaMIMEAllowlist entries are exact `type/subtype` (no wildcards) matched case-insensitively
+	// after stripping any parameters (e.g. "; charset=utf-8"); only allowlisted types cross.
+	MediaMIMEAllowlist []string `env:"MEDIA_MIME_ALLOWLIST" envSeparator:"," envDefault:"text/csv,text/plain,text/markdown,application/json,application/pdf,image/png,image/jpeg,image/gif,image/webp"`
+	MediaMaxBytes      int64    `env:"MEDIA_MAX_BYTES" envDefault:"10485760"`
+	MediaMaxTotalBytes int64    `env:"MEDIA_MAX_TOTAL_BYTES" envDefault:"26214400"`
+
 	LogLevel  string `env:"LOG_LEVEL" envDefault:"info"`
 	LogFormat string `env:"LOG_FORMAT" envDefault:"json"`
 }
@@ -197,11 +208,49 @@ func (c Config) validate() error {
 			return fmt.Errorf("STAGING_ROOMS entry %q must be a Matrix room ID (!opaque:server)", room)
 		}
 	}
+	if err := c.validateMedia(); err != nil {
+		return err
+	}
 	if _, err := c.SlogLevel(); err != nil {
 		return err
 	}
 	if c.LogFormat != LogFormatJSON && c.LogFormat != LogFormatText {
 		return fmt.Errorf("LOG_FORMAT %q must be %q or %q", c.LogFormat, LogFormatJSON, LogFormatText)
+	}
+	return nil
+}
+
+// validateMedia rejects an inconsistent media policy fail-fast (#115). MEDIA_MAX_BYTES=0 disables the
+// media path (allowlist then ignored); a positive cap turns it on and requires a non-empty allowlist
+// and an ordered per-delegation total. Every allowlist entry must be a bare `type/subtype` so a
+// wildcard or malformed value can never silently widen the gate. Setting MEDIA_MIME_ALLOWLIST="" is
+// NOT a disable switch — caarlos0/env re-applies the built-in default for an empty value — so
+// disabling is done through MEDIA_MAX_BYTES.
+func (c Config) validateMedia() error {
+	if c.MediaMaxBytes < 0 {
+		return fmt.Errorf("MEDIA_MAX_BYTES must be >= 0")
+	}
+	if c.MediaMaxTotalBytes < 0 {
+		return fmt.Errorf("MEDIA_MAX_TOTAL_BYTES must be >= 0")
+	}
+	entries := 0
+	for _, mime := range c.MediaMIMEAllowlist {
+		if strings.TrimSpace(mime) == "" {
+			continue
+		}
+		entries++
+		if strings.ContainsAny(mime, " *") || strings.Count(mime, "/") != 1 ||
+			strings.HasPrefix(mime, "/") || strings.HasSuffix(mime, "/") {
+			return fmt.Errorf("MEDIA_MIME_ALLOWLIST entry %q must be an exact type/subtype", mime)
+		}
+	}
+	if c.MediaMaxBytes > 0 {
+		if entries == 0 {
+			return fmt.Errorf("MEDIA_MIME_ALLOWLIST must list at least one type when MEDIA_MAX_BYTES > 0 (set MEDIA_MAX_BYTES=0 to disable media)")
+		}
+		if c.MediaMaxTotalBytes < c.MediaMaxBytes {
+			return fmt.Errorf("MEDIA_MAX_TOTAL_BYTES (%d) must be >= MEDIA_MAX_BYTES (%d)", c.MediaMaxTotalBytes, c.MediaMaxBytes)
+		}
 	}
 	return nil
 }
