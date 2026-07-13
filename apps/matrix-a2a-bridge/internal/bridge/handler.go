@@ -41,6 +41,19 @@ const (
 	contentStart    = "--- BEGIN UNTRUSTED MATRIX CONTENT ---"
 	contentEnd      = "--- END UNTRUSTED MATRIX CONTENT ---"
 
+	// automatedMixinKey stamps every bridge-authored event with the MSC3955 m.automated mixin, a
+	// machine-readable "this is automation" marker at the content layer. It hardens the trust
+	// boundary — automation must not act on agent replies (docs/security.md) — without brittle MXID
+	// heuristics, so it stays federation-safe (no localpart matching). MSC3955's "Unstable prefix"
+	// section deliberately reuses the PARENT MSC1767 namespace ("org.matrix.msc1767.*") rather than
+	// its own, and interoperating implementations (e.g. Ruma) emit exactly this key; using
+	// "org.matrix.msc3955.*" would be invisible to them — the non-portable outcome the issue rejects.
+	// Flip to the stable "m.automated" only once the MSC lands.
+	automatedMixinKey = "org.matrix.msc1767.automated"
+	// newContentKey is the m.replace replacement block (event.MessageEventContent.NewContent's tag);
+	// the mixin is mirrored inside it so edit-aware clients keep the marker after applying the edit.
+	newContentKey = "m.new_content"
+
 	delegationAuditSchema = "fgentic.delegation.v1"
 	delegationAuditStream = "audit"
 	tracerName            = "github.com/fmind/matrix-a2a-bridge/internal/bridge"
@@ -813,7 +826,7 @@ func (b *Bridge) postReply(ctx context.Context, intent *appservice.IntentAPI, ev
 	trace.SpanFromContext(ctx).AddEvent("matrix.reply.post")
 	content := &event.MessageEventContent{MsgType: event.MsgNotice, Body: text}
 	content.SetReply(evt) // m.relates_to reply pointing at the human's original message
-	resp, err := intent.SendMessageEvent(ctx, evt.RoomID, event.EventMessage, content)
+	resp, err := intent.SendMessageEvent(ctx, evt.RoomID, event.EventMessage, automatedContent(content))
 	if err != nil {
 		b.log.Error("post reply", "room", evt.RoomID, "err", err)
 		return ""
@@ -831,9 +844,22 @@ func (b *Bridge) editReply(ctx context.Context, intent *appservice.IntentAPI, ro
 	}
 	content := &event.MessageEventContent{MsgType: event.MsgNotice, Body: text}
 	content.SetEdit(target)
-	if _, err := intent.SendMessageEvent(ctx, roomID, event.EventMessage, content); err != nil {
+	if _, err := intent.SendMessageEvent(ctx, roomID, event.EventMessage, automatedContent(content)); err != nil {
 		b.log.Error("edit reply", "room", roomID, "err", err)
 	}
+}
+
+// automatedContent tags bridge-authored message content with the MSC3955 m.automated mixin. The
+// mixin is additive raw content merged alongside the parsed m.notice (mautrix merges Raw under
+// Parsed), so mixin-unaware clients render the reply exactly as before. For m.replace edits the
+// marker is mirrored into m.new_content as well, so edit-aware clients keep it once they apply the
+// replacement — the top-level fallback still carries it for edit-unaware bots.
+func automatedContent(content *event.MessageEventContent) *event.Content {
+	raw := map[string]any{automatedMixinKey: true}
+	if content.NewContent != nil {
+		raw[newContentKey] = map[string]any{automatedMixinKey: true}
+	}
+	return &event.Content{Parsed: content, Raw: raw}
 }
 
 // resolveTargets returns the mapped agent ghost local-parts a message addresses, from the typed
