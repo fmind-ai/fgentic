@@ -16,6 +16,28 @@ The bridge is self-contained under `apps/matrix-a2a-bridge/` (own Go module, mis
 1. Root `mise run format` / `check` / `test` / `build` delegate into the app — running them at the repo root covers the whole monorepo, and it's exactly what hooks + CI run.
 1. Definition of done: `format` clean, `check` no findings (golangci-lint, govulncheck, dprint, gitleaks), `test` green (gotestsum, `-race` + coverage), new behavior covered by a test.
 
+## Developing a feature (fast inner loop)
+
+1. **Iterate on the two hot packages, gate on the full suite.** `go test ./internal/a2aclient/ ./internal/bridge/` runs in seconds; the full `mise run test` adds the slow `matrixapp` + `-race` run. Run the full gate only before committing. (The first `go test` after adding a file spends time compiling — not a hang.)
+1. **Recipe — add a per-agent policy/admission knob** (the shape of `extensions` #114, `maxCost` #142, `stage` #128):
+   - `internal/bridge/agents.go` — add the field to `agentConfig` (on-disk YAML) **and** `AgentRef`; parse it in `compileAgent` (reject where it doesn't apply, e.g. remote-only fields on a local target); fold operational config into `mappingID(...)` so a change re-keys queued jobs and forces re-validation via `SameTarget`.
+   - `internal/config/config.go` — only if the feature needs a global env knob (e.g. `STAGING_ROOMS`); add a `validate()` clause and wire it into the chart `deployment.yaml`/`values.yaml`.
+   - `internal/bridge/handler.go` — enforce in `dispatchResolvedTarget`, respecting admission order: mapping/`SameTarget` → sender policy → **stage** → remote readiness → **cost** → limiter → A2A. A fail-closed refusal is a small `refuseXxx` helper emitting `outcome=denied, terminal_stage=admission, terminal_reason=<distinct>, a2a_attempted=false` and, when a bounded room notice is wanted, posting exactly once behind `allowNotice`. Add the new `terminal_reason` to `docs/audit.md`.
+   - `agents.schema.json` (+ the local/remote `oneOf` `not` branches when the field is target-scoped) and `agents.example.yaml`; document the behavior in `docs/bridge.md` §6.
+1. **Adding a method to the `a2aClient` interface** (handler.go) breaks compilation until **four** test fakes implement it: `scriptedA2AClient`, `deadlineA2AClient` (handler_test.go), `cardSequenceClient` (profiles_test.go), `tracingA2AClient` (telemetry_test.go).
+
+## Test patterns to reuse (deterministic, no cluster)
+
+1. **Remote A2A contract** — `newRemoteContractFixture` (a2aclient/remote_contract_test.go) runs an in-process `a2asrv` server and signs a card with a test P-256 key; mutate via `fixture.setCard`, resolve, then assert on `Result`, request headers, or `fixture.messages`. The deterministic substitute for a live remote.
+1. **Delegation audit** — `setBridgeLogOutput(b, &out)` + `auditRecords(t, out.String())` capture the content-free `fgentic.delegation.v1` records; assert the exact `outcome`/`terminal_stage`/`terminal_reason`/`a2a_attempted` tuple. `TestDelegationAuditRecordIsStableAndContentFree` is the schema anchor — extend its `want` map when you add an audit field.
+1. **Dispatch happy/deny path** — `pollingHarness(t, client)` wires a bridge to a mock Matrix server (`matrixRecorder`) + a `scriptedA2AClient`; call `dispatchResolvedTarget` directly and assert `client.callCount`, the audit, and posted notices. Pre-set `intent.Registered = true` + `StateStore.SetMembership(...MembershipJoin)` to skip network registration.
+1. **Config / schema** — `agents_test.go` loads inline YAML via `LoadAgents`; `agents_schema_test.go` validates the example/chart/integration fixtures against `agents.schema.json`.
+
+## Integration validation (when a change has a runtime surface)
+
+1. `mise run test:integration` (root) — kind + real-Synapse driver (`test/integration/cmd/driver`) proving `@mention → A2A → reply`, dedup, rate limit, tampered-card fail-close. Needs Docker; ~4 min; slow/flaky under host contention, so CI's clean runner is authoritative. Extend `runBasic` to prove new end-to-end behavior. A `messageContent` with a nil `Mentions.UserIDs` serializes `"user_ids": null` → Synapse `M_BAD_JSON`; send `[]string{}` for a mention-less message.
+1. `mise run check:federation` — **offline** federation contracts (signing, whitelist/policy/ACL, denied control); the deterministic proof for AgentCard-signing and revocation invariants without spinning up `fed:up`.
+
 ## Testing a change on the live local cluster (two paths)
 
 1. **Inner loop — `mise run watch`** (skaffold dev, from the repo root): rebuilds the image on change and deploys the chart into ns `bridge` with the fresh digest. The rest of the platform (ESS, agentgateway, kagent, Postgres) must already be up via Flux (matrix-agents bootstrap runbook). Note skaffold temporarily takes over the Helm release from Flux — Flux reconverges to the git state afterwards.

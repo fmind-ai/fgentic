@@ -34,7 +34,8 @@ Repo: `fmind-ai/fgentic` (public, Apache-2.0). All work is issue-driven; automat
 ## Pull requests
 
 1. Fill the PR template (What / Why / How / Test plan); link the issue with closing keywords (`Fixes #N` — this ticks the epic checklist). PRs are squash-merged.
-1. `gh pr create --fill --body-file <(...)` then watch CI: `gh pr checks --watch`.
+1. `gh pr create --title "..." --body-file <path>` then watch CI: `gh pr checks <n> --watch`. In a non-interactive shell `gh` may refuse with "prefer_editor_prompt not supported in non-tty mode" — run `gh config set prefer_editor_prompt disabled` once. Merge with `gh pr merge <n> --squash --delete-branch`, then `git checkout main && git pull`.
+1. Create the `<type>/<slug>` branch **before the first commit**. A commit straight to `main` skips PR CI _and_ the `Fixes #N` auto-close (you must then `gh issue close` manually), and a bug that slips in reds `main` — recover by fixing forward or reverting.
 
 ## CI / CD behavior
 
