@@ -1,6 +1,6 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended", ":gitSignOff"],
+  "extends": ["config:recommended", ":gitSignOff", "helpers:pinGitHubActionDigests"],
   "dependencyDashboard": true,
   "enabledManagers": [
     "custom.regex",
@@ -40,6 +40,17 @@
       "packageNameTemplate": "kubernetes-sigs/gateway-api",
       "versioningTemplate": "semver",
     },
+    {
+      "customType": "regex",
+      "description": "Track the immutable Trivy Operator release commit used as a Helm chart source",
+      "managerFilePatterns": ["/^infra/trivy-operator/source\\.yaml$/"],
+      "matchStrings": [
+        "# trivy-operator-version: (?<currentValue>v\\d+\\.\\d+\\.\\d+)\\n\\s+commit: (?<currentDigest>[0-9a-f]{40})",
+      ],
+      "datasourceTemplate": "github-tags",
+      "packageNameTemplate": "aquasecurity/trivy-operator",
+      "versioningTemplate": "semver",
+    },
   ],
   "packageRules": [
     {
@@ -58,15 +69,6 @@
       "matchManagers": ["kubernetes"],
       "matchFileNames": ["clusters/local/flux-system/gotk-components.yaml"],
       "enabled": false,
-    },
-    {
-      "description": "Automerge patch-only GitHub Actions updates after CI succeeds",
-      "matchManagers": ["github-actions"],
-      "matchUpdateTypes": ["patch"],
-      "automerge": true,
-      "automergeType": "pr",
-      "platformAutomerge": false,
-      "groupName": "patch-level development tooling",
     },
     {
       "description": "Automerge patch-only Go tool updates after CI succeeds",

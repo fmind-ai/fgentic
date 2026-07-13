@@ -110,6 +110,7 @@ depends = [
   "check:audit-attribution",
   "check:kubernetes-audit",
   "check:postgres-audit",
+  "check:trivy-operator",
   "check:secret-rotation",
   "check:supply-chain",
   "check:agent-zoo",
@@ -118,6 +119,7 @@ depends = [
   "check:federation-onboarding",
   "check:smoke-workflow",
   "check:mautrix-bridges",
+  "check:github-actions",
   "check:workflows",
   "check:app",
   "check:gateway",
@@ -214,6 +216,10 @@ run = "bash scripts/test-kubernetes-audit.sh"
 description = "Validate the DDL/ROLE-only pgAudit configuration and SQL-suppressed JSON projection"
 run = "bash scripts/test-postgres-audit.sh"
 
+[tasks."check:trivy-operator"]
+description = "Validate the pinned, least-privilege, structurally optional CVE drift scanner"
+run = "bash scripts/test-trivy-operator.sh"
+
 [tasks."check:secret-rotation"]
 description = "Test selective SOPS rotation and cross-consumer invariants with offline fixtures"
 run = "bash scripts/test-rotate-secrets.sh"
@@ -241,6 +247,10 @@ run = "bash scripts/test-fed-check.sh"
 [tasks."check:smoke-workflow"]
 description = "Validate nightly demo, policy conformance, diagnostics, and issue tracking"
 run = "bash scripts/test-smoke-workflow.sh"
+
+[tasks."check:github-actions"]
+description = "Require every remote GitHub Action to use an immutable commit with a version hint"
+run = "bash scripts/check-github-actions.sh"
 
 [tasks."check:mautrix-bridges"]
 description = "Render and validate optional mautrix runtimes, privacy defaults, secrets, and composable Flux layers"
@@ -330,6 +340,10 @@ run = "mise run test:integration"
 [tasks."test:tracing"]
 description = "Render the tracing stack and prove an OTLP span reaches Jaeger locally"
 run = "bash scripts/test-tracing.sh"
+
+[tasks."test:trivy-operator"]
+description = "Prove Trivy report creation, metrics, RBAC, bounds, and cleanup in owned k3d"
+run = "bash scripts/test-trivy-operator.sh --runtime"
 
 [tasks."test:load"]
 description = "Run the bridge dispatcher load regression scenario"

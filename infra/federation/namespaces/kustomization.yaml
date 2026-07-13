@@ -26,12 +26,19 @@ patches:
       kind: Namespace
       metadata:
         name: monitoring
+  - target: { kind: Namespace, name: trivy-system }
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: trivy-system
   # These Namespaces are omitted from the federation lab, so their namespaced admission objects
   # must be omitted in the same component build.
   - target:
       kind: ResourceQuota
       name: compute-budget
-      namespace: bridge|bridges|monitoring
+      namespace: bridge|bridges|monitoring|trivy-system
     patch: |
       $patch: delete
       apiVersion: v1
@@ -41,7 +48,7 @@ patches:
   - target:
       kind: LimitRange
       name: container-defaults
-      namespace: bridge|bridges|monitoring
+      namespace: bridge|bridges|monitoring|trivy-system
     patch: |
       $patch: delete
       apiVersion: v1

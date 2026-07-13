@@ -55,7 +55,7 @@ spec:
         optional: true
 ---
 # Observability (SPEC §9): kube-prometheus-stack + platform monitors. Early in the DAG — other
-# layers reference its CRDs (PodMonitor) and NetworkPolicies already admit `monitoring` (D14).
+# layers reference its monitor CRDs and NetworkPolicies already admit `monitoring` (D14).
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -81,8 +81,8 @@ spec:
         name: platform-settings-overrides
         optional: true
 ---
-# Monitors + alert rules for the platform, split from the stack above: their CRDs (PodMonitor,
-# PrometheusRule) only exist once kube-prometheus-stack is installed.
+# Monitors + alert rules for the platform, split from the stack above: their PodMonitor,
+# ServiceMonitor, and PrometheusRule CRDs exist only after kube-prometheus-stack is installed.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -105,6 +105,27 @@ spec:
       - kind: ConfigMap
         name: platform-settings-overrides
         optional: true
+---
+# Continuous vulnerability drift scanning is its own optional structural layer. Evaluation and
+# federation profiles delete this Kustomization entirely; local and GCP retain the exact pinned
+# operator, its report CRDs, and one-at-a-time scan Jobs.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: trivy-operator
+  namespace: flux-system
+spec:
+  interval: 30m
+  retryInterval: 2m
+  path: ./infra/trivy-operator
+  prune: true
+  wait: true
+  timeout: 15m
+  dependsOn:
+    - name: namespaces
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
 ---
 # Platform operators: cert-manager, Traefik, CNPG operator, agentgateway + kagent control planes.
 apiVersion: kustomize.toolkit.fluxcd.io/v1

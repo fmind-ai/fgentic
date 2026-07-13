@@ -127,7 +127,7 @@ static_contract() {
       fail "${namespace_file#"${ROOT_DIR}/"} has a platform namespace without admission labels"
   done
   [[ "${namespace_count}" -gt 0 ]] || fail "no managed namespaces found"
-  for namespace in bridges models; do
+  for namespace in bridges models trivy-system; do
     yq -e "select(.kind == \"Namespace\" and .metadata.name == \"${namespace}\") |
       .metadata.labels.\"fgentic.dev/image-policy\" == \"enforce\"" \
       "${ROOT_DIR}/infra/namespaces/namespaces.yaml" >/dev/null ||
@@ -149,6 +149,15 @@ static_contract() {
       [[ -n "${image}" ]] && assert_digest "${image}" "${manifest#"${ROOT_DIR}/"}"
     done <<<"${image_list}"
   done
+  image_list="$(yq -r '
+    (.spec.values.image.registry + "/" + .spec.values.image.repository + ":" +
+      .spec.values.image.tag),
+    (.spec.values.trivy.image.registry + "/" + .spec.values.trivy.image.repository + ":" +
+      .spec.values.trivy.image.tag)
+  ' "${ROOT_DIR}/infra/trivy-operator/helmrelease.yaml")"
+  while IFS= read -r image; do
+    [[ -n "${image}" ]] && assert_digest "${image}" "infra/trivy-operator/helmrelease.yaml"
+  done <<<"${image_list}"
   # $model is a yq binding, not a shell variable.
   # shellcheck disable=SC2016
   image_list="$(yq -r '

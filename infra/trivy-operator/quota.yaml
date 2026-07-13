@@ -1,0 +1,11 @@
+# Kubernetes admission serializes Job creation atomically. Trivy Operator v0.32.0's in-process
+# cache check can race when several workloads arrive together, so its configured limit alone is
+# not a hard concurrency boundary. This dedicated namespace keeps the quota away from other Jobs.
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: trivy-scan-serialization
+  namespace: trivy-system
+spec:
+  hard:
+    count/jobs.batch: "1"

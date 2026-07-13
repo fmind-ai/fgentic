@@ -1,0 +1,70 @@
+# Trivy Operator exposes report-level metrics through its stable Service in `trivy-system`.
+# Preserve `namespace` as the scanned workload label while the ServiceMonitor lives in monitoring.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: trivy-operator
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+      - trivy-system
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: trivy-operator
+      app.kubernetes.io/instance: trivy-operator
+  endpoints:
+    - port: metrics
+      path: /metrics
+      scheme: http
+      honorLabels: true
+---
+# Runtime CVE drift guard (SPEC §9, D13): flag newly disclosed HIGH/CRITICAL findings for an
+# already-running image without treating a newly deployed digest's first scan as drift.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: trivy-vulnerability-drift
+  namespace: monitoring
+spec:
+  groups:
+    - name: trivy-vulnerability-drift
+      rules:
+        # One image can back several workloads. `max` retains the conservative report count without
+        # multiplying it by replica/workload count; the report severity is renamed so Alertmanager's
+        # conventional `severity` label remains available for routing.
+        - record: namespace_image_vulnerability_severity:trivy_image_vulnerabilities:max
+          expr: >-
+            max by (
+              namespace,
+              image_registry,
+              image_repository,
+              image_digest,
+              vulnerability_severity
+            ) (
+              label_replace(
+                trivy_image_vulnerabilities{
+                  severity=~"High|Critical",
+                  image_digest=~"sha256:[0-9a-f]{64}"
+                },
+                "vulnerability_severity", "$1", "severity", "(.*)"
+              )
+            )
+        - alert: TrivyImageVulnerabilityDrift
+          expr: >-
+            (
+              namespace_image_vulnerability_severity:trivy_image_vulnerabilities:max
+              - min_over_time(
+                  namespace_image_vulnerability_severity:trivy_image_vulnerabilities:max[48h]
+                )
+            ) > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: Running image gained {{ $labels.vulnerability_severity }} vulnerabilities
+            description: >-
+              {{ $labels.image_registry }}/{{ $labels.image_repository }} in namespace
+              {{ $labels.namespace }} is above its lowest {{ $labels.vulnerability_severity }}
+              vulnerability count from the previous 48 hours. Review the VulnerabilityReport and
+              submit a digest-bump PR.

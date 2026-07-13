@@ -6,3 +6,4 @@ kind: Kustomization
 resources:
   - podmonitors.yaml
   - cost-alert.yaml
+  - trivy-alert.yaml

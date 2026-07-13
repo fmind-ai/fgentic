@@ -105,13 +105,13 @@ The namespaces layer creates a `compute-budget` ResourceQuota and `container-def
 
 Namespaces use three coarse profiles rather than one independently tuned setting per component:
 
-| Profile   | Namespaces                                                                                                                                      | Local/demo/federation: pods · requests · limits | GCP reference: pods · requests · limits |
-| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | --------------------------------------- |
-| `small`   | `cert-manager`, `gateway`, `cnpg-system`, `postgres`, `keycloak`, `agentgateway-system`, `bridge`, `bridges`; dormant `activitypub` deploy unit | 12 · 2 CPU/4 GiB · 8 CPU/8 GiB                  | 24 · 4 CPU/8 GiB · 12 CPU/16 GiB        |
-| `core`    | `matrix`, `kagent`, `monitoring`; federation-only `matrix-b`, `matrix-c`                                                                        | 24 · 4 CPU/8 GiB · 16 CPU/16 GiB                | 32 · 8 CPU/16 GiB · 24 CPU/24 GiB       |
-| `compute` | `models`                                                                                                                                        | 8 · 4 CPU/8 GiB · 8 CPU/12 GiB                  | 16 · 8 CPU/16 GiB · 16 CPU/24 GiB       |
+| Profile   | Namespaces                                                                                                                                                      | Local/demo/federation: pods · requests · limits | GCP reference: pods · requests · limits |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------- | --------------------------------------- |
+| `small`   | `cert-manager`, `gateway`, `cnpg-system`, `postgres`, `keycloak`, `agentgateway-system`, `bridge`, `bridges`, `trivy-system`; dormant `activitypub` deploy unit | 12 · 2 CPU/4 GiB · 8 CPU/8 GiB                  | 24 · 4 CPU/8 GiB · 12 CPU/16 GiB        |
+| `core`    | `matrix`, `kagent`, `monitoring`; federation-only `matrix-b`, `matrix-c`                                                                                        | 24 · 4 CPU/8 GiB · 16 CPU/16 GiB                | 32 · 8 CPU/16 GiB · 24 CPU/24 GiB       |
+| `compute` | `models`                                                                                                                                                        | 8 · 4 CPU/8 GiB · 8 CPU/12 GiB                  | 16 · 8 CPU/16 GiB · 16 CPU/24 GiB       |
 
-All 15 repository-managed Namespace manifests carry one quota and one LimitRange: 12 shared namespaces, the federation-only `matrix-b` and `matrix-c`, and the dormant self-contained `activitypub` deploy unit. The effective federation component omits `bridge`, `bridges`, and `monitoring` together with their admission objects, then adds both secondary homeservers, so its reconciled sets remain exactly aligned at 11 Namespaces, quotas, and LimitRanges. The bootstrap-critical cert-manager and CNPG operators retain complete explicit resources plus generous `small` rollout headroom. Kubernetes and Flux system namespaces are outside these owned layers and remain unmodified.
+All 16 repository-managed Namespace manifests carry one compute quota and one LimitRange: 13 shared namespaces, the federation-only `matrix-b` and `matrix-c`, and the dormant self-contained `activitypub` deploy unit. The scanner layer adds a second, narrow `count/jobs.batch: 1` quota in `trivy-system` because Kubernetes admission—not the operator's racy informer cache—must serialize scan Jobs. The effective demo removes `trivy-system`; the federation component omits `bridge`, `bridges`, `monitoring`, and `trivy-system` together with their admission objects, then adds both secondary homeservers, so its reconciled sets remain exactly aligned at 11 Namespaces, compute quotas, and LimitRanges. The bootstrap-critical cert-manager and CNPG operators retain complete explicit resources plus generous `small` rollout headroom. Kubernetes and Flux system namespaces are outside these owned layers and remain unmodified.
 
 The 2026-07-13 pinned-render audit found complete workload resources on kagent and the sample agents, the bridge and optional external bridges, model runtimes, and the primary Postgres, Keycloak, gateway, agentgateway, and observability containers. It also found deliberate or chart-owned gaps: ESS supplies requests and memory limits but no CPU limits; monitoring sidecars, exporters, operator hook Jobs, and some operator-generated helpers omit one or more fields. The namespace defaults cover those generated containers without duplicating fragile third-party chart internals. Cert-manager's four components and the agentgateway controller were corrected to explicit resources because their charts expose stable top-level values.
 
@@ -125,6 +125,40 @@ mise run test:resource-quotas
 ```
 
 The runtime test creates its own no-port kind cluster and kubeconfig, starts one agent Deployment, scales it past a two-Pod ceiling, and requires the ReplicaSet's `FailedCreate` event to name `compute-budget`. After a real Flux rollout, require every Kustomization and HelmRelease Ready, inspect `kubectl describe quota -A`, and repeat representative rollouts before treating static ceilings as target-cluster acceptance.
+
+## Operate continuous vulnerability scanning
+
+The production `local` and `gcp` overlays include the separate `trivy-operator` Flux layer; evaluation `demo` and disposable `federation` remove it structurally. Do not add a boolean setting that leaves dormant CRDs, RBAC, or scan Jobs in those smaller profiles. The immutable source of truth is [`infra/trivy-operator/`](../infra/trivy-operator/): Trivy Operator v0.32.0 and its chart 0.34.0 come from release commit `1006872c1463e81a40d48298145625aefef2a02f`, while both the operator and Trivy scanner images carry explicit SHA-256 digests recorded in [§9.9](observability.md#99-runtime-image-vulnerability-drift).
+
+After Flux reconciliation, inspect the layer, release, reports, and scrape target without broadening report access:
+
+```bash
+flux get kustomization trivy-operator
+flux get helmrelease trivy-operator -n trivy-system
+kubectl get vulnerabilityreports.aquasecurity.github.io -A
+kubectl -n monitoring get servicemonitor trivy-operator
+```
+
+The report list exposes package and CVE metadata to anyone allowed to read it. Grant triage access deliberately; the reference deletes the chart's aggregate report-view roles. Follow the [least-privilege and registry boundary](security.md#79-continuous-image-vulnerability-boundary) instead of enabling global Secret/ServiceAccount access. Private-registry credentials are unsupported on pinned v0.32.0 because quota rejection can orphan the generated credential Secret and suppress the retry; do not configure them until an upstream fix has a cleanup-and-eventual-report runtime case. A public registry or proxy on a non-443 port additionally needs a reviewed egress-policy exception and, when destination identity matters, an egress proxy or FQDN-aware CNI.
+
+When `TrivyImageVulnerabilityDrift` fires:
+
+1. Open the `VulnerabilityReport` for the alert's namespace, repository, digest, and severity. Confirm the newly reported package/CVE and whether an upstream fixed version exists; count growth alone does not prove exploitability.
+1. Update the source dependency and immutable image digest in a reviewed PR. Do not edit the generated report, deploy a mutable tag, or silence the rule as remediation. Verify signatures, attestations, and SBOMs where the artifact publishes them, following the [supply-chain runbook](security/supply-chain.md).
+1. Let Renovate propose routine pin updates after the maintainer completes [#6](https://github.com/fmind-ai/fgentic/issues/6), but keep human review and the full CI/runtime gates. Renovate availability is not an incident-response dependency; submit the digest-bump PR directly when a fix is urgent.
+1. Reconcile the approved revision, confirm the new digest produces a fresh `VulnerabilityReport`, and verify the old workload is gone. A new digest intentionally starts a new alert baseline, so alert clearance alone is not proof that the named CVE was removed.
+
+Static and rule checks are necessary but not runtime acceptance:
+
+```bash
+mise run check:trivy-operator
+mise run check:prometheus
+mise run test:trivy-operator
+```
+
+Before treating the layer as accepted, the runtime gate must use an ownership-labelled, no-port disposable k3d cluster; pre-occupy the scan quota, prove an operator scan Job is rejected, release the hold, and require schema-valid `VulnerabilityReport` objects for both simultaneously submitted digest-pinned fixtures without assuming a particular CVE. It must also prove the report metrics change, out-of-scope RBAC denials, one-at-a-time execution, and an observed operator working set below its 256 MiB limit. The gate must remove its cluster, containers, every named or anonymous volume, Docker network, kubeconfig, and image-volume artifacts on success and failure without targeting `local` or `fgentic`; only an explicitly configured diagnostics directory may remain after failure for inspection. No observed memory value is claimed here until that evidence exists.
+
+The hosted nightly `scanner` job must repeat the same gate and preserve diagnostics on failure. Require that job, the Prometheus rule fixtures, and the aggregate smoke result to pass at the exact candidate revision before production reconciliation. On the installed cluster, additionally require the ServiceMonitor target to be up, a fresh report in a representative target namespace, and quota headroom during a scan.
 
 ## Provision the administrator and room
 

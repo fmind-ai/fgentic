@@ -209,8 +209,8 @@ assert_static_contract() {
     yq eval-all -o=json '[select(.kind == "Namespace")]' "${NAMESPACE_FILE}" |
       yq -r '.[].metadata.name' | sort
   )"
-  [[ "$(wc -l <<<"${expected_namespaces}" | tr -d ' ')" -eq 12 ]] ||
-    fail "expected all twelve shared namespaces to be quota-managed"
+  [[ "$(wc -l <<<"${expected_namespaces}" | tr -d ' ')" -eq 13 ]] ||
+    fail "expected all thirteen shared namespaces to be quota-managed"
 
   local federation_namespaces repository_namespaces repository_quota_namespaces
   local repository_limit_namespaces
@@ -219,15 +219,15 @@ assert_static_contract() {
       "${NAMESPACE_FILE}" "${FEDERATION_NAMESPACE_FILE}" |
       yq -r '.[].metadata.name' | sort
   )"
-  [[ "$(wc -l <<<"${federation_namespaces}" | tr -d ' ')" -eq 14 ]] ||
-    fail "expected the shared and federation namespace sources to own fourteen namespaces"
+  [[ "$(wc -l <<<"${federation_namespaces}" | tr -d ' ')" -eq 15 ]] ||
+    fail "expected the shared and federation namespace sources to own fifteen namespaces"
   repository_namespaces="$(
     yq eval-all -o=json '[select(.kind == "Namespace")]' \
       "${NAMESPACE_FILE}" "${FEDERATION_NAMESPACE_FILE}" "${ACTIVITYPUB_NAMESPACE_FILE}" |
       yq -r '.[].metadata.name' | sort
   )"
-  [[ "$(wc -l <<<"${repository_namespaces}" | tr -d ' ')" -eq 15 ]] ||
-    fail "expected all fifteen repository-owned namespaces to be quota-managed"
+  [[ "$(wc -l <<<"${repository_namespaces}" | tr -d ' ')" -eq 16 ]] ||
+    fail "expected all sixteen repository-owned namespaces to be quota-managed"
   repository_quota_namespaces="$(
     yq eval-all -o=json \
       '[select(.kind == "ResourceQuota" and .metadata.name == "compute-budget")]' \
@@ -253,7 +253,7 @@ assert_static_contract() {
     ' "${NAMESPACE_FILE}" "${FEDERATION_NAMESPACE_FILE}" "${ACTIVITYPUB_NAMESPACE_FILE}"
   )"
   yq -e '
-    select(length == 15) |
+    select(length == 16) |
     [.[] | test("^(small|core|compute)$")] |
     select(all)
   ' <<<"${profiles}" >/dev/null || fail "every platform Namespace needs a known quota profile"

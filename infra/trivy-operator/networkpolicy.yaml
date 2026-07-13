@@ -1,0 +1,53 @@
+# Job creation is powerful: an unlabeled Pod must not escape merely because a compromised
+# controller omitted the expected selector label. Isolate every Pod in this dedicated namespace
+# first, then admit only the reviewed operator/scan shape below.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny
+  namespace: trivy-system
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Operator and scan Jobs need only the Kubernetes API and HTTPS registries/DB feeds. Public
+# registries or proxies on other ports require a reviewed extension documented in the runbook;
+# private-registry credentials remain unsupported on the pinned operator version.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: trivy-operator
+  namespace: trivy-system
+spec:
+  podSelector:
+    matchLabels:
+      fgentic.dev/trivy-network: "true"
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 8080
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - ports:
+        - protocol: TCP
+          port: 443

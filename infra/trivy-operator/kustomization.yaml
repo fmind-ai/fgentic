@@ -1,0 +1,10 @@
+# Continuous vulnerability drift scanning is a separate Flux layer so evaluation profiles can
+# remove it structurally instead of leaving suspended controllers or CRDs behind.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - source.yaml
+  - quota.yaml
+  - rbac.yaml
+  - helmrelease.yaml
+  - networkpolicy.yaml

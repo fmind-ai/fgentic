@@ -411,7 +411,7 @@ assert_yq \
 	'select(.kind == "Kustomization" and .metadata.name == "agentgateway-provider") |
     .spec.path == "./infra/agentgateway/providers/profiles/demo"' \
 	"${WORK_DIR}/cluster.yaml" 'provider-selection did not select the demo inventory'
-for omitted_layer in observability observability-monitors keycloak; do
+for omitted_layer in observability observability-monitors keycloak trivy-operator; do
 	if yq --unwrapScalar \
 		'select(.kind == "Kustomization") | .metadata.name' \
 		"${WORK_DIR}/cluster.yaml" | rg --fixed-strings --line-regexp "${omitted_layer}" >/dev/null; then
@@ -419,6 +419,27 @@ for omitted_layer in observability observability-monitors keycloak; do
 		exit 1
 	fi
 done
+assert_yq \
+	'select(.kind == "Kustomization" and .metadata.name == "namespaces") |
+    ((.spec.patches | length) == 3 and
+     ([.spec.patches[] | select(
+       .target.kind == "Namespace" and
+       .target.name == "trivy-system" and
+       (.patch | contains("$patch: delete"))
+     )] | length) == 1 and
+     ([.spec.patches[] | select(
+       .target.kind == "ResourceQuota" and
+       .target.name == "compute-budget" and
+       .target.namespace == "trivy-system" and
+       (.patch | contains("$patch: delete"))
+     )] | length) == 1 and
+     ([.spec.patches[] | select(
+       .target.kind == "LimitRange" and
+       .target.name == "container-defaults" and
+       .target.namespace == "trivy-system" and
+       (.patch | contains("$patch: delete"))
+     )] | length) == 1)' \
+	"${WORK_DIR}/cluster.yaml" 'demo namespace inventory still owns Trivy resources'
 assert_yq \
 	'select(.kind == "Kustomization" and .metadata.name == "platform-secrets") |
     .spec.path == "./clusters/demo/empty" and (.spec.decryption == null)' \

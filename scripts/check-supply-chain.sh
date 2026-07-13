@@ -96,13 +96,14 @@ assert_workflow '.permissions."id-token"' "write"
 assert_workflow '.permissions.attestations' "write"
 assert_workflow '.permissions."artifact-metadata"' "write"
 
-attest_steps="$(yq -r '.jobs."bridge-image".steps[] | .uses // ""' "${workflow}" | rg -c '^actions/attest@v4$')"
+attest_steps="$(yq -r '.jobs."bridge-image".steps[] | .uses // ""' "${workflow}" \
+  | rg -c '^actions/attest@[0-9a-f]{40}$')"
 [ "${attest_steps}" -ge 3 ] \
   || { echo "error: CD must attest image provenance, image SBOM, and chart provenance" >&2; exit 1; }
 yq -r '.jobs."bridge-image".steps[] | .uses // ""' "${workflow}" \
-  | rg -x 'anchore/sbom-action@v0' >/dev/null
+  | rg -x 'anchore/sbom-action@[0-9a-f]{40}' >/dev/null
 yq -r '.jobs."release-sbom".steps[] | .uses // ""' "${workflow}" \
-  | rg -x 'anchore/sbom-action@v0' >/dev/null
+  | rg -x 'anchore/sbom-action@[0-9a-f]{40}' >/dev/null
 rg --fixed-strings --quiet 'cosign sign --yes "${CHART_REPOSITORY}@${{ steps.chart.outputs.digest }}"' "${workflow}"
 rg --fixed-strings --quiet 'make it public before Flux is switched to keyless OCI verification' "${workflow}"
 
