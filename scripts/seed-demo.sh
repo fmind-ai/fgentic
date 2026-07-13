@@ -136,9 +136,10 @@ for command in curl jq kubectl yq; do
 done
 [ -r "${CA_CERT}" ] || die "local CA certificate not found: ${CA_CERT}"
 
-# Flux cannot wait for the Deployment dynamically created from the Gateway resource. Require the
-# proxy's xDS-backed readiness before emitting events so a successful seed never depends on a
-# control-plane startup race.
+# Flux cannot wait for the Deployment dynamically created from the Gateway resource. Wait for the
+# controller to create it, then require its xDS-backed readiness before emitting events.
+kubectl --namespace agentgateway-system wait --for=create deployment/agentgateway-proxy \
+	--timeout=2m >/dev/null || die "agentgateway proxy was not created within 2 minutes"
 kubectl --namespace agentgateway-system rollout status deployment/agentgateway-proxy \
 	--timeout=2m >/dev/null || die "agentgateway proxy did not become ready within 2 minutes"
 

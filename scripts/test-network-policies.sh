@@ -15,6 +15,7 @@ EOF
 
 REQUIRE_VLLM=false
 SKIP_KAGENT_POLICY_REQUIRE="${NETWORK_POLICY_SKIP_KAGENT_POLICY_REQUIRE:-false}"
+REQUIRE_TEST_FIXTURES="${NETWORK_POLICY_REQUIRE_TEST_FIXTURES:-false}"
 case "${1:-}" in
   "") ;;
   --require-vllm) REQUIRE_VLLM=true ;;
@@ -32,13 +33,19 @@ if [ "$#" -gt 1 ]; then
   exit 2
 fi
 
-case "${SKIP_KAGENT_POLICY_REQUIRE}" in
-  true | false) ;;
-  *)
-    echo "error: NETWORK_POLICY_SKIP_KAGENT_POLICY_REQUIRE must be true or false" >&2
-    exit 2
-    ;;
-esac
+validate_boolean() {
+  local name="$1"
+  local value="$2"
+  case "${value}" in
+    true | false) ;;
+    *)
+      echo "error: ${name} must be true or false" >&2
+      exit 2
+      ;;
+  esac
+}
+validate_boolean NETWORK_POLICY_SKIP_KAGENT_POLICY_REQUIRE "${SKIP_KAGENT_POLICY_REQUIRE}"
+validate_boolean NETWORK_POLICY_REQUIRE_TEST_FIXTURES "${REQUIRE_TEST_FIXTURES}"
 
 if ! command -v kubectl >/dev/null 2>&1; then
   echo "error: required command not found: kubectl" >&2
@@ -184,10 +191,14 @@ fi
 require_resource networkpolicy kagent agent-zoo-egress
 require_resource service kagent kagent-controller
 require_resource service kagent kagent-tools
+require_resource networkpolicy agentgateway-system agentgateway-default-deny-ingress
 require_resource networkpolicy agentgateway-system agentgateway-allow-agents
 require_resource networkpolicy agentgateway-system agentgateway-allow-xds
 require_resource service agentgateway-system agentgateway
 require_resource service agentgateway-system agentgateway-proxy
+if [ "${REQUIRE_TEST_FIXTURES}" = true ]; then
+  require_resource service agentgateway-system agentgateway-unmatched
+fi
 
 # kagent is reachable only from the namespaces listed in its load-bearing ingress policy.
 run_probe "${PROBE_NAMESPACE}" netpol-kagent-denied \
@@ -219,9 +230,18 @@ run_probe kagent netpol-gateway-kagent \
 # healthy while every proxy fails its startup probe, and an arbitrary workload must remain denied.
 run_probe "${PROBE_NAMESPACE}" netpol-xds-denied \
   agentgateway.agentgateway-system.svc.cluster.local 9978 denied
+run_probe agentgateway-system netpol-xds-unmatched-source \
+  agentgateway.agentgateway-system.svc.cluster.local 9978 denied
 run_probe agentgateway-system netpol-xds-proxy \
   agentgateway.agentgateway-system.svc.cluster.local 9978 reachable \
   '    app.kubernetes.io/name: agentgateway-proxy'
+
+if [ "${REQUIRE_TEST_FIXTURES}" = true ]; then
+  # The namespace-wide isolation remains fail closed when a chart upgrade introduces a workload
+  # that is not selected by one of the explicit allow policies.
+  run_probe bridge netpol-agentgateway-unmatched \
+    agentgateway-unmatched.agentgateway-system.svc.cluster.local 9090 denied
+fi
 
 VLLM_SERVICE="vllm-qwen2-5-0-5b-engine-service"
 if kubectl get namespace models >/dev/null 2>&1 \

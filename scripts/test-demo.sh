@@ -69,6 +69,28 @@ reply_fixture_matches() {
 }
 
 bash -n "${DEMO_SOURCES[@]}" "${ROOT_DIR}/scripts/seed-demo.sh"
+(
+	# The Secret key already names the caller. Its value must be one Agentgateway credential record,
+	# not another caller-name map, or every bridge request is rejected as an unknown API key.
+	# shellcheck source=scripts/lib/demo-secrets.sh
+	source "${ROOT_DIR}/scripts/lib/demo-secrets.sh"
+	secret_calls=()
+	apply_secret() {
+		secret_calls+=("$*")
+	}
+	apply_a2a_secrets fixture-key
+	[ "${#secret_calls[@]}" -eq 2 ]
+	server_prefix='agentgateway-system a2a-bridge-callers --from-literal=matrix-a2a-bridge='
+	[[ "${secret_calls[0]}" == "${server_prefix}"* ]]
+	server_document="${secret_calls[0]#"${server_prefix}"}"
+	jq --exit-status '
+    .key == "fixture-key" and
+    .metadata == {"workload": "matrix-a2a-bridge"} and
+    (has("matrix-a2a-bridge") | not)
+  ' <<<"${server_document}" >/dev/null
+	[ "${secret_calls[1]}" = \
+		'bridge a2a-bridge-credential --from-literal=token=fixture-key' ]
+)
 rg --fixed-strings \
 	'kubectl apply --server-side --kustomize "${SNAPSHOT_DIR}/infra/policies"' \
 	"${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null || {
@@ -78,6 +100,11 @@ rg --fixed-strings \
 rg --fixed-strings 'scripts/test-admission-policies.sh" --runtime' \
 	"${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null || {
 	echo 'error: demo acceptance omits the admission runtime contract' >&2
+	exit 1
+}
+rg --fixed-strings 'wait --for=create deployment/agentgateway-proxy' \
+	"${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null || {
+	echo 'error: demo seeding does not wait for the agentgateway data plane to exist' >&2
 	exit 1
 }
 rg --fixed-strings 'rollout status deployment/agentgateway-proxy' \
@@ -303,15 +330,26 @@ assert_yq \
 
 kubectl kustomize "${ROOT_DIR}/infra/agentgateway" >"${WORK_DIR}/agentgateway.yaml"
 assert_yq \
+	'select(.kind == "NetworkPolicy" and .metadata.name == "agentgateway-default-deny-ingress") |
+    (((.spec.podSelector | tag) == "!!map") and
+     ((.spec.podSelector | length) == 0) and
+     ((.spec.policyTypes | length) == 1) and
+     (.spec.policyTypes[0] == "Ingress") and
+     (((.spec | has("ingress")) | not)))' \
+	"${WORK_DIR}/agentgateway.yaml" 'agentgateway namespace does not fail closed for ingress'
+assert_yq \
 	'select(.kind == "NetworkPolicy" and .metadata.name == "agentgateway-allow-agents") |
     (.spec.podSelector.matchLabels."app.kubernetes.io/name" == "agentgateway-proxy" and
      .spec.ingress[0].from[0].namespaceSelector.matchLabels."kubernetes.io/metadata.name" == "bridge" and
      .spec.ingress[0].from[1].namespaceSelector.matchLabels."kubernetes.io/metadata.name" == "kagent" and
      .spec.ingress[0].ports[0].port == 8080 and .spec.ingress[0].ports[0].protocol == "TCP" and
+     (.spec.ingress[0].from | length) == 2 and
      (.spec.ingress[0].ports | length) == 1 and
      .spec.ingress[1].from[0].namespaceSelector.matchLabels."kubernetes.io/metadata.name" == "monitoring" and
      .spec.ingress[1].ports[0].port == 15020 and .spec.ingress[1].ports[0].protocol == "TCP" and
-     (.spec.ingress[1].ports | length) == 1)' \
+     (.spec.ingress[1].from | length) == 1 and
+     (.spec.ingress[1].ports | length) == 1 and
+     (.spec.ingress | length) == 2)' \
 	"${WORK_DIR}/agentgateway.yaml" 'agentgateway data-plane ingress is not port scoped'
 assert_yq \
 	'select(.kind == "NetworkPolicy" and .metadata.name == "agentgateway-allow-xds") |
@@ -319,7 +357,9 @@ assert_yq \
      .spec.ingress[0].from[0].namespaceSelector.matchLabels."kubernetes.io/metadata.name" == "agentgateway-system" and
      .spec.ingress[0].from[0].podSelector.matchLabels."app.kubernetes.io/name" == "agentgateway-proxy" and
      .spec.ingress[0].ports[0].port == 9978 and .spec.ingress[0].ports[0].protocol == "TCP" and
-     (.spec.ingress[0].ports | length) == 1)' \
+     (.spec.ingress[0].from | length) == 1 and
+     (.spec.ingress[0].ports | length) == 1 and
+     (.spec.ingress | length) == 1)' \
 	"${WORK_DIR}/agentgateway.yaml" 'agentgateway xDS ingress is not restricted to its proxy'
 
 kubectl kustomize "${ROOT_DIR}/infra/flux" >"${WORK_DIR}/controllers.yaml"

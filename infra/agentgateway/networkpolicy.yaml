@@ -1,8 +1,18 @@
-# Zero-trust ingress to the agent data plane: only the agent workloads (the bridge in ns `bridge`
-# and kagent in ns `kagent`) may reach the proxy. Prometheus receives only the metrics port. The
-# control plane is isolated separately because the proxy needs its xDS listener during startup.
-# These exact policies pass isolated kind+Calico deny/allow conformance; repeat the active-cluster
-# probe on each target CNI. Combined with the ClusterIP Services, they restrict other namespaces.
+# Fail closed for every current and future workload in this namespace. The additive policies below
+# expose only the proxy data/metrics ports and the controller xDS port to their intended clients.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentgateway-default-deny-ingress
+  namespace: agentgateway-system
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# Only the agent workloads (the bridge in ns `bridge` and kagent in ns `kagent`) may reach the
+# proxy data plane. Prometheus receives only the metrics port. These exact policies pass isolated
+# kind+Calico deny/allow conformance; repeat the active-cluster probe on each target CNI.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
