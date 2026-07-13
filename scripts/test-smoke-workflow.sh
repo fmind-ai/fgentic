@@ -29,7 +29,9 @@ yq -e '
   ([.jobs.demo.steps[] |
     select(.id == "quota_usage" and ."continue-on-error" == true and
       ((.run // "") | contains("kubectl get resourcequota --all-namespaces")) and
-      ((.run // "") | contains("(.items | length) == 12")))] | length) == 1 and
+      ((.run // "") | contains("--field-selector metadata.name=compute-budget")) and
+      ((.run // "") | contains("agentgateway-system")) and
+      ((.run // "") | contains("postgres")))] | length) == 1 and
   ([.jobs.demo.steps[] |
     select(.run == "mise run demo:down" and (.if | contains("always")))] | length) > 0 and
   ([.jobs.demo.steps[] |
