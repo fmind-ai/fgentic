@@ -208,6 +208,7 @@ Start the timer at the first failed bridge readiness/mention probe and stop it a
 1. **Map a ghost** — add `agent-<name>: {namespace: kagent, name: <name>}` to the bridge's `agents` map (chart `values.yaml` in `clusters/base/apps.yaml` or `apps/matrix-a2a-bridge/chart/values.yaml`); commit. The ghost `@agent-<name>:fgentic.fmind.ai` becomes invokable (the map is the allowlist).
 1. **Authorize optional network replies** — if Slack or Telegram interop is enabled, add the exact `@agent-<name>:<server_name>` to that network unit's mautrix `bridge.permissions` map at `relay` level. The provider bridge blocks undeclared Matrix identities, so omitting this step safely prevents that agent's reply from leaving Matrix.
 1. **Use it** — invite `@agent-<name>` into a room and `@mention` it.
+1. **(Optional) In-flight task pins** — to turn on `PIN_IN_FLIGHT_TASKS`, grant agent ghosts the room's `m.room.pinned_events` state-event power level (raise the ghost's user level or lower the pinned-events event default in the room's power levels); without it the bridge skips pinning silently. Threaded working-state progress (`MAX_TASK_PROGRESS_POSTS`) needs no extra power.
 
 ## Runbook: add an external-network bridge (interop)
 
