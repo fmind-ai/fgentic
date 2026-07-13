@@ -92,6 +92,86 @@ A one-shot loader writes the approximately 1 GB model snapshot to a 3 GiB PVC. O
 
 The reference is deliberately small: 2 CPU/4 GiB requested, 4 CPU/6 GiB limited, 1 GiB KV cache, 4K context, and one concurrent sequence. `Qwen2.5-0.5B-Instruct` makes local sovereignty demonstrable, not production model quality: expect slow CPU generation and materially weaker answers than the API defaults. A useful 7B/8B model needs roughly 14–16 GB for BF16 weights plus runtime/KV memory and normally a 24 GB GPU; an always-on cloud GPU would exceed the project's USD 85/month ceiling, so the GCP reference stays on Vertex.
 
+#### GPU production override
+
+Keep the tracked CPU profile unchanged. A GPU deployment is an environment-owned Flux patch against the selected `agentgateway-provider`, not a second default. The following statically rendered example targets one NVIDIA L4-class GPU with 24 GiB VRAM and `Qwen/Qwen2.5-7B-Instruct` at immutable revision `a09a35458c702b33eeacc393d103063234e8bc28`.
+
+Patch the existing `spec.values.servingEngineSpec.modelSpec[0]` fields individually; do not replace the whole item and lose its service account, hardened contexts, offline environment, or read-only mounts:
+
+```yaml
+name: qwen2-5-7b
+repository: vllm/vllm-openai
+tag: v0.24.0@sha256:251eba5cc7c12fed0b75da22a9240e582b1c9e39f6fbc064f86781b963bd814f
+modelURL: /models/qwen2.5-7b-instruct
+runtimeClassName: ""
+resources:
+  requests:
+    cpu: "2"
+    memory: 8Gi
+    nvidia.com/gpu: "1"
+  limits:
+    cpu: "4"
+    memory: 12Gi
+    nvidia.com/gpu: "1"
+shmSize: 4Gi
+vllmConfig:
+  enablePrefixCaching: false
+  enableChunkedPrefill: false
+  maxModelLen: 4096
+  dtype: bfloat16
+  tensorParallelSize: 1
+  maxNumSeqs: 4
+  gpuMemoryUtilization: 0.90
+  extraArgs:
+    - --served-model-name
+    - ${llm_model}
+    - --no-enable-log-requests
+extraVolumes:
+  - name: model-cache
+    persistentVolumeClaim:
+      claimName: qwen2-5-7b-model
+  - name: runtime-tmp
+    emptyDir:
+      sizeLimit: 2Gi
+```
+
+The paired cache and routing changes are mandatory:
+
+1. Resize and rename the PVC to `qwen2-5-7b-model` with `25Gi`; the StorageClass must let the CPU loader detach and the GPU node attach it.
+1. Keep the pinned CPU loader image and its no-token boundary, but download `Qwen/Qwen2.5-7B-Instruct` at revision `a09a35458c702b33eeacc393d103063234e8bc28` into `/models/qwen2.5-7b-instruct`. Set its deadline to `5400`, request `100m` CPU/`256Mi`, limit it to 1 CPU/1 GiB, and write the same revision to `.ready` only after `snapshot_download` returns.
+1. Point the engine init-container marker and model mount at the new path and claim. Use the pinned GPU image above for the init container, allow it up to 3,600 seconds to observe `.ready`, and keep both model mounts read-only.
+1. Set `llm_model` to `Qwen/Qwen2.5-7B-Instruct`, change the backend host to `vllm-qwen2-5-7b-engine-service.models.svc.cluster.local`, and update the NetworkPolicy probe's expected Service name.
+1. Raise the HelmRelease timeout from `30m` to `90m` and the `agentgateway-provider` Flux timeout from `45m` to at least `90m`; a first 15+ GiB model download must not look like a failed rollout.
+
+The GPU runtime remains operator-owned. An `nvidia.com/gpu` request is the portable scheduling constraint; leave `runtimeClassName` empty when NVIDIA is the node default, or set `nvidia` only after `kubectl get runtimeclass nvidia` succeeds. Accelerator labels such as `cloud.google.com/gke-accelerator: nvidia-l4`, taints/tolerations, driver and device-plugin installation, quantization, context/concurrency limits, node autoscaling, quota, and spend depend on the target cluster. Verify that the pinned multi-platform image resolves for the node architecture before rollout; use an architecture-specific digest if the runtime cannot select from its manifest list.
+
+Materialize the fully merged Helm values—not only the fragment above—at `.agents/tmp/vllm-gpu-values.yaml`, then validate the exact pinned chart render:
+
+```bash
+export llm_model=Qwen/Qwen2.5-7B-Instruct
+
+mise exec -- flux envsubst --strict < .agents/tmp/vllm-gpu-values.yaml \
+  | mise exec -- helm template vllm vllm-stack \
+      --repo https://vllm-project.github.io/production-stack \
+      --version 0.1.11 \
+      --namespace models \
+      --values - \
+  | tee .agents/tmp/vllm-gpu-render.yaml \
+  | mise exec -- kubeconform -strict -summary
+
+mise exec -- yq -e '
+  select(.kind == "Deployment") |
+  .spec.template.spec.containers[0].image ==
+    "vllm/vllm-openai:v0.24.0@sha256:251eba5cc7c12fed0b75da22a9240e582b1c9e39f6fbc064f86781b963bd814f" and
+  .spec.template.spec.containers[0].resources.requests."nvidia.com/gpu" == "1" and
+  .spec.template.spec.containers[0].resources.limits."nvidia.com/gpu" == "1" and
+  (.spec.template.spec.containers[0].command |
+    contains(["/models/qwen2.5-7b-instruct", "--gpu_memory_utilization", "0.9"]))
+' .agents/tmp/vllm-gpu-render.yaml
+```
+
+This proves rendering, schema validity, and the intended image/resource/command contract only. Live CUDA discovery, model loading, `/health`, direct and agentgateway chat, mention-to-reply, metrics, and NetworkPolicy denial evidence require a funded GPU environment and remain human acceptance work for issue #10.
+
 The current constrained k3d host is not runtime acceptance evidence: it lacks safe memory headroom and kube-router aborts policy synchronization with `iptables-restore: Message too large`. Do not download the large artifacts merely for static validation or claim “prompts never leave” until the full NetworkPolicy conformance probe and mention-to-reply capture pass on a verified policy engine.
 
 ### Mistral La Plateforme
