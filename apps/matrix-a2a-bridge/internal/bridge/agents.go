@@ -49,6 +49,7 @@ type AgentRef struct {
 	target    a2aclient.Target
 	timeout   time.Duration
 	maxCost   uint64 // per-remote credit-unit ceiling on the verified skill quote (0 = no gate)
+	dev       bool   // stage:dev — invocable only in configured staging rooms (#128)
 	mappingID string
 }
 
@@ -61,6 +62,9 @@ type agentConfig struct {
 	URL         *string `yaml:"url,omitempty"`
 	Description string  `yaml:"description,omitempty"`
 	AvatarURL   string  `yaml:"avatarURL,omitempty"`
+	// Stage gates blast radius (#128): `dev` agents are invocable only in the bridge's configured
+	// staging rooms; `prod` (the default) is unrestricted. Valid for both local and remote targets.
+	Stage *string `yaml:"stage,omitempty"`
 
 	Timeout      *time.Duration      `yaml:"timeout,omitempty"`
 	TokenBudget  *uint64             `yaml:"tokenBudget,omitempty"`
@@ -115,6 +119,12 @@ func (a *AgentRef) Timeout() time.Duration {
 // zero when no cost gate is configured (docs/federation.md).
 func (a *AgentRef) MaxCost() uint64 {
 	return a.maxCost
+}
+
+// IsDev reports whether this agent is staged `dev` and therefore invocable only in the bridge's
+// configured staging rooms (#128). The default (unset) stage is `prod`, which is unrestricted.
+func (a *AgentRef) IsDev() bool {
+	return a.dev
 }
 
 // MappingID binds a mapping to its route, pinned signer, token budget, and timeout. Profile
@@ -239,11 +249,29 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 	if err != nil {
 		return nil, fmt.Errorf("agent %q: %w", ghost, err)
 	}
+	if ref.dev, err = compileStage(ghost, cfg); err != nil {
+		return nil, err
+	}
 	if err := ref.compileSenders(ghost); err != nil {
 		return nil, err
 	}
-	ref.mappingID = mappingID(ref.target, ref.timeout, ref.maxCost)
+	ref.mappingID = mappingID(ref.target, ref.timeout, ref.maxCost, ref.dev)
 	return ref, nil
+}
+
+// compileStage validates the optional per-agent stage flag. The default (unset) is `prod`.
+func compileStage(ghost string, cfg *agentConfig) (bool, error) {
+	if cfg.Stage == nil {
+		return false, nil
+	}
+	switch *cfg.Stage {
+	case "prod":
+		return false, nil
+	case "dev":
+		return true, nil
+	default:
+		return false, fmt.Errorf("agent %q: stage must be \"dev\" or \"prod\", got %q", ghost, *cfg.Stage)
+	}
 }
 
 func compileRemoteTarget(cfg *agentConfig) (a2aclient.Target, time.Duration, error) {
@@ -306,10 +334,10 @@ func compileCardIdentity(cfg *cardIdentityConfig) (a2aclient.CardIdentity, error
 	}, nil
 }
 
-func mappingID(target a2aclient.Target, timeout time.Duration, maxCost uint64) string {
+func mappingID(target a2aclient.Target, timeout time.Duration, maxCost uint64, dev bool) string {
 	identity := target.IdentityFingerprint()
 	sum := sha256.Sum256([]byte(fmt.Sprintf(
-		"%s\x00%x\x00%d\x00%d\x00%d", target.ID(), identity, target.TokenBudget(), timeout, maxCost,
+		"%s\x00%x\x00%d\x00%d\x00%d\x00%t", target.ID(), identity, target.TokenBudget(), timeout, maxCost, dev,
 	)))
 	return hex.EncodeToString(sum[:])
 }

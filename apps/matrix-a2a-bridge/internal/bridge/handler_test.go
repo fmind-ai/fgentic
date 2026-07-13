@@ -1692,6 +1692,81 @@ func TestDispatchRefusesRemoteOverBudgetQuoteBeforeAdmission(t *testing.T) {
 	}
 }
 
+func TestDispatchEnforcesStagingRoomBoundary(t *testing.T) {
+	stagingRoom := id.RoomID("!staging:" + ownServer)
+	otherRoom := id.RoomID("!prod:" + ownServer)
+	agents, err := LoadAgents(writeTemp(t, `agents:
+  agent-dev: {namespace: kagent, name: dev-agent, stage: dev}
+  agent-prod: {namespace: kagent, name: prod-agent, stage: prod}
+`))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	client := &scriptedA2AClient{callResult: a2aclient.Result{Text: "ok", Terminal: true}}
+	b, _, _, _, recorder := pollingHarness(t, client)
+	b.agents = agents
+	b.stagingRooms = map[string]struct{}{stagingRoom.String(): {}}
+	for _, localpart := range []string{"agent-dev", "agent-prod"} {
+		for _, room := range []id.RoomID{stagingRoom, otherRoom} {
+			intent := b.as.Intent(id.NewUserID(localpart, ownServer))
+			intent.Registered = true
+			if err := b.as.StateStore.SetMembership(t.Context(), room, intent.UserID, event.MembershipJoin); err != nil {
+				t.Fatalf("SetMembership: %v", err)
+			}
+		}
+	}
+
+	dispatch := func(localpart string, room id.RoomID, eventID string) map[string]any {
+		var output strings.Builder
+		setBridgeLogOutput(b, &output)
+		ghost := id.NewUserID(localpart, ownServer)
+		evt, _ := msgEvent(id.NewUserID("alice", ownServer), "@"+localpart+" do it", ghost)
+		evt.ID = id.EventID(eventID)
+		evt.RoomID = room
+		ref, _ := agents.Lookup(localpart)
+		b.dispatchResolvedTarget(t.Context(), evt, localpart, "do it", ref, agents.IdentifySender(evt.Sender), dedupVerdictAccepted)
+		audits := auditRecords(t, output.String())
+		if len(audits) != 1 {
+			t.Fatalf("%s in %s: audits = %d, want 1", localpart, room, len(audits))
+		}
+		return audits[0]
+	}
+
+	// dev agent in a staging room: dispatches to A2A and completes.
+	if audit := dispatch("agent-dev", stagingRoom, "$dev-staging"); audit["outcome"] != outcomeOK {
+		t.Fatalf("dev-in-staging audit = %#v, want ok", audit)
+	}
+	if client.callCount != 1 {
+		t.Fatalf("dev-in-staging A2A calls = %d, want 1", client.callCount)
+	}
+	// dev agent elsewhere: refused fail-closed, no A2A, distinct reason, one bounded notice.
+	audit := dispatch("agent-dev", otherRoom, "$dev-other")
+	if audit["outcome"] != outcomeDenied || audit["terminal_stage"] != "admission" ||
+		audit["terminal_reason"] != "stage_policy_rejected" {
+		t.Fatalf("dev-elsewhere audit = %#v, want denied stage_policy_rejected", audit)
+	}
+	if client.callCount != 1 {
+		t.Fatalf("dev-elsewhere spent an A2A call: calls = %d", client.callCount)
+	}
+	// prod agent is unaffected by the staging boundary in any room.
+	if audit := dispatch("agent-prod", otherRoom, "$prod-other"); audit["outcome"] != outcomeOK {
+		t.Fatalf("prod-elsewhere audit = %#v, want ok", audit)
+	}
+	if client.callCount != 2 {
+		t.Fatalf("prod A2A calls total = %d, want 2", client.callCount)
+	}
+
+	notices := 0
+	for _, evt := range recorder.snapshot() {
+		if evt.Body == stageDeniedText {
+			notices++
+		}
+	}
+	if notices != 1 {
+		t.Fatalf("stage-denied notices = %d, want exactly one", notices)
+	}
+}
+
 func TestDispatchClassifiesTrustRevocationAtTransportBoundary(t *testing.T) {
 	client := &scriptedA2AClient{
 		callErr:     fmt.Errorf("remote transport refused request: %w", a2aclient.ErrRemoteTargetUntrusted),

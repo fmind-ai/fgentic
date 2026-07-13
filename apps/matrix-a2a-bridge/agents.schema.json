@@ -45,6 +45,10 @@
         "url": { "type": "string", "format": "uri", "pattern": "^https?://" },
         "description": { "type": "string" },
         "avatarURL": { "type": "string", "pattern": "^mxc://[^/]+/.+$" },
+        "stage": {
+          "description": "Rollout stage. `dev` agents are invocable only in the bridge's configured staging rooms; `prod` (the default) is unrestricted. Valid for both local and remote targets.",
+          "enum": ["dev", "prod"]
+        },
         "timeout": {
           "type": "string",
           "pattern": "^(?:[0-9]+(?:\\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))+$"
