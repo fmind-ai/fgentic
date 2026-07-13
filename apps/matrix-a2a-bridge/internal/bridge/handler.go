@@ -725,6 +725,7 @@ func (b *Bridge) awaitTask(
 	// Register the running task so a room member can cancel it by reacting to the placeholder (#98).
 	// A missing placeholder (its post failed) leaves nothing to react to, so there is nothing to track.
 	var task *inflightTask
+	progress := taskProgress{max: b.cfg.MaxTaskProgressPosts}
 	if placeholder != "" {
 		task = &inflightTask{
 			room:           evt.RoomID,
@@ -736,6 +737,17 @@ func (b *Bridge) awaitTask(
 		}
 		b.inflight.register(task)
 		defer b.inflight.unregister(placeholder)
+		progress.root = placeholder // thread working-state updates under the placeholder (#118)
+		if b.cfg.PinInFlightTasks {
+			b.pinPlaceholder(ctx, intent, evt.RoomID, placeholder)
+			// Unpin on any terminal state, on a fresh bounded context so a canceled/shutdown ctx
+			// still clears the pin (best-effort — a lingering pin is cosmetic, not a correctness bug).
+			defer func() {
+				unpinCtx, cancelUnpin := context.WithTimeout(context.WithoutCancel(ctx), b.cfg.RequestTimeout)
+				defer cancelUnpin()
+				b.unpinPlaceholder(unpinCtx, intent, evt.RoomID, placeholder)
+			}()
+		}
 	}
 
 	delay, pollErrors := b.pollInitial, 0
@@ -805,6 +817,10 @@ func (b *Bridge) awaitTask(
 			b.editReply(ctx, intent, evt.RoomID, placeholder, orDefault(polled.Text, emptyReplyText))
 			b.log.Info("delegated to agent (long task)", "ghost", localpart, "agent", ref.Path(), "room", evt.RoomID)
 			return audit
+		}
+		// Still working: surface a bounded, deduplicated progress update in the placeholder thread (#118).
+		if task != nil {
+			b.surface(ctx, intent, evt.RoomID, &progress, polled.Text)
 		}
 	}
 }

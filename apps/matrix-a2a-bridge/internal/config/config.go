@@ -93,6 +93,16 @@ type Config struct {
 	// to restrict cancellation to admins, or lower it toward 0 to let any room member cancel.
 	CancelModeratorPowerLevel int `env:"CANCEL_MODERATOR_POWER_LEVEL" envDefault:"50"`
 
+	// MaxTaskProgressPosts bounds the threaded working-state updates a long task may post to its
+	// placeholder thread (SPEC §6). Progress is deduplicated and capped so it never becomes notice
+	// spam under a flood of status changes (D7 response plane); 0 disables progress posting entirely.
+	MaxTaskProgressPosts int `env:"MAX_TASK_PROGRESS_POSTS" envDefault:"3"`
+	// PinInFlightTasks opts into pinning a running long task's placeholder (m.room.pinned_events) for
+	// a zero-UI "what is running here" view, unpinning on any terminal state. Off by default because
+	// it needs the ghost to hold the room's state-event power level; where power is missing it degrades
+	// silently. Enable it only after granting agent ghosts that power (matrix-agents add-agent runbook).
+	PinInFlightTasks bool `env:"PIN_IN_FLIGHT_TASKS" envDefault:"false"`
+
 	LogLevel  string `env:"LOG_LEVEL" envDefault:"info"`
 	LogFormat string `env:"LOG_FORMAT" envDefault:"json"`
 }
@@ -163,6 +173,9 @@ func (c Config) validate() error {
 	}
 	if c.CancelModeratorPowerLevel < 0 {
 		return fmt.Errorf("CANCEL_MODERATOR_POWER_LEVEL must be >= 0")
+	}
+	if c.MaxTaskProgressPosts < 0 {
+		return fmt.Errorf("MAX_TASK_PROGRESS_POSTS must be >= 0")
 	}
 	if _, err := c.SlogLevel(); err != nil {
 		return err
