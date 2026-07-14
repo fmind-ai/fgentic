@@ -13,6 +13,8 @@ The full platform runs on one k3d cluster (`fgentic`) with loopback 80/443 bound
 ## Lifecycle
 
 1. `mise run cluster:up` / `mise run cluster:down` (config: `infra/k3d-config.yaml` — k3s Traefik disabled, we install our own). Requires a running Docker daemon.
+1. On a constrained laptop, keep the full `fgentic` cluster stopped unless the work needs Keycloak SSO, telemetry/tracing, or Trivy: `mise exec -- k3d cluster stop fgentic` releases its active CPU/RAM without deleting state, and `mise exec -- k3d cluster start fgentic` restores it. `mise run cluster:down` is destructive to that cluster.
+1. Prefer `mise run demo:up` for the core Matrix mention-to-reply loop. This disposable profile keeps gateway, Postgres, ESS, agentgateway, the kagent controller/tools and three mapped Agents, and the bridge; it omits Keycloak, observability, and Trivy, scales kagent UI to zero, and disables KMCP. `mise run demo:down` deletes only the owned `fgentic-demo` cluster.
 1. After a recreate, redo the out-of-band steps: Gateway API CRDs, the `sops-age` Secret, `scripts/local-ca.sh`, `scripts/local-adc.sh`, then `flux bootstrap github … --path=clusters/local` (order and commands in the matrix-agents runbook). Once Flux is bootstrapped, run **`mise run cluster:overrides`** to re-apply the gitignored `platform-settings-overrides` (real `gcp_project`, etc.) — it is untracked, so a recreate loses it and Vertex falls back to the `your-gcp-project` placeholder until you do (idempotent; safe no-op if you never created the file).
 1. Rebuild-and-run a bridge change: `mise run bridge:load` + rollout restart, or `mise run watch` — see the bridge-dev skill.
 

@@ -114,6 +114,29 @@ yq -o=yaml '.spec.values' infra/kagent/helmrelease.yaml \
     --namespace kagent \
     --values - >"${tmp_dir}/kagent.yaml"
 
+# check:demo proves the nested overlay produces these exact values without network access. Render
+# the pinned upstream chart here so a renamed/ignored value cannot silently restore laptop load.
+yq -o=yaml '.spec.values' infra/kagent/helmrelease.yaml \
+  | flux envsubst --strict \
+  | helm template kagent "${kagent_repository}/${kagent_chart}" \
+    --version "${kagent_version}" \
+    --namespace kagent \
+    --set otel.tracing.enabled=false \
+    --set ui.replicas=0 \
+    --set kmcp.enabled=false \
+    --values - >"${tmp_dir}/kagent-demo.yaml"
+expected_demo_deployments=$'kagent-controller\t1\nkagent-tools\t1\nkagent-ui\t0'
+actual_demo_deployments="$(
+  yq eval-all -o=json -I=0 \
+    'select(.kind == "Deployment") |
+    {"name": .metadata.name, "replicas": (.spec.replicas // 1)}' \
+    "${tmp_dir}/kagent-demo.yaml" \
+    | jq --raw-output '[.name, .replicas] | @tsv' \
+    | sort
+)"
+[[ "${actual_demo_deployments}" == "${expected_demo_deployments}" ]] \
+  || fail "demo must retain controller/tools, scale UI to zero, and disable KMCP"
+
 assert_yq \
   'select(.kind == "Deployment" and .metadata.name == "kagent-tools") | .spec.template.spec.containers[0].args as $args | (($args | contains(["--tools=k8s"])) and ($args | contains(["--read-only"])))' \
   "${tmp_dir}/kagent.yaml" \
