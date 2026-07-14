@@ -6,7 +6,16 @@
 *.key
 age.key
 *.agekey
+# SOPS/age private key material (public recipients in .sops.yaml are safe to commit).
+keys.txt
+key.txt
+*.age
 **/secrets/*.plain.yaml
+# Cloud / cluster credentials — helper scripts already keep these outside the repo.
+application_default_credentials.json
+*-credentials.json
+kubeconfig
+*.kubeconfig
 
 # --- Terraform ---
 **/.terraform/
