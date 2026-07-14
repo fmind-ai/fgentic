@@ -117,7 +117,8 @@ serviceAccount:
 
 # Default-deny ingress except from the homeserver namespace (Synapse pushes AS transactions here)
 # and monitoring (future metrics scrapes — SPEC §4 F14). Validate enforcement on GKE Dataplane V2
-# or Cilium; constrained rootless k3d programs kube-router rules but failed a deny-egress probe.
+# or another explicit policy-enforcement target; constrained rootless k3d installs this intent but
+# disables its known-broken kube-router controller.
 networkPolicy:
   enabled: true
   fromNamespaces:

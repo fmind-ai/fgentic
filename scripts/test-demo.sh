@@ -349,6 +349,18 @@ rg --fixed-strings 'local CA certificate not found' "${WORK_DIR}/seed-startup.tx
         select(.arg == "--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<1Gi,imagefs.available<1Gi,nodefs.inodesFree<5%,imagefs.inodesFree<5%") |
         (.nodeFilters | ((length == 1) and (.[0] == "server:*")))' \
 			"${WORK_DIR}/${config}" "${config} omits the disposable-cluster eviction floor"
+		assert_yq \
+			'[.options.k3s.extraArgs[] | select(.arg == "--disable-network-policy")] as $args |
+        (
+          ($args | length) == 1 and
+          ($args | .[0].nodeFilters | length) == 1 and
+          ($args | .[0].nodeFilters[0]) == "server:*" and
+          ($args | .[0] | keys | length) == 2 and
+          ($args | .[0] | has("arg")) and
+          ($args | .[0] | has("nodeFilters"))
+        )' \
+			"${WORK_DIR}/${config}" \
+			"${config} does not disable the failed local NetworkPolicy controller"
 		audit_policy_source="$(yq -er '.files[] |
       select(.destination == "/etc/fgentic/audit-policy.yaml") | .source' \
 			"${WORK_DIR}/${config}")"

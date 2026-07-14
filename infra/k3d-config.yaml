@@ -1,9 +1,10 @@
 # Local k3d cluster for Fgentic. Binds loopback 80/443 to the Traefik/Gateway LoadBalancer so
 # Element Web + Synapse + MAS are reachable at their canonical https://*.fgentic.localhost URLs
 # (ESS bakes https public URLs into its config — a port suffix would break MAS/Element). K3s does
-# run its embedded kube-router NetworkPolicy controller, but this constrained rootless/userns host
-# aborts the generated iptables-restore with a netlink "Message too large" error. Treat local
-# policies as intent-only and run security conformance on a known enforcing cluster.
+# not run its embedded kube-router NetworkPolicy controller: this constrained rootless/userns host
+# aborts the generated iptables-restore with a netlink "Message too large" error. NetworkPolicy
+# objects remain as intent; enforcement is validated by the dedicated Calico test and must be
+# accepted on GKE Dataplane V2.
 apiVersion: k3d.io/v1alpha5
 kind: Simple
 metadata:
@@ -36,6 +37,11 @@ options:
       # Disable k3s's bundled Traefik + servicelb; we install our own Traefik (Gateway API)
       # and use k3d's loadbalancer, matching the GKE Gateway API path.
       - arg: --disable=traefik
+        nodeFilters:
+          - server:*
+      # This host cannot enforce kube-router rules. Disable its failed reconciliation instead of
+      # filling the k3d node log; all NetworkPolicy manifests remain installed as intent.
+      - arg: --disable-network-policy
         nodeFilters:
           - server:*
       # Keep a request/response-body-suppressed trail for selected high-signal objects. Metadata
