@@ -52,7 +52,9 @@ jobs:
             image_tags="${IMAGE_REPOSITORY}:sha-${GITHUB_SHA}"$'\n'"${IMAGE_REPOSITORY}:${GITHUB_REF_NAME}"
           else
             chart_version="${base_chart_version}-sha.${short_sha}"
-            image_tags="${IMAGE_REPOSITORY}:sha-${GITHUB_SHA}"$'\n'"${IMAGE_REPOSITORY}:latest"
+            # Publish only the immutable sha tag: deploys are digest-pinned, so a floating :latest
+            # is unused, and the no-latest admission policy (infra/policies) would reject it anyway.
+            image_tags="${IMAGE_REPOSITORY}:sha-${GITHUB_SHA}"
           fi
           {
             echo "chart-version=${chart_version}"
