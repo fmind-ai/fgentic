@@ -81,6 +81,7 @@ type mentions struct {
 }
 
 func main() {
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, nil)))
 	if err := run(); err != nil {
 		slog.Error("bridge integration failed", "err", err)
 		os.Exit(1)
@@ -107,6 +108,8 @@ func run() error {
 	switch scenario := envOrDefault("DRIVER_SCENARIO", "integration"); scenario {
 	case "integration":
 		return f.runBasic(ctx)
+	case "availability":
+		return f.runAvailability(ctx)
 	case "load":
 		return f.runLoad(ctx)
 	default:
@@ -164,7 +167,7 @@ func (f fixture) runBasic(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := f.waitForReplyCount(ctx, sess.AccessToken, roomID, ghost, eventID, replyText, 1); err != nil {
+	if err := f.waitForReply(ctx, sess.AccessToken, roomID, ghost, eventID, replyText); err != nil {
 		return err
 	}
 
@@ -203,14 +206,13 @@ func (f fixture) runBasic(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := f.waitForReplyCount(
+	if err := f.waitForReply(
 		ctx,
 		sess.AccessToken,
 		roomID,
 		plainGhost,
 		plainEventID,
 		plainReplyText,
-		1,
 	); err != nil {
 		return fmt.Errorf("plain A2A round trip: %w", err)
 	}
@@ -247,14 +249,13 @@ func (f fixture) runBasic(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	if err := f.waitForReplyCount(
+	if err := f.waitForReply(
 		ctx,
 		sess.AccessToken,
 		roomID,
 		plainGhost,
 		rateEventID,
 		rateLimitedReplyText,
-		1,
 	); err != nil {
 		return fmt.Errorf("plain A2A rate-limit notice: %w", err)
 	}
@@ -537,11 +538,11 @@ func (f fixture) pushAppserviceEvent(
 	return nil
 }
 
-func (f fixture) waitForReplyCount(
+func (f fixture) waitForReply(
 	ctx context.Context,
 	token, roomID, ghost, eventID, body string,
-	want int,
 ) error {
+	const want = 1
 	for {
 		count, err := f.replyCount(ctx, token, roomID, ghost, eventID, body)
 		if err == nil && count == want {

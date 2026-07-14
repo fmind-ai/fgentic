@@ -79,6 +79,10 @@ bash scripts/check-coverage.sh coverage.out
 description = "Exercise the real Matrix appservice wire path in an isolated kind cluster"
 run = "bash test/integration/run.sh"
 
+[tasks."test:availability"]
+description = "Prove graceful in-flight drain and cross-pod persistent deduplication"
+run = "bash test/integration/run-availability.sh"
+
 [tasks."test:load"]
 description = "Run the resource-bounded D3 dispatcher regression scenario"
 run = "bash test/integration/run-load.sh"

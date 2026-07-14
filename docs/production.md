@@ -99,6 +99,40 @@ For the optional GKE reference, apply [`infra/terraform/bootstrap/`](../infra/te
 
 Flux reconciles the DAG in dependency order: namespaces and secrets; controllers and observability; gateway, Postgres, and agentgateway; Matrix, Keycloak, kagent, and monitors; then the bridge. Inspect `flux get kustomizations` and `flux get helmreleases -A`; debug the first non-Ready layer instead of applying a workload around Flux.
 
+## Availability posture
+
+The GCP reference explicitly composes [`infra/production-ha/cluster`](../infra/production-ha/cluster); `local`, `demo`, and `federation` do not. The profile replicates only workloads whose current state and protocol boundaries support it. A PodDisruptionBudget protects against voluntary eviction; it does not keep a process alive through node, zone, storage, control-plane, or application failure. Likewise, `DoNotSchedule` hostname spreading needs at least two schedulable nodes with enough capacity before the second replica can start.
+
+The default Terraform reference has two nodes in one zone. It therefore demonstrates host-level separation, not zone or region availability. Setting `regional = true` changes the GKE control-plane and node-pool topology, but operators must still verify workload placement, storage topology, capacity, and failure behavior across the intended zones; a regional control plane alone is not that proof.
+
+| Component                                | Production profile                                                              | Honest boundary                                                                                             |
+| ---------------------------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| CNPG `platform-pg`                       | 3 instances; CNPG-owned failover and disruption budget                          | Database process/node resilience; backup and restore remain separate gates                                  |
+| Traefik                                  | 2 replicas, hostname spread, one-pod PDB                                        | One voluntary disruption or host loss; not zone HA                                                          |
+| Element Web, HAProxy, MAS                | 2 replicas each, hostname spread, one-pod PDBs                                  | Stateless web, routing, and authentication edge redundancy                                                  |
+| Synapse main                             | 1 replica, no PDB                                                               | Fast restart only; [#62](https://github.com/fmind-ai/fgentic/issues/62) tracks the state/media-store design |
+| Keycloak                                 | 2 replicas, JDBC discovery, required host anti-affinity, one-pod PDB            | Active/active application processes against shared Postgres                                                 |
+| agentgateway controller and proxy        | 2 replicas each, required host anti-affinity, zero-surge rollouts, one-pod PDBs | Controller and data-plane pod redundancy                                                                    |
+| kagent controller, KMCP, tools, and UI   | 2 replicas each, hostname spread, one-pod PDBs                                  | Platform workloads only; generated Agent workloads remain one replica                                       |
+| Matrix-to-A2A bridge                     | 1 ready intake replica, no PDB, zero-surge rollout                              | Graceful drain and fast restart; no hard-crash durability or cross-restart room-ordering guarantee          |
+| Other operators and observability stores | Existing chart defaults                                                         | Fast restart; Jaeger's in-memory trace store is explicitly ephemeral                                        |
+
+The static contract recursively renders the effective GCP and local Flux trees, renders the pinned third-party charts, verifies replica/PDB/resource and placement-selector invariants, and proves the production component did not leak into evaluation profiles:
+
+```bash
+mise run check:production-ha
+```
+
+The bridge availability fixture then holds one real A2A call, normally deletes the bridge pod, requires the old process to observe SIGTERM and deliver one reply, observes a distinct replacement process, and directly replays the same event to prove one Postgres-backed dedup skip without a second A2A call or reply:
+
+```bash
+mise run test:availability
+```
+
+This is a graceful-drain test, not an automatic Synapse-retry or SIGKILL test. The event marker is written before asynchronous completion, so a hard crash after that marker can still lose accepted work and suppress a later replay; [#311](https://github.com/fmind-ai/fgentic/issues/311) tracks the durable recovery design. The measured fixture timings below are one local observation, not a production RTO or SLO. Re-run the drill on the candidate revision and measure a controlled drain on the target cluster before setting either.
+
+On 2026-07-14, an owned one-node Kind v1.34.0 fixture on the cgroup-v1 local development host observed `delivery_gap_ms=1149`, `replacement_observed_ms=11563`, and `pod_ready_rto_seconds=2`. The normally deleted pod was `bridge-6c64649f68-9667x`; the distinct ready replacement was `bridge-6c64649f68-cmcvd`. The content-free counters remained exactly one A2A start, one completion, one Matrix reply, and one replacement-process dedup skip across the quiet window. These values characterize that fixture run only.
+
 ## Bound namespace compute
 
 The namespaces layer creates a `compute-budget` ResourceQuota and `container-defaults` LimitRange before any application workload. The quota caps aggregate Pods and CPU/memory requests and limits; it does not reserve that capacity. The LimitRange adds a 25m/64Mi request and 500m/512Mi limit only where a container omits the corresponding field, so reviewed workload-specific values remain authoritative and every admitted Pod is accounted.
@@ -115,7 +149,7 @@ All 16 repository-managed Namespace manifests carry one compute quota and one Li
 
 The 2026-07-13 pinned-render audit found complete workload resources on kagent and the sample agents, the bridge and optional external bridges, model runtimes, and the primary Postgres, Keycloak, gateway, agentgateway, and observability containers. It also found deliberate or chart-owned gaps: ESS supplies requests and memory limits but no CPU limits; monitoring sidecars, exporters, operator hook Jobs, and some operator-generated helpers omit one or more fields. The namespace defaults cover those generated containers without duplicating fragile third-party chart internals. Cert-manager's four components and the agentgateway controller were corrected to explicit resources because their charts expose stable top-level values.
 
-These are generous initial ceilings, not measured steady-state targets. Tighten only after capturing `kubectl describe quota -A` during normal traffic and a full rolling upgrade, retaining explicit rollout and failure-recovery headroom. Change the three profile values in `clusters/<env>/platform-settings.yaml`; do not patch individual ResourceQuota objects. Workload-level limits and HA/PDB sizing remain the responsibility of [#61](https://github.com/fmind-ai/fgentic/issues/61); namespace quotas complement that work by bounding aggregate blast radius.
+These are generous initial ceilings, not measured steady-state targets. Tighten only after capturing `kubectl describe quota -A` during normal traffic and a full rolling upgrade, retaining explicit rollout and failure-recovery headroom. Change the three profile values in `clusters/<env>/platform-settings.yaml`; do not patch individual ResourceQuota objects. Workload-level resource and availability invariants are enforced by `mise run check:production-ha`; namespace quotas complement them by bounding aggregate blast radius.
 
 Run the offline mapping/substitution contract on every change and the negative admission proof on an isolated cluster:
 
@@ -179,6 +213,9 @@ Slack and Telegram are optional external identity/data boundaries, not productio
 1. Run `mise run check` and `mise run test` warning-free before reconciling a revision.
 1. Review [security.md](security.md), including prompt-injection boundaries, A2A workload authorization, network-policy enforcement, secret handling, and supply-chain verification.
 1. Prove NetworkPolicy on GKE Dataplane V2 or another known-enforcing engine; the constrained local k3d host is intent-only when its kube-router probe fails.
+1. Confirm at least two schedulable nodes have replica and rollout headroom, then verify every required hostname-spread or anti-affinity rule places replicas on distinct nodes.
+1. Inspect every PDB and perform a controlled target-cluster drain; a rendered PDB is not evidence that eviction, rescheduling, storage attachment, and application recovery succeed together.
+1. Run `mise run test:availability`, retain its exact revision and timing evidence, and keep the documented hard-crash loss window outside any claimed RTO until the durable-work follow-up lands.
 1. Confirm selected-provider retention, residency, billing cap, and low-token runtime acceptance. Static rendering is not runtime evidence.
 1. Configure DNS and valid TLS for the apex plus `chat.`, `matrix.`, `auth.`, `id.`, and `grafana.` hosts. The GKE Terraform output provides the reserved ingress address.
 1. Review CNPG backups and complete a restore drill. The local overlay intentionally strips GCS backup configuration.

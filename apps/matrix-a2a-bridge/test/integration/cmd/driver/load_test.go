@@ -14,6 +14,7 @@ go_memstats_heap_sys_bytes 4e+06
 fgentic_queue_depth 90
 fgentic_inflight_delegations 10
 fgentic_dedup_skips_total 100
+process_start_time_seconds 1234.5
 fgentic_delegations_total{ghost="agent-integration",outcome="ok"} 100
 `) + "\n"))
 	if err != nil {
@@ -22,7 +23,8 @@ fgentic_delegations_total{ghost="agent-integration",outcome="ok"} 100
 	if metrics.HeapAlloc != 1_500_000 || metrics.HeapInUse != 2_000_000 || metrics.HeapSys != 4_000_000 {
 		t.Fatalf("heap metrics = %+v", metrics)
 	}
-	if metrics.QueueDepth != 90 || metrics.InFlight != 10 || metrics.DedupSkips != 100 {
+	if metrics.QueueDepth != 90 || metrics.InFlight != 10 || metrics.DedupSkips != 100 ||
+		metrics.ProcessStartTime != 1234.5 {
 		t.Fatalf("bridge metrics = %+v", metrics)
 	}
 }

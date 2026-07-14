@@ -52,11 +52,13 @@ type stubStats struct {
 	Active             int                 `json:"active"`
 	CardTampered       bool                `json:"card_tampered"`
 	DelayMillis        int64               `json:"delay_millis"`
+	HoldEnabled        bool                `json:"hold_enabled"`
 	MaxActive          int                 `json:"max_active"`
 	RemoteCardRequests int                 `json:"remote_card_requests"`
 	RemoteRequests     int                 `json:"remote_requests"`
 	RemoteUserID       string              `json:"remote_user_id"`
 	TokenBudgetValid   bool                `json:"token_budget_valid"`
+	TotalRequests      int                 `json:"total_requests"`
 	TotalStarted       int                 `json:"total_started"`
 	TotalCompleted     int                 `json:"total_completed"`
 	Starts             []stubRequestRecord `json:"starts"`
@@ -64,12 +66,13 @@ type stubStats struct {
 }
 
 type bridgeMetrics struct {
-	HeapAlloc  float64
-	HeapInUse  float64
-	HeapSys    float64
-	QueueDepth float64
-	InFlight   float64
-	DedupSkips float64
+	HeapAlloc        float64
+	HeapInUse        float64
+	HeapSys          float64
+	QueueDepth       float64
+	InFlight         float64
+	DedupSkips       float64
+	ProcessStartTime float64
 }
 
 type metricProfile struct {
@@ -541,7 +544,8 @@ func parseBridgeMetrics(body []byte) (bridgeMetrics, error) {
 			"go_memstats_heap_sys_bytes",
 			"fgentic_queue_depth",
 			"fgentic_inflight_delegations",
-			"fgentic_dedup_skips_total":
+			"fgentic_dedup_skips_total",
+			"process_start_time_seconds":
 			value, err := strconv.ParseFloat(fields[1], 64)
 			if err != nil {
 				return bridgeMetrics{}, fmt.Errorf("parse metric %s: %w", fields[0], err)
@@ -559,18 +563,20 @@ func parseBridgeMetrics(body []byte) (bridgeMetrics, error) {
 		"fgentic_queue_depth",
 		"fgentic_inflight_delegations",
 		"fgentic_dedup_skips_total",
+		"process_start_time_seconds",
 	} {
 		if _, ok := values[name]; !ok {
 			return bridgeMetrics{}, fmt.Errorf("bridge metric %s is missing", name)
 		}
 	}
 	return bridgeMetrics{
-		HeapAlloc:  values["go_memstats_heap_alloc_bytes"],
-		HeapInUse:  values["go_memstats_heap_inuse_bytes"],
-		HeapSys:    values["go_memstats_heap_sys_bytes"],
-		QueueDepth: values["fgentic_queue_depth"],
-		InFlight:   values["fgentic_inflight_delegations"],
-		DedupSkips: values["fgentic_dedup_skips_total"],
+		HeapAlloc:        values["go_memstats_heap_alloc_bytes"],
+		HeapInUse:        values["go_memstats_heap_inuse_bytes"],
+		HeapSys:          values["go_memstats_heap_sys_bytes"],
+		QueueDepth:       values["fgentic_queue_depth"],
+		InFlight:         values["fgentic_inflight_delegations"],
+		DedupSkips:       values["fgentic_dedup_skips_total"],
+		ProcessStartTime: values["process_start_time_seconds"],
 	}, nil
 }
 
