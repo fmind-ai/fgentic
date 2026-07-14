@@ -3,9 +3,10 @@
 # version hint for Renovate and human reviewers. Local actions remain intentionally unpinned.
 set -euo pipefail
 
-readonly root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly root_dir
 
-for command in rg yq; do
+for command in jq mise rg yq; do
 	command -v "${command}" >/dev/null 2>&1 || {
 		echo "error: required command not found: ${command}" >&2
 		exit 2
@@ -43,5 +44,24 @@ for workflow in "${workflows[@]}"; do
 	done < <(rg '^[[:space:]]*uses:' "${workflow}")
 done
 
+if ! mise --cd "${root_dir}" tasks info install:apps --json | jq -e '
+  .depends == [] and
+  .run == [
+    "mise run install:bridge",
+    "mise run install:gateway",
+    "mise run install:policy"
+  ]
+' >/dev/null; then
+	echo "error: install:apps must serialize shared mise toolchain installation" >&2
+	exit 1
+fi
+
+if ! yq --exit-status \
+	'.jobs.check.steps[] | select(.run == "mise run install:apps")' \
+	"${root_dir}/.github/workflows/ci.yml" >/dev/null; then
+	echo "error: CI check job must use the canonical install:apps task" >&2
+	exit 1
+fi
+
 [[ "${failed}" == false ]] || exit 1
-echo "GitHub Actions pinning contract passed (${#workflows[@]} workflows)"
+echo "GitHub Actions pinning and serialized-install contracts passed (${#workflows[@]} workflows)"

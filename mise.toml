@@ -45,7 +45,13 @@ run = "lefthook install"
 
 [tasks."install:apps"]
 description = "Install all application toolchains and locked environments"
-depends = ["install:bridge", "install:gateway", "install:policy"]
+# These installers share mise's data directory. Keep them sequential so cold-cache
+# runs cannot race while installing the same Go runtime or rebuilding its symlinks.
+run = [
+  "mise run install:bridge",
+  "mise run install:gateway",
+  "mise run install:policy",
+]
 
 [tasks."install:bridge"]
 description = "Install the bridge toolchain"
