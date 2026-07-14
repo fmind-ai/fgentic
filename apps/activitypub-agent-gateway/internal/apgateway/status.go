@@ -9,7 +9,7 @@ import (
 
 	vocab "github.com/go-ap/activitypub"
 
-	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/integrity"
 )
 
 // maxAlertsBytes bounds an inbound Alertmanager webhook payload.

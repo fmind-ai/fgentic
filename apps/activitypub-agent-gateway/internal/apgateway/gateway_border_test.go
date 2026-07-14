@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fmind/activitypub-agent-gateway/internal/httpsig"
-	"github.com/fmind/activitypub-agent-gateway/internal/policy"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/policy"
 )
 
 // gatewayWithBorder wires a test gateway whose inbox is gated by the federation border.

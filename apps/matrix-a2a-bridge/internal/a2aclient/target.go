@@ -16,7 +16,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/fmind/matrix-a2a-bridge/internal/agentcardjws"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/agentcardjws"
 )
 
 // TokenBudgetExtensionURI identifies Fgentic's A2A extension for a caller-supplied,

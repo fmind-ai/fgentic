@@ -10,7 +10,7 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
-	"github.com/fmind/matrix-a2a-bridge/internal/a2aclient"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/a2aclient"
 )
 
 // Bounds on the non-file content folded into a reply so a chatty agent cannot bloat a room message.

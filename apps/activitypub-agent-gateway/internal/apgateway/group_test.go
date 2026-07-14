@@ -18,11 +18,11 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/fmind/activitypub-agent-gateway/internal/budget"
-	"github.com/fmind/activitypub-agent-gateway/internal/delivery"
-	"github.com/fmind/activitypub-agent-gateway/internal/httpsig"
-	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
-	"github.com/fmind/activitypub-agent-gateway/internal/policy"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/budget"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/delivery"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/integrity"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/policy"
 )
 
 const validGroups = `schemaVersion: 1

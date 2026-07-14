@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/fmind/matrix-a2a-bridge/internal/config"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/config"
 )
 
 // mediaReject is a bounded, content-free reason a file was refused by the media policy (#115). It is

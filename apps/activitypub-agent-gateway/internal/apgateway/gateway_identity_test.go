@@ -8,7 +8,7 @@ import (
 	"net/http"
 	"testing"
 
-	"github.com/fmind/activitypub-agent-gateway/internal/identity"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/identity"
 )
 
 // TestActorAndCardShareOneIdentity is the FEP-c390 end-to-end proof: the AP actor carries a

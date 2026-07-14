@@ -11,7 +11,7 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/fmind/matrix-a2a-bridge/internal/mcppin"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/mcppin"
 )
 
 func TestUpdateCheckAndVerify(t *testing.T) {

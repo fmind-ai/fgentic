@@ -6,7 +6,7 @@ import (
 
 	"maunium.net/go/mautrix/id"
 
-	"github.com/fmind/matrix-a2a-bridge/internal/a2aclient"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/a2aclient"
 )
 
 // inflightTask is a long-running delegation that a room member can cancel by reacting to its

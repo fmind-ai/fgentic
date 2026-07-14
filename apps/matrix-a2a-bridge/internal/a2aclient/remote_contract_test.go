@@ -26,7 +26,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
 	"github.com/gowebpki/jcs"
 
-	"github.com/fmind/matrix-a2a-bridge/internal/agentcardjws"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/agentcardjws"
 )
 
 const remoteFixturePath = "/remote-agent"

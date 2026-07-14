@@ -13,7 +13,7 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/fmind/matrix-a2a-bridge/internal/mcppin"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/mcppin"
 )
 
 const maxPinBytes = 64 << 20

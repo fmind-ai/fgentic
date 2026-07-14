@@ -16,8 +16,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fmind/activitypub-agent-gateway/internal/httpsig"
-	"github.com/fmind/activitypub-agent-gateway/internal/policy"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/policy"
 )
 
 type staticResolver struct {

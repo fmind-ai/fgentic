@@ -12,9 +12,9 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fmind/activitypub-agent-gateway/internal/httpsig"
-	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
-	"github.com/fmind/activitypub-agent-gateway/internal/policy"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/integrity"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/policy"
 )
 
 // fakeObjResolver returns a fixed object-signing key and controller for the FEP-8b32 verifier.

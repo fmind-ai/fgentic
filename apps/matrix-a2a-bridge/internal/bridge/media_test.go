@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fmind/matrix-a2a-bridge/internal/config"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/config"
 )
 
 func testMediaPolicy() mediaPolicy {

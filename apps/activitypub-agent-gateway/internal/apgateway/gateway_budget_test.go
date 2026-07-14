@@ -10,9 +10,9 @@ import (
 
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/fmind/activitypub-agent-gateway/internal/budget"
-	"github.com/fmind/activitypub-agent-gateway/internal/httpsig"
-	"github.com/fmind/activitypub-agent-gateway/internal/policy"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/budget"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/policy"
 )
 
 // gatewayWithBudgetBorder builds a gateway whose border enforces the allowlist plus a token budget,

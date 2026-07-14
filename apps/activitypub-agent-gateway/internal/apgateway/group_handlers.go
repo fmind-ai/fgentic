@@ -9,8 +9,8 @@ import (
 
 	vocab "github.com/go-ap/activitypub"
 
-	"github.com/fmind/activitypub-agent-gateway/internal/httpsig"
-	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/integrity"
 )
 
 // publicCollection is the AS2 special IRI addressing "everyone" — Announce fan-out is public.

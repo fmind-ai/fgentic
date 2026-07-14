@@ -13,8 +13,8 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 
-	"github.com/fmind/matrix-a2a-bridge/internal/a2aclient"
-	"github.com/fmind/matrix-a2a-bridge/internal/agentcardjws"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/a2aclient"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/agentcardjws"
 )
 
 func TestReleaseGate(t *testing.T) {

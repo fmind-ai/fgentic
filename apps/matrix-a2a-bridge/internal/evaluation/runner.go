@@ -6,7 +6,7 @@ import (
 	"log/slog"
 	"time"
 
-	"github.com/fmind/matrix-a2a-bridge/internal/a2aclient"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/a2aclient"
 )
 
 // A2AClient is the existing bridge client surface needed by the harness.

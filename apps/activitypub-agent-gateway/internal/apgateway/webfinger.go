@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/fmind/activitypub-agent-gateway/internal/a2a"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/a2a"
 )
 
 // jrd is the WebFinger JSON Resource Descriptor (RFC 7033) returned for an agent handle.

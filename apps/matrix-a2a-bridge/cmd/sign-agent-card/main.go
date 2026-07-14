@@ -10,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/fmind/matrix-a2a-bridge/internal/agentcardjws"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/agentcardjws"
 )
 
 const (

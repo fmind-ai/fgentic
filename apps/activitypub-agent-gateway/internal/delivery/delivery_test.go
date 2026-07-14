@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/fmind/activitypub-agent-gateway/internal/httpsig"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
 )
 
 // captureInbox records delivered bodies and verifies each signature against pub.

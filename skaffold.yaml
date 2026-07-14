@@ -10,7 +10,7 @@ build:
     push: false # local/k3d: side-load, don't push
     useBuildkit: true
   artifacts:
-    - image: ghcr.io/fmind/matrix-a2a-bridge
+    - image: ghcr.io/fmind-ai/matrix-a2a-bridge
       context: apps/matrix-a2a-bridge
       docker:
         dockerfile: Dockerfile

@@ -19,15 +19,15 @@ import (
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
-	"github.com/fmind/activitypub-agent-gateway/internal/a2a"
-	"github.com/fmind/activitypub-agent-gateway/internal/apgateway"
-	"github.com/fmind/activitypub-agent-gateway/internal/budget"
-	"github.com/fmind/activitypub-agent-gateway/internal/config"
-	"github.com/fmind/activitypub-agent-gateway/internal/delivery"
-	"github.com/fmind/activitypub-agent-gateway/internal/httpsig"
-	"github.com/fmind/activitypub-agent-gateway/internal/identity"
-	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
-	"github.com/fmind/activitypub-agent-gateway/internal/policy"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/a2a"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/apgateway"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/budget"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/config"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/delivery"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/identity"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/integrity"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/policy"
 )
 
 func main() {

@@ -29,12 +29,12 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/sqlstatestore"
 
-	"github.com/fmind/matrix-a2a-bridge/internal/a2aclient"
-	"github.com/fmind/matrix-a2a-bridge/internal/bridge"
-	"github.com/fmind/matrix-a2a-bridge/internal/config"
-	"github.com/fmind/matrix-a2a-bridge/internal/matrixapp"
-	"github.com/fmind/matrix-a2a-bridge/internal/state"
-	"github.com/fmind/matrix-a2a-bridge/internal/telemetry"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/a2aclient"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/bridge"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/config"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/matrixapp"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/state"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/telemetry"
 )
 
 const appserviceShutdownTimeout = 5 * time.Second

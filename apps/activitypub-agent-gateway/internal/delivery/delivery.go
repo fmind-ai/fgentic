@@ -15,7 +15,7 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/fmind/activitypub-agent-gateway/internal/httpsig"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
 )
 
 // maxRespBytes bounds an untrusted inbox response body we read only to drain the connection.

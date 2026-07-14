@@ -11,7 +11,7 @@ import (
 
 	"maunium.net/go/mautrix/appservice"
 
-	"github.com/fmind/matrix-a2a-bridge/internal/config"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/config"
 )
 
 func TestConfigureMautrixLogger(t *testing.T) {

@@ -20,4 +20,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/fmind/activitypub-agent-gateway
+        - github.com/fmind-ai/activitypub-agent-gateway

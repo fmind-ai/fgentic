@@ -25,9 +25,9 @@ import (
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
-	"github.com/fmind/matrix-a2a-bridge/internal/a2aclient"
-	"github.com/fmind/matrix-a2a-bridge/internal/config"
-	"github.com/fmind/matrix-a2a-bridge/internal/state"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/a2aclient"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/config"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/state"
 )
 
 const (

@@ -1,4 +1,4 @@
-module github.com/fmind/matrix-a2a-bridge
+module github.com/fmind-ai/matrix-a2a-bridge
 
 go 1.25.0
 

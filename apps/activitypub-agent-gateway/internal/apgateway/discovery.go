@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/fmind/activitypub-agent-gateway/internal/a2a"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/a2a"
 )
 
 // a2aAgentCardRel is the novel cross-protocol WebFinger link relation that points from a fediverse

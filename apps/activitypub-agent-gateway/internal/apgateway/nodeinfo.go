@@ -4,7 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 
-	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/integrity"
 )
 
 // Instance-level self-description (issue #216): the Fediverse twin of /.well-known/matrix/server.

@@ -26,10 +26,10 @@ import (
 	vocab "github.com/go-ap/activitypub"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/fmind/activitypub-agent-gateway/internal/budget"
-	"github.com/fmind/activitypub-agent-gateway/internal/delivery"
-	"github.com/fmind/activitypub-agent-gateway/internal/identity"
-	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/budget"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/delivery"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/identity"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/integrity"
 )
 
 // maxInboxBytes bounds an untrusted inbound activity body.

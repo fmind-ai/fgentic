@@ -9,10 +9,10 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/fmind/activitypub-agent-gateway/internal/budget"
-	"github.com/fmind/activitypub-agent-gateway/internal/httpsig"
-	"github.com/fmind/activitypub-agent-gateway/internal/integrity"
-	"github.com/fmind/activitypub-agent-gateway/internal/policy"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/budget"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/integrity"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/policy"
 )
 
 // Border is the ActivityPub federation policy border: it verifies an inbound HTTP Signature, binds

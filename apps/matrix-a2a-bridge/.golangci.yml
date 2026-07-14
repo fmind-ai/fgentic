@@ -20,4 +20,4 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/fmind/matrix-a2a-bridge
+        - github.com/fmind-ai/matrix-a2a-bridge

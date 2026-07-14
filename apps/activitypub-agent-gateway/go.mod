@@ -1,4 +1,4 @@
-module github.com/fmind/activitypub-agent-gateway
+module github.com/fmind-ai/activitypub-agent-gateway
 
 go 1.25.0
 

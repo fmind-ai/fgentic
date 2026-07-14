@@ -10,8 +10,8 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/fmind/matrix-a2a-bridge/internal/a2aclient"
-	"github.com/fmind/matrix-a2a-bridge/internal/evaluation"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/a2aclient"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/evaluation"
 )
 
 func main() {

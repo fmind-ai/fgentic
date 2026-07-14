@@ -35,7 +35,7 @@ run = "go build -o bin/$APP_NAME ./cmd/gateway"
 
 [tasks."build:image"]
 description = "Build the production OCI image (distroless nonroot)"
-run = "docker build -t ghcr.io/fmind/$APP_NAME:local ."
+run = "docker build -t ghcr.io/fmind-ai/$APP_NAME:local ."
 
 [tasks.check]
 alias = "c"
@@ -86,7 +86,7 @@ depends = ["format:go", "format:dprint"]
 
 [tasks."format:go"]
 description = "Format Go sources and imports (goimports + gofumpt)"
-run = ["go tool goimports -local github.com/fmind/activitypub-agent-gateway -w .", "go tool gofumpt -w ."]
+run = ["go tool goimports -local github.com/fmind-ai/activitypub-agent-gateway -w .", "go tool gofumpt -w ."]
 
 [tasks."format:dprint"]
 description = "Format JSON, Markdown, TOML, YAML with dprint"
