@@ -172,7 +172,7 @@ mise exec -- yq -e '
 
 This proves rendering, schema validity, and the intended image/resource/command contract only. Live CUDA discovery, model loading, `/health`, direct and agentgateway chat, mention-to-reply, metrics, and NetworkPolicy denial evidence require a funded GPU environment and remain human acceptance work for issue #10.
 
-The current constrained k3d host is not runtime acceptance evidence: it lacks safe memory headroom and kube-router aborts policy synchronization with `iptables-restore: Message too large`. Do not download the large artifacts merely for static validation or claim “prompts never leave” until the full NetworkPolicy conformance probe and mention-to-reply capture pass on a verified policy engine.
+The current constrained k3d host is not runtime acceptance evidence: it lacks safe memory headroom, and repo-owned k3d servers disable kube-router because this host aborts policy synchronization with `iptables-restore: Message too large`. Do not download the large artifacts merely for static validation or claim “prompts never leave” until the full NetworkPolicy conformance probe and mention-to-reply capture pass on a verified policy engine.
 
 ### Mistral La Plateforme
 

@@ -46,7 +46,7 @@ normalized_resources() {
 }
 
 static_contract() {
-	require_commands diff yq
+	require_commands diff rg yq
 
 	yq -e '
     .apiVersion == "audit.k8s.io/v1" and
@@ -131,6 +131,18 @@ ARGS
     select((.nodeFilters | join(",")) == "server:*") | .arg' "${K3D_CONFIG}" | sort)"
 	diff -u <(printf '%s\n' "${expected_args}") <(printf '%s\n' "${actual_args}") >/dev/null ||
 		fail "k3d must activate the exact bounded API audit flags on every server"
+	yq -e '
+    [.options.k3s.extraArgs[] | select(.arg == "--disable-network-policy")] as $args |
+    (
+      ($args | length) == 1 and
+      ($args | .[0].nodeFilters | length) == 1 and
+      ($args | .[0].nodeFilters[0]) == "server:*" and
+      ($args | .[0] | keys | length) == 2 and
+      ($args | .[0] | has("arg")) and
+      ($args | .[0] | has("nodeFilters"))
+    )
+  ' "${K3D_CONFIG}" >/dev/null ||
+		fail "k3d must disable the failed local NetworkPolicy controller on every server"
 
 	echo "Kubernetes API audit static contract passed"
 }
@@ -242,6 +254,8 @@ runtime_contract() {
 		grep -Fq "\"--kube-apiserver-arg=${expected_arg}\"" <<<"${node_command}" ||
 			fail "running k3s node is missing --kube-apiserver-arg=${expected_arg}"
 	done
+	rg --fixed-strings '"--disable-network-policy"' <<<"${node_command}" >/dev/null ||
+		fail "running k3s node did not disable the local NetworkPolicy controller"
 
 	local namespace rotation_name
 	namespace="fgentic-api-audit-probe"
@@ -249,6 +263,26 @@ runtime_contract() {
 	kubectl create namespace "${namespace}" >/dev/null
 	kubectl --namespace "${namespace}" create configmap "${rotation_name}" \
 		--from-literal=probe=initial >/dev/null
+
+	# Exercise create, update, and delete watches. On this host an enabled kube-router controller
+	# repeatedly emits the rejected iptables ruleset; the disabled controller must remain silent.
+	local policy_name="controller-disabled-probe"
+	local policy_revision
+	for policy_revision in 1 2 3 4; do
+		kubectl apply --filename - >/dev/null <<EOF
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: ${policy_name}
+  namespace: ${namespace}
+  annotations:
+    fgentic.dev/probe-revision: "${policy_revision}"
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]
+EOF
+	done
+	kubectl --namespace "${namespace}" delete networkpolicy "${policy_name}" >/dev/null
 
 	# The disposable runtime lowers only maxsize to 1 MiB. Emit bounded body-suppressed Metadata events
 	# until kube-apiserver performs a real rotation; the canonical config remains 10 MiB/3/7 days.
@@ -359,10 +393,19 @@ runtime_contract() {
       .level == "Metadata" and
       (has("requestObject") | not) and
       (has("responseObject") | not))
-  ' --slurp "${audit_file}" >/dev/null ||
+	' --slurp "${audit_file}" >/dev/null ||
 		fail "Secret events must remain body-suppressed Metadata records"
 
-	echo "Kubernetes API audit runtime contract passed (${RUNTIME_CLUSTER_NAME}, ${backup_count} rotated file(s))"
+	local node_log="${RUNTIME_WORKDIR}/k3s-node.log"
+	docker logs "${RUNTIME_NODE_NAME}" >"${node_log}" 2>&1 ||
+		fail "could not inspect the disposable k3s node log"
+	if rg --quiet \
+		'network_policy_controller\.go|sendmsg\(\) failed|Message too large|iptables-restore' \
+		"${node_log}"; then
+		fail "disabled NetworkPolicy controller emitted a kube-router reconciliation failure"
+	fi
+
+	echo "Kubernetes API audit and k3d controller-silence runtime contract passed (${RUNTIME_CLUSTER_NAME}, ${backup_count} rotated file(s))"
 }
 
 static_contract

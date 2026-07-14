@@ -3,7 +3,8 @@
 # an ownership-guarded disposable k3d cluster; it never targets the shared local clusters.
 set -euo pipefail
 
-readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly ROOT_DIR
 readonly HELM_RELEASE="${ROOT_DIR}/infra/trivy-operator/helmrelease.yaml"
 readonly SOURCE="${ROOT_DIR}/infra/trivy-operator/source.yaml"
 readonly RBAC="${ROOT_DIR}/infra/trivy-operator/rbac.yaml"
@@ -19,6 +20,13 @@ readonly FIXTURE_IMAGE="mirror.gcr.io/library/alpine:3.22.1@sha256:4bcff63911fcb
 readonly OPERATOR_NAMESPACE="trivy-system"
 readonly OUT_OF_SCOPE_NAMESPACE="trivy-out-of-scope"
 readonly OPERATOR_MEMORY_LIMIT_BYTES=$((256 * 1024 * 1024))
+readonly -a RUNTIME_K3S_ARGS=(
+	'--disable=traefik@server:*'
+	'--disable-network-policy@server:*'
+	'--kubelet-arg=feature-gates=KubeletInUserNamespace=true@server:*'
+	'--kubelet-arg=fail-cgroupv1=false@server:*'
+	'--kube-proxy-arg=masquerade-all=true@server:*'
+)
 readonly -a TARGET_NAMESPACES=(
 	cert-manager
 	gateway
@@ -81,6 +89,15 @@ assert_jq_yaml() {
 
 static_contract() {
 	require_commands diff jq kubectl rg sort tr yq
+
+	local arg network_policy_arg_count=0
+	for arg in "${RUNTIME_K3S_ARGS[@]}"; do
+		if [[ "${arg}" == '--disable-network-policy@server:*' ]]; then
+			network_policy_arg_count=$((network_policy_arg_count + 1))
+		fi
+	done
+	((network_policy_arg_count == 1)) ||
+		fail "Trivy runtime must disable the failed NetworkPolicy controller on every server"
 
 	assert_yq '
     .kind == "GitRepository" and
@@ -905,7 +922,9 @@ runtime_contract() {
 	require_commands awk curl date diff docker helm jq k3d kubectl sed sha256sum sort yq
 	docker info >/dev/null 2>&1 || fail "Docker daemon is not available"
 
-	local k3s_image kubeconfig actual_owner chart_path actual_digest
+	local k3s_image kubeconfig actual_owner chart_path actual_digest node_command
+	local k3s_arg
+	local -a k3s_args=()
 	local namespace expected_namespaces actual_namespaces
 	local deployment_image rendered_rbac_count report_deadline reports real_reports fixture_digest
 	local metrics_port metric_value report_names working_set startup_logs
@@ -976,13 +995,13 @@ runtime_contract() {
 
 	k3s_image="$(yq -r '.image' "${K3D_CONFIG}")"
 	[[ "${k3s_image}" == rancher/k3s:v*-k3s* ]] || fail "invalid pinned k3s image: ${k3s_image}"
+	for k3s_arg in "${RUNTIME_K3S_ARGS[@]}"; do
+		k3s_args+=(--k3s-arg "${k3s_arg}")
+	done
 	echo "==> Creating isolated no-LB k3d cluster ${RUNTIME_CLUSTER_NAME}"
 	k3d cluster create "${RUNTIME_CLUSTER_NAME}" \
 		--servers 1 --agents 0 --image "${k3s_image}" --no-lb \
-		--k3s-arg '--disable=traefik@server:*' \
-		--k3s-arg '--kubelet-arg=feature-gates=KubeletInUserNamespace=true@server:*' \
-		--k3s-arg '--kubelet-arg=fail-cgroupv1=false@server:*' \
-		--k3s-arg '--kube-proxy-arg=masquerade-all=true@server:*' \
+		"${k3s_args[@]}" \
 		--runtime-label "${OWNER_LABEL}=${RUNTIME_OWNER_TOKEN}@server:*" \
 		--kubeconfig-update-default=false --kubeconfig-switch-context=false --timeout 3m
 	actual_owner="$(docker inspect --format "{{ index .Config.Labels \"${OWNER_LABEL}\" }}" \
@@ -990,6 +1009,9 @@ runtime_contract() {
 	[[ "${actual_owner}" == "${RUNTIME_OWNER_TOKEN}" ]] ||
 		fail "created server lacks the private ownership token; refusing to claim cleanup ownership"
 	RUNTIME_CLUSTER_OWNED=true
+	node_command="$(docker inspect --format '{{json .Config.Cmd}}' "${RUNTIME_NODE_NAME}")"
+	rg --fixed-strings '"--disable-network-policy"' <<<"${node_command}" >/dev/null ||
+		fail "running Trivy k3s node did not disable the local NetworkPolicy controller"
 	[[ "$(runtime_container_ids | wc -l | tr -d ' ')" == "1" ]] ||
 		fail "disposable cluster created unexpected node or load-balancer containers"
 	[[ "$(docker inspect --format '{{.Name}}' "${RUNTIME_NODE_NAME}")" == "/${RUNTIME_NODE_NAME}" ]] ||

@@ -212,7 +212,7 @@ Slack and Telegram are optional external identity/data boundaries, not productio
 
 1. Run `mise run check` and `mise run test` warning-free before reconciling a revision.
 1. Review [security.md](security.md), including prompt-injection boundaries, A2A workload authorization, network-policy enforcement, secret handling, and supply-chain verification.
-1. Prove NetworkPolicy on GKE Dataplane V2 or another known-enforcing engine; the constrained local k3d host is intent-only when its kube-router probe fails.
+1. Prove NetworkPolicy on GKE Dataplane V2 or another known-enforcing engine; repo-owned k3d servers deliberately disable the failed kube-router controller and are intent-only.
 1. Confirm at least two schedulable nodes have replica and rollout headroom, then verify every required hostname-spread or anti-affinity rule places replicas on distinct nodes.
 1. Inspect every PDB and perform a controlled target-cluster drain; a rendered PDB is not evidence that eviction, rescheduling, storage attachment, and application recovery succeed together.
 1. Run `mise run test:availability`, retain its exact revision and timing evidence, and keep the documented hard-crash loss window outside any claimed RTO until the durable-work follow-up lands.
