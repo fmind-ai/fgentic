@@ -56,9 +56,13 @@ Beyond that per-request token ceiling, a remote card may advertise **per-skill p
 
 No production remote or public Agent is configured by default. The listener, disposable credentials, signed artifacts, quota store, docs-qa Agent, and deterministic model are opt-in federation-lab resources; they make no provider or external-network connection.
 
-### 8.4 E2EE revisit (supersedes ADR 0008's scope)
+### 8.4 Federated-room encryption stance
 
-For federated rooms, "unencrypted" means the partner's server operators read everything, forever. Options, in order of preference: (a) keep federated agent rooms plaintext but **scoped** — dedicated per-project rooms, no sensitive-room federation, contractual controls (ship this first; it is what TI-Messenger-style deployments do in practice); (b) adopt appservice E2EE (mautrix crypto) later if demanded — acknowledged as officially "not recommended" and config-heavy. Document (a) as ADR 0008-bis when M8 federated-rooms work starts (issue #56).
+[ADR 0015](adr/0015-federated-room-encryption.md) accepts scoped plaintext federated agent rooms for v1. Every production or real-partner room is new, private, invite-only, purpose-specific, and starts with `m.room.history_visibility: joined`; it carries a visible plaintext/replication warning, names one allowed data class, and completes the bilateral onboarding agreement before activation. Public and explicitly partner-approved non-public content are the only supported classes; restricted, regulated, secret, and authentication material stay outside the room. Human-only E2EE rooms remain separate because the bridge does not operate Matrix crypto.
+
+This is a disclosed risk position, not an encryption claim: every admitted homeserver operator can read and retain room content. The ADR defines the compensating controls and hard revisit triggers for a future mautrix appservice-E2EE or accepted Matrix MLS/DMLS path.
+
+The provider-free acceptance rig is the sole narrow exception: it may use test-specific membership/history state without a bilateral contract only for synthetic identities and public/generated fixtures. It is never a real-partner or non-public-data environment.
 
 ### 8.5 Disposable federation hardening lab
 

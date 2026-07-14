@@ -16,3 +16,4 @@ Settled designs (including the D1–D16 register) are revisited by proposing a n
 - [0012 — Bridge Decomposition and Surface Budget](0012-bridge-decomposition-surface-budget.md) - cap what the bridge core may grow
 - [0013 — Federation Lab as the Permanent Acceptance Rig](0013-federation-lab-acceptance-rig.md) - provider-free lab gates cross-org changes
 - [0014 — ActivityPub as a Second Federation Transport](0014-activitypub-second-federation-transport.md) - additive AP transport in a self-contained app, Proposed (M18)
+- [0015 — Federated Agent Rooms Remain Unencrypted for v1](0015-federated-room-encryption.md) - purpose-scoped plaintext rooms with classification and bilateral controls

@@ -30,4 +30,4 @@ Rationale: a bot/appservice in a room does **not** force crypto (it simply recei
 1. The bridge stays small and crypto-free — no device keys, key backup, or cross-signing to operate ([ADR 0005](0005-matrix-a2a-bridge-appservice.md)).
 1. Server-side force-disable is explicit, declarative, and auditable in git — not a per-user client setting that can drift.
 1. Agent-room message content is protected only by transport TLS + in-cluster NetworkPolicies, not by E2EE — accepted for this deployment posture, and documented plainly rather than hidden.
-1. This is an **explicit, revisitable** decision: if sovereign E2EE across agent rooms becomes a hard requirement, the bridge adopts the mautrix crypto package and the force-disable is lifted — a bounded change, recorded here so the escape hatch is known.
+1. This is an **explicit, revisitable** decision: [ADR 0015](0015-federated-room-encryption.md) owns the stricter federated-room scope and the triggers for adopting appservice E2EE. If sovereign E2EE becomes a hard requirement, the bridge adopts the mautrix crypto package and the force-disable is lifted only after that operating boundary is accepted.
