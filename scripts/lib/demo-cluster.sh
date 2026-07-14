@@ -8,7 +8,9 @@ configure_ephemeral_flux_controllers() {
 	# Ephemeral profiles run on the same constrained workstation as clusters/local. Keep the
 	# single-replica controllers alive through API-server I/O stalls instead of flapping every
 	# dependent Kustomization after the default 15-second leader-election lease expires.
-	mapfile -t deployments < <(
+	while IFS= read -r deployment; do
+		[ -z "${deployment}" ] || deployments[${#deployments[@]}]="${deployment}"
+	done < <(
 		kubectl --namespace flux-system get deployments \
 			--selector app.kubernetes.io/part-of=flux --output json |
 			jq --raw-output --arg lease "--leader-election-lease-duration=${FLUX_LEADER_ELECTION_LEASE_DURATION}" '
@@ -73,11 +75,15 @@ cluster_cleanup_complete() {
 
 cleanup_cluster_artifacts() {
 	local attempt
+	local container_id
 	local container_ids=()
 	local network_owner
 	local volume_owner
 	for attempt in 1 2 3; do
-		mapfile -t container_ids < <(cluster_container_ids)
+		container_ids=()
+		while IFS= read -r container_id; do
+			[ -z "${container_id}" ] || container_ids[${#container_ids[@]}]="${container_id}"
+		done < <(cluster_container_ids)
 		if ((${#container_ids[@]} > 0)); then
 			# Ownership was proven from the server's private runtime label before k3d deletion;
 			# the exact k3d.cluster label selects the remaining nodes and load balancer only.
@@ -129,7 +135,7 @@ EOF
 	fi
 	# The source is the first side-loaded workload requested; delay only the bridge image through
 	# the much longer platform dependency chain.
-	k3d image import --cluster "${CLUSTER_NAME}" "${SOURCE_IMAGE}" >/dev/null
+	k3d image import --mode auto --cluster "${CLUSTER_NAME}" "${SOURCE_IMAGE}" >/dev/null
 }
 
 load_bridge_image_if_requested() {
@@ -144,7 +150,7 @@ load_bridge_image_if_requested() {
 
 	# Loading only after Flux applies this exact HelmRelease tag leaves the long dependency wait
 	# behind us and can precede Pod creation, narrowing the unused pullPolicy=Never image window.
-	k3d image import --cluster "${CLUSTER_NAME}" "${BRIDGE_IMAGE}" >/dev/null || return 2
+	k3d image import --mode auto --cluster "${CLUSTER_NAME}" "${BRIDGE_IMAGE}" >/dev/null || return 2
 }
 
 build_image() {
@@ -400,7 +406,7 @@ demo_up() {
 	if [ "${PROFILE}" = "federation" ]; then
 		FEDERATION_GATEWAY_IP="$(docker inspect "k3d-${CLUSTER_NAME}-serverlb" |
 			jq -er --arg network "k3d-${CLUSTER_NAME}" \
-			'.[0].NetworkSettings.Networks[$network].IPAddress')"
+				'.[0].NetworkSettings.Networks[$network].IPAddress')"
 		prepare_federation_agent_card_key
 	fi
 

@@ -21,6 +21,8 @@ An open-standard AI-agent collaboration platform: humans + agents share Matrix r
 
 `mise run demo:up` creates the separately owned `fgentic-demo` k3d cluster, installs local Flux controllers, reconciles a cluster-local snapshot of the canonical HelmReleases, generates cluster-only credentials, and idempotently seeds Alice plus `#lobby:fgentic.localhost`. Its default model endpoint is a deterministic response fixture, not a language model. It needs no GitHub account, SOPS key, provider account, or checkout mutation, but the pinned images require at least 10 GiB of free disk. `mise run demo:down` verifies the cluster's ownership label and deletes only that demo cluster.
 
+For repository development, run `mise run dev:up` once, then `dev:reload` or `watch` for bridge-only changes. Reuse does not rebuild the local Git source, reinstall Flux, reconcile every layer, or reseed; `dev:stop` preserves state while releasing active CPU/RAM. These commands use temporary kubeconfigs and never switch the operator's default context. Return to `demo:up` after manifests/profile changes and for the full acceptance proof.
+
 Use [README.md](../../../README.md#evaluate-in-15-minutes) for evaluation choices and [docs/production.md](../../../docs/production.md) for the full GitOps/SOPS path. Never promote evaluation credentials, its local Git source, or the deterministic provider into production.
 
 ## Runbook: disposable federation lab

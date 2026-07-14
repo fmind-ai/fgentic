@@ -1,6 +1,6 @@
 ---
 name: local-cluster
-description: Run and troubleshoot the local k3d platform — cluster lifecycle, local CA/ADC prerequisites, layer-by-layer diagnosis when fgentic.localhost misbehaves, and constrained-host (rootless/crostini) quirks. Use when the local cluster is down, broken, or being (re)created.
+description: Run and troubleshoot Fgentic's repo-owned k3d profiles — lightweight development, full local GitOps, local CA/ADC prerequisites, and constrained-host quirks. Use when a local cluster is down, broken, or being recreated.
 metadata:
   author: Médéric Hurier (Fmind)
   created: 2026-07-11
@@ -8,16 +8,17 @@ metadata:
 
 # Local Cluster (k3d)
 
-The full platform runs on one k3d cluster (`fgentic`) with loopback 80/443 bound to the Gateway, so everything lives at its canonical `https://*.fgentic.localhost` URL (ESS bakes https URLs — no port suffixes). First-time setup is the matrix-agents bootstrap runbook; this skill is lifecycle + diagnosis.
+The default development path is the owned lightweight `fgentic-demo` cluster. The full production-shaped platform remains available as `fgentic`; both bind loopback 80/443 to keep canonical `https://*.fgentic.localhost` URLs, so run only one at a time. First-time full-platform setup is the matrix-agents bootstrap runbook; this skill covers profile choice, lifecycle, and diagnosis.
 
-## Lifecycle
+## Choose the smallest sufficient profile
 
-1. `mise run cluster:up` / `mise run cluster:down` (config: `infra/k3d-config.yaml` — k3s Traefik disabled, we install our own). Requires a running Docker daemon.
-1. On a constrained laptop, keep the full `fgentic` cluster stopped unless the work needs Keycloak SSO, telemetry/tracing, or Trivy: `mise exec -- k3d cluster stop fgentic` releases its active CPU/RAM without deleting state, and `mise exec -- k3d cluster start fgentic` restores it. `mise run cluster:down` is destructive to that cluster.
-1. A stopped node retains its original k3s command: `k3d cluster start` cannot adopt a new server flag. If `docker inspect k3d-fgentic-server-0 --format '{{json .Config.Cmd}}'` lacks `--disable-network-policy`, keep that cluster stopped until its state can be discarded or migrated deliberately, then recreate it with `mise run cluster:down` followed by `mise run cluster:up`. Do not mutate host iptables or Docker daemon logging to retrofit it.
-1. Prefer `mise run demo:up` for the core Matrix mention-to-reply loop. This disposable profile keeps gateway, Postgres, ESS, agentgateway, the kagent controller/tools and three mapped Agents, and the bridge; it omits Keycloak, observability, and Trivy, scales kagent UI to zero, and disables KMCP. `mise run demo:down` deletes only the owned `fgentic-demo` cluster.
-1. After a recreate, redo the out-of-band steps: Gateway API CRDs, the `sops-age` Secret, `scripts/local-ca.sh`, `scripts/local-adc.sh`, then `flux bootstrap github … --path=clusters/local` (order and commands in the matrix-agents runbook). Once Flux is bootstrapped, run **`mise run cluster:overrides`** to re-apply the gitignored `platform-settings-overrides` (real `gcp_project`, etc.) — it is untracked, so a recreate loses it and Vertex falls back to the `your-gcp-project` placeholder until you do (idempotent; safe no-op if you never created the file).
-1. Rebuild-and-run a bridge change: `mise run bridge:load` + rollout restart, or `mise run watch` — see the bridge-dev skill.
+1. **No platform cluster:** focused unit tests first; use `mise run test:integration` for the isolated kind-based Matrix↔A2A boundary.
+1. **Daily interactive bridge loop:** `mise run dev:up` creates/seeds the lightweight `fgentic-demo` once or starts it without reconciliation. Use `dev:reload` or `watch` for bridge-only changes, `dev:status` to inspect, `dev:stop` to release active CPU/RAM while preserving state, and `dev:down` to delete only the owned cluster. Every command generates a temporary kubeconfig and leaves the user's default context untouched.
+1. **Manifest/profile acceptance:** `mise run demo:up` reconciles a fresh local snapshot and repeats admission plus seeded end-to-end proof. It retains gateway, Postgres, ESS, agentgateway, the kagent controller/tools and three mapped Agents, and the bridge; it omits Keycloak, observability, and Trivy, scales kagent UI to zero, and disables KMCP.
+1. **Full local GitOps:** `mise run cluster:up` / `cluster:down` manages the production-shaped `fgentic` cluster from `infra/k3d-config.yaml`. Use it only for Keycloak SSO, telemetry/tracing, Trivy, SOPS, or full Flux bootstrap behavior omitted from demo. On a constrained laptop, `mise exec -- k3d cluster stop fgentic` releases active CPU/RAM without deleting state and `mise exec -- k3d cluster start fgentic` restores it.
+1. A stopped node retains its original k3s command: `k3d cluster start` cannot adopt new server flags. If `docker inspect k3d-fgentic-server-0 --format '{{json .Config.Cmd}}'` lacks `--disable-network-policy`, keep that cluster stopped until its state can be discarded or migrated deliberately, then recreate it with `mise run cluster:down` followed by `mise run cluster:up`. Do not mutate host iptables or Docker daemon settings to retrofit it.
+1. After a full-cluster recreate, redo the out-of-band steps: Gateway API CRDs, the `sops-age` Secret, `scripts/local-ca.sh`, `scripts/local-adc.sh`, then `flux bootstrap github … --path=clusters/local` (order and commands in the matrix-agents runbook). Once Flux is bootstrapped, run **`mise run cluster:overrides`** to re-apply the gitignored `platform-settings-overrides` (real `gcp_project`, etc.) — it is untracked, so a recreate loses it and Vertex falls back to the `your-gcp-project` placeholder until you do (idempotent; safe no-op if you never created the file).
+1. The only prerequisites common to the repo-owned profiles are Docker, Git, and `mise install`. Docker Engine on Linux and Docker Desktop/compatible Docker daemons on macOS are supported; k3d auto-selects its local or remote-daemon image import mode. No global k3d cluster or `~/.agents/skills/k8s-local` setup is required.
 
 ## Diagnose top-down (symptom → layer)
 

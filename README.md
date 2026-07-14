@@ -107,6 +107,24 @@ To exercise the federation thesis without an external model or provider account,
 
 The Matrix proof requires room-v12 policy, participant-only server ACLs, bidirectional messages between A and B, rejected join plus signed-federation-send attempts from C, and a Synapse callback dropping a disallowed event before it reaches A. `mise run fed:policy-reload` additionally proves a git policy change takes effect through Flux without restarting either Synapse pod and restores the canonical deny policy. The cluster stays running for inspection; remove only that lab with `mise run fed:down`. See the [federation lab topology and trust boundary](docs/federation.md#85-disposable-federation-hardening-lab); use the separate [partner onboarding runbook](docs/federation-onboarding.md) before enabling a real organization.
 
+## Develop with the smallest sufficient loop
+
+The repository owns its development cluster; no global Kubernetes setup, default kubeconfig context, GitHub account, SOPS key, or paid model is required. Use the cheapest proof that reaches the boundary you changed:
+
+1. **Go behavior:** run the focused package tests, then the bridge suite before commit.
+
+   ```bash
+   mise --cd apps/matrix-a2a-bridge exec -- go test ./internal/a2aclient/ ./internal/bridge/
+   mise run test:app
+   ```
+
+1. **Matrix ↔ A2A wire behavior:** `mise run test:integration` creates and removes its own isolated kind fixture; it does not need the platform cluster.
+1. **Interactive bridge work:** create the lightweight cluster once with `mise run dev:up`, then use `mise run dev:reload` after a code change or `mise run watch` for automatic reloads. Reuse is bridge-only: it does not rebuild the local Git source, reinstall Flux, reconcile the platform, or reseed the room.
+1. **Manifest/profile or final end-to-end proof:** run `mise run demo:up`; this intentionally reconciles the current checkout and repeats admission plus seeded Matrix → bridge → agentgateway → kagent acceptance.
+1. **Full platform-only features:** use `mise run cluster:up` and the production-shaped bootstrap only for Keycloak SSO, observability/tracing, Trivy, SOPS, or full Flux behavior omitted from the demo.
+
+`mise run dev:status` reports the lightweight cluster, `mise run dev:stop` releases its active CPU/RAM while preserving state and images, and `mise run dev:down` deletes only that owned cluster. All `dev:*` commands use a temporary kubeconfig and reject a same-named cluster without the demo ownership label. Docker Desktop on macOS and Docker Engine on Linux are both supported through the repo-pinned mise toolchain; ports 80/443 on `127.0.0.1` must be free while the demo is running.
+
 ## Production
 
 Production is a separate GitOps path: SOPS-encrypted secrets, a reviewed git source, the full observability and SSO layers, and Flux reconciliation. Follow the self-contained [production installation](docs/production.md), then the [security](docs/security.md), [identity](docs/identity.md), and [operator](.agents/skills/matrix-agents/SKILL.md) runbooks. Enable an external network only through the [opt-in interop contract](docs/interop.md); the [Slack provider walkthrough](docs/interop-slack.md) is separate because it requires a workspace owner and live evidence.

@@ -7,6 +7,7 @@ readonly ROOT_DIR
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo-check.XXXXXX")"
 readonly WORK_DIR
 readonly DEMO="${ROOT_DIR}/scripts/demo.sh"
+readonly DEV="${ROOT_DIR}/scripts/dev.sh"
 readonly DEMO_SETTINGS_FILE="${ROOT_DIR}/clusters/demo/platform-settings.yaml"
 readonly REPLY_FILTER="${ROOT_DIR}/scripts/lib/demo-reply.jq"
 readonly SEED_STATE_FILTER="${ROOT_DIR}/scripts/lib/demo-seed-state.jq"
@@ -129,7 +130,7 @@ reply_fixture_matches() {
 		--from-file "${REPLY_FILTER}" >/dev/null
 }
 
-bash -n "${DEMO_SOURCES[@]}" "${ROOT_DIR}/scripts/seed-demo.sh"
+bash -n "${DEMO_SOURCES[@]}" "${DEV}" "${ROOT_DIR}/scripts/seed-demo.sh"
 (
 	# The Secret key already names the caller. Its value must be one Agentgateway credential record,
 	# not another caller-name map, or every bridge request is rejected as an unknown API key.
@@ -177,7 +178,7 @@ bash -n "${DEMO_SOURCES[@]}" "${ROOT_DIR}/scripts/seed-demo.sh"
 	[ "${early_image_calls[0]}" = 'build:fgentic-demo-source:fixture' ]
 	[ "${early_image_calls[1]}" = 'build:matrix-a2a-bridge:fixture' ]
 	[ "${early_image_calls[2]}" = \
-		'k3d:image import --cluster fgentic-demo-fixture fgentic-demo-source:fixture' ]
+		'k3d:image import --mode auto --cluster fgentic-demo-fixture fgentic-demo-source:fixture' ]
 	[ "${#early_image_calls[@]}" -eq 3 ]
 	bridge_image_calls="${WORK_DIR}/bridge-image-calls"
 	: >"${bridge_image_calls}"
@@ -210,7 +211,7 @@ bash -n "${DEMO_SOURCES[@]}" "${ROOT_DIR}/scripts/seed-demo.sh"
 		"${bridge_image_calls}")" -eq 3 ]
 	tail -n 1 "${bridge_image_calls}" |
 		rg --fixed-strings --line-regexp \
-			'k3d image import --cluster fgentic-demo-fixture matrix-a2a-bridge:fixture' >/dev/null
+			'k3d image import --mode auto --cluster fgentic-demo-fixture matrix-a2a-bridge:fixture' >/dev/null
 	PROFILE=federation
 	load_bridge_image_if_requested
 	[ "$(wc -l <"${bridge_image_calls}")" -eq 4 ]
@@ -397,12 +398,141 @@ done
 rg --fixed-strings 'deterministic in-cluster response stub' "${WORK_DIR}/help.txt" >/dev/null
 rg --fixed-strings 'FGENTIC_ALLOW_PAID_PROVIDER=yes' "${WORK_DIR}/help.txt" >/dev/null
 rg --fixed-strings 'FGENTIC_DEMO_CACHE_DIR' "${WORK_DIR}/help.txt" >/dev/null
+"${DEV}" --help >"${WORK_DIR}/dev-help.txt"
+rg --fixed-strings 'temporary kubeconfig' "${WORK_DIR}/dev-help.txt" >/dev/null
+rg --fixed-strings 'never reads, changes, or switches' "${WORK_DIR}/dev-help.txt" >/dev/null
+rg --fixed-strings "exec \"\${ROOT_DIR}/scripts/demo.sh\" up" "${DEV}" >/dev/null
+yq --input-format toml --output-format yaml --exit-status '
+  .tools.watchexec == "2.5.1" and
+  (.tasks.watch.depends | length) == 1 and .tasks.watch.depends[0] == "dev:up" and
+  (.tasks.watch.run | contains("mise run dev:reload")) and
+  .tasks."dev:up".run == "bash scripts/dev.sh up" and
+  .tasks."dev:reload".run == "bash scripts/dev.sh reload" and
+  .tasks."dev:stop".run == "bash scripts/dev.sh stop"
+' "${ROOT_DIR}/mise.toml" >/dev/null || {
+	echo 'error: repo-owned development tasks are incomplete' >&2
+	exit 1
+}
+[ ! -e "${ROOT_DIR}/skaffold.yaml" ] || {
+	echo 'error: obsolete Skaffold configuration is still present' >&2
+	exit 1
+}
 if FGENTIC_DEMO_CLUSTER=fgentic "${DEMO}" down \
 	>"${WORK_DIR}/reserved-cluster.txt" 2>&1; then
 	echo 'error: demo teardown accepted the reserved fgentic cluster name' >&2
 	exit 1
 fi
 rg --fixed-strings 'must be fgentic-demo' "${WORK_DIR}/reserved-cluster.txt" >/dev/null
+
+dev_fake_bin="${WORK_DIR}/dev-fake-bin"
+dev_fake_state="${WORK_DIR}/dev-fake-state"
+mkdir -p "${dev_fake_bin}" "${dev_fake_state}"
+cat >"${dev_fake_bin}/docker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+info) ;;
+inspect) printf '%s\n' "${FAKE_DEV_OWNER:-true}" ;;
+build) printf 'docker %s\n' "$*" >>"${FAKE_DEV_COMMANDS:?}" ;;
+*) exit 2 ;;
+esac
+EOF
+cat >"${dev_fake_bin}/k3d" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-} ${2:-}" in
+"cluster list") printf '[{"name":"fgentic-demo","serversRunning":1,"serversCount":1}]\n' ;;
+"cluster start" | "cluster stop") printf 'k3d %s\n' "$*" >>"${FAKE_DEV_COMMANDS:?}" ;;
+"kubeconfig get")
+	printf 'k3d %s\n' "$*" >>"${FAKE_DEV_COMMANDS:?}"
+	printf 'apiVersion: v1\nkind: Config\n'
+	;;
+"image import") printf 'k3d %s\n' "$*" >>"${FAKE_DEV_COMMANDS:?}" ;;
+*) exit 2 ;;
+esac
+EOF
+cat >"${dev_fake_bin}/kubectl" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'kubectl KUBECONFIG=%s %s\n' "${KUBECONFIG:-unset}" "$*" >>"${FAKE_DEV_COMMANDS:?}"
+case "$*" in
+*'get helmrelease matrix-a2a-bridge --output json')
+	printf '%s\n' '{"spec":{"values":{"image":{"repository":"matrix-a2a-bridge","tag":"demo-fixture","pullPolicy":"Never"}}}}'
+	;;
+*'get secret fgentic-demo-bootstrap'*) printf 'fixture-password' ;;
+*'llm_provider'*) printf 'demo' ;;
+*'llm_model'*) printf 'fgentic-demo' ;;
+*'jsonpath={.spec.template.spec.containers[0].image}'*) printf 'matrix-a2a-bridge:demo-fixture' ;;
+*'jsonpath={.status.readyReplicas}'*) printf '1' ;;
+esac
+EOF
+chmod +x "${dev_fake_bin}/docker" "${dev_fake_bin}/k3d" "${dev_fake_bin}/kubectl"
+
+: >"${dev_fake_state}/commands"
+PATH="${dev_fake_bin}:${PATH}" \
+	FAKE_DEV_COMMANDS="${dev_fake_state}/commands" \
+	FGENTIC_CA_DIR="${WORK_DIR}/portable-ca" \
+	"${ROOT_DIR}/scripts/local-ca.sh" >"${dev_fake_state}/local-ca.txt" 2>&1
+openssl x509 --in "${WORK_DIR}/portable-ca/ca.crt" --noout --text |
+	rg --fixed-strings 'CA:TRUE' >/dev/null || {
+	echo 'error: portable local CA generation omitted the CA constraint' >&2
+	exit 1
+}
+rg --fixed-strings 'update-ca-certificates' "${dev_fake_state}/local-ca.txt" >/dev/null
+rg --fixed-strings 'security add-trusted-cert' "${ROOT_DIR}/scripts/local-ca.sh" >/dev/null
+
+run_dev_fixture() {
+	local action="$1"
+	local owner="${2:-true}"
+	: >"${dev_fake_state}/commands"
+	PATH="${dev_fake_bin}:${PATH}" \
+		KUBECONFIG="${WORK_DIR}/must-not-be-used" \
+		FAKE_DEV_COMMANDS="${dev_fake_state}/commands" \
+		FAKE_DEV_OWNER="${owner}" \
+		"${DEV}" "${action}" >"${dev_fake_state}/${action}-${owner}.txt" 2>&1
+}
+
+run_dev_fixture up
+rg --fixed-strings 'k3d cluster start fgentic-demo' "${dev_fake_state}/commands" >/dev/null
+if rg --fixed-strings 'docker build' "${dev_fake_state}/commands" >/dev/null; then
+	echo 'error: reusing the development cluster rebuilt the bridge' >&2
+	exit 1
+fi
+if rg --fixed-strings "${WORK_DIR}/must-not-be-used" "${dev_fake_state}/commands" >/dev/null; then
+	echo 'error: the development loop used the caller Kubernetes context' >&2
+	exit 1
+fi
+rg --regexp 'kubectl KUBECONFIG=.*/fgentic-dev-kubeconfig\.[^ ]+' \
+	"${dev_fake_state}/commands" >/dev/null
+
+run_dev_fixture reload
+rg --fixed-strings \
+	'docker build --quiet --tag matrix-a2a-bridge:demo-fixture --label dev.fgentic.demo.cluster=fgentic-demo' \
+	"${dev_fake_state}/commands" >/dev/null
+rg --fixed-strings \
+	'k3d image import --mode auto --cluster fgentic-demo matrix-a2a-bridge:demo-fixture' \
+	"${dev_fake_state}/commands" >/dev/null
+rg --fixed-strings \
+	'rollout restart deployment/matrix-a2a-bridge' "${dev_fake_state}/commands" >/dev/null
+rg --fixed-strings \
+	'rollout status deployment/matrix-a2a-bridge --timeout=2m' \
+	"${dev_fake_state}/commands" >/dev/null
+
+run_dev_fixture stop
+rg --fixed-strings 'k3d cluster stop fgentic-demo' "${dev_fake_state}/commands" >/dev/null
+
+: >"${dev_fake_state}/commands"
+if PATH="${dev_fake_bin}:${PATH}" FAKE_DEV_COMMANDS="${dev_fake_state}/commands" \
+	FAKE_DEV_OWNER=foreign "${DEV}" reload >"${dev_fake_state}/foreign.txt" 2>&1; then
+	echo 'error: the development loop accepted a foreign cluster' >&2
+	exit 1
+fi
+rg --fixed-strings 'refusing to manage fgentic-demo' "${dev_fake_state}/foreign.txt" >/dev/null
+if rg --regexp 'cluster start|docker build|image import|rollout restart' \
+	"${dev_fake_state}/commands" >/dev/null; then
+	echo 'error: the development loop mutated a foreign cluster' >&2
+	exit 1
+fi
 
 fake_bin="${WORK_DIR}/fake-bin"
 mkdir -p "${fake_bin}"
@@ -626,8 +756,8 @@ assert_yq \
 yq eval-all -o=yaml \
 	'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") |
     .spec.values' \
-	"${WORK_DIR}/demo-bridge.yaml" \
-	| helm template matrix-a2a-bridge "${ROOT_DIR}/apps/matrix-a2a-bridge/chart" \
+	"${WORK_DIR}/demo-bridge.yaml" |
+	helm template matrix-a2a-bridge "${ROOT_DIR}/apps/matrix-a2a-bridge/chart" \
 		--namespace bridge \
 		--values - >"${WORK_DIR}/demo-bridge-chart.yaml"
 assert_yq \

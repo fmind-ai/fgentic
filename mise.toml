@@ -29,6 +29,7 @@ kubectl = "1.35.0"
 python = "3.14.6"
 ripgrep = "latest"
 sops = "latest"
+watchexec = "2.5.1"
 yq = "latest"
 
 # --- Aggregate vocabulary (install / format / check / test / build / watch) ---
@@ -391,8 +392,14 @@ run = "mise run build"
 
 [tasks.watch]
 alias = "w"
-description = "Run the local Kubernetes dev loop (Skaffold)"
-run = "skaffold dev"
+description = "Watch bridge sources and reload them into the lightweight owned dev cluster"
+depends = ["dev:up"]
+run = """
+watchexec --postpone --debounce 500ms \
+  --watch apps/matrix-a2a-bridge \
+  --filter '*.go' --filter 'go.mod' --filter 'go.sum' --filter 'Dockerfile' \
+  -- mise run dev:reload
+"""
 
 # --- Local cluster lifecycle (k3d) ---
 
@@ -440,6 +447,26 @@ run = "bash scripts/demo.sh up"
 description = "Delete only the ephemeral fgentic-demo evaluation cluster"
 run = "bash scripts/demo.sh down"
 
+[tasks."dev:up"]
+description = "Create once or quickly start the lightweight repo-owned development cluster"
+run = "bash scripts/dev.sh up"
+
+[tasks."dev:reload"]
+description = "Build and reload only the bridge in the lightweight development cluster"
+run = "bash scripts/dev.sh reload"
+
+[tasks."dev:status"]
+description = "Show the lightweight development cluster and bridge status"
+run = "bash scripts/dev.sh status"
+
+[tasks."dev:stop"]
+description = "Stop the lightweight development cluster while preserving state"
+run = "bash scripts/dev.sh stop"
+
+[tasks."dev:down"]
+description = "Delete only the owned lightweight development cluster"
+run = "bash scripts/dev.sh down"
+
 [tasks."fed:up"]
 description = "Reconcile and prove the provider-free federation hardening lab"
 run = "bash scripts/federation.sh up"
@@ -453,8 +480,14 @@ description = "Prove a Flux policy allow/deny reload without restarting Synapse"
 run = "bash scripts/reload-federation-policy.sh"
 
 [tasks."bridge:load"]
-description = "Build the bridge image and side-load it into the local k3d cluster (matrix-a2a-bridge:local)"
+description = "Build and side-load the bridge into the optional full local k3d cluster"
 run = """
 docker build -t matrix-a2a-bridge:local apps/matrix-a2a-bridge
-k3d image import --cluster fgentic matrix-a2a-bridge:local
+k3d image import --mode auto --cluster fgentic matrix-a2a-bridge:local
+KUBECONFIG="$(mktemp "${TMPDIR:-/tmp}/fgentic-local-kubeconfig.XXXXXX")"
+trap 'rm -f "$KUBECONFIG"' EXIT
+k3d kubeconfig get fgentic >"$KUBECONFIG"
+KUBECONFIG="$KUBECONFIG" kubectl --namespace bridge rollout restart deployment/matrix-a2a-bridge
+KUBECONFIG="$KUBECONFIG" kubectl --namespace bridge rollout status \
+  deployment/matrix-a2a-bridge --timeout=2m
 """

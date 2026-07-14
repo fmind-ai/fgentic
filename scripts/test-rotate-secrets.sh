@@ -15,6 +15,15 @@ for command in age-keygen awk date git kubectl sha256sum sops yq; do
 	fi
 done
 
+# Git hooks export repository-local variables such as GIT_DIR and GIT_INDEX_FILE. Clear every
+# variable Git classifies as local before initializing the disposable fixture, or its synthetic
+# commits can mutate the caller's branch while this test runs from pre-commit.
+git_local_variables="$(git rev-parse --local-env-vars)"
+while IFS= read -r git_variable; do
+	[ -z "${git_variable}" ] || unset "${git_variable}"
+done <<<"${git_local_variables}"
+unset git_local_variables git_variable
+
 WORK_DIR="$(mktemp -d)"
 FIXTURE_ROOT="${WORK_DIR}/fixture"
 trap 'rm -rf "${WORK_DIR}"' EXIT
