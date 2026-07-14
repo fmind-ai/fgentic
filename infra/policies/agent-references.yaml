@@ -7,7 +7,7 @@ kind: ValidatingAdmissionPolicy
 metadata:
   name: approved-agent-references.fgentic.dev
   annotations:
-    fgentic.dev/cel-cost: linear in Agent tools, headers, and tool names; no cross-object lookup
+    fgentic.dev/cel-cost: linear in Agent env, tools, headers, and tool names; no cross-object lookup
 spec:
   failurePolicy: Fail
   matchConstraints:
@@ -38,7 +38,10 @@ spec:
     - expression: 'has(object.spec.declarative.deployment) && has(object.spec.declarative.deployment.serviceAccountName) && object.spec.declarative.deployment.serviceAccountName == "agent-zoo-runtime" && has(object.spec.declarative.deployment.labels) && "fgentic.dev/agent-zoo" in object.spec.declarative.deployment.labels && object.spec.declarative.deployment.labels["fgentic.dev/agent-zoo"] == "true" && size(object.spec.declarative.deployment.labels) == 1'
       message: managed Agents must use the reviewed agent-zoo-runtime pod identity
       reason: Forbidden
-    - expression: "!has(object.spec.declarative.deployment) || (!has(object.spec.declarative.deployment.affinity) && !has(object.spec.declarative.deployment.annotations) && !has(object.spec.declarative.deployment.env) && !has(object.spec.declarative.deployment.extraContainers) && !has(object.spec.declarative.deployment.imagePullPolicy) && !has(object.spec.declarative.deployment.imagePullSecrets) && !has(object.spec.declarative.deployment.imageRegistry) && !has(object.spec.declarative.deployment.nodeSelector) && !has(object.spec.declarative.deployment.podSecurityContext) && !has(object.spec.declarative.deployment.replicas) && !has(object.spec.declarative.deployment.securityContext) && !has(object.spec.declarative.deployment.serviceAccountConfig) && !has(object.spec.declarative.deployment.tolerations) && !has(object.spec.declarative.deployment.volumeMounts) && !has(object.spec.declarative.deployment.volumes))"
+    - expression: '!has(object.spec.declarative.deployment) || (has(object.spec.declarative.deployment.env) && size(object.spec.declarative.deployment.env) == 3 && object.spec.declarative.deployment.env.all(e, has(e.value) && e.value == "false" && !has(e.valueFrom)) && object.spec.declarative.deployment.env.exists(e, e.name == "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS") && object.spec.declarative.deployment.env.exists(e, e.name == "OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT") && object.spec.declarative.deployment.env.exists(e, e.name == "TRACELOOP_TRACE_CONTENT"))'
+      message: managed Agents must disable every reviewed GenAI trace-content path
+      reason: Forbidden
+    - expression: "!has(object.spec.declarative.deployment) || (!has(object.spec.declarative.deployment.affinity) && !has(object.spec.declarative.deployment.annotations) && !has(object.spec.declarative.deployment.extraContainers) && !has(object.spec.declarative.deployment.imagePullPolicy) && !has(object.spec.declarative.deployment.imagePullSecrets) && !has(object.spec.declarative.deployment.imageRegistry) && !has(object.spec.declarative.deployment.nodeSelector) && !has(object.spec.declarative.deployment.podSecurityContext) && !has(object.spec.declarative.deployment.replicas) && !has(object.spec.declarative.deployment.securityContext) && !has(object.spec.declarative.deployment.serviceAccountConfig) && !has(object.spec.declarative.deployment.tolerations) && !has(object.spec.declarative.deployment.volumeMounts) && !has(object.spec.declarative.deployment.volumes))"
       message: managed Agents cannot override the reviewed pod runtime
       reason: Forbidden
     - expression: '!has(object.spec.declarative.tools) || (object.metadata.name == "platform-helper" && size(object.spec.declarative.tools) == 1)'

@@ -70,6 +70,15 @@ spec:
       serviceAccountName: agent-zoo-runtime
       labels:
         fgentic.dev/agent-zoo: "true"
+      # kagent 0.9.11's Python runtime enables three independent GenAI content capture paths
+      # unless each producer-specific switch is explicitly disabled on the generated Agent pod.
+      env:
+        - name: ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
+          value: "false"
+        - name: OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT
+          value: "false"
+        - name: TRACELOOP_TRACE_CONTENT
+          value: "false"
       resources:
         requests:
           cpu: 50m
@@ -121,6 +130,13 @@ spec:
       serviceAccountName: agent-zoo-runtime
       labels:
         fgentic.dev/agent-zoo: "true"
+      env:
+        - name: ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
+          value: "false"
+        - name: OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT
+          value: "false"
+        - name: TRACELOOP_TRACE_CONTENT
+          value: "false"
       resources:
         requests:
           cpu: 50m
@@ -167,6 +183,13 @@ spec:
       serviceAccountName: agent-zoo-runtime
       labels:
         fgentic.dev/agent-zoo: "true"
+      env:
+        - name: ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
+          value: "false"
+        - name: OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT
+          value: "false"
+        - name: TRACELOOP_TRACE_CONTENT
+          value: "false"
       resources:
         requests:
           cpu: 50m

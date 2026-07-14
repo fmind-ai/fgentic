@@ -330,7 +330,7 @@ run = "mise run test"
 [tasks.test]
 alias = "t"
 description = "Run deterministic application and pinned external-bridge runtime tests"
-depends = ["test:app", "test:gateway", "test:policy", "test:mautrix-bridges"]
+depends = ["test:app", "test:gateway", "test:policy", "test:mautrix-bridges", "test:kagent-trace-privacy"]
 
 [tasks."test:integration"]
 description = "Run the bridge's kind-based Matrix appservice integration test"
@@ -340,6 +340,10 @@ run = "mise run test:integration"
 [tasks."test:tracing"]
 description = "Render the tracing stack and prove an OTLP span reaches Jaeger locally"
 run = "bash scripts/test-tracing.sh"
+
+[tasks."test:kagent-trace-privacy"]
+description = "Prove the pinned kagent runtime suppresses content in exported traces"
+run = "bash scripts/test-kagent-trace-privacy.sh"
 
 [tasks."test:trivy-operator"]
 description = "Prove Trivy report creation, metrics, RBAC, bounds, and cleanup in owned k3d"

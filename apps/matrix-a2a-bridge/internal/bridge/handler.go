@@ -56,9 +56,12 @@ const (
 	// the mixin is mirrored inside it so edit-aware clients keep the marker after applying the edit.
 	newContentKey = "m.new_content"
 
-	delegationAuditSchema = "fgentic.delegation.v1"
-	delegationAuditStream = "audit"
-	tracerName            = "github.com/fmind/matrix-a2a-bridge/internal/bridge"
+	delegationAuditSchema         = "fgentic.delegation.v1"
+	delegationAuditStream         = "audit"
+	tracerName                    = "github.com/fmind/matrix-a2a-bridge/internal/bridge"
+	traceEventA2AMessageSendError = "a2a.message.send.error"
+	traceEventA2ATaskTimeout      = "a2a.task.timeout"
+	traceEventA2ATaskPollError    = "a2a.task.poll.error"
 
 	outcomeDeduplicated = "deduplicated"
 
@@ -913,7 +916,9 @@ func (b *Bridge) dispatchWithDedupVerdict(
 	cancel()
 	a2aLatency.WithLabelValues(localpart).Observe(time.Since(callStarted).Seconds())
 	if err != nil {
-		span.RecordError(err)
+		// Error values can contain remote response bodies. Preserve only a bounded event name;
+		// the deferred audit attributes carry the reviewed machine-readable failure reason.
+		span.AddEvent(traceEventA2AMessageSendError)
 		if errors.Is(err, a2aclient.ErrRemoteTargetUntrusted) {
 			delegationsTotal.WithLabelValues(localpart, outcomeDenied).Inc()
 			b.log.Warn("refusing delegation after remote agent trust changed", "agent", ref.Path(), "room", evt.RoomID)
@@ -1173,7 +1178,7 @@ func (b *Bridge) awaitTask(
 			if who := taskCanceler(task); who != "" {
 				return b.finishCanceled(ctx, a2aCtx, intent, evt, ref, localpart, placeholder, res.TaskID, who, audit)
 			}
-			trace.SpanFromContext(ctx).RecordError(err)
+			trace.SpanFromContext(ctx).AddEvent(traceEventA2ATaskTimeout)
 			delegationsTotal.WithLabelValues(localpart, outcomeTimeout).Inc()
 			audit.outcome = outcomeTimeout
 			audit.terminalReason = "task_timeout"
@@ -1191,7 +1196,7 @@ func (b *Bridge) awaitTask(
 			if who := taskCanceler(task); who != "" {
 				return b.finishCanceled(ctx, a2aCtx, intent, evt, ref, localpart, placeholder, res.TaskID, who, audit)
 			}
-			trace.SpanFromContext(ctx).RecordError(err)
+			trace.SpanFromContext(ctx).AddEvent(traceEventA2ATaskPollError)
 			if errors.Is(err, a2aclient.ErrRemoteTargetUntrusted) {
 				delegationsTotal.WithLabelValues(localpart, outcomeDenied).Inc()
 				audit.outcome = outcomeDenied
