@@ -4,7 +4,7 @@ An open-standard, **sovereignty-first** AI-agent collaboration platform: humans 
 
 ## Roadmap & issue conventions (for coding agents)
 
-- The executable roadmap is **GitHub milestones M0–M17** (sequenced sovereignty-first; [docs/roadmap.md](../docs/roadmap.md) has the map). Each milestone has an `kind/epic` tracker issue with sweep order and definition of done — start there, work top-to-bottom.
+- The executable roadmap is **GitHub milestones M0–M24** (sequenced sovereignty-first; the milestones page is the current source of truth; [docs/roadmap.md](../docs/roadmap.md) has the map). Each milestone has an `kind/epic` tracker issue with sweep order and definition of done — start there, work top-to-bottom.
 - Labels: `agent-ready` = groomed, pick up as-is; `needs-human` = blocked on a maintainer decision/approval/account/spend — do the preparable parts, then hand off explicitly. Both labels together = agent-preparable with one marked human gate (a `**Human:**` bullet names the terminal step). `area/*` scopes the subsystem; `kind/*` the work type.
 - Per issue: follow its Tasks + Acceptance criteria literally; run `mise run check` + `mise run test` warning-free before claiming done; tick the epic checklist via the issue's closing keywords (`Fixes #N` in the PR).
 - The M8 federation lab topology is the prerequisite for later M8 work: validate it with `mise run fed:up` before claiming a policy or cross-org flow works. Never merge anything that assumes a single homeserver forever ([docs/roadmap.md](../docs/roadmap.md) standing rule).

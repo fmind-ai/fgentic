@@ -15,7 +15,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 - [Fediverse Interop Spec](fediverse.md) - ActivityPub as a second, additive cross-org transport with every M8 control mapped to an AP twin (M18)
 - [Observability Spec](observability.md) - metrics, traces, dashboards, and the LLM token-burn alert (§9)
 - [Licensing & Foundation Strategy](licensing.md) - Apache-2.0 rationale, AGPL boundaries, homeserver triggers (§10)
-- [Roadmap](roadmap.md) - phase history and the mapping to GitHub milestones M0–M17 (§13)
+- [Roadmap](roadmap.md) - phase history and the mapping to GitHub milestones M0–M24 (§13)
 - [Identity and SSO](identity.md) - MAS as the Matrix OIDC authority, Keycloak as the reference upstream IdP
 - [Model Provider Profiles](models.md) - per-cluster model backends behind agentgateway (D16)
 - [External-Network Interop](interop.md) - opt-in Slack/Telegram bridges as governed identity boundaries

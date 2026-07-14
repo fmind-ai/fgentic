@@ -1,6 +1,6 @@
 ---
 name: github-flow
-description: Work the Fgentic GitHub backlog — milestones M0–M17, epic trackers, labels, issue pickup, DCO commits, PRs, and how CI/CD behaves (digest pinning). Use when picking up an issue, triaging, opening a PR, or reasoning about the pipelines.
+description: Work the Fgentic GitHub backlog — milestones M0–M24, epic trackers, labels, issue pickup, DCO commits, PRs, and how CI/CD behaves (digest pinning). Use when picking up an issue, triaging, opening a PR, or reasoning about the pipelines.
 metadata:
   author: Médéric Hurier (Fmind)
   created: 2026-07-11
@@ -12,7 +12,7 @@ Repo: `fmind-ai/fgentic` (public, Apache-2.0). All work is issue-driven; automat
 
 ## Backlog model
 
-1. The roadmap is **GitHub milestones M0–M17** (sequenced sovereignty-first; history + mapping in [docs/roadmap.md](../../../docs/roadmap.md)). Each milestone has exactly one `kind/epic` tracker issue with the sweep order and definition of done — **start there, work top-to-bottom**.
+1. The roadmap is **GitHub milestones M0–M24** (sequenced sovereignty-first; the milestones page is the current source of truth; history + mapping in [docs/roadmap.md](../../../docs/roadmap.md)). Each milestone has exactly one `kind/epic` tracker issue with the sweep order and definition of done — **start there, work top-to-bottom**.
 1. List milestones: `gh api repos/fmind-ai/fgentic/milestones --jq '.[] | "\(.number) \(.title) — \(.open_issues) open"'`. Find an epic: `gh issue list --label kind/epic --milestone "<title>"`.
 1. Labels: `agent-ready` = groomed, pick up as-is · `needs-human` = blocked on a maintainer decision/account/approval/spend — do the preparable parts, then hand off explicitly · `area/*` (bridge, infra, identity, matrix, models, federation, observability, security, ci, docs, community) · `kind/*` (feature, fix, test, chore, docs, research, epic).
 1. Issue bodies cite `SPEC §N` — resolve via the mapping table in [.agents/AGENTS.md](../../AGENTS.md).
