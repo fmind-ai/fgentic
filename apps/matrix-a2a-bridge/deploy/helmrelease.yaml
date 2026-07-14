@@ -10,7 +10,7 @@ metadata:
   namespace: flux-system
 spec:
   interval: 30m
-  suspend: true
+  suspend: false
   url: oci://ghcr.io/fmind-ai/charts/matrix-a2a-bridge
   layerSelector:
     mediaType: application/vnd.cncf.helm.chart.content.v1.tar+gzip
@@ -20,6 +20,8 @@ spec:
     matchOIDCIdentity:
       - issuer: ^https://token.actions.githubusercontent.com$
         subject: ^https://github\.com/fmind-ai/fgentic/\.github/workflows/cd\.yml@refs/heads/main$
+  ref:
+    digest: sha256:8d65d6bb9a0d137fd691c0d432fe02a06277a3895d8ff187734b46daf32dfc38
 ---
 # The Matrix<->A2A bridge initially deploys from its in-repo Helm chart. The first successful CD
 # publication switches it to the digest-pinned OCIRepository above. Ordering
@@ -32,14 +34,6 @@ metadata:
   namespace: bridge
 spec:
   interval: 30m
-  chart:
-    spec:
-      chart: ./apps/matrix-a2a-bridge/chart
-      reconcileStrategy: Revision # redeploy when the chart in git changes
-      sourceRef:
-        kind: GitRepository
-        name: flux-system
-        namespace: flux-system
   # Only the image and per-cluster settings are overridden here; the chart's values.yaml supplies
   # the rest (agent targets/descriptions, NetworkPolicy, security context). Sender MXIDs belong
   # here because Flux postBuild substitutes this manifest, not the chart's default values file.
@@ -47,7 +41,7 @@ spec:
   values:
     image:
       repository: ghcr.io/fmind-ai/matrix-a2a-bridge
-      tag: sha-bcd0a18c754dd9d6d923c63c3b9ff4747c2e694a@sha256:bdc04af181880fb17582cafe859a4122e274189f8795ee8676ea2ba7fac51417 # v0.1.0 build; CI re-pins on the next bridge change to main
+      tag: sha-49867dd4f94a574152d9b3d92ae7b6c49e7f81ca@sha256:e1686722ce27d18fbb3183dbd174501cabffb539e5155cf0cea2d3f1a5215c70 # v0.1.0 build; CI re-pins on the next bridge change to main
     config:
       serverName: ${server_name}
       agentCardRefreshInterval: 5m
@@ -66,3 +60,7 @@ spec:
     metrics:
       podMonitor:
         enabled: true # the observability layer provides the CRDs
+  chartRef:
+    kind: OCIRepository
+    name: matrix-a2a-bridge-chart
+    namespace: flux-system
