@@ -65,7 +65,7 @@ run = [
 [tasks.format]
 alias = "f"
 description = "Format everything (config/markup, Terraform, and applications)"
-depends = ["format:dprint", "format:terraform", "format:app", "format:gateway", "format:policy"]
+depends = ["format:dprint", "format:terraform", "format:a2a-tck", "format:app", "format:gateway", "format:policy"]
 
 [tasks."format:dprint"]
 description = "Format JSON, Markdown, TOML, YAML at the repo root + infra/docs (dprint)"
@@ -74,6 +74,14 @@ run = "dprint fmt"
 [tasks."format:terraform"]
 description = "Canonicalise Terraform formatting"
 run = "terraform fmt -recursive infra"
+
+[tasks."format:a2a-tck"]
+description = "Format the Python adapter for the external A2A compatibility kit"
+dir = "apps/synapse-federation-policy"
+run = [
+  "uv run ruff check --config pyproject.toml --select I --fix ../../scripts/a2a_tck_plugin.py",
+  "uv run ruff format --config pyproject.toml ../../scripts/a2a_tck_plugin.py",
+]
 
 [tasks."format:app"]
 description = "Format the application (delegates to apps/matrix-a2a-bridge)"
@@ -106,6 +114,7 @@ depends = [
   "check:dashboards",
   "check:reference-grants",
   "check:a2a-authorization",
+  "check:a2a-tck",
   "check:admission-policies",
   "check:resource-quotas",
   "check:mcp-governance",
@@ -197,6 +206,16 @@ run = "bash scripts/check-reference-grants.sh && bash scripts/test-reference-gra
 [tasks."check:a2a-authorization"]
 description = "Validate the fail-closed A2A API-key and CEL authorization contract"
 run = "bash scripts/test-a2a-authorization.sh"
+
+[tasks."check:a2a-tck"]
+description = "Validate the pinned authenticated federation A2A compatibility-kit contract"
+run = [
+  "mise --cd apps/synapse-federation-policy exec -- uv run ruff format --check --config pyproject.toml ../../scripts/a2a_tck_plugin.py",
+  "mise --cd apps/synapse-federation-policy exec -- uv run ruff check --config pyproject.toml ../../scripts/a2a_tck_plugin.py",
+  "mise --cd apps/synapse-federation-policy exec -- uv run ty check ../../scripts/a2a_tck_plugin.py",
+  "mise --cd apps/synapse-federation-policy exec -- env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=../.. uv run python -B -c 'from pathlib import Path; import pytest; from scripts import a2a_tck_plugin as plugin; plugin.validate_scope_document(Path(\"../../scripts/a2a-tck-scope.json\")); route = \"https://example.test/api/a2a/kagent/docs-qa\"; assert plugin._interface_request_url(route, \"/\") == route; assert plugin._interface_request_url(route, route) == route; pytest.raises(pytest.UsageError, plugin._interface_request_url, route, \"https://unexpected.test/\"); manager = pytest.PytestPluginManager(); manager.register(plugin)'",
+  "bash scripts/test-a2a-tck.sh",
+]
 
 [tasks."check:admission-policies"]
 description = "Validate the fail-closed Kubernetes admission policy and Flux bootstrap contract"
@@ -478,6 +497,10 @@ run = "bash scripts/federation.sh down"
 [tasks."fed:policy-reload"]
 description = "Prove a Flux policy allow/deny reload without restarting Synapse"
 run = "bash scripts/reload-federation-policy.sh"
+
+[tasks."fed:tck"]
+description = "Run the pinned A2A MUST/JSONRPC TCK against the authenticated federation route"
+run = "bash scripts/fed-tck.sh"
 
 [tasks."bridge:load"]
 description = "Build and side-load the bridge into the optional full local k3d cluster"

@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/a2aproject/a2a-go/v2/a2a"
 )
 
 func TestDocumentPresenceNormalizationAndWirePreservation(t *testing.T) {
@@ -97,6 +99,69 @@ func TestDocumentPresenceNormalizationAndWirePreservation(t *testing.T) {
 	}
 	if !bytes.Equal(document.Payload(), signedDocument.Payload()) {
 		t.Fatal("signing changed the canonical unsigned payload")
+	}
+}
+
+func TestDocumentOfficialSecurityRequirementStringList(t *testing.T) {
+	wire := decodeTestObject(t, testCardJSON(t))
+	wire["securityRequirements"] = []any{map[string]any{
+		"schemes": map[string]any{
+			"orgOIDC": map[string]any{"list": []any{}},
+		},
+	}}
+	raw := encodeTestObject(t, wire)
+	document, err := Parse(raw)
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	card, err := document.Card()
+	if err != nil {
+		t.Fatalf("Card: %v", err)
+	}
+	if len(card.SecurityRequirements) != 1 {
+		t.Fatalf("security requirements = %#v", card.SecurityRequirements)
+	}
+	scopes, exists := card.SecurityRequirements[0][a2a.SecuritySchemeName("orgOIDC")]
+	if !exists || len(scopes) != 0 {
+		t.Fatalf("typed orgOIDC scopes = %#v, present %v", scopes, exists)
+	}
+
+	payload := decodeTestObject(t, document.Payload())
+	payloadRequirement := payload["securityRequirements"].([]any)[0].(map[string]any)
+	payloadScopes := payloadRequirement["schemes"].(map[string]any)["orgOIDC"].(map[string]any)
+	if len(payloadScopes) != 0 {
+		t.Fatalf("canonical orgOIDC StringList = %#v", payloadScopes)
+	}
+
+	bundle, err := Sign(raw, testPrivateKey(t), "fixture-key")
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	signed := decodeTestObject(t, bundle.AgentCard)
+	signedRequirement := signed["securityRequirements"].([]any)[0].(map[string]any)
+	signedScopes := signedRequirement["schemes"].(map[string]any)["orgOIDC"].(map[string]any)
+	list, exists := signedScopes["list"].([]any)
+	if !exists || len(list) != 0 {
+		t.Fatalf("signed orgOIDC StringList = %#v", signedScopes)
+	}
+}
+
+func TestDocumentLegacySecurityRequirementArray(t *testing.T) {
+	wire := decodeTestObject(t, testCardJSON(t))
+	wire["securityRequirements"] = []any{map[string]any{
+		"schemes": map[string]any{"legacyOAuth": []any{"openid"}},
+	}}
+	document, err := Parse(encodeTestObject(t, wire))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	card, err := document.Card()
+	if err != nil {
+		t.Fatalf("Card: %v", err)
+	}
+	scopes := card.SecurityRequirements[0][a2a.SecuritySchemeName("legacyOAuth")]
+	if len(scopes) != 1 || scopes[0] != "openid" {
+		t.Fatalf("legacy OAuth scopes = %#v", scopes)
 	}
 }
 

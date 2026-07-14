@@ -912,7 +912,7 @@ func TestVerifyRemoteCardPresenceNormalization(t *testing.T) {
 		"examples":    []any{},
 		"securityRequirements": []any{map[string]any{
 			"schemes": map[string]any{
-				"oauth": []any{}, // Empty scopes is a meaningful OpenAPI requirement value.
+				"oauth": map[string]any{"list": []any{}},
 			},
 		}},
 	}}
@@ -928,6 +928,9 @@ func TestVerifyRemoteCardPresenceNormalization(t *testing.T) {
 	delete(payloadFlow, "pkceRequired")
 	payloadSkill := payload["skills"].([]any)[0].(map[string]any)
 	delete(payloadSkill, "examples")
+	payloadSkillRequirement := payloadSkill["securityRequirements"].([]any)[0].(map[string]any)
+	payloadSkillScopes := payloadSkillRequirement["schemes"].(map[string]any)["oauth"].(map[string]any)
+	delete(payloadSkillScopes, "list")
 	raw := signCardDocument(t, wire, payload, key, identity.KeyID, "", nil, nil)
 	if _, err := verifyRemoteAgentCard(raw, target); err != nil {
 		t.Fatalf("verifyRemoteAgentCard: %v", err)

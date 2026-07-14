@@ -41,7 +41,7 @@
   "securityRequirements": [
     {
       "schemes": {
-        "orgBOIDC": []
+        "orgBOIDC": { "list": [] }
       }
     }
   ],

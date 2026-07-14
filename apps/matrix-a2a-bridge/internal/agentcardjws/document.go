@@ -83,7 +83,11 @@ func Parse(raw []byte) (*Document, error) {
 // Card decodes the document into the official A2A v1.0 AgentCard type. Unknown signed fields
 // remain covered by Payload even though the SDK intentionally ignores them here.
 func (d *Document) Card() (*a2a.AgentCard, error) {
-	decoder := json.NewDecoder(bytes.NewReader(d.raw))
+	cardJSON, err := domainCardJSON(d.raw)
+	if err != nil {
+		return nil, fmt.Errorf("card JSON does not match the A2A schema: %w", err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(cardJSON))
 	var card a2a.AgentCard
 	if err := decoder.Decode(&card); err != nil {
 		return nil, fmt.Errorf("card JSON does not match the A2A schema")
@@ -92,6 +96,67 @@ func (d *Document) Card() (*a2a.AgentCard, error) {
 		return nil, fmt.Errorf("card has trailing JSON data")
 	}
 	return &card, nil
+}
+
+// domainCardJSON adapts the v1 protobuf StringList wire shape to the array shape
+// expected by the pinned a2a-go domain model without changing the signed document.
+func domainCardJSON(raw []byte) ([]byte, error) {
+	document, err := decodeObject(raw)
+	if err != nil {
+		return nil, err
+	}
+	if err := unwrapSecurityRequirementStringLists(document["securityRequirements"]); err != nil {
+		return nil, err
+	}
+	if skills, ok := document["skills"].([]any); ok {
+		for _, value := range skills {
+			skill, _ := value.(map[string]any)
+			if skill == nil {
+				continue
+			}
+			if err := unwrapSecurityRequirementStringLists(skill["securityRequirements"]); err != nil {
+				return nil, err
+			}
+		}
+	}
+	encoded, err := json.Marshal(document)
+	if err != nil {
+		return nil, fmt.Errorf("encode domain AgentCard: %w", err)
+	}
+	return encoded, nil
+}
+
+func unwrapSecurityRequirementStringLists(value any) error {
+	requirements, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	for _, requirementValue := range requirements {
+		requirement, _ := requirementValue.(map[string]any)
+		if requirement == nil {
+			continue
+		}
+		schemes, _ := requirement["schemes"].(map[string]any)
+		for name, scopesValue := range schemes {
+			stringList, ok := scopesValue.(map[string]any)
+			if !ok {
+				continue
+			}
+			if len(stringList) == 0 {
+				schemes[name] = []any{}
+				continue
+			}
+			list, exists := stringList["list"]
+			if !exists || len(stringList) != 1 {
+				return fmt.Errorf("security requirement StringList has unknown fields")
+			}
+			if _, ok := list.([]any); !ok {
+				return fmt.Errorf("security requirement StringList list is not an array")
+			}
+			schemes[name] = list
+		}
+	}
+	return nil
 }
 
 // Payload returns a copy of the canonical unsigned payload covered by the JWS.
