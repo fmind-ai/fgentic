@@ -258,6 +258,16 @@ patches:
               - op: replace
                 path: /spec/values/otel/tracing/enabled
                 value: false
+              # The UI and KMCP controller are outside the Matrix mention-to-reply path. Scaling
+              # the UI to zero and disabling KMCP saves 320 MiB of requested RAM here only.
+              - op: add
+                path: /spec/values/ui
+                value:
+                  replicas: 0
+              - op: add
+                path: /spec/values/kmcp
+                value:
+                  enabled: false
   - target:
       group: kustomize.toolkit.fluxcd.io
       version: v1

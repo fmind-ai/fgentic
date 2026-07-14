@@ -7,6 +7,7 @@ readonly ROOT_DIR
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo-check.XXXXXX")"
 readonly WORK_DIR
 readonly DEMO="${ROOT_DIR}/scripts/demo.sh"
+readonly DEMO_SETTINGS_FILE="${ROOT_DIR}/clusters/demo/platform-settings.yaml"
 readonly REPLY_FILTER="${ROOT_DIR}/scripts/lib/demo-reply.jq"
 readonly SEED_STATE_FILTER="${ROOT_DIR}/scripts/lib/demo-seed-state.jq"
 readonly EXPECTED_DEMO_REPLY="Fgentic's deterministic evaluation model is working through agentgateway and kagent."
@@ -40,6 +41,22 @@ assert_yq() {
 		echo "error: ${message}" >&2
 		exit 1
 	}
+}
+
+render_demo_layer() {
+	local layer="$1"
+	local path="$2"
+	local flux_file="${WORK_DIR}/demo-${layer}-flux.yaml"
+	DEMO_LAYER="${layer}" DEMO_SETTINGS_PATH="${DEMO_SETTINGS_FILE}" yq eval-all -o=yaml \
+		'select(.kind == "Kustomization" and .metadata.name == strenv(DEMO_LAYER)) |
+      .spec.postBuild.substitute = load(strenv(DEMO_SETTINGS_PATH)).data' \
+		"${WORK_DIR}/cluster.yaml" >"${flux_file}"
+	flux build kustomization "${layer}" \
+		--path "${path}" \
+		--kustomization-file "${flux_file}" \
+		--dry-run \
+		--in-memory-build \
+		--strict-substitute >"${WORK_DIR}/demo-${layer}.yaml"
 }
 
 reply_fixture() {
@@ -135,8 +152,109 @@ bash -n "${DEMO_SOURCES[@]}" "${ROOT_DIR}/scripts/seed-demo.sh"
 	[ "${secret_calls[1]}" = \
 		'bridge a2a-bridge-credential --from-literal=token=fixture-key' ]
 )
+(
+	# Load the pullPolicy=Never bridge only once Flux applies its exact HelmRelease tag, narrowing the
+	# image-GC window even when a retained cluster still has stale release state.
+	# shellcheck source=scripts/lib/demo-cluster.sh
+	source "${ROOT_DIR}/scripts/lib/demo-cluster.sh"
+	PROFILE=demo
+	DEMO_TIMEOUT=15m
+	CLUSTER_NAME=fgentic-demo-fixture
+	SOURCE_CONTEXT="${WORK_DIR}/source-context"
+	SOURCE_BASE_IMAGE='source-base:fixture'
+	SOURCE_GIT_PACKAGES='git git-daemon busybox-extras'
+	SOURCE_IMAGE='fgentic-demo-source:fixture'
+	BRIDGE_IMAGE='matrix-a2a-bridge:fixture'
+	mkdir -p "${SOURCE_CONTEXT}"
+	early_image_calls=()
+	build_image() {
+		early_image_calls+=("build:$1")
+	}
+	k3d() {
+		early_image_calls+=("k3d:$*")
+	}
+	build_and_load_images
+	[ "${early_image_calls[0]}" = 'build:fgentic-demo-source:fixture' ]
+	[ "${early_image_calls[1]}" = 'build:matrix-a2a-bridge:fixture' ]
+	[ "${early_image_calls[2]}" = \
+		'k3d:image import --cluster fgentic-demo-fixture fgentic-demo-source:fixture' ]
+	[ "${#early_image_calls[@]}" -eq 3 ]
+	bridge_image_calls="${WORK_DIR}/bridge-image-calls"
+	: >"${bridge_image_calls}"
+	kubectl() {
+		printf 'kubectl %s\n' "$*" >>"${bridge_image_calls}"
+		case "$(wc -l <"${bridge_image_calls}")" in
+		1)
+			printf '%s\n' '{"spec":{"values":{"image":{"repository":"matrix-a2a-bridge","tag":"stale"}}}}'
+			;;
+		2) return 1 ;;
+		*)
+			printf '%s\n' '{"spec":{"values":{"image":{"repository":"matrix-a2a-bridge","tag":"fixture"}}}}'
+			;;
+		esac
+	}
+	k3d() {
+		printf 'k3d %s\n' "$*" >>"${bridge_image_calls}"
+	}
+	bridge_image_loaded=false
+	for _ in 1 2 3 4; do
+		if [ "${bridge_image_loaded}" = false ] && load_bridge_image_if_requested; then
+			bridge_image_loaded=true
+		fi
+	done
+	[ "${bridge_image_loaded}" = true ]
+	[ "$(rg --count '^kubectl ' "${bridge_image_calls}")" -eq 3 ]
+	[ "$(rg --count '^k3d ' "${bridge_image_calls}")" -eq 1 ]
+	[ "$(rg --count --fixed-strings \
+		'kubectl --namespace bridge get helmrelease matrix-a2a-bridge --output json' \
+		"${bridge_image_calls}")" -eq 3 ]
+	tail -n 1 "${bridge_image_calls}" |
+		rg --fixed-strings --line-regexp \
+			'k3d image import --cluster fgentic-demo-fixture matrix-a2a-bridge:fixture' >/dev/null
+	PROFILE=federation
+	load_bridge_image_if_requested
+	[ "$(wc -l <"${bridge_image_calls}")" -eq 4 ]
+
+	# The real helper must distinguish a requested image whose containerd import fails.
+	PROFILE=demo
+	k3d() {
+		printf 'k3d %s\n' "$*" >>"${bridge_image_calls}"
+		return 1
+	}
+	if load_bridge_image_if_requested; then
+		echo 'error: bridge image import failure was reported as success' >&2
+		exit 1
+	else
+		[ "$?" -eq 2 ]
+	fi
+	[ "$(wc -l <"${bridge_image_calls}")" -eq 6 ]
+
+	# A containerd/import failure is a terminal resource error, not a request-readiness retry.
+	SOURCE_REVISION=fixture
+	load_attempts=0
+	load_bridge_image_if_requested() {
+		load_attempts=$((load_attempts + 1))
+		return 2
+	}
+	flux_calls=0
+	flux() {
+		flux_calls=$((flux_calls + 1))
+	}
+	if wait_for_platform >/dev/null 2>&1; then
+		echo 'error: bridge image import failure did not stop reconciliation' >&2
+		exit 1
+	fi
+	[ "${load_attempts}" -eq 1 ]
+	[ "${flux_calls}" -eq 2 ]
+)
 rg --fixed-strings \
-	'kubectl apply --server-side --kustomize "${SNAPSHOT_DIR}/infra/policies"' \
+	'kubectl apply --server-side --force-conflicts \' \
+	"${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null || {
+	echo 'error: demo bootstrap does not reclaim admission fields on cluster reuse' >&2
+	exit 1
+}
+rg --fixed-strings -- \
+	'--kustomize "${SNAPSHOT_DIR}/infra/policies"' \
 	"${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null || {
 	echo 'error: demo bootstrap does not install admission before namespaces' >&2
 	exit 1
@@ -411,14 +529,15 @@ assert_yq \
 	'select(.kind == "Kustomization" and .metadata.name == "agentgateway-provider") |
     .spec.path == "./infra/agentgateway/providers/profiles/demo"' \
 	"${WORK_DIR}/cluster.yaml" 'provider-selection did not select the demo inventory'
-for omitted_layer in observability observability-monitors keycloak trivy-operator; do
-	if yq --unwrapScalar \
-		'select(.kind == "Kustomization") | .metadata.name' \
-		"${WORK_DIR}/cluster.yaml" | rg --fixed-strings --line-regexp "${omitted_layer}" >/dev/null; then
-		echo "error: small profile still contains ${omitted_layer}" >&2
-		exit 1
-	fi
-done
+expected_demo_layers=$'agentgateway\nagentgateway-provider\nbridge\ncontrollers\ngateway\nkagent\nmatrix\nnamespaces\nplatform-secrets\npolicies\npostgres'
+actual_demo_layers="$(
+	yq eval-all -N -r 'select(.kind == "Kustomization") | .metadata.name' \
+		"${WORK_DIR}/cluster.yaml" | sort
+)"
+[[ "${actual_demo_layers}" == "${expected_demo_layers}" ]] || {
+	echo "error: small-profile Flux inventory drifted: ${actual_demo_layers}" >&2
+	exit 1
+}
 assert_yq \
 	'select(.kind == "Kustomization" and .metadata.name == "namespaces") |
     ((.spec.patches | length) == 3 and
@@ -444,11 +563,78 @@ assert_yq \
 	'select(.kind == "Kustomization" and .metadata.name == "platform-secrets") |
     .spec.path == "./clusters/demo/empty" and (.spec.decryption == null)' \
 	"${WORK_DIR}/cluster.yaml" 'demo secret inventory must be empty and non-SOPS'
+
+render_demo_layer postgres "${ROOT_DIR}/infra/postgres"
 assert_yq \
-	'select(.kind == "Kustomization" and .metadata.name == "bridge") |
-    ((.spec.patches[0].patch | contains("matrix-a2a-bridge")) and
-     (.spec.patches[0].patch | contains("pullPolicy: Never")))' \
-	"${WORK_DIR}/cluster.yaml" 'demo bridge is not pinned to the side-loaded image'
+	'select(.kind == "Cluster" and .metadata.name == "platform-pg") |
+    .spec.monitoring.enablePodMonitor == false' \
+	"${WORK_DIR}/demo-postgres.yaml" 'demo Postgres still enables its PodMonitor'
+if yq eval-all -N -r \
+	'select(.kind == "ScheduledBackup" or
+    (.kind == "Database" and .metadata.name == "keycloak")) |
+    .metadata.name' "${WORK_DIR}/demo-postgres.yaml" | rg --quiet '.'; then
+	echo 'error: demo Postgres retains a backup or Keycloak database dependency' >&2
+	exit 1
+fi
+
+render_demo_layer agentgateway "${ROOT_DIR}/infra/agentgateway"
+if yq eval-all -N -r \
+	'select(.kind == "AgentgatewayPolicy" and .metadata.name == "tracing") |
+    .metadata.name' "${WORK_DIR}/demo-agentgateway.yaml" | rg --quiet '.'; then
+	echo 'error: demo agentgateway still references the tracing backend' >&2
+	exit 1
+fi
+
+render_demo_layer kagent "${ROOT_DIR}/infra/kagent"
+assert_yq \
+	'select(.kind == "HelmRelease" and .metadata.name == "kagent") |
+    .spec.values.otel.tracing.enabled == false and
+    .spec.values.ui.replicas == 0 and
+    .spec.values.kmcp.enabled == false' \
+	"${WORK_DIR}/demo-kagent.yaml" 'demo kagent resource-budget patch is ineffective'
+expected_demo_agents=$'docs-qa\nplatform-helper\nscribe'
+actual_demo_agents="$(
+	yq eval-all -N -r 'select(.kind == "Agent") | .metadata.name' \
+		"${WORK_DIR}/demo-kagent.yaml" | sort
+)"
+[[ "${actual_demo_agents}" == "${expected_demo_agents}" ]] || {
+	echo "error: small profile must retain exactly the three mapped Agents" >&2
+	exit 1
+}
+
+render_demo_layer bridge "${ROOT_DIR}/apps/matrix-a2a-bridge/deploy"
+assert_yq \
+	'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") |
+    .spec.values.image.repository == "matrix-a2a-bridge" and
+    .spec.values.image.tag == "local" and
+    .spec.values.image.pullPolicy == "Never" and
+    .spec.values.config.otelEndpoint == "" and
+    .spec.values.metrics.podMonitor.enabled == false' \
+	"${WORK_DIR}/demo-bridge.yaml" 'demo bridge resource patch is ineffective'
+yq eval-all -o=yaml \
+	'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") |
+    .spec.values' \
+	"${WORK_DIR}/demo-bridge.yaml" \
+	| helm template matrix-a2a-bridge "${ROOT_DIR}/apps/matrix-a2a-bridge/chart" \
+		--namespace bridge \
+		--values - >"${WORK_DIR}/demo-bridge-chart.yaml"
+assert_yq \
+	'select(.kind == "ConfigMap" and .metadata.name == "matrix-a2a-bridge-agents") |
+    .data."agents.yaml" | from_yaml | .agents as $agents |
+    (($agents | length) == 3 and
+     ($agents | has("agent-docs-qa")) and
+     ($agents | has("agent-platform-helper")) and
+     ($agents | has("agent-scribe")) and
+     $agents."agent-docs-qa".name == "docs-qa" and
+     $agents."agent-platform-helper".name == "platform-helper" and
+     $agents."agent-scribe".name == "scribe" and
+     ([$agents[] | select(
+       .namespace == "kagent" and
+       (.allowedSenders | length) == 1 and
+       .allowedSenders[0] == "@alice:fgentic.localhost"
+     )] | length) == 3)' \
+	"${WORK_DIR}/demo-bridge-chart.yaml" \
+	'demo bridge must retain exactly the three local kagent mappings'
 
 kubectl kustomize "${ROOT_DIR}/infra/agentgateway" >"${WORK_DIR}/agentgateway.yaml"
 assert_yq \

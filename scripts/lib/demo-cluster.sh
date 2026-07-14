@@ -123,13 +123,28 @@ ENTRYPOINT ["httpd", "-f", "-v", "-p", "8080", "-h", "/www"]
 EOF
 
 	build_image "${SOURCE_IMAGE}" "${SOURCE_CONTEXT}/Dockerfile" "${SOURCE_CONTEXT}" source
-	local images=("${SOURCE_IMAGE}")
 	if [ "${PROFILE}" = "demo" ]; then
 		build_image "${BRIDGE_IMAGE}" "${ROOT_DIR}/apps/matrix-a2a-bridge/Dockerfile" \
 			"${ROOT_DIR}/apps/matrix-a2a-bridge" bridge
-		images+=("${BRIDGE_IMAGE}")
 	fi
-	k3d image import --cluster "${CLUSTER_NAME}" "${images[@]}" >/dev/null
+	# The source is the first side-loaded workload requested; delay only the bridge image through
+	# the much longer platform dependency chain.
+	k3d image import --cluster "${CLUSTER_NAME}" "${SOURCE_IMAGE}" >/dev/null
+}
+
+load_bridge_image_if_requested() {
+	local requested_image
+	[ "${PROFILE}" = "demo" ] || return 0
+	requested_image="$(
+		kubectl --namespace bridge get helmrelease matrix-a2a-bridge --output json 2>/dev/null |
+			jq --exit-status --raw-output \
+				'.spec.values.image | "\(.repository):\(.tag)"' 2>/dev/null
+	)" || return 1
+	[ "${requested_image}" = "${BRIDGE_IMAGE}" ] || return 1
+
+	# Loading only after Flux applies this exact HelmRelease tag leaves the long dependency wait
+	# behind us and can precede Pod creation, narrowing the unused pullPolicy=Never image window.
+	k3d image import --cluster "${CLUSTER_NAME}" "${BRIDGE_IMAGE}" >/dev/null || return 2
 }
 
 build_image() {
@@ -276,17 +291,33 @@ timeout_seconds() {
 }
 
 wait_for_platform() {
-	local expected_revision deadline kustomizations helmreleases
+	local bridge_image_loaded bridge_image_status expected_revision deadline kustomizations helmreleases
 	expected_revision="main@sha1:${SOURCE_REVISION}"
 	deadline=$((SECONDS + $(timeout_seconds "${DEMO_TIMEOUT}")))
+	bridge_image_loaded=false
+	[ "${PROFILE}" = "demo" ] || bridge_image_loaded=true
 
 	while ((SECONDS < deadline)); do
+		if [ "${bridge_image_loaded}" = false ]; then
+			if load_bridge_image_if_requested; then
+				bridge_image_loaded=true
+			else
+				bridge_image_status=$?
+				if [ "${bridge_image_status}" -eq 2 ]; then
+					echo "Bridge HelmRelease requested ${BRIDGE_IMAGE}, but its image import failed." >&2
+					flux get kustomizations >&2 || true
+					flux get helmreleases --all-namespaces >&2 || true
+					return 1
+				fi
+			fi
+		fi
 		if ! kustomizations="$(kubectl --namespace flux-system get kustomizations --output json)" ||
 			! helmreleases="$(kubectl get helmreleases --all-namespaces --output json)"; then
 			sleep 5
 			continue
 		fi
-		if jq -e --arg revision "${expected_revision}" '
+		if [ "${bridge_image_loaded}" = true ] &&
+			jq -e --arg revision "${expected_revision}" '
         (.items | length > 0) and all(.items[];
           .status.observedGeneration == .metadata.generation and
           .status.lastAppliedRevision == $revision and
@@ -303,6 +334,9 @@ wait_for_platform() {
 	done
 
 	echo "Flux did not reconcile the evaluation revision within ${DEMO_TIMEOUT}:" >&2
+	if [ "${bridge_image_loaded}" = false ]; then
+		echo "Bridge HelmRelease did not request the expected image ${BRIDGE_IMAGE}." >&2
+	fi
 	flux get kustomizations >&2 || true
 	flux get helmreleases --all-namespaces >&2 || true
 	return 1
@@ -383,8 +417,10 @@ demo_up() {
 			>/dev/null
 	fi
 	# Match the production Flux DAG: admission must protect the first managed Namespace creation,
-	# not only later updates. These cluster-scoped objects have no namespace/CRD dependency.
-	kubectl apply --server-side --kustomize "${SNAPSHOT_DIR}/infra/policies" >/dev/null
+	# not only later updates. Flux becomes the steady-state field manager; force is required when a
+	# retained disposable cluster hands those same canonical fields back to this bootstrap step.
+	kubectl apply --server-side --force-conflicts \
+		--kustomize "${SNAPSHOT_DIR}/infra/policies" >/dev/null
 	render_bootstrap_namespaces | kubectl apply --filename - >/dev/null
 	"${ROOT_DIR}/scripts/local-ca.sh"
 	create_ephemeral_secrets

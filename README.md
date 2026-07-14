@@ -82,14 +82,14 @@ Reference deployment: `fgentic.fmind.ai` (Element at `chat.`, Synapse at `matrix
 
 ## Evaluate in 15 minutes
 
-Prerequisites: Docker (allocate at least ~8 GiB RAM and 4 CPUs to it), Git, [mise](https://mise.jdx.dev/), and at least 10 GiB of free disk for the pinned cluster images. The demo binds host ports **80** and **443** on `127.0.0.1` and serves the platform under `*.fgentic.localhost`, so both ports must be free and `*.localhost` must resolve to loopback (automatic on systemd-resolved and macOS; otherwise add a hosts entry). The default is deliberately free and deterministic: it exercises Matrix → bridge → agentgateway → kagent with an in-cluster OpenAI-compatible response stub. It proves the integration path, not model quality.
+Prerequisites: Docker (allocate at least ~8 GiB RAM and 4 CPUs to it), Git, [mise](https://mise.jdx.dev/), and at least 10 GiB of free disk for the pinned cluster images. The demo is also the constrained-laptop profile: it omits SSO, telemetry, tracing, and vulnerability scanning, scales the kagent UI to zero, and disables KMCP while retaining the complete Matrix → bridge → agentgateway → kagent path. Use the production-shaped local profile only when testing those omitted controls. The demo binds host ports **80** and **443** on `127.0.0.1` and serves the platform under `*.fgentic.localhost`, so both ports must be free and `*.localhost` must resolve to loopback (automatic on systemd-resolved and macOS; otherwise add a hosts entry). The default is deliberately free and deterministic: it uses an in-cluster OpenAI-compatible response stub and proves integration, not model quality.
 
 ```bash
 mise install
 mise run demo:up
 ```
 
-The final output is the Element URL, `@alice:fgentic.localhost`, its generated password, and the seeded `#lobby:fgentic.localhost` room. Every mapped ghost is already a member and has replied to its own seeded transport probe. The command does not mutate the checkout, commit, push, or need a GitHub account; its random credentials live only in the `fgentic-demo` cluster. Set `FGENTIC_DEMO_CACHE_DIR` to a persistent directory to reuse BuildKit layers across repeated installs. Remove only that evaluation cluster with `mise run demo:down`.
+The final output is the Element URL, `@alice:fgentic.localhost`, its generated password, and the seeded `#lobby:fgentic.localhost` room. Every mapped ghost is already a member and has replied to its own seeded transport probe. The command does not mutate the checkout, commit, push, or need a GitHub account; its random credentials live only in the `fgentic-demo` cluster. Set `FGENTIC_DEMO_CACHE_DIR` to a persistent directory to reuse BuildKit layers across repeated installs. Remove only that evaluation cluster with `mise run demo:down`. For the persistent full `fgentic` cluster, `mise exec -- k3d cluster stop fgentic`/`mise exec -- k3d cluster start fgentic` preserve its state; `mise run cluster:down` deletes it.
 
 Choose the model boundary before using non-demo data:
 
