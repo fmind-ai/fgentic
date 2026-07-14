@@ -1,0 +1,32 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ess-element-web
+  namespace: matrix
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: ess-element-web
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ess-haproxy
+  namespace: matrix
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: ess-haproxy
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: ess-matrix-authentication-service
+  namespace: matrix
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: ess-matrix-authentication-service

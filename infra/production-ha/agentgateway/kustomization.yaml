@@ -1,0 +1,64 @@
+# Both the controller and the generated proxy are independently replicated. The controller chart
+# and AgentgatewayParameters CRD each own their corresponding PDB, avoiding selector drift.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: agentgateway
+      namespace: agentgateway-system
+    patch: |
+      - op: add
+        path: /spec/values/controller
+        value:
+          replicaCount: 2
+          strategy:
+            type: RollingUpdate
+            rollingUpdate:
+              maxSurge: 0
+              maxUnavailable: 1
+          podDisruptionBudget:
+            maxUnavailable: 1
+      - op: add
+        path: /spec/values/affinity
+        value:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/instance: agentgateway
+                    app.kubernetes.io/name: agentgateway
+  - target:
+      group: agentgateway.dev
+      version: v1alpha1
+      kind: AgentgatewayParameters
+      name: secured
+      namespace: agentgateway-system
+    patch: |
+      - op: add
+        path: /spec/deployment
+        value:
+          spec:
+            replicas: 2
+            strategy:
+              type: RollingUpdate
+              rollingUpdate:
+                maxSurge: 0
+                maxUnavailable: 1
+            template:
+              spec:
+                affinity:
+                  podAntiAffinity:
+                    requiredDuringSchedulingIgnoredDuringExecution:
+                      - topologyKey: kubernetes.io/hostname
+                        labelSelector:
+                          matchLabels:
+                            app.kubernetes.io/name: agentgateway-proxy
+      - op: add
+        path: /spec/podDisruptionBudget
+        value:
+          spec:
+            maxUnavailable: 1

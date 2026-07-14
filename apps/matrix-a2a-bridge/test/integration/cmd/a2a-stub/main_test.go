@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -15,6 +16,33 @@ import (
 	"github.com/fmind/matrix-a2a-bridge/internal/a2aclient"
 	"github.com/fmind/matrix-a2a-bridge/internal/agentcardjws"
 )
+
+func TestReleaseGate(t *testing.T) {
+	gate := newReleaseGate(true)
+	heldCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := gate.wait(heldCtx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("enabled releaseGate.wait() error = %v, want context cancellation", err)
+	}
+
+	gate.release()
+	gate.release()
+	if err := gate.wait(context.Background()); err != nil {
+		t.Fatalf("released releaseGate.wait() error = %v", err)
+	}
+}
+
+func TestLoadHold(t *testing.T) {
+	t.Setenv("A2A_STUB_HOLD", "true")
+	hold, err := loadHold()
+	if err != nil || !hold {
+		t.Fatalf("loadHold() = %v, %v", hold, err)
+	}
+	t.Setenv("A2A_STUB_HOLD", "invalid")
+	if _, err := loadHold(); err == nil {
+		t.Fatal("loadHold() accepted an invalid boolean")
+	}
+}
 
 func TestParseLoadMarker(t *testing.T) {
 	record, ok := parseLoadMarker("provenance\nload room=07 seq=09\nend")

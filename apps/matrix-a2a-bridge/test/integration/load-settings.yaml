@@ -5,6 +5,7 @@ metadata:
   namespace: bridge-integration
 data:
   a2aStubDelay: 2s
+  agentCardRefreshInterval: 30s
   concurrency: "16"
   # The fixture has no LLM or paid boundary. Raise both token buckets so the test reaches the
   # dispatcher instead of testing D7's admission policy.
@@ -20,3 +21,4 @@ metadata:
   namespace: plain-agent
 data:
   a2aStubDelay: 2s
+  a2aStubHold: "false"

@@ -1,0 +1,19 @@
+# Keycloak's chart uses JDBC_PING against the shared database and required hostname anti-affinity,
+# so two replicas are a supported active/active posture rather than merely duplicate pods.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: keycloak
+      namespace: keycloak
+    patch: |
+      - op: replace
+        path: /spec/values/replicas
+        value: 2
+      - op: add
+        path: /spec/values/podDisruptionBudget
+        value:
+          maxUnavailable: 1

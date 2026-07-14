@@ -45,6 +45,11 @@ spec:
                 configMapKeyRef:
                   name: fixture-settings
                   key: a2aStubDelay
+            - name: A2A_STUB_HOLD
+              valueFrom:
+                configMapKeyRef:
+                  name: fixture-settings
+                  key: a2aStubHold
           ports:
             - containerPort: 8080
               name: http
@@ -132,6 +137,9 @@ spec:
         app.kubernetes.io/name: bridge
     spec:
       automountServiceAccountToken: false
+      # The availability scenario sends SIGTERM while an A2A call is held. This budget must exceed
+      # both the HTTP intake barrier and the bridge dispatcher drain.
+      terminationGracePeriodSeconds: 45
       securityContext:
         runAsGroup: 65532
         runAsNonRoot: true
@@ -155,13 +163,18 @@ spec:
             - name: A2A_BASE_URL
               value: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080
             - name: AGENT_CARD_REFRESH_INTERVAL
-              value: 1s
+              valueFrom:
+                configMapKeyRef:
+                  name: fixture-settings
+                  key: agentCardRefreshInterval
             - name: DATABASE_URL
               value: postgres://postgres@postgres:5432/bridge?sslmode=disable
             - name: REQUEST_TIMEOUT
-              value: 10s
+              value: 30s
             - name: TASK_TIMEOUT
-              value: 20s
+              value: 35s
+            - name: SHUTDOWN_TIMEOUT
+              value: 25s
             - name: CONCURRENCY
               valueFrom:
                 configMapKeyRef:

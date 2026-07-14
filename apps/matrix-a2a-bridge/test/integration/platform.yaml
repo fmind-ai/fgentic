@@ -60,6 +60,7 @@ metadata:
   namespace: bridge-integration
 data:
   a2aStubDelay: 0s
+  agentCardRefreshInterval: 1s
   concurrency: "2"
   senderRatePerMinute: "0.01"
   senderRateBurst: "1"
@@ -73,6 +74,7 @@ metadata:
   namespace: plain-agent
 data:
   a2aStubDelay: 0s
+  a2aStubHold: "false"
 ---
 apiVersion: v1
 kind: Secret
@@ -208,6 +210,14 @@ spec:
             periodSeconds: 2
             timeoutSeconds: 2
             failureThreshold: 30
+          # Initialization can be I/O-bound on the constrained local acceptance host. Keep
+          # steady-state liveness strict, but do not let it kill Postgres before initdb finishes.
+          startupProbe:
+            exec:
+              command: [pg_isready, -U, postgres]
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 90
           livenessProbe:
             exec:
               command: [pg_isready, -U, postgres]

@@ -56,6 +56,7 @@ type statsSnapshot struct {
 	Active             int             `json:"active"`
 	CardTampered       bool            `json:"card_tampered"`
 	DelayMillis        int64           `json:"delay_millis"`
+	HoldEnabled        bool            `json:"hold_enabled"`
 	MaxActive          int             `json:"max_active"`
 	RemoteCardRequests int             `json:"remote_card_requests"`
 	RemoteRequests     int             `json:"remote_requests"`
@@ -71,6 +72,7 @@ type statsSnapshot struct {
 type statsRecorder struct {
 	mu                 sync.Mutex
 	delay              time.Duration
+	holdEnabled        bool
 	active             int
 	maxActive          int
 	totalRequests      int
@@ -147,6 +149,7 @@ func (r *statsRecorder) snapshot() statsSnapshot {
 		Active:             r.active,
 		CardTampered:       r.cardTampered,
 		DelayMillis:        r.delay.Milliseconds(),
+		HoldEnabled:        r.holdEnabled,
 		MaxActive:          r.maxActive,
 		RemoteCardRequests: r.remoteCardRequests,
 		RemoteRequests:     r.remoteRequests,
@@ -162,9 +165,36 @@ func (r *statsRecorder) snapshot() statsSnapshot {
 
 type executor struct {
 	delay  time.Duration
+	gate   *releaseGate
 	remote bool
 	reply  string
 	stats  *statsRecorder
+}
+
+type releaseGate struct {
+	released chan struct{}
+	once     sync.Once
+}
+
+func newReleaseGate(enabled bool) *releaseGate {
+	gate := &releaseGate{released: make(chan struct{})}
+	if !enabled {
+		gate.release()
+	}
+	return gate
+}
+
+func (g *releaseGate) wait(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return context.Cause(ctx)
+	case <-g.released:
+		return nil
+	}
+}
+
+func (g *releaseGate) release() {
+	g.once.Do(func() { close(g.released) })
 }
 
 func (e executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
@@ -184,6 +214,11 @@ func (e executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) 
 		}
 
 		e.stats.start(record)
+		if err := e.gate.wait(ctx); err != nil {
+			e.stats.finish(record, false)
+			yield(nil, err)
+			return
+		}
 		if err := waitDelay(ctx, e.delay); err != nil {
 			e.stats.finish(record, false)
 			yield(nil, err)
@@ -242,10 +277,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	stats := &statsRecorder{delay: delay}
+	hold, err := loadHold()
+	if err != nil {
+		return err
+	}
+	gate := newReleaseGate(hold)
+	stats := &statsRecorder{delay: delay, holdEnabled: hold}
 
 	localHandler := a2asrv.NewHandler(
-		executor{delay: delay, reply: localReplyText, stats: stats},
+		executor{delay: delay, gate: gate, reply: localReplyText, stats: stats},
 		a2asrv.WithTaskStore(taskstore.NewInMemory(nil)),
 	)
 	localCard := &a2a.AgentCard{
@@ -273,7 +313,7 @@ func run() error {
 		return fmt.Errorf("encode tampered remote AgentCard: %w", err)
 	}
 	remoteHandler := a2asrv.NewHandler(
-		executor{delay: delay, remote: true, reply: remoteReplyText, stats: stats},
+		executor{delay: delay, gate: gate, remote: true, reply: remoteReplyText, stats: stats},
 		a2asrv.WithTaskStore(taskstore.NewInMemory(nil)),
 		a2asrv.WithCapabilityChecks(&remoteCard.Capabilities),
 	)
@@ -294,6 +334,10 @@ func run() error {
 	mux.Handle(remoteAgentPath, recordRemoteUser(a2asrv.NewJSONRPCHandler(remoteHandler), stats))
 	mux.HandleFunc("POST /control/tamper", func(w http.ResponseWriter, _ *http.Request) {
 		stats.tamperCard()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /control/release", func(w http.ResponseWriter, _ *http.Request) {
+		gate.release()
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -325,6 +369,7 @@ func run() error {
 			"local_agent_path", localAgentPath,
 			"remote_agent_path", remoteAgentPath,
 			"load_delay", delay,
+			"load_hold", hold,
 		)
 		errCh <- server.ListenAndServe()
 	}()
@@ -411,6 +456,15 @@ func loadDelay() (time.Duration, error) {
 		return 0, fmt.Errorf("A2A_STUB_DELAY must be 0 or between %s and %s, got %s", minLoadDelay, maxLoadDelay, delay)
 	}
 	return delay, nil
+}
+
+func loadHold() (bool, error) {
+	raw := envOrDefault("A2A_STUB_HOLD", "false")
+	hold, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("parse A2A_STUB_HOLD %q: %w", raw, err)
+	}
+	return hold, nil
 }
 
 func parseLoadMarker(text string) (requestRecord, bool) {

@@ -98,6 +98,7 @@ depends = [
   "check:manifests",
   "check:charts",
   "check:overlays",
+  "check:production-ha",
   "check:scan",
   "check:leaks",
   "check:prometheus",
@@ -155,6 +156,10 @@ run = "helm-unittest apps/matrix-a2a-bridge/chart"
 [tasks."check:overlays"]
 description = "Flux-build and schema-validate the local and GCP cluster overlays"
 run = "bash scripts/check-flux-overlays.sh"
+
+[tasks."check:production-ha"]
+description = "Prove the opt-in production replica, PDB, and resource contract"
+run = "bash scripts/test-production-ha.sh"
 
 [tasks."check:scan"]
 alias = "cn"
@@ -336,6 +341,11 @@ depends = ["test:app", "test:gateway", "test:policy", "test:mautrix-bridges", "t
 description = "Run the bridge's kind-based Matrix appservice integration test"
 dir = "apps/matrix-a2a-bridge"
 run = "mise run test:integration"
+
+[tasks."test:availability"]
+description = "Run the bridge's graceful-drain and persistent-deduplication scenario"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run test:availability"
 
 [tasks."test:tracing"]
 description = "Render the tracing stack and prove an OTLP span reaches Jaeger locally"
