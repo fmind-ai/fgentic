@@ -29,6 +29,7 @@ jq --join-output --compact-output '.publicJwk' "${WORK_DIR}/agent-card-bundle.js
 jq -e '
   (.agentCard.signatures | length) == 1 and
   (.agentCard.signatures[0].header == null) and
+  .agentCard.securityRequirements[0].schemes.orgBOIDC == {"list": []} and
   .publicJwk.kty == "EC" and .publicJwk.crv == "P-256" and
   .publicJwk.alg == "ES256" and .publicJwk.use == "sig" and
   .publicJwk.key_ops == ["verify"] and (.publicJwk | has("d") | not)

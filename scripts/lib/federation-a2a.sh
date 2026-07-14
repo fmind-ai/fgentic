@@ -106,7 +106,7 @@ verify_public_agent_card() {
       any(.capabilities.extensions[]?; .uri == $extension and .required == true) and
       .securitySchemes.orgBOIDC.openIdConnectSecurityScheme.openIdConnectUrl == $oidc and
       (.securityRequirements | length) == 1 and
-      (.securityRequirements[0].schemes.orgBOIDC | type) == "array" and
+      .securityRequirements[0].schemes.orgBOIDC == {"list": []} and
       any(.skills[]?; .id == "fgentic-documentation") and
       (.signatures | length) >= 1
     ' "${served_card}" >/dev/null || die "public AgentCard contract is incomplete"

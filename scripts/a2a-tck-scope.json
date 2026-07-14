@@ -1,0 +1,218 @@
+{
+  "schemaVersion": 1,
+  "tck": {
+    "archiveSha256": "74fc0cd3e8c5fad08fb090885c5fc76228d63dd9a5ff5f29e0cc7fea56414e8c",
+    "commit": "5996b79f9cefa6fc390980e383e358a66fb9e49e",
+    "version": "1.0.0"
+  },
+  "tier": "MUST",
+  "transport": "JSONRPC",
+  "allow": [
+    {
+      "id": "public-agent-card",
+      "pattern": "tests/compatibility/agent_card/test_agent_card\\.py::.*",
+      "reason": "The anonymous signed AgentCard is part of the exported route.",
+      "expectedOutcome": "passed"
+    },
+    {
+      "id": "send-response-schema",
+      "pattern": "tests/compatibility/core_operations/test_data_model\\.py::TestSendMessageResponseSchema::test_response_validates_against_schema",
+      "reason": "The exported SendMessage response must validate against the v1 schema.",
+      "expectedOutcome": "passed"
+    },
+    {
+      "id": "send-response-enums",
+      "pattern": "tests/compatibility/core_operations/test_data_model\\.py::TestEnumSerialization::test_enum_values_are_strings",
+      "reason": "The exported JSON response must serialize enums as strings.",
+      "expectedOutcome": "passed"
+    },
+    {
+      "id": "send-response-timestamps",
+      "pattern": "tests/compatibility/core_operations/test_data_model\\.py::TestTimestampFormat::test_timestamps_are_iso8601_utc",
+      "reason": "The exported Task response must use v1 UTC timestamp serialization.",
+      "expectedOutcome": "passed"
+    },
+    {
+      "id": "send-message-operation",
+      "pattern": "tests/compatibility/core_operations/test_requirements\\.py::test_must_requirement\\[CORE-SEND-001-jsonrpc\\]",
+      "reason": "SendMessage is the invocation operation exported to the partner.",
+      "expectedOutcome": "passed"
+    },
+    {
+      "id": "send-message-unsupported-media",
+      "pattern": "tests/compatibility/core_operations/test_requirements\\.py::test_must_requirement\\[CORE-SEND-003-jsonrpc\\]",
+      "reason": "The exported SendMessage operation must reject an unsupported part media type with ContentTypeNotSupportedError.",
+      "expectedOutcome": "passed"
+    },
+    {
+      "id": "send-message-direct-variants",
+      "pattern": "tests/compatibility/core_operations/test_requirements\\.py::test_must_requirement\\[(?:CORE-EXECUTION-MODE-(?:001|002)|CORE-MULTI-(?:001a|002a|003|004))-jsonrpc\\]",
+      "reason": "These execution-mode, context, and task-ID variants dispatch only the exported SendMessage operation.",
+      "expectedOutcome": "passed"
+    },
+    {
+      "id": "get-task-not-found-operation",
+      "pattern": "tests/compatibility/core_operations/test_requirements\\.py::test_must_requirement\\[CORE-GET-002-jsonrpc\\]",
+      "reason": "The exported GetTask operation must return TaskNotFoundError for an inaccessible task ID.",
+      "expectedOutcome": "passed"
+    },
+    {
+      "id": "get-task-existing-prerequisite",
+      "pattern": "tests/compatibility/core_operations/test_task_lifecycle\\.py::TestGetTask::test_get_task_returns_current_state\\[jsonrpc\\]",
+      "reason": "The exported SendMessage result supplies the task ID used to prove GetTask on existing state.",
+      "expectedOutcome": "passed"
+    },
+    {
+      "id": "get-task-history-limit",
+      "pattern": "tests/compatibility/core_operations/test_task_history\\.py::TestHistoryLengthLimit::test_get_task_history_does_not_exceed_limit\\[jsonrpc\\]",
+      "reason": "Exercise the historyLength limit when the agent produces the working task required by the TCK fixture.",
+      "expectedOutcome": "skipped",
+      "expectedReason": "Expected task state 'TASK_STATE_INPUT_REQUIRED' but got 'TASK_STATE_COMPLETED'"
+    },
+    {
+      "id": "send-message-terminal-task",
+      "pattern": "tests/compatibility/core_operations/test_task_lifecycle\\.py::TestMultiTurn::test_send_message_to_terminal_task\\[jsonrpc\\]",
+      "reason": "The terminal-task variant uses only the exported SendMessage and GetTask operations.",
+      "expectedOutcome": "passed"
+    },
+    {
+      "id": "send-message-infer-task-context",
+      "pattern": "tests/compatibility/core_operations/test_task_lifecycle\\.py::TestMultiTurn::test_infer_context_from_task\\[jsonrpc\\]",
+      "reason": "Exercise task-context inference when the agent produces the working task required by the TCK fixture.",
+      "expectedOutcome": "skipped",
+      "expectedReason": "Expected task state 'TASK_STATE_INPUT_REQUIRED' but got 'TASK_STATE_COMPLETED'"
+    },
+    {
+      "id": "send-message-reject-mismatching-context",
+      "pattern": "tests/compatibility/core_operations/test_task_lifecycle\\.py::TestMultiTurn::test_reject_mismatching_context\\[jsonrpc\\]",
+      "reason": "The mismatching-context variant uses only the exported SendMessage and GetTask operations.",
+      "expectedOutcome": "passed"
+    },
+    {
+      "id": "get-task-jsonrpc-error-structure",
+      "pattern": "tests/compatibility/core_operations/test_error_handling\\.py::TestJsonRpcErrorStructure::.*",
+      "reason": "Authenticated GetTask failures must retain the JSON-RPC error object, code mapping, and ErrorInfo structure.",
+      "expectedOutcome": "passed"
+    },
+    {
+      "id": "jsonrpc-response-wire",
+      "pattern": "tests/compatibility/core_operations/test_transport_behavior\\.py::TestJsonRpcFormat::test_(response_validates_jsonrpc_envelope|content_type_is_application_json)",
+      "reason": "The exported response must retain the JSON-RPC envelope and media type.",
+      "expectedOutcome": "passed"
+    },
+    {
+      "id": "get-task-jsonrpc-error-code",
+      "pattern": "tests/compatibility/jsonrpc/test_error_codes\\.py::(?:TestJsonRpcErrorCodeMappings::test_task_not_found_error|TestJsonRpcErrorCodeRange::test_error_code_in_valid_range\\[GetTask-nonexistent\\])",
+      "reason": "Authenticated GetTask failures must use the A2A TaskNotFoundError code and valid JSON-RPC error range.",
+      "expectedOutcome": "passed"
+    },
+    {
+      "id": "get-task-jsonrpc-error-info",
+      "pattern": "tests/compatibility/jsonrpc/test_error_info\\.py::TestJsonRpcErrorInfo::.*",
+      "reason": "Authenticated GetTask failures must carry the required ErrorInfo detail.",
+      "expectedOutcome": "passed"
+    }
+  ],
+  "skip": [
+    {
+      "id": "tck-open-metadata-camel-case",
+      "pattern": "tests/compatibility/core_operations/test_data_model\\.py::TestCamelCaseFieldNames::test_no_snake_case_keys",
+      "reason": "The pinned assertion treats keys inside the protocol's open Metadata maps as A2A model fields; kagent_* application metadata is valid arbitrary extension data, while the separate response-schema node validates protocol field names."
+    },
+    {
+      "id": "unadvertised-grpc-binding",
+      "pattern": "tests/compatibility/grpc/.*",
+      "reason": "The signed AgentCard advertises only JSONRPC."
+    },
+    {
+      "id": "unadvertised-http-json-binding",
+      "pattern": "tests/compatibility/http_json/.*",
+      "reason": "The signed AgentCard advertises only JSONRPC."
+    },
+    {
+      "id": "response-profile-artifacts",
+      "pattern": "tests/compatibility/core_operations/test_artifacts\\.py::.*",
+      "reason": "The docs-qa route returns its own deterministic text Message and does not implement the TCK's scenario-specific literal or artifact fixtures; generic Message schema remains covered."
+    },
+    {
+      "id": "policy-restricted-error-surface",
+      "pattern": "tests/compatibility/core_operations/test_error_handling\\.py::(?!TestJsonRpcErrorStructure::).*",
+      "reason": "Raw probes omit the partner JWT and required budget extension, while non-SendMessage probes are rejected at the edge; backend error semantics are therefore not observable."
+    },
+    {
+      "id": "unadvertised-multi-stream",
+      "pattern": "tests/compatibility/core_operations/test_multi_stream\\.py::.*",
+      "reason": "The AgentCard does not advertise streaming."
+    },
+    {
+      "id": "unadvertised-push-notifications",
+      "pattern": "tests/compatibility/core_operations/test_push_notifications\\.py::.*",
+      "reason": "The AgentCard does not advertise push notifications."
+    },
+    {
+      "id": "unadvertised-requirement-bindings",
+      "pattern": "tests/compatibility/core_operations/test_requirements\\.py::test_must_requirement\\[.*-(?:grpc|http_json)\\]",
+      "reason": "The signed AgentCard advertises only JSONRPC, so the same requirement is not claimed for gRPC or HTTP+JSON."
+    },
+    {
+      "id": "non-exported-jsonrpc-requirements",
+      "pattern": "tests/compatibility/core_operations/test_requirements\\.py::test_must_requirement\\[(?!(?:CORE-SEND-(?:001|003)|CORE-GET-002|CORE-EXECUTION-MODE-(?:001|002)|CORE-MULTI-(?:001a|002a|003|004))-jsonrpc\\]$).*jsonrpc\\]",
+      "reason": "The partner surface exports only SendMessage and GetTask; stream, push, list, cancel, and extended-card operations are policy-restricted."
+    },
+    {
+      "id": "unadvertised-stream-ordering",
+      "pattern": "tests/compatibility/core_operations/test_stream_ordering\\.py::.*",
+      "reason": "The AgentCard does not advertise streaming."
+    },
+    {
+      "id": "unadvertised-task-history-bindings",
+      "pattern": "tests/compatibility/core_operations/test_task_history\\.py::.*\\[(?:grpc|http_json)\\]",
+      "reason": "The signed AgentCard advertises only JSONRPC."
+    },
+    {
+      "id": "unadvertised-task-lifecycle-bindings",
+      "pattern": "tests/compatibility/core_operations/test_task_lifecycle\\.py::.*\\[(?:grpc|http_json)\\]",
+      "reason": "The signed AgentCard advertises only JSONRPC."
+    },
+    {
+      "id": "non-exported-task-lifecycle-operations",
+      "pattern": "tests/compatibility/core_operations/test_task_lifecycle\\.py::(?:TestCancelTask|TestSubscribeLifecycle)::.*\\[jsonrpc\\]",
+      "reason": "The partner surface does not export CancelTask or SubscribeToTask."
+    },
+    {
+      "id": "tck-client-method-catalogue",
+      "pattern": "tests/compatibility/core_operations/test_transport_behavior\\.py::TestJsonRpcMethodNames::.*",
+      "reason": "This assertion checks the TCK client's own method-name catalogue rather than the exported server route."
+    },
+    {
+      "id": "incompatible-generic-extension-probe",
+      "pattern": "tests/compatibility/core_operations/test_transport_behavior\\.py::TestJsonRpcServiceParams::.*",
+      "reason": "The upstream raw probe omits the partner JWT and required token-budget extension, so it cannot reach the exported backend contract."
+    },
+    {
+      "id": "unadvertised-jsonrpc-streaming-behavior",
+      "pattern": "tests/compatibility/core_operations/test_transport_behavior\\.py::TestJsonRpcStreaming::.*",
+      "reason": "The AgentCard does not advertise streaming."
+    },
+    {
+      "id": "unadvertised-http-json-transport-behavior",
+      "pattern": "tests/compatibility/core_operations/test_transport_behavior\\.py::TestRest.*",
+      "reason": "The signed AgentCard does not advertise the HTTP+JSON binding."
+    },
+    {
+      "id": "unadvertised-grpc-transport-behavior",
+      "pattern": "tests/compatibility/core_operations/test_transport_behavior\\.py::TestGrpc.*",
+      "reason": "The signed AgentCard does not advertise the gRPC binding."
+    },
+    {
+      "id": "policy-hidden-jsonrpc-errors",
+      "pattern": "tests/compatibility/jsonrpc/test_error_codes\\.py::(?!(?:TestJsonRpcErrorCodeMappings::test_task_not_found_error|TestJsonRpcErrorCodeRange::test_error_code_in_valid_range\\[GetTask-nonexistent\\])$).*",
+      "reason": "Edge authorization rejects non-exported operations and invalid content-type or version parameters before those backend JSON-RPC mappings are observable."
+    },
+    {
+      "id": "unadvertised-jsonrpc-streaming",
+      "pattern": "tests/compatibility/jsonrpc/test_sse_streaming\\.py::.*",
+      "reason": "The AgentCard does not advertise streaming."
+    }
+  ]
+}
