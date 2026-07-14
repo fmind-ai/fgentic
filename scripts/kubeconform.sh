@@ -17,6 +17,41 @@ SCHEMA_LOCATIONS=(
 )
 KUBECONFORM=(kubeconform -strict -ignore-missing-schemas -summary "${SCHEMA_LOCATIONS[@]}")
 
+# External chart hosts (GitHub Pages, GHCR OCI) intermittently reset the connection mid-render,
+# which used to fail the whole gate on a transient fault. Pull each pinned chart once into a local
+# cache with bounded retries, then render every block offline from that copy: retrying only the
+# fetch keeps the gate deterministic without ever re-running (and so masking) the schema validation
+# that follows, and the cache collapses the repeated ESS pulls (matrix + three federation
+# homeservers) into a single download.
+CHART_CACHE="$(mktemp -d)"
+trap 'rm -rf "${CHART_CACHE}"' EXIT
+
+retry() {
+  local -i max="${RETRY_ATTEMPTS:-3}" delay="${RETRY_DELAY:-3}" n=1
+  until "$@"; do
+    if (( n >= max )); then
+      echo "  command failed after ${max} attempts: $*" >&2
+      return 1
+    fi
+    echo "  attempt ${n}/${max} failed; retrying in ${delay}s..." >&2
+    sleep "${delay}"
+    (( n++, delay *= 2 ))
+  done
+}
+
+# fetch_chart <cache-key> <chart-ref> [helm pull flags...] -> echoes the extracted chart directory.
+# `helm pull --untar` writes the chart to <dest>/<chart-name>/; the cache key dedupes repeated pulls.
+fetch_chart() {
+  local key="$1"
+  shift
+  local dir="${CHART_CACHE}/${key}"
+  if [ ! -d "${dir}" ]; then
+    retry helm pull "$@" --untar --untardir "${dir}.tmp" >&2
+    mv "${dir}.tmp" "${dir}"
+  fi
+  find "${dir}" -mindepth 1 -maxdepth 1 -type d
+}
+
 # Export every platform-settings key as an env var for flux envsubst.
 settings_env="$(yq -r '.data | to_entries[] | .key + "=" + .value' "${SETTINGS}")"
 while IFS='=' read -r key value; do
@@ -37,15 +72,14 @@ VLLM_RELEASE=infra/models/vllm/helmrelease.yaml
 VLLM_REPOSITORY="$(yq -er 'select(.kind == "HelmRepository" and .metadata.name == "vllm") | .spec.url' infra/flux/sources.yaml)"
 VLLM_CHART="$(yq -er '.spec.chart.spec.chart' "${VLLM_RELEASE}")"
 VLLM_CHART_VERSION="$(yq -er '.spec.chart.spec.version' "${VLLM_RELEASE}")"
+VLLM_CHART_DIR="$(fetch_chart vllm "${VLLM_CHART}" --repo "${VLLM_REPOSITORY}" --version "${VLLM_CHART_VERSION}")"
 (
   # The committed cluster default intentionally remains Vertex; render this opt-in profile with
   # its documented served-model alias so Helm and Flux substitution see the real value shape.
   export llm_model=Qwen/Qwen2.5-0.5B-Instruct
   yq -o=yaml '.spec.values' "${VLLM_RELEASE}" \
     | flux envsubst --strict \
-    | helm template vllm "${VLLM_CHART}" \
-      --repo "${VLLM_REPOSITORY}" \
-      --version "${VLLM_CHART_VERSION}" \
+    | helm template vllm "${VLLM_CHART_DIR}" \
       --namespace models \
       --values - \
     | "${KUBECONFORM[@]}"
@@ -58,11 +92,10 @@ for release in otel-collector jaeger; do
   version="$(yq -er "select(.metadata.name == \"${release}\") | .spec.chart.spec.version" "${TRACING_RELEASE}")"
   source="$(yq -er "select(.metadata.name == \"${release}\") | .spec.chart.spec.sourceRef.name" "${TRACING_RELEASE}")"
   repository="$(yq -er "select(.kind == \"HelmRepository\" and .metadata.name == \"${source}\") | .spec.url" infra/flux/sources.yaml)"
+  chart_dir="$(fetch_chart "${release}" "${chart}" --repo "${repository}" --version "${version}")"
   yq -e "select(.metadata.name == \"${release}\") | .spec.values" "${TRACING_RELEASE}" \
     | flux envsubst --strict \
-    | helm template "${release}" "${chart}" \
-      --repo "${repository}" \
-      --version "${version}" \
+    | helm template "${release}" "${chart_dir}" \
       --namespace monitoring \
       --values - \
     | "${KUBECONFORM[@]}"
@@ -118,13 +151,12 @@ ESS_RELEASE=infra/matrix/helmrelease.yaml
 ESS_SOURCE=infra/flux/sources.yaml
 ESS_REPOSITORY="$(yq -er 'select(.kind == "OCIRepository" and .metadata.name == "ess-matrix-stack") | .spec.url' "${ESS_SOURCE}")"
 ESS_VERSION="$(yq -er 'select(.kind == "OCIRepository" and .metadata.name == "ess-matrix-stack") | .spec.ref.tag' "${ESS_SOURCE}")"
+ESS_CHART_DIR="$(fetch_chart ess "${ESS_REPOSITORY}" --version "${ESS_VERSION}")"
 yq -e '.spec.values' "${ESS_RELEASE}" \
   | flux envsubst --strict \
-  | helm template ess "${ESS_REPOSITORY}" \
-    --version "${ESS_VERSION}" \
+  | helm template ess "${ESS_CHART_DIR}" \
     --namespace matrix \
     --values - \
-  | sed -e '/^Pulled: /d' -e '/^Digest: /d' \
   | "${KUBECONFORM[@]}"
 
 echo "==> Rendering + validating all federation-lab ESS releases"
@@ -143,23 +175,20 @@ for homeserver in \
   read -r namespace release <<< "${homeserver}"
   yq -e "select(.kind == \"HelmRelease\" and .metadata.namespace == \"${namespace}\" and
     .metadata.name == \"${release}\") | .spec.values" <<< "${federation_render}" \
-    | helm template ess "${ESS_REPOSITORY}" \
-      --version "${ESS_VERSION}" \
+    | helm template ess "${ESS_CHART_DIR}" \
       --namespace "${namespace}" \
       --values - \
-    | sed -e '/^Pulled: /d' -e '/^Digest: /d' \
     | "${KUBECONFORM[@]}"
 done
 
 echo "==> Rendering + validating pinned KeycloakX chart"
 keycloak_chart_version="$(yq -er '.spec.chart.spec.version' infra/keycloak/helmrelease.yaml)"
-keycloak_render="$(mktemp)"
-trap 'rm -f "${keycloak_render}"' EXIT
+keycloak_chart_dir="$(fetch_chart keycloakx keycloakx \
+  --repo https://codecentric.github.io/helm-charts --version "${keycloak_chart_version}")"
+keycloak_render="${CHART_CACHE}/keycloak-render.yaml"
 yq -e '.spec.values' infra/keycloak/helmrelease.yaml \
   | flux envsubst --strict \
-  | helm template keycloak keycloakx \
-    --repo https://codecentric.github.io/helm-charts \
-    --version "${keycloak_chart_version}" \
+  | helm template keycloak "${keycloak_chart_dir}" \
     --namespace keycloak \
     --values - \
   > "${keycloak_render}"
