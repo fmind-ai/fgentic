@@ -1,0 +1,6 @@
+# Flux resource list for the bridge app (reconciled by the `bridge` Kustomization in
+# clusters/base/apps.yaml, after the matrix/agentgateway/kagent layers).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - helmrelease.yaml

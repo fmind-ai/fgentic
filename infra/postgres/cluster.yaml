@@ -1,0 +1,88 @@
+# Shared CloudNativePG cluster — the "bridging infra" for all stateful tenants. Each service gets
+# its OWN database + scoped login role (see databases.yaml), never an embedded/bundled database.
+# instances=1 keeps it portable to single-node k3d; raise to 3 for HA on a multi-node cluster.
+apiVersion: postgresql.cnpg.io/v1
+kind: Cluster
+metadata:
+  name: platform-pg
+  namespace: postgres
+spec:
+  instances: 1
+  imageName: ghcr.io/cloudnative-pg/postgresql:17.5@sha256:b1deeed2aa998b2f381e39c5cadb9ec06127708c8bd62965743af19abf21628f
+
+  storage:
+    size: 10Gi
+
+  # WAL archiving + base backups to GCS (SPEC §4 D12): the bucket + Workload-Identity-bound GSA
+  # are provisioned by infra/terraform (backups.tf); the KSA annotation below completes the
+  # keyless binding. GKE-only — the local overlay (clusters/local) strips this block and the
+  # serviceAccountTemplate (backups elsewhere need an alternative object store, e.g. MinIO).
+  backup:
+    retentionPolicy: 30d
+    barmanObjectStore:
+      destinationPath: gs://${pg_backups_bucket}
+      googleCredentials:
+        gkeEnvironment: true # Workload Identity, no key file
+  serviceAccountTemplate:
+    metadata:
+      annotations:
+        iam.gke.io/gcp-service-account: fgentic-pg-backup@${gcp_project}.iam.gserviceaccount.com
+
+  # PodMonitor for the observability layer (the postgres Kustomization depends on observability,
+  # so the Prometheus Operator CRDs exist by the time the operator reconciles this).
+  monitoring:
+    enablePodMonitor: true
+
+  # Enforce TLS and exact database/role pairing at the connection boundary. PostgreSQL grants
+  # CONNECT to PUBLIC by default, so an `all all` HBA rule would let one tenant authenticate to
+  # another tenant's database even when schema ownership later blocks normal reads.
+  postgresql:
+    # CloudNativePG detects pgaudit.* parameters, manages the preload library/extension in every
+    # connectable database, and converts its CSV records to structured JSON stdout. Audit only
+    # schema and privilege changes; suppress SQL text and parameters because both may hold content.
+    parameters:
+      pgaudit.log: "ddl, role"
+      pgaudit.log_catalog: "off"
+      pgaudit.log_parameter: "off"
+      pgaudit.log_statement: "off"
+    pg_hba:
+      - hostssl synapse synapse all scram-sha-256
+      - hostssl mas mas all scram-sha-256
+      - hostssl bridge bridge all scram-sha-256
+      - hostssl kagent kagent all scram-sha-256
+      - hostssl keycloak keycloak all scram-sha-256
+      - hostssl all all all reject
+      - hostnossl all all all reject
+
+  # Declarative login roles for each tenant; passwords come from SOPS-encrypted Secrets
+  # (infra/secrets). No superuser is exposed to tenants.
+  managed:
+    roles:
+      - name: synapse
+        login: true
+        passwordSecret:
+          name: pg-synapse
+      - name: mas
+        login: true
+        passwordSecret:
+          name: pg-mas
+      - name: bridge
+        login: true
+        passwordSecret:
+          name: pg-bridge
+      - name: kagent
+        login: true
+        passwordSecret:
+          name: pg-kagent
+      - name: keycloak
+        login: true
+        passwordSecret:
+          name: pg-keycloak
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: "1"
+      memory: 512Mi

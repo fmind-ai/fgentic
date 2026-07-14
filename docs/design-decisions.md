@@ -1,0 +1,83 @@
+---
+type: Decision Register
+title: Design Decisions D1–D16
+description: The durable register of settled design decisions with the evidence behind each; revisit via a new ADR, never a drive-by PR (§4).
+---
+
+# Design Decisions D1–D16 (formerly SPEC §4)
+
+> The durable record of _why_ the system looks the way it does. Revisit via a new ADR, never a drive-by PR. Section references `§N` map per the table in [.agents/AGENTS.md](../.agents/AGENTS.md).
+
+Each entry records the problem found in the first draft, the evidence, and what the code/manifests now do. They are kept as the durable record of _why_ the system looks the way it does.
+
+### D1 — Apps depend on infra via Flux Kustomizations (was: broken `dependsOn`)
+
+The draft's bridge **HelmRelease** listed Flux **Kustomizations** in `dependsOn` — but `HelmRelease.spec.dependsOn` only resolves other HelmReleases; the release would wait forever. **Now:** each app is wrapped in its own Flux `Kustomization` (`clusters/base/apps.yaml` → `apps/matrix-a2a-bridge/deploy/`) that `dependsOn` the infra Kustomizations — the DAG stays homogeneous.
+
+### D2 — The reserved ingress IP is pinned by name (was: orphaned)
+
+Terraform reserved a static address the Traefik Service never used; DNS would break on Service recreation. **Now:** the Traefik values carry `networking.gke.io/load-balancer-ip-addresses: fgentic-ingress-ip` (GKE resolves the reserved address by name; harmless on other providers/k3d).
+
+### D3 — Bounded, per-room-ordered dispatch (was: unbounded and unordered)
+
+The appservice API delivers events on a single linearised transaction queue (Synapse #17621 documents the stall mode). mautrix's `EventProcessor` defaults to `AsyncHandlers` (verified in source: one goroutine per event), so a synchronous A2A call in the handler doesn't block the queue — but it means **unbounded concurrent LLM calls with no per-room ordering**. **Now:** `HandleMessage` only classifies and enqueues; a dispatcher drains per-room FIFO queues under a global concurrency cap (`CONCURRENCY`, default 16) and accepted running-plus-queued caps (32 per room, 256 globally). Helm rejects more than one replica and uses a zero-surge rollout (`maxSurge: 0`, `maxUnavailable: 1`), because even a rollout overlap would split a room across independent dispatchers. Shutdown first closes appservice intake and drains its synchronous processor, then gives accepted delegations 25 seconds before cancellation under a 45-second pod grace. Any target rejected or dropped at that boundary emits a terminal `shutdown` audit rather than disappearing after dedup. The registration sets `rate_limited: false` so ghost replies bypass Synapse's `rc_message` (0.2 msg/s default) — the bridge enforces its own budgets (D7).
+
+### D4 — Postgres-backed bridge state (was: all in-memory)
+
+Pod restarts lost conversation threading, ghost registration state, and the transaction dedup cache — a redelivered transaction **re-invoked agents** (duplicate LLM spend + duplicate replies). **Now:** the `bridge` CNPG database backs the mautrix SQL StateStore and the bridge's own tables (§5); `DATABASE_URL` empty falls back to in-memory for local dev only.
+
+### D5 — Context threads keyed by `(room, agent)` (was: per room)
+
+kagent maps `contextId` 1:1 to a persistent session (verified: `SessionID = task.ContextID`); a room-keyed contextId would collide sessions across two agents in one room and cross-contaminate their memory. **Now:** `bridge_contexts` is keyed `(room_id, ghost)`.
+
+### D6 — Federation-safe target resolution + sender policy (was: localpart spoofing hole)
+
+The draft matched mentions by localpart only — in a federated room, `@agent-k8s:evil.example` would have invoked the _local_ agent; and any room member could invoke any agent. **Now:** a mention resolves to an agent only when its homeserver is the bridge's own server; each agent in `agents.yaml` carries `allowedServers` (extra homeservers, own server always allowed — federated senders **deny-by-default**) and `allowedSenders` (anchored `*`-globs over full user IDs). Configured `bridgedOrigins` add a second fail-closed identity class for local MXIDs owned by external appservices: one anchored namespace maps to one bounded network label, overlaps fail startup, and the full MXID must explicitly match `allowedSenders`. This is the bridge-level half of the federation/interop trust model (§7–§8), unit-tested.
+
+### D7 — Rate limits as LLM-spend guards (was: none)
+
+Every mention is an LLM invocation; a chatty or malicious room drains the model budget (the closest prior-art project died of exactly this). **Now:** token buckets per `(sender, agent)` (default 6/min, burst 3) and per room (default 30/min, burst 10), rejecting with a polite ghost notice; bridged keys prefix the bounded network while retaining the complete MXID and agent, so two remote identities never share a budget. A separate response plane bounds all bridge-generated directory, denial, and rate-limit notices with the same sender/room defaults; it never consumes invocation capacity, and exhaustion emits no further Matrix event. Each of the four keyed maps has a hard 4096-bucket default. A new key fails closed at capacity; the bridge never evicts an active bucket and resets its burst, while idle cleanup scans at most once per minute. The dispatcher independently bounds accepted running plus queued work at 32 jobs per room and 256 globally. Overflow is silent and occurs before rate admission or A2A, with a content-free `queue_full` audit. Agentgateway token-unit rate limits on the LLM route are the second layer (§9). The cross-org listener adds a fail-closed global quota keyed by the verified JWT `azp`, using each required `SendMessage` `maxTokens` value as admission cost (§8.3). That value is a reservation, not actual usage; provider/model token metrics arise on the separate downstream hop and remain aggregate rather than per consumer.
+
+### D8 — Loop-safe reply semantics (was: loopable)
+
+A federated agent or third-party bot could `@mention` a local agent whose reply mentions back — unbounded ping-pong. **Now:** ghost replies are **`m.notice`** (the Matrix convention for bot output) and the bridge never treats `m.notice` as a delegating message; the room-level rate bucket (D7) is the backstop.
+
+### D9 — Long tasks via `tasks/get` + Matrix edits (was: hard 60s ceiling)
+
+Real agent work exceeds 60s; kagent deliberately sets no timeout on its agent client and proxies `tasks/get`. **Now:** §6's model — non-terminal `Task` → placeholder reply → poll with backoff up to `TASK_TIMEOUT` (10m) → `m.replace`-edit the placeholder into the final answer. Matrix edits are the deliberate open-standard substitute for streaming; `message/send` stays non-streaming.
+
+### D10 — A2A wire-version pinned to kagent's (was: v2.0.0 vs v2.3.1 drift)
+
+kagent selects the wire format by header, defaulting to legacy 0.3 JSON-RPC, with the default slated to flip around kagent 0.11. **Now:** the bridge pins the SDK version kagent itself runs (v2.3.1); the §12 contract test is the tripwire for the 0.11 flip.
+
+### D11 — kagent treated as unauthenticated (documented, mitigated)
+
+kagent v0.9.11's default `auth.mode: unsecure` derives identity from a spoofable `X-User-Id` header (fallback `admin@kagent.dev`) and its authorizer is a no-op — **NetworkPolicies are the only boundary in front of every agent**. **Now:** a NetworkPolicy on the `kagent` namespace admits only agentgateway, the bridge, kagent's own pods, and monitoring; the bridge stamps `X-User-Id` with the real Matrix sender so kagent sessions/audit attribute to humans; kagent's OIDC (`trusted-proxy` + oauth2-proxy) is tracked for adoption when it stabilizes; any future cross-org exposure goes through agentgateway JWT/mTLS (§8.3), never kagent directly.
+
+**Review (2026-07-11): not adopted.** The newest non-prerelease upstream release is still [v0.9.11](https://github.com/kagent-dev/kagent/releases/tag/v0.9.11); [v0.10.0-beta6](https://github.com/kagent-dev/kagent/releases/tag/v0.10.0-beta6) is a SemVer prerelease and no v0.11 release exists. More importantly, both versions' `trusted-proxy` mode ([v0.9.11 source](https://github.com/kagent-dev/kagent/blob/v0.9.11/go/core/internal/httpserver/auth/proxy_authn.go#L28-L78), [beta6 source](https://github.com/kagent-dev/kagent/blob/v0.10.0-beta6/go/core/internal/httpserver/auth/proxy_authn.go#L28-L78)) decodes the JWT payload without validating its signature, relies on oauth2-proxy as the actual authentication boundary, and still installs the [no-op authorizer](https://github.com/kagent-dev/kagent/blob/v0.10.0-beta6/go/core/cmd/controller/main.go#L32-L55). That browser-oriented proxy flow cannot authenticate Fgentic's non-browser Matrix bridge: Matrix events carry a sender ID, not the sender's OIDC bearer token, so the bridge can only assert that sender through `X-User-Id`. Upstream's validated non-browser pattern is instead gateway/ext-auth credential validation plus trusted identity projection ([kagent #1890](https://github.com/kagent-dev/kagent/issues/1890)); kagent's per-agent/API authorization remains open in [#1270](https://github.com/kagent-dev/kagent/issues/1270). Re-evaluate only after #1270 (or its accepted successor) ships in a non-prerelease release **and** the bridge path implements #1890's gateway-owned validation and header sanitization. Until both conditions hold, `X-User-Id` is attribution rather than authentication and the NetworkPolicy conformance guard remains mandatory.
+
+### D12 — Data durability (was: zero backups)
+
+A single PVC loss would have destroyed Synapse history, MAS identities, kagent sessions, and bridge state simultaneously. **Now:** CNPG WAL archiving + nightly `ScheduledBackup` to a Terraform-provisioned GCS bucket via a keyless Workload-Identity binding; `instances: 3` documented as the production profile. Still open: the Synapse **media store** decision (S3/GCS media provider vs snapshot-backed PVC) — tracked as issue #62 (M9).
+
+### D13 — Supply chain: digest-pinned, signed images (was: mutable `latest`)
+
+**Now:** `cd.yml` builds multi-arch → trivy-scans the pushed digest → emits Syft SBOM plus SLSA/SBOM attestations → cosign-signs the image and an OCI Helm chart (keyless OIDC) → commits both immutable digests into the deployment source. Flux keyless-verifies the chart's exact workflow identity before helm-controller can install it. CI (`ci.yml`) runs the same `mise` gates as the git hooks plus a clean-tree assertion. The one-time safe bootstrap and operator verification commands are in [docs/security/supply-chain.md](security/supply-chain.md).
+
+### D14 — NetworkPolicies pre-wired for monitoring (was: self-sabotaging)
+
+The agentgateway policy would have silently blocked Prometheus scraping `:15020` once observability lands. **Now:** every NetworkPolicy carries the `monitoring` namespace allowance up front.
+
+### D15 — Version/label hygiene
+
+ESS bumped `25.6.1` → `26.6.2` (values revalidated — §2); the LLM model id became a per-cluster `platform-settings` value (the reference runs Vertex AI `google/gemini-2.5-flash` — superseded by D16's multi-provider profiles); the Terraform `bootstrap/` module now exists (it was a phantom path in `mise.toml`).
+
+### D16 — Sovereign model profiles (decided 2026-07-11; implementation: milestone M1)
+
+The reference config hard-wired one hyperscaler model — dissonant with sovereignty-first positioning: the first question every enterprise asks is _"where do our prompts go?"_. **Decision:** the LLM backend is a per-cluster choice through agentgateway (the abstraction already exists — this is configuration surface, not new architecture), with sovereignty-ranked reference profiles: **self-hosted vLLM** (nothing leaves the cluster) > **EU API** (Mistral) > **hyperscalers** (Vertex, Anthropic, OpenAI/Azure — region-pinned where offered). Rules: provider selection lives in `clusters/<env>/platform-settings` + one SOPS secret; token metering and the spend alert must stay provider-agnostic (D7 does not regress); each profile documents its data flow in `docs/models.md`. Vertex remains the verified default until M1 lands.
+
+### Workload-identity follow-up
+
+[ADR 0010](adr/0010-defer-spiffe-workload-identity.md) defers SPIRE until both agentgateway's stable Kubernetes API and kagent can consume and authorize an SVID end to end. Installing an issuer while either endpoint still trusts an API key, source IP, or projected header would add an identity control plane without replacing the current boundary.
+
+---

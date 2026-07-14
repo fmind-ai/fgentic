@@ -1,0 +1,68 @@
+# The ActivityPub agent gateway deploys from its in-repo Helm chart. It is a SECOND, additive
+# federation transport (docs/adr/0014), self-contained and never bundled into the mautrix bridge.
+#
+# NOT yet wired into the reconciled cluster DAG (clusters/base/apps.yaml): the image is published
+# and this unit is enabled only once the signed ActivityPub federation border (issue #211) gates
+# public exposure. Until then this manifest is schema-validated but not reconciled — the same
+# opt-in posture as the external mautrix bridge profiles. httpRoute stays disabled regardless.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: activitypub-agent-gateway
+  namespace: activitypub
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: ./apps/activitypub-agent-gateway/chart
+      reconcileStrategy: Revision # redeploy when the chart in git changes
+      sourceRef:
+        kind: GitRepository
+        name: flux-system
+        namespace: flux-system
+  values:
+    image:
+      repository: ghcr.io/fmind-ai/activitypub-agent-gateway
+      tag: "0.1.0" # CI overwrites with sha-<git>@sha256:<digest> once the image is published
+    config:
+      serverName: ${server_name}
+    # The federation policy border (issue #211) is ON: the ../component Component projects the
+    # fgentic-activitypub-policy ConfigMap this mounts and hot-reloads. Inbound activities must pass
+    # HTTP-Signature verification and the allowlist before any A2A call.
+    policy:
+      enabled: true
+    # FEP-8b32 object integrity (issue #212) is ON: outbound replies are signed with the SOPS-backed
+    # Ed25519 key and each actor publishes its assertionMethod Multikey, and inbound activities must
+    # ALSO carry a valid object proof (requireInbound) — belt-and-suspenders over the transport
+    # signature so a relayed or tampered object cannot ride a trusted actor. Requires the
+    # activitypub-agent-gateway-signing-key Secret (scripts/gen-secrets.sh).
+    integrity:
+      enabled: true
+      requireInbound: true
+    # FEP-c390 cross-transport identity (issue #218) is ON: each actor binds to a P-256 did:key and
+    # its AgentCard publishes the matching JWK. Requires the activitypub-agent-gateway-identity-key
+    # Secret (scripts/gen-secrets.sh).
+    identity:
+      enabled: true
+    # Per-actor/per-domain token-budget admission (issue #213) is ON: every inbound delegation
+    # reserves its token ceiling from the verified actor's/domain's pools (policy.json `budgets`)
+    # before any A2A call, deny-by-default for an unbudgeted domain. Reservation ≠ consumption.
+    budget:
+      enabled: true
+    # Group collaboration (issue #217) is ON: designated rooms are exposed as AP Group actors that
+    # remote actors follow and post to, with Announce fan-out and governed @agent routing. Inbound
+    # group traffic passes the F3/F4/F5 border; outbound delivery is signed with the integrity key.
+    groups:
+      enabled: true
+    # Follow-to-subscribe agent status feed (issue #219) is ON: agents accept Follows and Prometheus
+    # alerts (POSTed to the internal /alerts endpoint) become signed, rate-limited status Notes fanned
+    # out to followers. Sovereign, pull-based notifications with no outbound webhook lock-in.
+    statusFeed:
+      enabled: true
+    # Public exposure is gated on the border being proven in force (docs/fediverse.md §3): keep the
+    # route false until then, even though the border itself is now enabled.
+    httpRoute:
+      enabled: false
+    metrics:
+      podMonitor:
+        enabled: true # the observability layer provides the CRDs

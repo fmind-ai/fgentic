@@ -1,0 +1,13 @@
+apiVersion: v2
+name: mautrix-bridge
+description: Restricted single-replica runtime for mautrix Go bridges
+type: application
+version: 0.1.0
+appVersion: "0.2606.0"
+keywords:
+  - matrix
+  - appservice
+  - mautrix
+home: https://github.com/fmind-ai/fgentic
+sources:
+  - https://github.com/mautrix

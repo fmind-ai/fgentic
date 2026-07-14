@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+# Update or verify the reviewed MCP server-surface pin with the bridge Go module.
+set -euo pipefail
+
+readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly PIN_MCP_BIN="$(mktemp)"
+trap 'rm -f "${PIN_MCP_BIN}"' EXIT
+
+mise --cd "${ROOT_DIR}/apps/matrix-a2a-bridge" exec -- \
+	go build -o "${PIN_MCP_BIN}" ./cmd/pin-mcp
+"${PIN_MCP_BIN}" "$@"

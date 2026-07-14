@@ -1,0 +1,30 @@
+# Public ingress has two replicas and permits only one voluntary disruption. Hostname spreading
+# keeps the two pods apart when the provider exposes at least two schedulable nodes.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: traefik
+      namespace: gateway
+    patch: |
+      - op: replace
+        path: /spec/values/deployment/replicas
+        value: 2
+      - op: add
+        path: /spec/values/podDisruptionBudget
+        value:
+          enabled: true
+          maxUnavailable: 1
+      - op: add
+        path: /spec/values/topologySpreadConstraints
+        value:
+          - maxSkew: 1
+            topologyKey: kubernetes.io/hostname
+            whenUnsatisfiable: DoNotSchedule
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/instance: traefik-gateway
+                app.kubernetes.io/name: traefik

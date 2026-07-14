@@ -1,0 +1,157 @@
+suite: bridge deployment
+templates:
+  - templates/deployment.yaml
+tests:
+  - it: enforces one non-overlapping appservice consumer
+    asserts:
+      - equal:
+          path: spec.replicas
+          value: 1
+      - equal:
+          path: spec.strategy.type
+          value: RollingUpdate
+      - equal:
+          path: spec.strategy.rollingUpdate.maxSurge
+          value: 0
+      - equal:
+          path: spec.strategy.rollingUpdate.maxUnavailable
+          value: 1
+  - it: rejects multiple independent room dispatchers
+    set:
+      replicaCount: 2
+    asserts:
+      - failedTemplate:
+          errorMessage: matrix-a2a-bridge requires replicaCount=1 to preserve per-room ordering
+  - it: mounts the configured registration secret read-only
+    set:
+      registration.secretName: bridge-registration-test
+      registration.key: registration-test.yaml
+    asserts:
+      - equal:
+          path: spec.template.spec.volumes[0].secret.secretName
+          value: bridge-registration-test
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].subPath
+          value: registration-test.yaml
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[0].readOnly
+          value: true
+  - it: keeps the production resource defaults
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests.cpu
+          value: 50m
+      - equal:
+          path: spec.template.spec.containers[0].resources.requests.memory
+          value: 64Mi
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.cpu
+          value: 200m
+      - equal:
+          path: spec.template.spec.containers[0].resources.limits.memory
+          value: 128Mi
+  - it: renders bounded dispatcher and limiter capacities
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "ROOM_QUEUE_CAPACITY")].value
+          value: "32"
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "GLOBAL_QUEUE_CAPACITY")].value
+          value: "256"
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "RATE_LIMIT_BUCKET_CAPACITY")].value
+          value: "4096"
+  - it: renders default media byte caps as exact decimal strings
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "MEDIA_MAX_BYTES")].value
+          value: "10485760"
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "MEDIA_MAX_TOTAL_BYTES")].value
+          value: "26214400"
+  - it: preserves zero disablement and custom decimal byte caps
+    set:
+      config.mediaMaxBytes: "0"
+      config.mediaMaxTotalBytes: "123456789"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "MEDIA_MAX_BYTES")].value
+          value: "0"
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "MEDIA_MAX_TOTAL_BYTES")].value
+          value: "123456789"
+  - it: rejects a negative media byte cap before deployment
+    set:
+      config.mediaMaxBytes: "-1"
+    asserts:
+      - failedTemplate:
+          errorMessage: config.mediaMaxBytes must be a non-negative decimal string
+  - it: rejects a fractional media byte cap before deployment
+    set:
+      config.mediaMaxBytes: "1.5"
+    asserts:
+      - failedTemplate:
+          errorMessage: config.mediaMaxBytes must be a non-negative decimal string
+  - it: rejects exponent notation before deployment
+    set:
+      config.mediaMaxTotalBytes: "2.62144e+07"
+    asserts:
+      - failedTemplate:
+          errorMessage: config.mediaMaxTotalBytes must be a non-negative decimal string
+  - it: leaves time to drain intake, delegations, and telemetry before pod termination
+    asserts:
+      - equal:
+          path: spec.template.spec.terminationGracePeriodSeconds
+          value: 45
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "SHUTDOWN_TIMEOUT")].value
+          value: 25s
+  - it: mounts the full agent ConfigMap for live reload without a rollout checksum
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].volumeMounts[1].mountPath
+          value: /etc/matrix-a2a-bridge/agents
+      - notExists:
+          path: spec.template.spec.containers[0].volumeMounts[1].subPath
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "AGENTS_PATH")].value
+          value: /etc/matrix-a2a-bridge/agents/agents.yaml
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "AGENTS_RELOAD_INTERVAL")].value
+          value: 5s
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "AGENT_CARD_REFRESH_INTERVAL")].value
+          value: 5m
+      - notExists:
+          path: spec.template.metadata.annotations["checksum/agents"]
+  - it: reads the A2A workload credential from its dedicated secret
+    set:
+      a2aAuthentication.secretName: a2a-call-test
+      a2aAuthentication.key: credential
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[4].name
+          value: A2A_API_KEY
+      - equal:
+          path: spec.template.spec.containers[0].env[4].valueFrom.secretKeyRef.name
+          value: a2a-call-test
+      - equal:
+          path: spec.template.spec.containers[0].env[4].valueFrom.secretKeyRef.key
+          value: credential
+  - it: omits the workload credential only when explicitly disabled
+    set:
+      a2aAuthentication.enabled: false
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].env[?(@.name == "A2A_API_KEY")]
+  - it: keeps tracing disabled without an OTLP endpoint
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].env[?(@.name == "OTEL_EXPORTER_OTLP_ENDPOINT")]
+  - it: configures standard OTLP export when an endpoint is supplied
+    set:
+      config.otelEndpoint: http://otel-collector.monitoring.svc.cluster.local:4318
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "OTEL_EXPORTER_OTLP_ENDPOINT")].value
+          value: http://otel-collector.monitoring.svc.cluster.local:4318

@@ -1,0 +1,22 @@
+# The agentgateway data-plane Gateway. It provides the in-cluster proxy the bridge and kagent
+# dial for LLM egress (/v1) and A2A (/api/a2a). Shaped by the "secured" AgentgatewayParameters
+# (ClusterIP). Not attached to the public Traefik gateway — agent traffic never leaves the cluster.
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: agentgateway-proxy
+  namespace: agentgateway-system
+spec:
+  gatewayClassName: agentgateway
+  infrastructure:
+    parametersRef:
+      group: agentgateway.dev
+      kind: AgentgatewayParameters
+      name: secured
+  listeners:
+    - name: default
+      protocol: HTTP
+      port: 8080
+      allowedRoutes:
+        namespaces:
+          from: All

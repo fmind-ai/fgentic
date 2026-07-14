@@ -1,0 +1,173 @@
+replicaCount: 1 # in-memory outbox + context threading; the chart rejects higher values
+terminationGracePeriodSeconds: 45
+
+image:
+  repository: ghcr.io/fmind-ai/activitypub-agent-gateway
+  pullPolicy: IfNotPresent
+  tag: "" # set by CI to an immutable digest; defaults to .Chart.AppVersion
+
+# --- Gateway configuration (rendered into the Deployment env) ---
+config:
+  serverName: fgentic.fmind.ai # the acct: handle domain; overridden per cluster (${server_name})
+  publicScheme: https # scheme of every actor/inbox/outbox URL
+  publicHost: "" # externally-reachable host for actor IDs; empty defaults to serverName
+  # Base URL advertised in the published A2A AgentCard + actor `implements` for cross-protocol
+  # discovery (#215). Empty defaults in-app to the gated federation A2A host (https://a2a.<publicHost>).
+  a2aPublicBaseURL: ""
+  # Route A2A THROUGH agentgateway by default (telemetry + the LLM-credential chokepoint on the
+  # agent's own egress). Point directly at kagent to skip the gateway hop:
+  #   http://kagent-controller.kagent.svc.cluster.local:8083
+  a2aBaseURL: http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080
+  ghostPrefix: agent-
+  requestTimeout: 60s # transport deadline for one A2A message/send
+  taskTimeout: 10m # overall deadline when polling a long-running task (tasks/get)
+  shutdownTimeout: 25s # HTTP drain on SIGTERM
+  logLevel: info
+  logFormat: json
+  listenPort: 8480 # public AP HTTP server (actor, WebFinger, inbox, outbox)
+  metricsPort: 9090 # Prometheus /metrics side port (never public)
+
+# Workload credential for the agentgateway A2A route. X-User-Id remains end-user (AP actor)
+# attribution; this independent key proves the caller is the gateway and is removed by the gateway.
+a2aAuthentication:
+  enabled: true
+  secretName: activitypub-agent-gateway-credential
+  key: token
+
+# The ghost -> A2A agent routing map (WHICH agents are exposed as AP actors and WHERE they route).
+# Rendered into a ConfigMap. `description` becomes the actor summary. Local kagent targets only:
+# inbound AP sender authorization is the signed-border/allowlist control landed by later
+# federation work (docs/fediverse.md §3), so no per-agent sender policy lives here yet.
+agents:
+  agent-docs-qa:
+    namespace: kagent
+    name: docs-qa
+    description: Answers architecture and operations questions from local Fgentic documentation.
+
+# Collaboration Groups (issue #217): expose designated rooms as ActivityPub Group actors that remote
+# Fediverse actors can follow and post to, with Announce fan-out and governed @agent routing. Needs
+# integrity.enabled (signing key for the actor publicKey + signed delivery) and policy.enabled (the
+# F3/F4/F5 border on inbound group traffic). DISABLED here so the chart installs standalone.
+groups:
+  enabled: false
+  rooms:
+    collab:
+      name: Fgentic collaboration
+      description: Cross-organization agent collaboration room.
+
+# Follow-to-subscribe agent status feed (issue #219): agents accept Follows, and Prometheus alerts
+# POSTed to the INTERNAL /alerts endpoint (metrics port) are published as signed status Notes fanned
+# out to followers, capped per agent per window. Sovereign, pull-based notifications — no outbound
+# webhook lock-in. Needs integrity.enabled (signing) and policy.enabled (border). DISABLED here.
+statusFeed:
+  enabled: false
+  window: 1m # rate-limit window
+  maxPerWindow: 6 # max status Notes per agent per window (flapping-alert guard)
+
+# The git-reloadable federation policy border (issue #211). When enabled, every inbound activity
+# must pass HTTP-Signature verification and this allowlist before any A2A call. The allowlist is a
+# ConfigMap projected by the namespace-neutral Component (component/) — mounted as a directory so
+# Kubernetes' atomic symlink swap hot-reloads it without a pod restart. DISABLED here so the chart
+# installs standalone; the deploy unit enables it. Never expose the gateway publicly with the
+# border off.
+policy:
+  enabled: false
+  configMapName: fgentic-activitypub-policy
+  reloadInterval: 5s # poll the projected policy.json for a hot-swap
+  signatureMaxSkew: 12h # reject inbound signatures whose timestamp drifts further than this
+
+# FEP-8b32 object integrity proofs (eddsa-jcs-2022, issue #212). When enabled, outbound replies carry
+# an Ed25519 DataIntegrityProof and each actor publishes its assertionMethod Multikey, so a remote
+# verifier confirms a sovereign agent authored the reply even after relaying. The signing key is an
+# Ed25519 PKCS#8 PEM in a SOPS-backed Secret — never committed plaintext (docs/fediverse.md §3).
+# requireInbound additionally makes a valid object proof MANDATORY on the inbox (fail-closed); it
+# needs the policy border on (POLICY_PATH), the single admission choke point. DISABLED here so the
+# chart installs standalone; the deploy unit enables it.
+integrity:
+  enabled: false
+  secretName: activitypub-agent-gateway-signing-key
+  secretKey: ed25519.pem # PKCS#8 PEM key inside the Secret
+  keyFragment: ed25519-key # verificationMethod = <actorID>#<keyFragment>
+  requireInbound: false # require a valid inbound object proof (needs policy.enabled)
+
+# FEP-c390 cross-transport identity (issue #218). When enabled, each actor attaches a
+# VerifiableIdentityStatement bound to a P-256 did:key and its AgentCard publishes the matching JWK,
+# so a verifier confirms both federation faces share one sovereign key that survives a domain move.
+# The key is a SOPS-backed P-256 PKCS#8 PEM. DISABLED here so the chart installs standalone.
+identity:
+  enabled: false
+  secretName: activitypub-agent-gateway-identity-key
+  secretKey: p256.pem
+
+# Per-actor/per-domain token-budget admission (D7/D8, issue #213). When enabled, every inbound
+# delegation reserves its token ceiling from the VERIFIED actor's and domain's pools (declared in the
+# policy.json `budgets` block) before any A2A/LLM call; deny-by-default for an allowlisted-but-
+# unbudgeted domain. A reservation gates admission — it is NOT consumption and is never reported as
+# spend (model-token metering stays aggregate at agentgateway). Needs policy.enabled. DISABLED here
+# so the chart installs standalone; the deploy unit enables it.
+budget:
+  enabled: false
+  window: 1m # rolling reservation window
+  capacity: 4096 # max tracked actor/domain keys (cardinality safety)
+
+service:
+  type: ClusterIP
+  port: 8480
+
+serviceAccount:
+  create: true
+  automountServiceAccountToken: false
+
+# Default-deny ingress except from the Gateway (Traefik) namespace, which fronts the single exact
+# AP route, and monitoring (metrics scrapes). Egress is left open so the gateway can reach
+# agentgateway/kagent for A2A. Validate enforcement on a policy-enforcing CNI.
+networkPolicy:
+  enabled: true
+  fromNamespaces:
+    - traefik
+    - monitoring
+
+# One exact public HTTPRoute exposing ONLY the actor/WebFinger/inbox/outbox paths (mirrors the
+# fed-lab single-route exposure). DISABLED by default: public exposure is gated on the signed
+# federation border (docs/fediverse.md §3, issue #211). Enable it only once that border is in force.
+httpRoute:
+  enabled: false
+  hostname: "" # e.g. a2a.fgentic.fmind.ai; empty falls back to config.publicHost/serverName
+  parentRef:
+    name: external
+    namespace: gateway
+    sectionName: https
+
+# Prometheus scraping: the PodMonitor needs the monitoring.coreos.com CRDs (kube-prometheus-
+# stack) — enabled by the platform deploy values, off by default so the chart installs standalone.
+metrics:
+  podMonitor:
+    enabled: false
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532 # distroless:nonroot
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 48Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+revisionHistoryLimit: 3
+nodeSelector: {}
+tolerations: []
+affinity: {}

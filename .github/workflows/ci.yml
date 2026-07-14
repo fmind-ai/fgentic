@@ -1,0 +1,62 @@
+name: CI
+on:
+  push:
+    branches: [main]
+  pull_request:
+permissions:
+  contents: read
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0 # check:leaks scans recent git history
+      - name: Install mise system
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+      - name: Install application toolchains
+        # Each app pins its own tools and run_auto_install is off; Python also syncs its lockfile.
+        run: mise run install:apps
+      - name: Format sources
+        run: mise run format
+      - name: Run checks
+        run: mise run check
+      - name: Run tests
+        run: mise run test
+      - name: Verify no changes
+        run: test -z "$(git status --porcelain)"
+  bridge-integration:
+    name: Bridge appservice integration
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0
+      - name: Detect bridge changes
+        id: bridge-changes
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          if [[ "${{ github.event_name }}" != "pull_request" ]] \
+            || ! git diff --quiet "${BASE_SHA}" "${HEAD_SHA}" -- \
+              apps/matrix-a2a-bridge .github/workflows/ci.yml; then
+            echo "run=true" >> "${GITHUB_OUTPUT}"
+          else
+            echo "run=false" >> "${GITHUB_OUTPUT}"
+          fi
+      - name: Install mise system
+        if: steps.bridge-changes.outputs.run == 'true'
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+      - name: Install app toolchain
+        if: steps.bridge-changes.outputs.run == 'true'
+        run: mise --cd apps/matrix-a2a-bridge install
+      - name: Run bridge integration
+        if: steps.bridge-changes.outputs.run == 'true'
+        run: mise run test:integration

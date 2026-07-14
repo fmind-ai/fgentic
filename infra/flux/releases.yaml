@@ -1,0 +1,157 @@
+# Platform operators/controllers (Flux HelmReleases, values inlined). CRD-bearing charts install
+# their own CRDs. The only out-of-band CRD install is the Gateway API (one-time bootstrap). The
+# ESS matrix-stack HelmRelease lives in infra/matrix; the CNPG Cluster in infra/postgres.
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cert-manager
+  namespace: cert-manager
+spec:
+  interval: 30m
+  install:
+    createNamespace: true
+  chart:
+    spec:
+      chart: cert-manager
+      version: v1.20.3
+      sourceRef:
+        kind: HelmRepository
+        name: jetstack
+        namespace: flux-system
+  values:
+    crds:
+      enabled: true
+    config:
+      enableGatewayAPI: true # ACME HTTP-01 solved through the Gateway API
+    resources:
+      requests: { cpu: 50m, memory: 64Mi }
+      limits: { cpu: 500m, memory: 256Mi }
+    webhook:
+      resources:
+        requests: { cpu: 10m, memory: 32Mi }
+        limits: { cpu: 200m, memory: 128Mi }
+    cainjector:
+      resources:
+        requests: { cpu: 10m, memory: 64Mi }
+        limits: { cpu: 200m, memory: 256Mi }
+    startupapicheck:
+      resources:
+        requests: { cpu: 10m, memory: 32Mi }
+        limits: { cpu: 100m, memory: 64Mi }
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: traefik
+  namespace: gateway
+spec:
+  interval: 30m
+  timeout: 10m
+  install:
+    createNamespace: true
+  chart:
+    spec:
+      chart: traefik
+      # v3.6.x targets Gateway API v1.4 — matching the platform's pinned CRD bundle (v3.7 moved
+      # to v1.6, whose standard channel watches TLSRoute v1 that v1.4 does not serve).
+      version: 39.0.9
+      sourceRef:
+        kind: HelmRepository
+        name: traefik
+        namespace: flux-system
+  values:
+    providers:
+      kubernetesGateway:
+        enabled: true # watch Gateway API (Gateway/HTTPRoute)
+      kubernetesIngress:
+        enabled: false
+    gateway:
+      enabled: false # we manage our own shared Gateway (infra/gateway)
+    gatewayClass:
+      enabled: true # provides GatewayClass "traefik"
+    # Traefik's Gateway provider matches listener ports against its entryPoint PORTS (not the
+    # Service's exposed ports) — bind the real 80/443 so the shared Gateway stays portable
+    # across providers; the sysctl (kubelet-safe since k8s 1.22) permits the non-root bind.
+    ports:
+      web:
+        port: 80
+        exposedPort: 80
+      websecure:
+        port: 443
+        exposedPort: 443
+    podSecurityContext:
+      sysctls:
+        - name: net.ipv4.ip_unprivileged_port_start
+          value: "0"
+    service:
+      type: LoadBalancer
+      annotations:
+        # Pin the Terraform-reserved static address by NAME (infra/terraform/vpc.tf) so DNS
+        # survives Service recreation. GKE-specific; ignored by other providers/k3d (SPEC §4 D2).
+        networking.gke.io/load-balancer-ip-addresses: ${ingress_ip_name}
+    deployment:
+      replicas: 1
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+      limits:
+        cpu: 500m
+        memory: 128Mi
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: cloudnative-pg
+  namespace: cnpg-system
+spec:
+  interval: 30m
+  install:
+    createNamespace: true
+  chart:
+    spec:
+      chart: cloudnative-pg
+      version: 0.29.0
+      sourceRef:
+        kind: HelmRepository
+        name: cnpg
+        namespace: flux-system
+  values:
+    resources:
+      requests:
+        cpu: 50m
+        memory: 100Mi
+      limits:
+        cpu: 500m
+        memory: 200Mi
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: agentgateway-crds
+  namespace: agentgateway-system
+spec:
+  interval: 30m
+  install:
+    createNamespace: true
+  chartRef:
+    kind: OCIRepository
+    name: agentgateway-crds
+    namespace: flux-system
+---
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: kagent-crds
+  namespace: kagent
+spec:
+  interval: 30m
+  chart:
+    spec:
+      chart: kagent-crds
+      version: "0.9.11"
+      sourceRef:
+        kind: HelmRepository
+        name: kagent
+        namespace: flux-system

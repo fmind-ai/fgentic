@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use Fgentic in your work, please cite it as below."
+title: "Fgentic — Sovereign Agentic Collaboration Platform"
+abstract: >-
+  An open-standard, sovereignty-first platform where humans and AI agents share
+  Matrix rooms and delegate tasks over A2A to Kubernetes-native agents governed by
+  agentgateway, self-hosted end-to-end via Flux GitOps with a per-cluster choice of
+  model backend and Matrix federation as the cross-organization destination.
+type: software
+authors:
+  - family-names: Hurier
+    given-names: Médéric
+    alias: Fmind
+repository-code: "https://github.com/fmind-ai/fgentic"
+url: "https://github.com/fmind-ai/fgentic"
+license: Apache-2.0
+keywords:
+  - matrix
+  - a2a
+  - ai-agents
+  - agentgateway
+  - kagent
+  - kubernetes
+  - gitops
+  - federation
+  - sovereignty
+  - open-standards

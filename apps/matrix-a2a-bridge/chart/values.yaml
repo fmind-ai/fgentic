@@ -1,0 +1,176 @@
+replicaCount: 1 # fixed single appservice consumer; the chart rejects higher values
+terminationGracePeriodSeconds: 45
+
+image:
+  repository: ghcr.io/fmind-ai/matrix-a2a-bridge
+  pullPolicy: IfNotPresent
+  tag: "" # set by CI to an immutable digest; defaults to .Chart.AppVersion
+
+# --- Bridge configuration (rendered into the Deployment env) ---
+config:
+  serverName: fgentic.fmind.ai # overridden per cluster (deploy/helmrelease.yaml: ${server_name})
+  # ESS's Synapse Service (release name `ess` — infra/matrix/helmrelease.yaml keeps it fixed).
+  homeserverURL: http://ess-synapse.matrix.svc.cluster.local:8008
+  # Route A2A THROUGH agentgateway by default (telemetry + the LLM-credential chokepoint on the
+  # agent's own egress). Point directly at kagent to skip the gateway hop:
+  #   http://kagent-controller.kagent.svc.cluster.local:8083
+  a2aBaseURL: http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080
+  ghostPrefix: agent-
+  requestTimeout: 60s # transport deadline for one A2A message/send
+  taskTimeout: 10m # overall deadline when polling a long-running task (tasks/get)
+  inputWaitTimeout: 10m # how long a paused (input-required) task waits for a threaded reply (#116)
+  shutdownTimeout: 25s # dispatcher drain before cancellation; pod grace also covers intake/telemetry
+  concurrency: 16 # max in-flight delegations across all rooms (per-room FIFO regardless)
+  roomQueueCapacity: 32 # accepted running + queued jobs per room
+  globalQueueCapacity: 256 # accepted running + queued jobs across all rooms
+  # Token-bucket rate limits guarding LLM spend (SPEC §4 F7).
+  senderRatePerMinute: 6
+  senderRateBurst: 3
+  roomRatePerMinute: 30
+  roomRateBurst: 10
+  rateLimitBucketCapacity: 4096 # hard cap for each sender/room invocation/notice bucket map
+  logLevel: info
+  logFormat: json
+  listenPort: 29331
+  metricsPort: 9090 # Prometheus /metrics side port (SPEC §9.3)
+  agentsReloadInterval: 5s # poll the projected ConfigMap for routing/profile changes
+  agentCardRefreshInterval: 5m # independently revalidate every signed remote AgentCard
+  # Standard OTLP/HTTP endpoint. Empty keeps tracing disabled for standalone installs.
+  otelEndpoint: ""
+  # Room IDs where stage:dev agents may be invoked (#128). Empty = every dev agent is
+  # deny-by-default everywhere. e.g. ["!staging:fgentic.fmind.ai"].
+  stagingRooms: []
+  # Media policy (#115): files between Matrix and A2A. mediaMaxBytes=0 disables the media path
+  # entirely; a positive cap turns it on. mediaMaxBytes caps one file, mediaMaxTotalBytes the summed
+  # bytes of one delegation in each direction. mediaMimeAllowlist is exact type/subtype (no
+  # wildcards); empty here keeps the bridge's built-in default document/image set.
+  # Keep byte counts as decimal strings. Helm loads unquoted large YAML numbers as floats and can
+  # render them in exponent notation, which the bridge's strict int64 boundary correctly rejects.
+  mediaMaxBytes: "10485760" # 10 MiB per file; set "0" to disable media
+  mediaMaxTotalBytes: "26214400" # 25 MiB per delegation per direction
+  mediaMimeAllowlist: [] # e.g. ["text/csv","application/pdf","image/png"]; empty = built-in default
+
+# Postgres backing the bridge state (mautrix StateStore + contexts + event dedup — SPEC §5).
+# The Secret holds a full connection URL under `key` (e.g. postgres://bridge:...@platform-pg-rw
+# .postgres.svc.cluster.local:5432/bridge?sslmode=require). Disable only for local dev:
+# in-memory state loses conversation threading and dedup on restart.
+database:
+  enabled: true
+  secretName: matrix-a2a-bridge-db
+  key: url
+
+# The appservice registration (id + as_token/hs_token + namespaces) is SENSITIVE and lives in a
+# pre-existing SOPS-encrypted Secret with key `registration.yaml`. The SAME registration must be
+# loaded by the homeserver (ESS/Synapse). See registration.example.yaml.
+registration:
+  secretName: matrix-a2a-bridge-registration
+  key: registration.yaml
+
+# Workload credential for the agentgateway A2A route. X-User-Id remains end-user attribution;
+# this independent key proves that the caller is the bridge and is removed by the gateway.
+a2aAuthentication:
+  enabled: true
+  secretName: a2a-bridge-credential
+  key: token
+
+# Anchored full-MXID namespaces owned by external bridges. Matching senders require an explicit
+# per-agent allowedSenders match even though their MXID is local. Network names are low-cardinality
+# audit values; patterns use one trailing localpart '*' and an exact homeserver.
+bridgedOrigins: {}
+
+# The ghost -> A2A agent routing map (also the invocation allowlist). Rendered into a ConfigMap
+# whose schemaVersion is fixed to the bridge/chart's current agents.schema.json major (v1).
+# `description` is only a startup/card-outage fallback; live profiles and `!agents` prefer the
+# current AgentCard. Optional avatarURL values must be existing mxc:// URIs. Local targets use
+# `namespace` + `name`. Remote targets instead use `url`, a positive whole-delegation `timeout`
+# and partner-enforced `tokenBudget` extension value, plus a pinned ES256 `cardIdentity` (`name`,
+# `organization`, `keyID`, and public P-256 JWK). The bridge does not observe model token usage.
+# Signed-card trust is checked before any remote A2A invocation; no remote target is enabled by default.
+agents:
+  agent-platform-helper:
+    namespace: kagent
+    name: platform-helper
+    description: Read-only diagnostics for the evaluation profile's Kubernetes namespaces.
+    # avatarURL: mxc://fgentic.fmind.ai/media-id
+    allowedSenders:
+      - "@alice:fgentic.fmind.ai"
+  agent-docs-qa:
+    namespace: kagent
+    name: docs-qa
+    description: Answers architecture and operations questions from local Fgentic documentation.
+    allowedSenders:
+      - "@alice:fgentic.fmind.ai"
+  agent-scribe:
+    namespace: kagent
+    name: scribe
+    description: Summarizes pasted or quoted room discussion without tools.
+    allowedSenders:
+      - "@alice:fgentic.fmind.ai"
+
+service:
+  type: ClusterIP
+  port: 29331
+
+serviceAccount:
+  create: true
+  automountServiceAccountToken: false
+
+# Default-deny ingress except from the homeserver namespace (Synapse pushes AS transactions here)
+# and monitoring (future metrics scrapes — SPEC §4 F14). Validate enforcement on GKE Dataplane V2
+# or Cilium; constrained rootless k3d programs kube-router rules but failed a deny-egress probe.
+networkPolicy:
+  enabled: true
+  fromNamespaces:
+    - matrix
+    - monitoring
+
+# Prometheus scraping: the PodMonitor needs the monitoring.coreos.com CRDs (kube-prometheus-
+# stack) — enabled by the platform deploy values, off by default so the chart installs standalone.
+metrics:
+  podMonitor:
+    enabled: false
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532 # distroless:nonroot
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 50m
+    memory: 64Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+podDisruptionBudget:
+  enabled: false # optional single-replica disruption guard; may block voluntary maintenance
+  minAvailable: 1
+
+revisionHistoryLimit: 3
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+# Extra pod volumes and container mounts, e.g. to project a SOPS-managed mTLS client-cert Secret at
+# the paths a remote mapping's `mtls:` block references (#244). Example:
+#   extraVolumes:
+#     - name: mtls-partner-reviewer
+#       secret:
+#         secretName: bridge-mtls-partner-reviewer
+#   extraVolumeMounts:
+#     - name: mtls-partner-reviewer
+#       mountPath: /etc/matrix-a2a-bridge/mtls/partner-reviewer
+#       readOnly: true
+extraVolumes: []
+extraVolumeMounts: []

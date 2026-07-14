@@ -1,0 +1,11 @@
+# kagent namespace + a ModelConfig (routed through agentgateway) + the least-privilege sample
+# agent zoo exposed over A2A. The platform itself is a HelmRelease (infra/flux); its model-auth +
+# Postgres connection Secrets are SOPS-encrypted (infra/secrets).
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - helmrelease.yaml
+  - networkpolicy.yaml
+  - modelconfig.yaml
+  - agent-zoo-prompts.yaml
+  - agent-zoo.yaml

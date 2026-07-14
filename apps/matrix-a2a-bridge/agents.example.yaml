@@ -1,0 +1,95 @@
+# Bridged-origin policy is derived only from configured, anchored full-MXID namespaces. The
+# network label is bounded audit attribution; it must be a lowercase DNS-style label. Patterns
+# use one trailing '*' in the localpart and an exact homeserver. Display names and bare
+# localparts are never identity evidence. A matching bridged sender remains denied unless the
+# target agent's allowedSenders explicitly matches its full MXID.
+schemaVersion: 1
+
+bridgedOrigins:
+  slack:
+    - "@slack_*:fgentic.fmind.ai"
+  telegram:
+    - "@telegram_*:fgentic.fmind.ai"
+
+# Ghost -> A2A agent routing map, and the bridge's authorization allowlist: only ghosts listed
+# here can be invoked. Key = the agent ghost local-part (@agent-k8s -> "agent-k8s"). A local
+# value uses the kagent Agent's namespace + name, resolving to
+# <A2A_BASE_URL>/api/a2a/<namespace>/<name>. A remote value instead uses an exact url plus the
+# signed-card trust, timeout, and token-budget fields shown in the commented example below.
+#
+# Sender policy (SPEC §4 F6) — per agent, optional:
+#   allowedServers: extra homeservers whose users may invoke the agent (the bridge's own
+#                   server is always allowed; federated senders are deny-by-default).
+#   allowedSenders: '*' globs over full user IDs; empty = native Matrix users on an allowed
+#                   server, but never a sender matching bridgedOrigins.
+#   description: startup fallback while the AgentCard is unavailable.
+#   avatarURL: optional existing mxc:// URI; HTTP(S) icons are not uploaded implicitly.
+#   stage: `dev` confines the agent to the bridge's STAGING_ROOMS (blast-radius boundary before a
+#          new agent meets production rooms); `prod` (the default) is unrestricted. Flipping
+#          `stage: dev` -> `prod` is a one-line reload that promotes the agent with no pod restart.
+agents:
+  agent-platform-helper:
+    namespace: kagent
+    name: platform-helper
+    description: Read-only diagnostics for the evaluation profile's Kubernetes namespaces.
+    # avatarURL: mxc://fgentic.fmind.ai/media-id
+    # To admit one immutable Slack puppet deliberately, add
+    # "@slack_t0123456789-u0123456789:fgentic.fmind.ai" to this list.
+    allowedSenders: ["@alice:fgentic.fmind.ai"]
+  agent-docs-qa:
+    namespace: kagent
+    name: docs-qa
+    description: Answers architecture and operations questions from local Fgentic documentation.
+    allowedSenders: ["@alice:fgentic.fmind.ai"]
+  agent-scribe:
+    namespace: kagent
+    name: scribe
+    description: Summarizes pasted or quoted room discussion without tools.
+    allowedSenders: ["@alice:fgentic.fmind.ai"]
+
+  # Remote agents are opt-in. `url` is the exact canonical JSONRPC or HTTP+JSON endpoint without
+  # a trailing slash; the signed AgentCard lives at
+  # <url>/.well-known/agent-card.json. The bridge accepts only ES256 cards whose protected JWS
+  # key ID, name, provider organization, and P-256 public JWK match this pin. `tokenBudget` is a
+  # positive partner-enforced maximum-token scalar sent through the
+  # https://fgentic.fmind.ai/a2a/extensions/token-budget/v1 extension on message/send.
+  # It is not bridge-observed or hard local model-token accounting. The target timeout is an
+  # additional whole-delegation ceiling combined with the global request/task timeouts.
+  # `extensions` (optional, remote only) lists extra A2A extension URIs to activate on top of the
+  # always-on token-budget contract; the bridge sends only those the verified card also declares
+  # and treats the list as its allowlist of `required` card extensions. Add only through review.
+  # `maxCost` (optional, remote only) is the highest per-skill credit-unit price the bridge will
+  # pay this remote; the verified card must then advertise a skill-quote within it or the delegation
+  # fails closed (quote_over_budget). Credit-units are bilateral accounting units, not currency.
+  # `allowMedia` (optional, remote only) opts this mapping into moving file bytes across the org
+  # boundary in either direction (#115). Omitted/false keeps the boundary closed to files: inbound
+  # room files are refused and the remote's artifact bytes are withheld. Files still pass the global
+  # MEDIA_MIME_ALLOWLIST + size caps regardless. Local agents always move media (in-cluster).
+  # `mtls` (optional, remote only) presents a client certificate to the partner for A2A v1.0
+  # transport mutual authentication (#244). clientCertFile/clientKeyFile (and optional serverCAFile)
+  # reference SOPS-managed files mounted into the pod — never inline PEM here. A verified card that
+  # declares an mtls security scheme without this configured fails closed.
+  # agent-partner-reviewer:
+  #   url: https://agents.partner.example/a2a/reviewer
+  #   timeout: 30s
+  #   tokenBudget: 4096
+  #   maxCost: 8192
+  #   allowMedia: true
+  #   mtls:
+  #     clientCertFile: /etc/matrix-a2a-bridge/mtls/partner-reviewer/tls.crt
+  #     clientKeyFile: /etc/matrix-a2a-bridge/mtls/partner-reviewer/tls.key
+  #     serverCAFile: /etc/matrix-a2a-bridge/mtls/partner-reviewer/ca.crt
+  #   extensions:
+  #     - https://fgentic.fmind.ai/a2a/extensions/skill-quote/v1
+  #   cardIdentity:
+  #     name: Partner reviewer
+  #     organization: Partner Example
+  #     keyID: partner-reviewer-2026-07
+  #     publicKey:
+  #       kty: EC
+  #       crv: P-256
+  #       x: <base64url-x-coordinate>
+  #       y: <base64url-y-coordinate>
+  #   description: Reviews documents through the partner's governed A2A endpoint.
+  #   allowedServers: [partner.example]
+  #   allowedSenders: ["@alice:fgentic.fmind.ai"]

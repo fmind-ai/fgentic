@@ -1,0 +1,16 @@
+# Flux resource list for the ActivityPub agent gateway app. Reconciled by the (future) `activitypub`
+# Kustomization once the signed federation border gates exposure (docs/fediverse.md §3). The
+# Namespace is applied before the namespaced HelmRelease within this single Kustomization.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: activitypub # project the border's policy ConfigMap into the app namespace
+resources:
+  - namespace.yaml
+  - resource-quotas.yaml
+  - helmrelease.yaml
+# The future Flux Kustomization for this dormant unit must post-build substitute platform-settings
+# before activation; the namespace quota deliberately has no standalone hard-coded profile.
+components:
+  # The namespace-neutral federation-border allowlist. Projects the mutable
+  # fgentic-activitypub-policy ConfigMap that the HelmRelease mounts and hot-reloads.
+  - ../component

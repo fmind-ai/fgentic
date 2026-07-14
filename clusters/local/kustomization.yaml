@@ -1,0 +1,83 @@
+# LOCAL (k3d) cluster overlay: the shared base DAG + local settings + local structural patches.
+# Bootstrap: `mise run cluster:up && flux bootstrap github ... --path=clusters/local` (the
+# matrix-agents runbook walks through it). flux bootstrap adds ./flux-system below this directory.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - flux-system
+  - ../base
+  - platform-settings.yaml
+  - secrets.yaml
+components:
+  - ../base/provider-selection
+patches:
+  # No object store locally: strip the CNPG GCS backup config (WAL archiving + ScheduledBackup +
+  # the Workload Identity service-account binding). Postgres itself is unchanged.
+  - patch: |
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: postgres
+        namespace: flux-system
+      spec:
+        patches:
+          - target:
+              kind: Cluster
+              name: platform-pg
+            patch: |
+              - op: remove
+                path: /spec/backup
+              - op: remove
+                path: /spec/serviceAccountTemplate
+          - target:
+              kind: ScheduledBackup
+              name: platform-pg-nightly
+            patch: |
+              apiVersion: postgresql.cnpg.io/v1
+              kind: ScheduledBackup
+              metadata:
+                name: platform-pg-nightly
+                namespace: postgres
+              $patch: delete
+  # The bridge image is side-loaded into k3d (`mise run bridge:load`), never pulled from GHCR
+  # (the repo/package is private and local runs should not depend on registry state).
+  - patch: |
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: bridge
+        namespace: flux-system
+      spec:
+        patches:
+          - target:
+              kind: HelmRelease
+              name: matrix-a2a-bridge
+            patch: |
+              - op: replace
+                path: /spec/values/image
+                value:
+                  repository: matrix-a2a-bridge
+                  tag: local
+                  pullPolicy: Never
+  # Local Vertex AI auth: ambient credentials do not exist on k3d — point only the Vertex profile
+  # at the ADC JSON Secret created by scripts/local-adc.sh (kept out of git). Other selected
+  # profiles have distinct backend names and therefore do not receive this provider-specific patch.
+  - patch: |
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: agentgateway-provider
+        namespace: flux-system
+      spec:
+        patches:
+          - target:
+              group: agentgateway.dev
+              version: v1alpha1
+              kind: AgentgatewayBackend
+              name: llm-vertex
+              namespace: agentgateway-system
+            patch: |
+              - op: add
+                path: /spec/policies/auth/gcp/secretRef
+                value:
+                  name: gcp-adc

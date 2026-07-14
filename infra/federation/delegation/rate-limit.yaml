@@ -1,0 +1,217 @@
+# Envoy's reference global rate-limit service turns agentgateway's verified maxTokens cost into
+# Redis-backed, per-azp reservations. This is admission accounting, not downstream model-token
+# attribution; actual model metrics remain aggregate at the separate LLM hop.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: federation-rate-limit
+  namespace: agentgateway-system
+  labels:
+    app.kubernetes.io/name: federation-rate-limit
+    app.kubernetes.io/component: rate-limit
+    app.kubernetes.io/part-of: fgentic-federation
+data:
+  config.yaml: |
+    domain: fgentic-cross-org-a2a
+    descriptors:
+      - key: consumer
+        rate_limit:
+          unit: minute
+          requests_per_unit: ${federation_a2a_quota_budget_units_per_minute}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: federation-redis
+  namespace: agentgateway-system
+  labels:
+    app.kubernetes.io/name: federation-redis
+    app.kubernetes.io/component: quota-store
+    app.kubernetes.io/part-of: fgentic-federation
+spec:
+  selector:
+    app.kubernetes.io/name: federation-redis
+  ports:
+    - name: redis
+      port: 6379
+      targetPort: redis
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: federation-redis
+  namespace: agentgateway-system
+  labels:
+    app.kubernetes.io/name: federation-redis
+    app.kubernetes.io/component: quota-store
+    app.kubernetes.io/part-of: fgentic-federation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: federation-redis
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: federation-redis
+        app.kubernetes.io/component: quota-store
+        app.kubernetes.io/part-of: fgentic-federation
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        fsGroup: 999
+        runAsGroup: 999
+        runAsNonRoot: true
+        runAsUser: 999
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: redis
+          image: docker.io/library/redis:8.8.0@sha256:2838d5524559494f6f1cd66e97e76b200d64a633a8614200620755ed395daf32
+          args:
+            - --save
+            - ""
+            - --appendonly
+            - "no"
+          ports:
+            - name: redis
+              containerPort: 6379
+          readinessProbe:
+            tcpSocket:
+              port: redis
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: redis
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: data
+              mountPath: /data
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: federation-rate-limit
+  namespace: agentgateway-system
+  labels:
+    app.kubernetes.io/name: federation-rate-limit
+    app.kubernetes.io/component: rate-limit
+    app.kubernetes.io/part-of: fgentic-federation
+spec:
+  selector:
+    app.kubernetes.io/name: federation-rate-limit
+  ports:
+    - name: grpc
+      port: 8081
+      targetPort: grpc
+      appProtocol: kubernetes.io/h2c
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: federation-rate-limit
+  namespace: agentgateway-system
+  labels:
+    app.kubernetes.io/name: federation-rate-limit
+    app.kubernetes.io/component: rate-limit
+    app.kubernetes.io/part-of: fgentic-federation
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: federation-rate-limit
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: federation-rate-limit
+        app.kubernetes.io/component: rate-limit
+        app.kubernetes.io/part-of: fgentic-federation
+    spec:
+      automountServiceAccountToken: false
+      enableServiceLinks: false
+      securityContext:
+        fsGroup: 65532
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: rate-limit
+          image: docker.io/envoyproxy/ratelimit:3e085e5b@sha256:70453d5ca820dce0c2939d95a3eeb0f3e64ac083749bc021401c13e4233d1595
+          command:
+            - /bin/ratelimit
+          ports:
+            - name: grpc
+              containerPort: 8081
+            - name: debug
+              containerPort: 6070
+          env:
+            - name: USE_STATSD
+              value: "false"
+            - name: LOG_LEVEL
+              value: info
+            - name: RUNTIME_ROOT
+              value: /data
+            - name: RUNTIME_SUBDIRECTORY
+              value: ratelimit
+            - name: RUNTIME_IGNOREDOTFILES
+              value: "true"
+            - name: REDIS_SOCKET_TYPE
+              value: tcp
+            - name: REDIS_URL
+              value: federation-redis:6379
+            - name: TMPDIR
+              value: /tmp
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 1
+            periodSeconds: 5
+          livenessProbe:
+            tcpSocket:
+              port: grpc
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: config
+              mountPath: /data/ratelimit/config
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          configMap:
+            name: federation-rate-limit
+        - name: tmp
+          emptyDir: {}

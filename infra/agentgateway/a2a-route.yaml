@@ -1,0 +1,20 @@
+# A2A route (/api/a2a/*) -> kagent. The path prefix is PRESERVED (no rewrite) so kagent receives
+# /api/a2a/<ns>/<name> unchanged. This is what the bridge dials as A2A_BASE_URL + agent path.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: kagent-a2a
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+    - name: agentgateway-proxy
+      sectionName: default
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /api/a2a
+      backendRefs:
+        - name: kagent-a2a
+          group: agentgateway.dev
+          kind: AgentgatewayBackend

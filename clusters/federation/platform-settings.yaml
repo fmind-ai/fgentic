@@ -1,0 +1,42 @@
+# Cluster-local settings for the federation hardening lab. The lifecycle installer must override
+# federation_gateway_ip with the reachable k3d Gateway address before reconciliation.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-settings
+  namespace: flux-system
+data:
+  server_name: org-a.fgentic.localhost
+  federation_partner_server_name: org-b.fgentic.localhost
+  federation_denied_server_name: org-c.fgentic.localhost
+  # RFC 5737 placeholder: valid for offline rendering, deliberately unreachable at runtime.
+  federation_gateway_ip: 192.0.2.1
+  cluster_issuer: local-ca
+  acme_email: unused@fgentic.localhost
+  ingress_ip_name: unused-federation
+  llm_provider: demo
+  llm_model: fgentic-demo
+  # This disposable local lab shares the single-node namespace admission ceilings.
+  quota_default_request_cpu: 25m
+  quota_default_request_memory: 64Mi
+  quota_default_limit_cpu: 500m
+  quota_default_limit_memory: 512Mi
+  quota_small_pods: "12"
+  quota_small_requests_cpu: "2"
+  quota_small_requests_memory: 4Gi
+  quota_small_limits_cpu: "8"
+  quota_small_limits_memory: 8Gi
+  quota_core_pods: "24"
+  quota_core_requests_cpu: "4"
+  quota_core_requests_memory: 8Gi
+  quota_core_limits_cpu: "16"
+  quota_core_limits_memory: 16Gi
+  quota_compute_pods: "8"
+  quota_compute_requests_cpu: "4"
+  quota_compute_requests_memory: 8Gi
+  quota_compute_limits_cpu: "8"
+  quota_compute_limits_memory: 12Gi
+  # Admission reserves the request budget: one maximum request fits, a second in the same minute
+  # deterministically exceeds this lab quota.
+  federation_a2a_max_budget_units: "4096"
+  federation_a2a_quota_budget_units_per_minute: "5000"

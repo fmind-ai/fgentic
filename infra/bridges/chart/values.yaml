@@ -1,0 +1,93 @@
+nameOverride: ""
+fullnameOverride: ""
+
+image:
+  repository: ""
+  digest: ""
+  pullPolicy: IfNotPresent
+
+bridge:
+  command: []
+  args: []
+  port: 29335
+
+config:
+  content: ""
+
+secret:
+  name: ""
+  mountPath: /run/secrets/mautrix
+
+env: []
+
+serviceAccount:
+  create: true
+  name: ""
+  automountServiceAccountToken: false
+
+service:
+  port: 29335
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1337
+  runAsGroup: 1337
+  fsGroup: 1337
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+probes:
+  startup:
+    failureThreshold: 30
+    periodSeconds: 5
+  readiness:
+    failureThreshold: 6
+    periodSeconds: 10
+  liveness:
+    failureThreshold: 6
+    periodSeconds: 10
+
+# Provider media conversion uses temporary files. Keep this below the container's total
+# ephemeral-storage limit so oversized content fails inside the pod instead of filling a node.
+tmp:
+  sizeLimit: 256Mi
+
+resources:
+  requests:
+    cpu: 25m
+    ephemeral-storage: 64Mi
+    memory: 64Mi
+  limits:
+    ephemeral-storage: 512Mi
+    memory: 256Mi
+
+networkPolicy:
+  enabled: true
+  ingressNamespaces:
+    - matrix
+  ingressPodSelector:
+    k8s.element.io/synapse-instance: ess-synapse
+  homeserver:
+    namespace: matrix
+    port: 8008
+    podSelector:
+      app.kubernetes.io/instance: ess-haproxy
+  database:
+    namespace: postgres
+    port: 5432
+    podSelector:
+      cnpg.io/cluster: platform-pg
+  # Standard NetworkPolicy cannot select FQDNs. This admits arbitrary non-private IPv4 TCP/443;
+  # use a governed egress proxy or FQDN-aware CNI before stricter provider endpoint claims.
+  publicIPv4TLS: true
+
+nodeSelector: {}
+tolerations: []
+affinity: {}

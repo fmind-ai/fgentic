@@ -1,0 +1,30 @@
+name: Bug report
+description: Something broken in the bridge, the manifests, or the docs
+labels: ["kind/fix"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Reproduction
+      description: Minimal steps, from a clean state if possible (e.g. the k3d quickstart).
+    validations:
+      required: true
+  - type: textarea
+    id: env
+    attributes:
+      label: Environment
+      description: Cluster type (k3d/GKE/other), component versions (bridge image digest, chart pins), model profile.
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs / evidence
+      description: Relevant bridge/Synapse/agentgateway logs. Redact secrets and personal data.

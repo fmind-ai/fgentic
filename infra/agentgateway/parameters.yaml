@@ -1,0 +1,22 @@
+# Secure the per-Gateway data-plane proxy. agentgateway hardcodes the generated Service to
+# type: LoadBalancer (a PUBLIC L4 LB — an unauthenticated internet-facing LLM/A2A oracle). Force
+# it to ClusterIP: the only consumers are in-cluster (the bridge + kagent), so no LB is needed.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayParameters
+metadata:
+  name: secured
+  namespace: agentgateway-system
+spec:
+  logging:
+    level: info
+    format: json
+  service:
+    spec:
+      type: ClusterIP # override the hardcoded LoadBalancer — in-cluster only, no public IP
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      cpu: 500m
+      memory: 256Mi

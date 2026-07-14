@@ -1,0 +1,9 @@
+# Shared web config for EVERY environment: namespace, ClusterIssuers (ACME + local CA), the
+# multi-SAN TLS Gateway, and the HTTP->HTTPS redirect. Traefik itself is a HelmRelease
+# (infra/flux); which issuer signs the Gateway cert is ${cluster_issuer} in platform-settings.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - cluster-issuer.yaml
+  - gateway.yaml
+  - redirect.yaml

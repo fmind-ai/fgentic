@@ -1,0 +1,23 @@
+# Native Azure OpenAI v1 routing. resourceName is the Azure resource name (not a URL); agentgateway
+# derives <resource>.openai.azure.com and /openai/v1/chat/completions. API-key auth uses Azure's
+# `api-key` header while the referenced Secret still stores the value under `Authorization`.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: llm-azure-openai
+  namespace: agentgateway-system
+spec:
+  ai:
+    provider:
+      azure:
+        resourceName: ${azure_openai_resource}
+        resourceType: OpenAI
+        model: ${llm_model}
+        apiVersion: v1
+  policies:
+    auth:
+      secretRef:
+        name: azure-openai-secret
+      location:
+        header:
+          name: api-key

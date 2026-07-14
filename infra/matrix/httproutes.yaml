@@ -1,0 +1,102 @@
+# Gateway API routes attaching the ESS component Services to the shared fgentic-gateway HTTPS
+# listeners. Service names follow ESS's chart naming — verify with `kubectl -n matrix get svc`
+# after the HelmRelease reconciles and adjust backendRefs if the release name differs.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: element-web
+  namespace: matrix
+spec:
+  parentRefs:
+    - name: fgentic-gateway
+      namespace: gateway
+      sectionName: https-chat
+  hostnames:
+    - chat.${server_name}
+  rules:
+    - backendRefs:
+        - name: ess-element-web
+          port: 80
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: synapse
+  namespace: matrix
+spec:
+  parentRefs:
+    - name: fgentic-gateway
+      namespace: gateway
+      sectionName: https-matrix
+  hostnames:
+    - matrix.${server_name}
+  rules:
+    # MSC3861: login/refresh/logout are served by MAS's compatibility layer, not Synapse —
+    # mirrors the path split of the ESS-generated Ingress. Longest-prefix precedence keeps the
+    # /_matrix catch-all below from shadowing these. Two rules: max 8 matches per rule.
+    - matches:
+        - path: { type: PathPrefix, value: /_matrix/client/api/v1/login }
+        - path: { type: PathPrefix, value: /_matrix/client/api/v1/refresh }
+        - path: { type: PathPrefix, value: /_matrix/client/api/v1/logout }
+        - path: { type: PathPrefix, value: /_matrix/client/r0/login }
+        - path: { type: PathPrefix, value: /_matrix/client/r0/refresh }
+        - path: { type: PathPrefix, value: /_matrix/client/r0/logout }
+      backendRefs:
+        - name: ess-matrix-authentication-service
+          port: 8080
+    - matches:
+        - path: { type: PathPrefix, value: /_matrix/client/v3/login }
+        - path: { type: PathPrefix, value: /_matrix/client/v3/refresh }
+        - path: { type: PathPrefix, value: /_matrix/client/v3/logout }
+        - path: { type: PathPrefix, value: /_matrix/client/unstable/login }
+        - path: { type: PathPrefix, value: /_matrix/client/unstable/refresh }
+        - path: { type: PathPrefix, value: /_matrix/client/unstable/logout }
+      backendRefs:
+        - name: ess-matrix-authentication-service
+          port: 8080
+    - matches:
+        - path: { type: PathPrefix, value: /_matrix }
+        - path: { type: PathPrefix, value: /_synapse }
+      backendRefs:
+        - name: ess-synapse
+          port: 8008
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: matrix-authentication-service
+  namespace: matrix
+spec:
+  parentRefs:
+    - name: fgentic-gateway
+      namespace: gateway
+      sectionName: https-auth
+  hostnames:
+    - auth.${server_name}
+  rules:
+    - backendRefs:
+        - name: ess-matrix-authentication-service
+          port: 8080
+---
+# Apex delegation: /.well-known/matrix/{client,server} at the apex host so user IDs are
+# @name:${server_name} while the actual homeserver lives at matrix.${server_name}.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: well-known
+  namespace: matrix
+spec:
+  parentRefs:
+    - name: fgentic-gateway
+      namespace: gateway
+      sectionName: https-wellknown
+  hostnames:
+    - ${server_name}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /.well-known/matrix
+      backendRefs:
+        - name: ess-well-known # the haproxy-fronted well-known service (port name haproxy-wkd)
+          port: 8010

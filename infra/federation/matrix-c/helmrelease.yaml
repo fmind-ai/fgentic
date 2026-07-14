@@ -1,0 +1,99 @@
+# A third, namespace-isolated Synapse is the non-partner control for federation denial tests.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: matrix-stack-c
+  namespace: matrix-c
+spec:
+  interval: 30m
+  timeout: 15m
+  install:
+    remediation:
+      retries: -1
+  upgrade:
+    remediation:
+      retries: -1
+  releaseName: ess
+  chartRef:
+    kind: OCIRepository
+    name: ess-matrix-stack
+    namespace: flux-system
+  values:
+    serverName: ${federation_denied_server_name}
+    storage:
+      resourcePolicy: delete
+
+    synapse:
+      ingress:
+        host: matrix.${federation_denied_server_name}
+        tlsEnabled: false
+      postgres:
+        host: platform-pg-rw.postgres.svc.cluster.local
+        port: 5432
+        user: synapse_c
+        database: synapse_c
+        sslMode: require
+        password:
+          secret: pg-synapse-c
+          secretKey: password
+      serviceMonitors:
+        enabled: false
+      hostAliases:
+        - ip: ${federation_gateway_ip}
+          hostnames:
+            - ${server_name}
+            - matrix.${server_name}
+            - ${federation_partner_server_name}
+            - matrix.${federation_partner_server_name}
+            - ${federation_denied_server_name}
+            - matrix.${federation_denied_server_name}
+      # The public CA certificate is provisioned cluster-locally in every Matrix namespace.
+      extraVolumes:
+        - name: federation-ca
+          configMap:
+            name: fgentic-local-ca
+            items:
+              - key: ca.crt
+                path: ca.crt
+          mountContext: both
+      extraVolumeMounts:
+        - name: federation-ca
+          mountPath: /etc/fgentic-ca
+          readOnly: true
+          mountContext: both
+      additional:
+        10-federation:
+          config: |
+            default_room_version: "12"
+            federation_domain_whitelist:
+              - ${server_name}
+              - ${federation_partner_server_name}
+              - ${federation_denied_server_name}
+            federation_custom_ca_list:
+              - /etc/fgentic-ca/ca.crt
+            ip_range_whitelist:
+              - ${federation_gateway_ip}/32
+            trusted_key_servers:
+              - server_name: ${server_name}
+            federation_whitelist_endpoint_enabled: true
+      appservices: []
+
+    matrixAuthenticationService:
+      enabled: false
+    elementWeb:
+      enabled: false
+    elementAdmin:
+      enabled: false
+    matrixRTC:
+      enabled: false
+
+    wellKnownDelegation:
+      enabled: true
+      ingress:
+        tlsEnabled: false
+      additional:
+        client: |
+          {"io.element.e2ee": {"default": false, "force_disable": true}}
+
+    postgres:
+      enabled: false

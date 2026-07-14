@@ -1,0 +1,106 @@
+suite: agent routing config
+templates:
+  - templates/configmap.yaml
+tests:
+  - it: declares the immutable bridge configuration schema version
+    asserts:
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "^schemaVersion: 1\\n"
+  - it: renders anchored bridged-origin MXID namespaces
+    set:
+      bridgedOrigins:
+        slack:
+          - "@slack_*:fgentic.fmind.ai"
+        telegram:
+          - "@telegram_*:fgentic.fmind.ai"
+    asserts:
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "bridgedOrigins:\\n\\s+slack:\\n\\s+- '@slack_\\*:fgentic\\.fmind\\.ai'"
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "telegram:\\n\\s+- '@telegram_\\*:fgentic\\.fmind\\.ai'"
+  - it: preserves per-agent sender policy fields
+    set:
+      agents:
+        agent-locked:
+          namespace: kagent
+          name: locked
+          description: Restricted test agent.
+          avatarURL: mxc://fgentic.fmind.ai/locked-avatar
+          allowedServers:
+            - partner.example
+          allowedSenders:
+            - "@ops-*:partner.example"
+    asserts:
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "allowedServers:\\n\\s+- partner.example"
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "allowedSenders:\\n\\s+- '@ops-\\*:partner.example'"
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "description: Restricted test agent\\."
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "avatarURL: mxc://fgentic.fmind.ai/locked-avatar"
+      - matchRegex:
+          path: data["welcome.txt"]
+          pattern: "@agent-locked:fgentic.fmind.ai — Restricted test agent\\."
+  - it: preserves the fail-closed remote target trust and budget contract
+    set:
+      agents:
+        agent-remote:
+          url: https://agents.partner.example/a2a/reviewer
+          timeout: 30s
+          tokenBudget: 4096
+          cardIdentity:
+            name: Partner reviewer
+            organization: Partner Example
+            keyID: partner-reviewer-2026-07
+            publicKey:
+              kty: EC
+              crv: P-256
+              x: axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY
+              y: T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU
+          description: Reviews documents through a governed partner endpoint.
+          allowedSenders:
+            - "@alice:fgentic.fmind.ai"
+    asserts:
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "agent-remote:\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+cardIdentity:"
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "crv: P-256\\n\\s+kty: EC\\n\\s+x: axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY\\n\\s+\"y\": T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU"
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "keyID: partner-reviewer-2026-07\\n\\s+name: Partner reviewer\\n\\s+organization: Partner Example"
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "timeout: 30s\\n\\s+tokenBudget: 4096\\n\\s+url: https://agents\\.partner\\.example/a2a/reviewer"
+  - it: renders the three least-privilege demo agents and Alice-only allowlists
+    asserts:
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "agent-platform-helper:\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+description: .*\\n\\s+name: platform-helper"
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "agent-docs-qa:\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+description: .*\\n\\s+name: docs-qa"
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "agent-scribe:\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+description: .*\\n\\s+name: scribe"
+      - matchRegex:
+          path: data["welcome.txt"]
+          pattern: "@agent-platform-helper:fgentic.fmind.ai"
+      - matchRegex:
+          path: data["welcome.txt"]
+          pattern: "@agent-docs-qa:fgentic.fmind.ai"
+      - matchRegex:
+          path: data["welcome.txt"]
+          pattern: "@agent-scribe:fgentic.fmind.ai"
+      - matchRegex:
+          path: data["welcome.txt"]
+          pattern: "Send !agents in this room"

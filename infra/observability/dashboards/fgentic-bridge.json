@@ -1,0 +1,177 @@
+{
+  "annotations": { "list": [] },
+  "description": "Operational health of the Matrix-to-A2A bridge. All panels use the bridge Prometheus side-port metrics.",
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Successful and rejected delegations per second, split by mapped ghost and terminal outcome.",
+      "fieldConfig": { "defaults": { "unit": "reqps" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum by (ghost, outcome) (rate(fgentic_delegations_total[$__rate_interval]))",
+          "legendFormat": "{{ghost}} / {{outcome}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Delegations by agent and outcome",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Quantiles derived from the fgentic_a2a_request_seconds histogram; long-task polling is intentionally excluded by the metric.",
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.50, sum by (le, ghost) (rate(fgentic_a2a_request_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{ghost}} p50",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.95, sum by (le, ghost) (rate(fgentic_a2a_request_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{ghost}} p95",
+          "range": true,
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, ghost) (rate(fgentic_a2a_request_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "{{ghost}} p99",
+          "range": true,
+          "refId": "C"
+        }
+      ],
+      "title": "A2A latency histogram quantiles",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Items waiting across every per-room FIFO queue.",
+      "fieldConfig": { "defaults": { "min": 0, "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 8, "x": 0, "y": 8 },
+      "id": 3,
+      "options": {
+        "legend": { "displayMode": "hidden", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "fgentic_queue_depth",
+          "legendFormat": "queued",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Queue depth",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Delegations currently occupying dispatcher workers.",
+      "fieldConfig": { "defaults": { "min": 0, "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 8, "x": 8, "y": 8 },
+      "id": 4,
+      "options": {
+        "legend": { "displayMode": "hidden", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "fgentic_inflight_delegations",
+          "legendFormat": "in flight",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "In-flight delegations",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Requests rejected by the bridge sender/room token buckets before model spend occurs.",
+      "fieldConfig": { "defaults": { "min": 0, "unit": "reqps" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 8, "x": 16, "y": 8 },
+      "id": 5,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum by (ghost) (rate(fgentic_delegations_total{outcome=\"rate_limited\"}[$__rate_interval]))",
+          "legendFormat": "{{ghost}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Rate-limit rejections",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Homeserver transaction redeliveries suppressed before a duplicate agent invocation.",
+      "fieldConfig": { "defaults": { "min": 0, "unit": "reqps" }, "overrides": [] },
+      "gridPos": { "h": 7, "w": 24, "x": 0, "y": 15 },
+      "id": 6,
+      "options": {
+        "legend": { "displayMode": "hidden", "placement": "bottom", "showLegend": false },
+        "tooltip": { "mode": "single", "sort": "none" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "rate(fgentic_dedup_skips_total[$__rate_interval])",
+          "legendFormat": "deduplicated",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Deduplicated events",
+      "type": "timeseries"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": ["fgentic", "bridge"],
+  "templating": { "list": [] },
+  "time": { "from": "now-6h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Fgentic — Bridge",
+  "uid": "fgentic-bridge",
+  "version": 1,
+  "weekStart": ""
+}

@@ -1,0 +1,58 @@
+# --- Secrets (defense in depth; real secrets live SOPS-encrypted as *.sops.yaml) ---
+# Never commit decrypted secrets or private keys.
+*.dec.yaml
+*.dec.yml
+*.pem
+*.key
+age.key
+*.agekey
+# SOPS/age private key material (public recipients in .sops.yaml are safe to commit).
+keys.txt
+key.txt
+*.age
+**/secrets/*.plain.yaml
+# Cloud / cluster credentials — helper scripts already keep these outside the repo.
+application_default_credentials.json
+*-credentials.json
+kubeconfig
+*.kubeconfig
+
+# --- Terraform ---
+**/.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+tfplan
+crash.log
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+# Keep the lock file committed for reproducible provider versions:
+!**/.terraform.lock.hcl
+# Never commit real variable values; keep the example template:
+*.tfvars
+!*.tfvars.example
+
+# --- Env & local config ---
+.env
+.env.*
+!.env.example
+!.env.sample
+# Local platform-settings override (keeps your real GCP project / values out of git):
+**/platform-settings-overrides.yaml
+!**/platform-settings-overrides.example.yaml
+
+# --- Build artifacts & caches ---
+**/bin/
+**/tmp/
+coverage.out
+*.coverprofile
+.task/
+
+# --- Agent scratch (global standard) ---
+.agents/tmp/
+
+# --- OS / editor ---
+.DS_Store
+*.swp

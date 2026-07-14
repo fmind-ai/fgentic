@@ -1,0 +1,41 @@
+# Authenticate the managed platform-helper before MCP parsing, then enforce the same five-tool
+# allowlist at the gateway's MCP layer. The bearer key is scoped to this route and is distinct from
+# both the bridge A2A key and all model-provider credentials.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: platform-helper-mcp-authorization
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: kagent-tools-mcp
+  traffic:
+    apiKeyAuthentication:
+      mode: Strict
+      secretRef:
+        name: mcp-agent-callers
+    authorization:
+      action: Require
+      policy:
+        matchExpressions:
+          - >-
+            apiKey.agent == "platform-helper" &&
+            request.path == "/mcp" &&
+            request.method in ["POST", "GET", "DELETE"]
+  backend:
+    mcp:
+      authorization:
+        action: Require
+        policy:
+          matchExpressions:
+            - >-
+              apiKey.agent == "platform-helper" &&
+              mcp.tool.name in [
+                "k8s_get_resources",
+                "k8s_describe_resource",
+                "k8s_get_events",
+                "k8s_get_resource_yaml",
+                "k8s_get_pod_logs"
+              ]

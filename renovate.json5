@@ -1,0 +1,99 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["config:recommended", ":gitSignOff", "helpers:pinGitHubActionDigests"],
+  "dependencyDashboard": true,
+  "enabledManagers": [
+    "custom.regex",
+    "dockerfile",
+    "flux",
+    "github-actions",
+    "gomod",
+    "helm-values",
+    "kubernetes",
+    "mise",
+    "pep621",
+    "terraform",
+  ],
+  "ignorePaths": ["**/node_modules/**", "**/bower_components/**", "**/vendor/**", "**/__fixtures__/**"],
+  "labels": ["area/ci"],
+  "prConcurrentLimit": 10,
+  "prHourlyLimit": 2,
+  "flux": {
+    "managerFilePatterns": ["/^infra/.+\\.ya?ml$/", "/^apps/.+/deploy/.+\\.ya?ml$/"],
+  },
+  "kubernetes": {
+    "managerFilePatterns": ["/^(?:apps|clusters|infra)/.+\\.ya?ml$/"],
+  },
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "Track the experimental Gateway API CRD bundle used by the bootstrap runbooks",
+      "managerFilePatterns": [
+        "/^\\.agents/skills/matrix-agents/SKILL\\.md$/",
+        "/^docs/production\\.md$/",
+        "/^scripts/lib/demo-cluster\\.sh$/",
+      ],
+      "matchStrings": [
+        "github\\.com/kubernetes-sigs/gateway-api/releases/download/(?<currentValue>v\\d+\\.\\d+\\.\\d+)/experimental-install\\.yaml",
+      ],
+      "datasourceTemplate": "github-releases",
+      "packageNameTemplate": "kubernetes-sigs/gateway-api",
+      "versioningTemplate": "semver",
+    },
+    {
+      "customType": "regex",
+      "description": "Track the immutable Trivy Operator release commit used as a Helm chart source",
+      "managerFilePatterns": ["/^infra/trivy-operator/source\\.yaml$/"],
+      "matchStrings": [
+        "# trivy-operator-version: (?<currentValue>v\\d+\\.\\d+\\.\\d+)\\n\\s+commit: (?<currentDigest>[0-9a-f]{40})",
+      ],
+      "datasourceTemplate": "github-tags",
+      "packageNameTemplate": "aquasecurity/trivy-operator",
+      "versioningTemplate": "semver",
+    },
+  ],
+  "packageRules": [
+    {
+      "description": "Require CI-backed human review unless a narrower rule explicitly opts in",
+      "matchPackageNames": ["*"],
+      "automerge": false,
+    },
+    {
+      "description": "Leave the bridge image digest to the CD workflow",
+      "matchDatasources": ["docker"],
+      "matchFileNames": ["apps/matrix-a2a-bridge/deploy/helmrelease.yaml"],
+      "enabled": false,
+    },
+    {
+      "description": "Leave generated Flux controller images to the Flux bundle manager",
+      "matchManagers": ["kubernetes"],
+      "matchFileNames": ["clusters/local/flux-system/gotk-components.yaml"],
+      "enabled": false,
+    },
+    {
+      "description": "Automerge patch-only Go tool updates after CI succeeds",
+      "matchManagers": ["gomod"],
+      "matchPackageNames": ["golang.org/x/tools", "golang.org/x/vuln", "mvdan.cc/gofumpt"],
+      "matchUpdateTypes": ["patch"],
+      "automerge": true,
+      "automergeType": "pr",
+      "platformAutomerge": false,
+      "groupName": "patch-level development tooling",
+    },
+    {
+      "description": "Keep the Gateway API, Traefik, agentgateway, and kagent pins under human review",
+      "matchDepNames": [
+        "kubernetes-sigs/gateway-api",
+        "/(^|\\/)(traefik|agentgateway(-crds)?|kagent(-crds)?)$/",
+      ],
+      "groupName": "coupled Gateway API stack",
+      "groupSlug": "coupled-gateway-api-stack",
+      "separateMajorMinor": false,
+      "addLabels": ["needs-human"],
+      "automerge": false,
+      "prBodyNotes": [
+        "Gateway API, Traefik, agentgateway, and kagent have wire/CRD compatibility constraints; validate and upgrade them together.",
+      ],
+    },
+  ],
+}

@@ -1,0 +1,27 @@
+# Homeserver B is an independent Flux unit so it can wait on the shared DB and Gateway without
+# sharing Helm ownership with homeserver A.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: matrix-b
+  namespace: flux-system
+spec:
+  interval: 30m
+  retryInterval: 2m
+  path: ./infra/federation/matrix-b
+  prune: true
+  wait: true
+  timeout: 20m
+  dependsOn:
+    - name: postgres
+    - name: gateway
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true

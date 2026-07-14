@@ -1,0 +1,114 @@
+[env]
+APP_NAME = "matrix-a2a-bridge"
+
+[settings.task]
+run_auto_install = false # fail fast in hooks/CI on a missing tool
+
+[tools]
+go = "latest"
+golangci-lint = "latest"
+gotestsum = "latest"
+gitleaks = "latest"
+dprint = "latest"
+lefthook = "latest"
+kind = "0.32.0"
+kubectl = "1.35.0"
+
+[tasks.all]
+alias = "a"
+description = "Format, check, test, and build the project"
+run = ["mise run format", "mise run check", "mise run test", "mise run build"]
+
+[tasks.install]
+alias = "i"
+description = "Tidy Go modules and download dependencies"
+run = "go mod tidy"
+
+[tasks.build]
+alias = "b"
+description = "Compile the production binary"
+depends = ["build:go"]
+
+[tasks."build:go"]
+description = "Compile the production Go binary"
+sources = ["go.mod", "go.sum", "**/*.go"]
+outputs = ["bin/{{env.APP_NAME}}"]
+run = "go build -o bin/$APP_NAME ./cmd/bridge"
+
+[tasks."build:image"]
+description = "Build the production OCI image (distroless nonroot)"
+run = "docker build -t ghcr.io/fmind/$APP_NAME:local ."
+
+[tasks.check]
+alias = "c"
+description = "Run all static checks"
+depends = ["check:lint", "check:vuln", "check:format", "check:leaks"]
+
+[tasks."check:lint"]
+alias = "cl"
+description = "Lint Go sources (golangci-lint)"
+# --allow-parallel-runners lets this queue behind the AP gateway's lint under the aggregate root
+# check (golangci-lint refuses concurrent runs by default).
+run = "golangci-lint run --allow-parallel-runners ./..."
+
+[tasks."check:vuln"]
+alias = "cv"
+description = "Scan Go code for known vulnerabilities (govulncheck)"
+run = "go tool govulncheck ./..."
+
+[tasks."check:format"]
+alias = "cf"
+description = "Check config/markup formatting (dprint)"
+run = "dprint check"
+
+[tasks."check:leaks"]
+alias = "cs"
+description = "Audit git history for leaked secrets (gitleaks)"
+run = "gitleaks git --log-opts=\"--max-count=100\" --verbose"
+
+[tasks.test]
+alias = "t"
+description = "Run the test suite (gotestsum, race + coverage)"
+run = """
+set -e
+gotestsum --format pkgname -- -race -coverprofile=coverage.out ./...
+bash scripts/check-coverage.sh coverage.out
+"""
+
+[tasks."test:integration"]
+description = "Exercise the real Matrix appservice wire path in an isolated kind cluster"
+run = "bash test/integration/run.sh"
+
+[tasks."test:availability"]
+description = "Prove graceful in-flight drain and cross-pod persistent deduplication"
+run = "bash test/integration/run-availability.sh"
+
+[tasks."test:load"]
+description = "Run the resource-bounded D3 dispatcher regression scenario"
+run = "bash test/integration/run-load.sh"
+
+[tasks."eval:models"]
+description = "Evaluate the three sample agents against the selected local model profile"
+run = "bash scripts/eval-models.sh"
+
+[tasks.format]
+alias = "f"
+description = "Format all sources and documents"
+depends = ["format:go", "format:dprint"]
+
+[tasks."format:go"]
+description = "Format Go sources and imports (goimports + gofumpt)"
+run = ["go tool goimports -local github.com/fmind/matrix-a2a-bridge -w .", "go tool gofumpt -w ."]
+
+[tasks."format:dprint"]
+description = "Format JSON, Markdown, TOML, YAML with dprint"
+run = "dprint fmt"
+
+[tasks.watch]
+alias = "w"
+description = "Run with live reload (air)"
+run = "go tool air"
+
+[tasks.clean]
+description = "Remove build artifacts and coverage files"
+run = "rm -rf bin/ tmp/ coverage.out"

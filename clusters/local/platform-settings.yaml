@@ -1,0 +1,60 @@
+# Deployment values for the LOCAL (k3d) cluster, substituted into every manifest by the Flux
+# Kustomizations in clusters/base (postBuild). This ConfigMap is the single place a deployment
+# configures its domain, TLS issuer, cloud project, and model — manifests carry no environment
+# specifics. For ad-hoc tweaks without editing git-tracked defaults, create a ConfigMap named
+# `platform-settings-overrides` in flux-system (optional, wins over this one).
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-settings
+  namespace: flux-system
+data:
+  # Matrix server_name — user IDs are @name:fgentic.localhost; hosts are chat./matrix./auth. of it.
+  server_name: fgentic.localhost
+  # cert-manager ClusterIssuer for the shared Gateway: the openssl local CA (scripts/local-ca.sh
+  # creates + trusts it) — *.localhost is not ACME-issuable.
+  cluster_issuer: local-ca
+  acme_email: fgentic@fmind.ai # unused locally (ACME issuers stay idle)
+  # Set your own GCP project for the Vertex profile (agentgateway calls Vertex AI with it, ADC
+  # secret via scripts/local-adc.sh); the default `demo` provider needs none. To override without
+  # editing this tracked file, create a `platform-settings-overrides` ConfigMap (see the header).
+  # The backup/ingress settings stay inert (stripped by the overlay).
+  gcp_project: your-gcp-project
+  pg_backups_bucket: unused-local
+  ingress_ip_name: unused-local
+  # Selects infra/agentgateway/providers/profiles/<llm_provider>; switching to an installed
+  # profile needs only these settings plus that profile's per-cluster SOPS Secret.
+  llm_provider: vertex
+  # Vertex AI OpenAI-compatible endpoint requires <publisher>/<model>.
+  llm_model: google/gemini-2.5-flash
+  vertex_region: europe-west1
+  # Provider-specific connection settings. They remain inert unless their profile is selected.
+  # Eligible OpenAI projects can use eu.api.openai.com for European processing (see docs/models.md).
+  openai_host: api.openai.com
+  # Azure resource name only (not the endpoint URL); replace before selecting azure-openai.
+  azure_openai_resource: not-configured
+  # Alert when aggregate model-token consumption exceeds this count over 15 minutes.
+  llm_usage_budget_15m: "100000"
+  # Initial namespace-compute profiles. These are admission ceilings, not reservations; tighten
+  # only after observing ResourceQuota usage through representative rollouts and peak traffic.
+  quota_default_request_cpu: 25m
+  quota_default_request_memory: 64Mi
+  quota_default_limit_cpu: 500m
+  quota_default_limit_memory: 512Mi
+  quota_small_pods: "12"
+  quota_small_requests_cpu: "2"
+  quota_small_requests_memory: 4Gi
+  quota_small_limits_cpu: "8"
+  quota_small_limits_memory: 8Gi
+  quota_core_pods: "24"
+  quota_core_requests_cpu: "4"
+  quota_core_requests_memory: 8Gi
+  quota_core_limits_cpu: "16"
+  quota_core_limits_memory: 16Gi
+  quota_compute_pods: "8"
+  quota_compute_requests_cpu: "4"
+  quota_compute_requests_memory: 8Gi
+  quota_compute_limits_cpu: "8"
+  quota_compute_limits_memory: 12Gi
+  # Local development keeps MAS password login as a recovery/demo path alongside Keycloak SSO.
+  mas_local_login_enabled: "true"

@@ -1,0 +1,26 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fixture-settings
+  namespace: bridge-integration
+data:
+  a2aStubDelay: 0s
+  agentCardRefreshInterval: 30s
+  concurrency: "2"
+  # Keep admission policy out of the resilience assertion: the disposable stub has no LLM or
+  # paid boundary, and this scenario isolates graceful drain plus persistent deduplication.
+  senderRatePerMinute: "6000"
+  senderRateBurst: "20"
+  roomRatePerMinute: "6000"
+  roomRateBurst: "20"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fixture-settings
+  namespace: plain-agent
+data:
+  a2aStubDelay: 0s
+  # Hold the marked A2A call until run.sh observes the bridge handling SIGTERM. This removes
+  # host-scheduling races from the mid-delegation disruption point.
+  a2aStubHold: "true"

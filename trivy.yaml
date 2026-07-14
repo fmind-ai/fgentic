@@ -1,0 +1,25 @@
+# Project Trivy config (trivy auto-loads ./trivy.yaml). Signal-over-noise: only actionable,
+# fixable HIGH/CRITICAL findings, so local `mise run check:scan` and CI produce identical results.
+severity:
+  - HIGH
+  - CRITICAL
+scan:
+  scanners:
+    - license
+    - misconfig
+    - secret
+    - vuln
+  # Flux's generated component manifests are upstream-owned (its controllers legitimately
+  # manage cluster Secrets — KSV-0041 et al.); scanning them only flags Flux itself. Agent scratch
+  # is git-ignored and may contain source checkouts used for version verification, not deliverables.
+  skip-dirs:
+    - .agents/tmp
+    - clusters/local/flux-system
+    - clusters/gcp/flux-system
+vulnerability:
+  ignore-unfixed: true
+misconfiguration:
+  # SOPS-encrypted Secrets are ciphertext, not plaintext leaks; the bridge chart is rendered
+  # and schema-checked by kubeconform, so skip Helm-template heuristics here.
+  helm:
+    values: []

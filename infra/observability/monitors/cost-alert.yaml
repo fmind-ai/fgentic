@@ -1,0 +1,32 @@
+# LLM spend-rate alert (SPEC §9.5): unbounded automated invocation is the platform's #1 cost
+# failure mode (D7/D8) — page when sustained token throughput exceeds the expected budget.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: llm-spend
+  namespace: monitoring
+spec:
+  groups:
+    - name: llm-spend
+      rules:
+        # Keep the dimensions buyers need for a provider/model cost breakdown while removing
+        # scrape-target and route cardinality. Dashboards can query this provider-neutral series.
+        - record: system_model_token_type:agentgateway_gen_ai_client_token_usage_sum:increase15m
+          expr: >-
+            sum by (gen_ai_system, gen_ai_request_model, gen_ai_token_type)
+            (increase(agentgateway_gen_ai_client_token_usage_sum[15m]))
+        - alert: LLMTokenBurnHigh
+          # Aggregate every provider/model; platform-settings owns the deployment-specific budget.
+          expr: >-
+            sum(system_model_token_type:agentgateway_gen_ai_client_token_usage_sum:increase15m)
+            > ${llm_usage_budget_15m}
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: LLM token throughput is unusually high
+            description: >-
+              More than ${llm_usage_budget_15m} model tokens were consumed in 15 minutes through
+              agentgateway across all providers and models. Check for mention storms, agent loops,
+              or a misbehaving automation (bridge rate limits and this global token budget bound
+              the current blast radius; per-room budgets are tracked in issue #99).

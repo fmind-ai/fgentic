@@ -1,0 +1,12 @@
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: llm-demo
+  namespace: agentgateway-system
+spec:
+  ai:
+    provider:
+      openai:
+        model: ${llm_model}
+      host: demo-llm.models.svc.cluster.local
+      port: 80

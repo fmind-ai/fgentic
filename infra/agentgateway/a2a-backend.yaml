@@ -1,0 +1,13 @@
+# A2A backend: routes agent-to-agent calls to kagent's controller, which serves every declarative
+# Agent (with a2aConfig) as an A2A server at /api/a2a/<namespace>/<name>. Fronting kagent's A2A
+# through agentgateway keeps LLM + MCP + A2A in one telemetry plane (governance/observability; it
+# does not inspect A2A responses — the who-can-call-whom allowlist lives in the bridge).
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: kagent-a2a
+  namespace: agentgateway-system
+spec:
+  a2a:
+    host: kagent-controller.kagent.svc.cluster.local
+    port: 8083

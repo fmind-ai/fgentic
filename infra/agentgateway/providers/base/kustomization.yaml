@@ -1,0 +1,21 @@
+# Shared route component owned and pruned with the selected provider. The replacement binds the
+# route to the profile's single backend without duplicating route manifests or interpolating names.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - llm-route.yaml
+replacements:
+  - source:
+      group: agentgateway.dev
+      version: v1alpha1
+      kind: AgentgatewayBackend
+      fieldPath: metadata.name
+    targets:
+      - select:
+          group: gateway.networking.k8s.io
+          version: v1
+          kind: HTTPRoute
+          name: llm
+          namespace: agentgateway-system
+        fieldPaths:
+          - spec.rules.0.backendRefs.0.name

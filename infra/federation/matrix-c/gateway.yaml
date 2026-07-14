@@ -1,0 +1,51 @@
+# C owns a distinct leaf certificate and Gateway listeners while sharing the Traefik data plane.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: matrix-c-tls
+  namespace: gateway
+spec:
+  secretName: matrix-c-tls
+  issuerRef:
+    kind: ClusterIssuer
+    name: ${cluster_issuer}
+  dnsNames:
+    - ${federation_denied_server_name}
+    - matrix.${federation_denied_server_name}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: federation-c
+  namespace: gateway
+spec:
+  gatewayClassName: traefik
+  listeners:
+    - name: https-wellknown-c
+      protocol: HTTPS
+      port: 443
+      hostname: ${federation_denied_server_name}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: matrix-c-tls
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix-c
+    - name: https-matrix-c
+      protocol: HTTPS
+      port: 443
+      hostname: matrix.${federation_denied_server_name}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: matrix-c-tls
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix-c

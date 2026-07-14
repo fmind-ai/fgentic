@@ -1,0 +1,73 @@
+# Public TLS terminates at Traefik, but only these two exact method/path pairs can reach the
+# dedicated agentgateway listener. No prefix route exposes another kagent Agent.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: federated-docs-qa-public
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+    - name: fgentic-gateway
+      namespace: gateway
+      sectionName: https-a2a
+  hostnames:
+    - a2a.${server_name}
+  rules:
+    - matches:
+        - method: GET
+          path:
+            type: Exact
+            value: /api/a2a/kagent/docs-qa/.well-known/agent-card.json
+      backendRefs:
+        - name: agentgateway-proxy
+          port: 8081
+    - matches:
+        - method: POST
+          path:
+            type: Exact
+            value: /api/a2a/kagent/docs-qa
+      backendRefs:
+        - name: agentgateway-proxy
+          port: 8081
+---
+# Keep AgentCard delivery on its own route so it can remain anonymous while invocation requires
+# a verified org-B JWT. The direct-response policy serves it without an upstream backend.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: federated-docs-qa-card
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+    - name: agentgateway-proxy
+      sectionName: federation-a2a
+  hostnames:
+    - a2a.${server_name}
+  rules:
+    - matches:
+        - method: GET
+          path:
+            type: Exact
+            value: /api/a2a/kagent/docs-qa/.well-known/agent-card.json
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: federated-docs-qa
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+    - name: agentgateway-proxy
+      sectionName: federation-a2a
+  hostnames:
+    - a2a.${server_name}
+  rules:
+    - matches:
+        - method: POST
+          path:
+            type: Exact
+            value: /api/a2a/kagent/docs-qa
+      backendRefs:
+        - name: federated-docs-qa-a2a
+          group: agentgateway.dev
+          kind: AgentgatewayBackend

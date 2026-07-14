@@ -1,0 +1,176 @@
+{{- if ne (int .Values.replicaCount) 1 }}
+{{- fail "matrix-a2a-bridge requires replicaCount=1 to preserve per-room ordering" }}
+{{- end }}
+{{- $mediaMaxBytes := include "matrix-a2a-bridge.nonNegativeDecimal" (list "config.mediaMaxBytes" .Values.config.mediaMaxBytes) }}
+{{- $mediaMaxTotalBytes := include "matrix-a2a-bridge.nonNegativeDecimal" (list "config.mediaMaxTotalBytes" .Values.config.mediaMaxTotalBytes) }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "matrix-a2a-bridge.fullname" . }}
+  labels:
+    {{- include "matrix-a2a-bridge.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  # Two appservice consumers have independent room queues. A zero-surge rollout deletes the old
+  # pod before creating the new one, preserving FIFO/context ordering without a Recreate migration.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  selector:
+    matchLabels:
+      {{- include "matrix-a2a-bridge.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "matrix-a2a-bridge.selectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      serviceAccountName: {{ include "matrix-a2a-bridge.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: bridge
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: []
+          ports:
+            - name: appservice
+              containerPort: {{ .Values.config.listenPort }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.config.metricsPort }}
+              protocol: TCP
+          env:
+            - name: METRICS_PORT
+              value: {{ .Values.config.metricsPort | quote }}
+            - name: SERVER_NAME
+              value: {{ .Values.config.serverName | quote }}
+            - name: HOMESERVER_URL
+              value: {{ .Values.config.homeserverURL | quote }}
+            - name: A2A_BASE_URL
+              value: {{ .Values.config.a2aBaseURL | quote }}
+            {{- if .Values.a2aAuthentication.enabled }}
+            - name: A2A_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.a2aAuthentication.secretName }}
+                  key: {{ .Values.a2aAuthentication.key }}
+            {{- end }}
+            - name: GHOST_PREFIX
+              value: {{ .Values.config.ghostPrefix | quote }}
+            - name: REQUEST_TIMEOUT
+              value: {{ .Values.config.requestTimeout | quote }}
+            - name: TASK_TIMEOUT
+              value: {{ .Values.config.taskTimeout | quote }}
+            - name: INPUT_WAIT_TIMEOUT
+              value: {{ .Values.config.inputWaitTimeout | quote }}
+            - name: SHUTDOWN_TIMEOUT
+              value: {{ .Values.config.shutdownTimeout | quote }}
+            - name: CONCURRENCY
+              value: {{ .Values.config.concurrency | quote }}
+            - name: ROOM_QUEUE_CAPACITY
+              value: {{ .Values.config.roomQueueCapacity | quote }}
+            - name: GLOBAL_QUEUE_CAPACITY
+              value: {{ .Values.config.globalQueueCapacity | quote }}
+            - name: SENDER_RATE_PER_MINUTE
+              value: {{ .Values.config.senderRatePerMinute | quote }}
+            - name: SENDER_RATE_BURST
+              value: {{ .Values.config.senderRateBurst | quote }}
+            - name: ROOM_RATE_PER_MINUTE
+              value: {{ .Values.config.roomRatePerMinute | quote }}
+            - name: ROOM_RATE_BURST
+              value: {{ .Values.config.roomRateBurst | quote }}
+            - name: RATE_LIMIT_BUCKET_CAPACITY
+              value: {{ .Values.config.rateLimitBucketCapacity | quote }}
+            - name: MEDIA_MAX_BYTES
+              value: {{ $mediaMaxBytes | quote }}
+            - name: MEDIA_MAX_TOTAL_BYTES
+              value: {{ $mediaMaxTotalBytes | quote }}
+            {{- if .Values.config.mediaMimeAllowlist }}
+            - name: MEDIA_MIME_ALLOWLIST
+              value: {{ join "," .Values.config.mediaMimeAllowlist | quote }}
+            {{- end }}
+            {{- if .Values.database.enabled }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.secretName }}
+                  key: {{ .Values.database.key }}
+            {{- end }}
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.config.logFormat | quote }}
+            - name: LISTEN_PORT
+              value: {{ .Values.config.listenPort | quote }}
+            - name: REGISTRATION_PATH
+              value: /etc/matrix-a2a-bridge/registration.yaml
+            - name: AGENTS_PATH
+              value: /etc/matrix-a2a-bridge/agents/agents.yaml
+            - name: AGENTS_RELOAD_INTERVAL
+              value: {{ .Values.config.agentsReloadInterval | quote }}
+            - name: AGENT_CARD_REFRESH_INTERVAL
+              value: {{ .Values.config.agentCardRefreshInterval | quote }}
+            {{- if .Values.config.otelEndpoint }}
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: {{ .Values.config.otelEndpoint | quote }}
+            {{- end }}
+            {{- if .Values.config.stagingRooms }}
+            - name: STAGING_ROOMS
+              value: {{ join "," .Values.config.stagingRooms | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: registration
+              mountPath: /etc/matrix-a2a-bridge/registration.yaml
+              subPath: {{ .Values.registration.key }}
+              readOnly: true
+            - name: agents
+              # Mount the whole projected ConfigMap directory: Kubernetes updates its atomic
+              # symlink, which the bridge polls. A subPath mount would stay frozen forever.
+              mountPath: /etc/matrix-a2a-bridge/agents
+              readOnly: true
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /_matrix/mau/live
+              port: appservice
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /_matrix/mau/ready
+              port: appservice
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: registration
+          secret:
+            secretName: {{ .Values.registration.secretName }}
+        - name: agents
+          configMap:
+            name: {{ include "matrix-a2a-bridge.fullname" . }}-agents
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

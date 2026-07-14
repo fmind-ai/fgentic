@@ -1,0 +1,24 @@
+# Optional additions composed into the canonical Postgres Flux layer. Keeping the Cluster under
+# one Flux field manager lets multiple bridge components append independent roles safely.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - database.yaml
+patches:
+  - target:
+      group: postgresql.cnpg.io
+      version: v1
+      kind: Cluster
+      name: platform-pg
+      namespace: postgres
+    patch: |
+      - op: add
+        path: /spec/managed/roles/-
+        value:
+          name: telegrambridge
+          login: true
+          passwordSecret:
+            name: pg-telegrambridge
+      - op: add
+        path: /spec/postgresql/pg_hba/0
+        value: hostssl telegrambridge telegrambridge all scram-sha-256

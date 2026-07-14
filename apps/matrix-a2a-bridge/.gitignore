@@ -1,0 +1,8 @@
+bin/
+tmp/
+coverage.out
+*.coverprofile
+# Never commit a real registration (contains as_token/hs_token) or resolved agents override.
+registration.yaml
+agents.yaml
+*.dec.yaml

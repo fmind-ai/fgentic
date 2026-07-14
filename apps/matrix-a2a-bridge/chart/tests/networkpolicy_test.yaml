@@ -1,0 +1,31 @@
+suite: bridge network policy
+templates:
+  - templates/networkpolicy.yaml
+tests:
+  - it: allows only configured namespaces on the appservice port by default
+    asserts:
+      - equal:
+          path: spec.policyTypes
+          value:
+            - Ingress
+      - equal:
+          path: spec.ingress[0].ports[0].port
+          value: 29331
+      - contains:
+          path: spec.ingress[0].from
+          content:
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: matrix
+      - contains:
+          path: spec.ingress[0].from
+          content:
+            namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: monitoring
+  - it: renders no policy when explicitly disabled
+    set:
+      networkPolicy.enabled: false
+    asserts:
+      - hasDocuments:
+          count: 0

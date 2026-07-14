@@ -1,0 +1,66 @@
+# B owns a distinct leaf certificate and Gateway listeners while sharing the Traefik data plane.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: matrix-b-tls
+  namespace: gateway
+spec:
+  secretName: matrix-b-tls
+  issuerRef:
+    kind: ClusterIssuer
+    name: ${cluster_issuer}
+  dnsNames:
+    - ${federation_partner_server_name}
+    - matrix.${federation_partner_server_name}
+    - id.${federation_partner_server_name}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: federation-b
+  namespace: gateway
+spec:
+  gatewayClassName: traefik
+  listeners:
+    - name: https-wellknown-b
+      protocol: HTTPS
+      port: 443
+      hostname: ${federation_partner_server_name}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: matrix-b-tls
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix-b
+    - name: https-matrix-b
+      protocol: HTTPS
+      port: 443
+      hostname: matrix.${federation_partner_server_name}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: matrix-b-tls
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix-b
+    - name: https-id-b
+      protocol: HTTPS
+      port: 443
+      hostname: id.${federation_partner_server_name}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: matrix-b-tls
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: keycloak

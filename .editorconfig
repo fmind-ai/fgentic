@@ -1,0 +1,28 @@
+# EditorConfig — https://editorconfig.org
+# Editor hints that mirror the authoritative formatters (dprint for config/markup,
+# gofmt/gofumpt for Go, ruff for Python). dprint stays the source of truth in CI.
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 2
+
+# Go is tab-indented (gofmt).
+[*.go]
+indent_style = tab
+
+# Python is 4-space (ruff/PEP 8).
+[*.{py,pyi}]
+indent_size = 4
+
+# Makefiles require real tabs.
+[{Makefile,*.mk}]
+indent_style = tab
+
+# Markdown: trailing whitespace can be a hard line break; dprint does not wrap it.
+[*.md]
+trim_trailing_whitespace = false

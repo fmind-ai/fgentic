@@ -1,0 +1,72 @@
+# Local k3d cluster for Fgentic. Binds loopback 80/443 to the Traefik/Gateway LoadBalancer so
+# Element Web + Synapse + MAS are reachable at their canonical https://*.fgentic.localhost URLs
+# (ESS bakes https public URLs into its config — a port suffix would break MAS/Element). K3s does
+# run its embedded kube-router NetworkPolicy controller, but this constrained rootless/userns host
+# aborts the generated iptables-restore with a netlink "Message too large" error. Treat local
+# policies as intent-only and run security conformance on a known enforcing cluster.
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: fgentic
+servers: 1
+agents: 0
+image: rancher/k3s:v1.35.5-k3s1
+files:
+  # k3d copies both files before k3s starts. The marker creates the log directory without a
+  # host bind mount, so audit records stay inside the disposable node container.
+  - source: k3d-audit-policy.yaml
+    destination: /etc/fgentic/audit-policy.yaml
+    nodeFilters:
+      - server:*
+  - source: |
+      managed by infra/k3d-config.yaml
+    destination: /var/log/kubernetes/audit/.fgentic-managed
+    nodeFilters:
+      - server:*
+ports:
+  - port: 127.0.0.1:80:80
+    nodeFilters:
+      - loadbalancer
+  - port: 127.0.0.1:443:443
+    nodeFilters:
+      - loadbalancer
+options:
+  k3s:
+    extraArgs:
+      # Disable k3s's bundled Traefik + servicelb; we install our own Traefik (Gateway API)
+      # and use k3d's loadbalancer, matching the GKE Gateway API path.
+      - arg: --disable=traefik
+        nodeFilters:
+          - server:*
+      # Keep a request/response-body-suppressed trail for selected high-signal objects. Metadata
+      # is deliberate: Request/RequestResponse would persist Secret and ConfigMap bodies.
+      - arg: --kube-apiserver-arg=audit-policy-file=/etc/fgentic/audit-policy.yaml
+        nodeFilters:
+          - server:*
+      - arg: --kube-apiserver-arg=audit-log-path=/var/log/kubernetes/audit/audit.log
+        nodeFilters:
+          - server:*
+      # At most the current 10 MiB file plus three backups; age also expires stale backups.
+      - arg: --kube-apiserver-arg=audit-log-maxsize=10
+        nodeFilters:
+          - server:*
+      - arg: --kube-apiserver-arg=audit-log-maxbackup=3
+        nodeFilters:
+          - server:*
+      - arg: --kube-apiserver-arg=audit-log-maxage=7
+        nodeFilters:
+          - server:*
+      # Tolerate user-namespace/rootless hosts (ChromeOS crostini, rootless Docker) where the
+      # kubelet cannot write kernel flags under /proc/sys; harmless on regular Linux.
+      - arg: --kubelet-arg=feature-gates=KubeletInUserNamespace=true
+        nodeFilters:
+          - server:*
+      - arg: --kubelet-arg=fail-cgroupv1=false
+        nodeFilters:
+          - server:*
+      # Hosts without br_netfilter (ChromeOS/termina kernels) cannot conntrack bridged traffic,
+      # so same-node pod->Service replies bypass un-DNAT and time out; masquerade-all forces the
+      # reply path through the node. Harmless elsewhere (services see the node IP as source).
+      - arg: --kube-proxy-arg=masquerade-all=true
+        nodeFilters:
+          - server:*

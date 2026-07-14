@@ -1,0 +1,211 @@
+{{- if ne (int .Values.replicaCount) 1 }}
+{{- fail "activitypub-agent-gateway requires replicaCount=1 (in-memory outbox + context threading)" }}
+{{- end }}
+{{- if and .Values.integrity.requireInbound (not .Values.policy.enabled) }}
+{{- fail "integrity.requireInbound needs policy.enabled (object integrity gates the border)" }}
+{{- end }}
+{{- if and .Values.budget.enabled (not .Values.policy.enabled) }}
+{{- fail "budget.enabled needs policy.enabled (budgets live in the border policy)" }}
+{{- end }}
+{{- if and .Values.groups.enabled (or (not .Values.integrity.enabled) (not .Values.policy.enabled)) }}
+{{- fail "groups.enabled needs integrity.enabled (signing key) and policy.enabled (border)" }}
+{{- end }}
+{{- if and .Values.statusFeed.enabled (or (not .Values.integrity.enabled) (not .Values.policy.enabled)) }}
+{{- fail "statusFeed.enabled needs integrity.enabled (signing key) and policy.enabled (border)" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "activitypub-agent-gateway.fullname" . }}
+  labels:
+    {{- include "activitypub-agent-gateway.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  selector:
+    matchLabels:
+      {{- include "activitypub-agent-gateway.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "activitypub-agent-gateway.selectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      serviceAccountName: {{ include "activitypub-agent-gateway.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: gateway
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: []
+          ports:
+            - name: http
+              containerPort: {{ .Values.config.listenPort }}
+              protocol: TCP
+            - name: metrics
+              containerPort: {{ .Values.config.metricsPort }}
+              protocol: TCP
+          env:
+            - name: SERVER_NAME
+              value: {{ .Values.config.serverName | quote }}
+            - name: PUBLIC_SCHEME
+              value: {{ .Values.config.publicScheme | quote }}
+            {{- if .Values.config.publicHost }}
+            - name: PUBLIC_HOST
+              value: {{ .Values.config.publicHost | quote }}
+            {{- end }}
+            {{- if .Values.config.a2aPublicBaseURL }}
+            - name: A2A_PUBLIC_BASE_URL
+              value: {{ .Values.config.a2aPublicBaseURL | quote }}
+            {{- end }}
+            - name: A2A_BASE_URL
+              value: {{ .Values.config.a2aBaseURL | quote }}
+            {{- if .Values.a2aAuthentication.enabled }}
+            - name: A2A_API_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.a2aAuthentication.secretName }}
+                  key: {{ .Values.a2aAuthentication.key }}
+            {{- end }}
+            - name: GHOST_PREFIX
+              value: {{ .Values.config.ghostPrefix | quote }}
+            - name: REQUEST_TIMEOUT
+              value: {{ .Values.config.requestTimeout | quote }}
+            - name: TASK_TIMEOUT
+              value: {{ .Values.config.taskTimeout | quote }}
+            - name: SHUTDOWN_TIMEOUT
+              value: {{ .Values.config.shutdownTimeout | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.config.logFormat | quote }}
+            - name: LISTEN_PORT
+              value: {{ .Values.config.listenPort | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.config.metricsPort | quote }}
+            - name: AGENTS_PATH
+              value: /etc/activitypub-agent-gateway/agents/agents.yaml
+            {{- if .Values.policy.enabled }}
+            - name: POLICY_PATH
+              value: /etc/activitypub-agent-gateway/policy/policy.json
+            - name: POLICY_RELOAD_INTERVAL
+              value: {{ .Values.policy.reloadInterval | quote }}
+            - name: SIGNATURE_MAX_SKEW
+              value: {{ .Values.policy.signatureMaxSkew | quote }}
+            {{- end }}
+            {{- if .Values.integrity.enabled }}
+            - name: INTEGRITY_KEY_PATH
+              value: /etc/activitypub-agent-gateway/signing-key/{{ .Values.integrity.secretKey }}
+            - name: INTEGRITY_KEY_FRAGMENT
+              value: {{ .Values.integrity.keyFragment | quote }}
+            - name: INTEGRITY_REQUIRE_INBOUND
+              value: {{ .Values.integrity.requireInbound | quote }}
+            {{- end }}
+            {{- if .Values.identity.enabled }}
+            - name: IDENTITY_KEY_PATH
+              value: /etc/activitypub-agent-gateway/identity-key/{{ .Values.identity.secretKey }}
+            {{- end }}
+            {{- if .Values.budget.enabled }}
+            - name: BUDGET_ENABLED
+              value: "true"
+            - name: BUDGET_WINDOW
+              value: {{ .Values.budget.window | quote }}
+            - name: BUDGET_CAPACITY
+              value: {{ .Values.budget.capacity | quote }}
+            {{- end }}
+            {{- if .Values.groups.enabled }}
+            - name: GROUPS_PATH
+              value: /etc/activitypub-agent-gateway/groups/groups.yaml
+            {{- end }}
+            {{- if .Values.statusFeed.enabled }}
+            - name: STATUS_FEED_ENABLED
+              value: "true"
+            - name: STATUS_WINDOW
+              value: {{ .Values.statusFeed.window | quote }}
+            - name: STATUS_MAX_PER_WINDOW
+              value: {{ .Values.statusFeed.maxPerWindow | quote }}
+            {{- end }}
+          volumeMounts:
+            - name: agents
+              # Mount the whole projected ConfigMap directory (atomic symlink swap on update).
+              mountPath: /etc/activitypub-agent-gateway/agents
+              readOnly: true
+            {{- if .Values.policy.enabled }}
+            - name: policy
+              # Whole-directory mount so the projected policy.json hot-reloads without a restart.
+              mountPath: /etc/activitypub-agent-gateway/policy
+              readOnly: true
+            {{- end }}
+            {{- if .Values.integrity.enabled }}
+            - name: signing-key
+              mountPath: /etc/activitypub-agent-gateway/signing-key
+              readOnly: true
+            {{- end }}
+            {{- if .Values.identity.enabled }}
+            - name: identity-key
+              mountPath: /etc/activitypub-agent-gateway/identity-key
+              readOnly: true
+            {{- end }}
+            {{- if .Values.groups.enabled }}
+            - name: groups
+              mountPath: /etc/activitypub-agent-gateway/groups
+              readOnly: true
+            {{- end }}
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: agents
+          configMap:
+            name: {{ include "activitypub-agent-gateway.fullname" . }}-agents
+        {{- if .Values.policy.enabled }}
+        - name: policy
+          configMap:
+            name: {{ .Values.policy.configMapName }}
+        {{- end }}
+        {{- if .Values.integrity.enabled }}
+        - name: signing-key
+          secret:
+            secretName: {{ .Values.integrity.secretName }}
+            defaultMode: 0400
+        {{- end }}
+        {{- if .Values.identity.enabled }}
+        - name: identity-key
+          secret:
+            secretName: {{ .Values.identity.secretName }}
+            defaultMode: 0400
+        {{- end }}
+        {{- if .Values.groups.enabled }}
+        - name: groups
+          configMap:
+            name: {{ include "activitypub-agent-gateway.fullname" . }}-groups
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

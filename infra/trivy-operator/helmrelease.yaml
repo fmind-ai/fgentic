@@ -1,0 +1,176 @@
+# Vulnerability-only Trivy Operator profile. Report CRDs stay in the scanned namespace while its
+# one-at-a-time Jobs run in an isolated restricted namespace under an admission-enforced quota.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: trivy-operator
+  namespace: trivy-system
+spec:
+  interval: 30m
+  timeout: 12m
+  install:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  upgrade:
+    crds: CreateReplace
+    remediation:
+      retries: 3
+  chart:
+    spec:
+      chart: ./deploy/helm
+      reconcileStrategy: Revision
+      sourceRef:
+        kind: GitRepository
+        name: trivy-operator
+        namespace: flux-system
+  # Chart 0.34.0 emits aggregate report-view ClusterRoles even when rbac.create=false. Do not
+  # silently extend every built-in view/edit/admin principal; triage access must be explicit.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              group: rbac.authorization.k8s.io
+              version: v1
+              kind: ClusterRole
+              name: aggregate-vulnerability-reports-view
+            patch: |
+              $patch: delete
+              apiVersion: rbac.authorization.k8s.io/v1
+              kind: ClusterRole
+              metadata:
+                name: aggregate-vulnerability-reports-view
+          - target:
+              group: rbac.authorization.k8s.io
+              version: v1
+              kind: ClusterRole
+              name: aggregate-config-audit-reports-view
+            patch: |
+              $patch: delete
+              apiVersion: rbac.authorization.k8s.io/v1
+              kind: ClusterRole
+              metadata:
+                name: aggregate-config-audit-reports-view
+          - target:
+              group: rbac.authorization.k8s.io
+              version: v1
+              kind: ClusterRole
+              name: aggregate-exposed-secret-reports-view
+            patch: |
+              $patch: delete
+              apiVersion: rbac.authorization.k8s.io/v1
+              kind: ClusterRole
+              metadata:
+                name: aggregate-exposed-secret-reports-view
+  values:
+    targetNamespaces: cert-manager,gateway,cnpg-system,postgres,keycloak,matrix,agentgateway-system,kagent,bridge,bridges,monitoring,models
+    targetWorkloads: pod,replicaset,statefulset,daemonset,cronjob,job
+    operator:
+      scanJobTTL: 30s
+      scanJobTimeout: 10m
+      scanJobsConcurrentLimit: 1
+      scanJobsRetryDelay: 1m
+      vulnerabilityScannerEnabled: true
+      sbomGenerationEnabled: false
+      clusterSbomCacheEnabled: false
+      scannerReportTTL: 24h
+      configAuditScannerEnabled: false
+      rbacAssessmentScannerEnabled: false
+      infraAssessmentScannerEnabled: false
+      clusterComplianceEnabled: false
+      accessGlobalSecretsAndServiceAccount: false
+      metricsFindingsEnabled: true
+      metricsVulnIdEnabled: false
+      exposedSecretScannerEnabled: false
+      metricsExposedSecretInfo: false
+      metricsConfigAuditInfo: false
+      metricsRbacAssessmentInfo: false
+      metricsInfraAssessmentInfo: false
+      metricsImageInfo: false
+      metricsClusterComplianceInfo: false
+      podLabels:
+        fgentic.dev/trivy-network: "true"
+    image:
+      registry: mirror.gcr.io
+      repository: aquasec/trivy-operator
+      tag: 0.32.0@sha256:d4a61c4607e2931bd2615bf3bcf8912669d11d194c44c77edd413e6301b50c5b
+      pullPolicy: IfNotPresent
+    service:
+      headless: false
+    serviceMonitor:
+      enabled: false
+    trivyOperator:
+      scanJobsInSameNamespace: false
+      useGCRServiceAccount: false
+      scanJobAutomountServiceAccountToken: false
+      scanJobPodTemplateLabels: fgentic.dev/trivy-network=true
+      scanJobPodTemplatePodSecurityContext:
+        runAsNonRoot: true
+        runAsUser: 10000
+        runAsGroup: 10000
+        fsGroup: 10000
+        seccompProfile:
+          type: RuntimeDefault
+      scanJobPodTemplateContainerSecurityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop:
+            - ALL
+        privileged: false
+        readOnlyRootFilesystem: true
+        runAsNonRoot: true
+        runAsUser: 10000
+    trivy:
+      image:
+        registry: mirror.gcr.io
+        repository: aquasec/trivy
+        tag: 0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f
+        pullPolicy: IfNotPresent
+      mode: Standalone
+      command: image
+      severity: HIGH,CRITICAL
+      slow: true
+      ignoreUnfixed: false
+      timeout: 9m0s
+      resources:
+        requests:
+          cpu: 100m
+          memory: 128Mi
+          ephemeralStorage: 256Mi
+        limits:
+          cpu: 500m
+          memory: 512Mi
+          ephemeralStorage: 2Gi
+    compliance:
+      specs: []
+    rbac:
+      create: false
+    serviceAccount:
+      create: false
+      name: trivy-operator
+    automountServiceAccountToken: true
+    podSecurityContext:
+      runAsNonRoot: true
+      runAsUser: 10000
+      runAsGroup: 10000
+      fsGroup: 10000
+      seccompProfile:
+        type: RuntimeDefault
+    securityContext:
+      privileged: false
+      allowPrivilegeEscalation: false
+      readOnlyRootFilesystem: true
+      runAsNonRoot: true
+      runAsUser: 10000
+      capabilities:
+        drop:
+          - ALL
+    resources:
+      requests:
+        cpu: 50m
+        memory: 64Mi
+        ephemeral-storage: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+        ephemeral-storage: 512Mi

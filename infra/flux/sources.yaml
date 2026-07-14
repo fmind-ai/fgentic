@@ -1,0 +1,126 @@
+# Flux chart sources for the platform. Classic Helm repos + OCI registries, all in flux-system so
+# HelmReleases in any namespace can reference them. Pin versions here (Renovate keeps them current).
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: jetstack
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: https://charts.jetstack.io
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: traefik
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: https://traefik.github.io/charts
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: cnpg
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: https://cloudnative-pg.github.io/charts
+---
+# KeycloakX is the maintained Apache-2.0 chart that deploys Keycloak's official Quay image.
+# Bitnami's public Keycloak images/charts stopped receiving production updates in August 2025;
+# the official Keycloak Operator is upstream-owned but disproportionate for one optional instance.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: codecentric
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: https://codecentric.github.io/helm-charts
+---
+# Element Server Suite (Synapse + MAS + Element + well-known). Pin to the latest release:
+# https://github.com/element-hq/ess-helm/releases
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: ess-matrix-stack
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: oci://ghcr.io/element-hq/ess-helm/matrix-stack
+  ref:
+    tag: "26.6.2"
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: agentgateway-crds
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: oci://cr.agentgateway.dev/charts/agentgateway-crds
+  ref:
+    tag: v1.3.1
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: OCIRepository
+metadata:
+  name: agentgateway
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: oci://cr.agentgateway.dev/charts/agentgateway
+  ref:
+    tag: v1.3.1
+---
+# kagent charts come through an OCI-type HelmRepository (not chartRef->OCIRepository): Flux
+# appends the artifact digest as semver build metadata on chartRef pulls, and the kagent chart
+# stamps raw .Chart.Version into app.kubernetes.io/version — '+' is invalid in a label value.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: kagent
+  namespace: flux-system
+spec:
+  interval: 24h
+  type: oci
+  url: oci://ghcr.io/kagent-dev/kagent/helm
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: prometheus-community
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: https://prometheus-community.github.io/helm-charts
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: open-telemetry
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: https://open-telemetry.github.io/opentelemetry-helm-charts
+---
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: jaegertracing
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: https://jaegertracing.github.io/helm-charts
+---
+# Official vLLM Production Stack chart; the selected vLLM provider owns its HelmRelease.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: HelmRepository
+metadata:
+  name: vllm
+  namespace: flux-system
+spec:
+  interval: 24h
+  url: https://vllm-project.github.io/production-stack

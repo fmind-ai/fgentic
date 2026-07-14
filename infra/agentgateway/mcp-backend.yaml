@@ -1,0 +1,18 @@
+# Governed MCP backend for kagent's read-only Kubernetes tool server. The target is static because
+# the Service lives in another namespace; agentgateway terminates the downstream MCP session and
+# opens the only agent-authorized connection to kagent-tools.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: kagent-tools
+  namespace: agentgateway-system
+spec:
+  mcp:
+    failureMode: FailClosed
+    targets:
+      - name: kagent-tools
+        static:
+          host: kagent-tools.kagent.svc.cluster.local
+          port: 8084
+          path: /mcp
+          protocol: StreamableHTTP

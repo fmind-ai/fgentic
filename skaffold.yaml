@@ -1,0 +1,36 @@
+apiVersion: skaffold/v4beta11
+kind: Config
+metadata:
+  name: fgentic
+# Local (k3d) inner loop for the Matrix<->A2A bridge only. The platform (ESS, agentgateway,
+# kagent, Postgres, gateway) is applied out of band (see the matrix-agents runbook); Skaffold
+# just builds/side-loads the bridge and deploys its Helm chart with live rebuild on change.
+build:
+  local:
+    push: false # local/k3d: side-load, don't push
+    useBuildkit: true
+  artifacts:
+    - image: ghcr.io/fmind/matrix-a2a-bridge
+      context: apps/matrix-a2a-bridge
+      docker:
+        dockerfile: Dockerfile
+manifests:
+  helm:
+    releases:
+      - name: matrix-a2a-bridge
+        chartPath: apps/matrix-a2a-bridge/chart
+        namespace: bridge
+        createNamespace: true
+        setValueTemplates:
+          image.repository: "{{.IMAGE_REPO_ghcr_io_fmind_matrix_a2a_bridge}}"
+          image.tag: "{{.IMAGE_TAG_ghcr_io_fmind_matrix_a2a_bridge}}@{{.IMAGE_DIGEST_ghcr_io_fmind_matrix_a2a_bridge}}"
+        valuesFiles:
+          - apps/matrix-a2a-bridge/chart/values.yaml
+profiles:
+  # Production parity: build and PUSH to GHCR so remote nodes can pull. Prefer the CI pipeline
+  # (multi-arch + signed + SBOM) for real production; this profile is for parity testing only.
+  - name: prod
+    build:
+      local:
+        push: true
+        useBuildkit: true

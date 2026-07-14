@@ -1,0 +1,71 @@
+# Fail closed for every current and future workload in this namespace. The additive policies below
+# expose only the proxy data/metrics ports and the controller xDS port to their intended clients.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentgateway-default-deny-ingress
+  namespace: agentgateway-system
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+---
+# Only the agent workloads (the bridge in ns `bridge` and kagent in ns `kagent`) may reach the
+# proxy data plane. Prometheus receives only the metrics port. These exact policies pass isolated
+# kind+Calico deny/allow conformance; repeat the active-cluster probe on each target CNI.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentgateway-allow-agents
+  namespace: agentgateway-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agentgateway-proxy
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: bridge
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kagent
+      ports:
+        - port: 8080
+          protocol: TCP
+    # Prometheus scrapes the proxy metrics port (:15020) — without this the observability layer
+    # silently loses the gateway's GenAI metrics (SPEC §4 F14).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - port: 15020
+          protocol: TCP
+---
+# The data-plane proxy must receive its configuration from the controller before its readiness
+# probe can pass. Select both namespace and workload identity so no other pod can reach xDS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentgateway-allow-xds
+  namespace: agentgateway-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agentgateway
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentgateway-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agentgateway-proxy
+      ports:
+        - port: 9978
+          protocol: TCP

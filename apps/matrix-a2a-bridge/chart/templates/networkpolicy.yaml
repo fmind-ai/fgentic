@@ -1,0 +1,27 @@
+{{- if .Values.networkPolicy.enabled -}}
+# Only the homeserver namespace(s) may reach the appservice transaction port; the homeserver
+# pushes room events here (PUT /_matrix/app/v1/transactions/{txnID}). Egress is left open so the
+# bridge can reach the homeserver Client-Server API and agentgateway/kagent for A2A.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "matrix-a2a-bridge.fullname" . }}
+  labels:
+    {{- include "matrix-a2a-bridge.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "matrix-a2a-bridge.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        {{- range .Values.networkPolicy.fromNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.config.listenPort }}
+{{- end }}

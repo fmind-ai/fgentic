@@ -1,0 +1,203 @@
+# Trace ingestion is deliberately a separate, single-purpose Collector: applications send OTLP,
+# and only the Collector may write to Jaeger. Logs and metrics retain their existing paths.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: otel-collector
+  namespace: monitoring
+spec:
+  interval: 30m
+  timeout: 10m
+  install:
+    remediation:
+      retries: -1
+  upgrade:
+    remediation:
+      retries: -1
+  chart:
+    spec:
+      chart: opentelemetry-collector
+      version: 0.165.0
+      sourceRef:
+        kind: HelmRepository
+        name: open-telemetry
+        namespace: flux-system
+  values:
+    mode: deployment
+    fullnameOverride: otel-collector
+    replicaCount: 1
+    image:
+      repository: ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-k8s
+      tag: 0.156.0
+      digest: sha256:4bb87d79b9f4f7971cf0c7c2fbf7decab3ddfda0a8f73794e98d9bc6fe77f609
+    serviceAccount:
+      automountServiceAccountToken: false
+    podSecurityContext:
+      runAsNonRoot: true
+      seccompProfile:
+        type: RuntimeDefault
+    securityContext:
+      allowPrivilegeEscalation: false
+      capabilities:
+        drop: [ALL]
+      readOnlyRootFilesystem: true
+    resources:
+      requests: { cpu: 25m, memory: 64Mi }
+      limits: { cpu: 500m, memory: 256Mi }
+    ports:
+      otlp:
+        enabled: true
+      otlp-http:
+        enabled: true
+      metrics:
+        enabled: true
+      jaeger-compact:
+        enabled: false
+      jaeger-thrift:
+        enabled: false
+      jaeger-grpc:
+        enabled: false
+      zipkin:
+        enabled: false
+    serviceMonitor:
+      enabled: true
+    # alternateConfig prevents the chart's debug logs/metrics pipelines from accepting data the
+    # reference does not store. The health extension is mandatory for the chart's probes.
+    alternateConfig:
+      extensions:
+        health_check:
+          endpoint: $${env:MY_POD_IP}:13133
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: $${env:MY_POD_IP}:4317
+            http:
+              endpoint: $${env:MY_POD_IP}:4318
+      processors:
+        memory_limiter:
+          check_interval: 5s
+          limit_percentage: 80
+          spike_limit_percentage: 25
+        batch: {}
+      exporters:
+        otlp_grpc/jaeger:
+          endpoint: jaeger.monitoring.svc.cluster.local:4317
+          tls:
+            insecure: true
+      service:
+        extensions: [health_check]
+        telemetry:
+          resource:
+            attributes:
+              - name: service.name
+                value: otel-collector
+          metrics:
+            readers:
+              - pull:
+                  exporter:
+                    prometheus:
+                      host: $${env:MY_POD_IP}
+                      port: 8888
+        pipelines:
+          traces:
+            receivers: [otlp]
+            processors: [memory_limiter, batch]
+            exporters: [otlp_grpc/jaeger]
+---
+# Jaeger v2's built-in memory backend keeps the reference cheap and dependency-free. It is
+# intentionally ephemeral; production storage choices and their trade-offs are in docs/observability.md.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: jaeger
+  namespace: monitoring
+spec:
+  interval: 30m
+  timeout: 10m
+  install:
+    remediation:
+      retries: -1
+  upgrade:
+    remediation:
+      retries: -1
+  chart:
+    spec:
+      chart: jaeger
+      version: 4.11.1
+      sourceRef:
+        kind: HelmRepository
+        name: jaegertracing
+        namespace: flux-system
+  values:
+    userconfig:
+      extensions:
+        healthcheckv2:
+          use_v2: true
+          http:
+            endpoint: 0.0.0.0:13133
+        jaeger_query:
+          storage:
+            traces: memory
+        jaeger_storage:
+          backends:
+            memory:
+              memory:
+                max_traces: 10000
+      receivers:
+        otlp:
+          protocols:
+            grpc:
+              endpoint: 0.0.0.0:4317
+            http:
+              endpoint: 0.0.0.0:4318
+      processors:
+        batch: {}
+      exporters:
+        jaeger_storage_exporter:
+          trace_storage: memory
+      service:
+        extensions: [jaeger_storage, jaeger_query, healthcheckv2]
+        pipelines:
+          traces:
+            receivers: [otlp]
+            processors: [batch]
+            exporters: [jaeger_storage_exporter]
+        telemetry:
+          resource:
+            attributes:
+              - name: service.name
+                value: jaeger
+          metrics:
+            readers:
+              - pull:
+                  exporter:
+                    prometheus:
+                      host: 0.0.0.0
+                      port: 8888
+    jaeger:
+      replicas: 1
+      image:
+        tag: 2.19.0
+        digest: sha256:ede4864215be4cd85bd8c3129a2fea6c5713c5653c7282c429dba123014bc68b
+      serviceAccount:
+        automountServiceAccountToken: false
+      podSecurityContext:
+        runAsUser: 10001
+        runAsGroup: 10001
+        fsGroup: 10001
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      securityContext:
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: [ALL]
+        readOnlyRootFilesystem: true
+      resources:
+        requests: { cpu: 25m, memory: 96Mi }
+        limits: { cpu: 500m, memory: 256Mi }
+      ingress:
+        enabled: false
+      httproute:
+        enabled: false

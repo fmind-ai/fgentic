@@ -1,0 +1,14 @@
+# The AP gateway's own namespace (self-contained app deploy). Restricted PSS: the workload runs
+# non-root, read-only rootfs, no added capabilities.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: activitypub
+  labels:
+    fgentic.dev/managed: "true"
+    # The pre-publication deploy tag is rewritten to a digest only when CD publishes the image.
+    fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: small
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

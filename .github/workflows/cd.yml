@@ -1,0 +1,262 @@
+# Continuous delivery of the bridge image + chart (D13): build multi-arch → scan → SBOM + SLSA
+# attest → keyless cosign sign → publish the chart to OCI → commit both immutable digests into
+# the Flux deployment source. Flux keyless-verifies the chart before Helm can install it.
+name: CD
+on:
+  push:
+    branches: [main]
+    tags: ["v*"]
+    paths:
+      - apps/matrix-a2a-bridge/**
+      - .github/workflows/cd.yml
+  release:
+    types: [published]
+permissions:
+  actions: read # attach Syft output to a GitHub Release
+  artifact-metadata: write # link provenance to the GHCR artifact
+  attestations: write # persist SLSA/SBOM attestations
+  contents: write # commit the image digest back to the deploy manifest
+  id-token: write # keyless signing via OIDC
+  packages: write # push to GHCR
+concurrency:
+  # An auto-merged pin PR would add merge/check latency to every image publication and can be
+  # superseded by the next build. Keep the direct GitOps commit, serialize publishers, and retry
+  # against a moving main branch instead.
+  group: ${{ github.workflow }}-bridge-digest-pin
+  cancel-in-progress: false # never cancel a half-published release
+jobs:
+  bridge-image:
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+        with:
+          fetch-depth: 0 # digest-pin retries rebase onto concurrent main updates
+      - name: Install mise system
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+      - name: Set lower-case registry path
+        run: |
+          echo "IMAGE_REPOSITORY=$(echo "ghcr.io/${{ github.repository_owner }}/matrix-a2a-bridge" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+          echo "CHART_REPOSITORY=$(echo "ghcr.io/${{ github.repository_owner }}/charts/matrix-a2a-bridge" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+      - name: Select immutable image and chart versions
+        id: versions
+        run: |
+          short_sha="${GITHUB_SHA:0:12}"
+          base_chart_version=$(mise exec -- yq -er '.version' apps/matrix-a2a-bridge/chart/Chart.yaml)
+          if [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            release_version="${GITHUB_REF_NAME#v}"
+            [[ "$release_version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([+-][0-9A-Za-z.-]+)?$ ]] \
+              || { echo "Release tag is not SemVer: ${GITHUB_REF_NAME}" >&2; exit 1; }
+            chart_version="$release_version"
+            image_tags="${IMAGE_REPOSITORY}:sha-${GITHUB_SHA}"$'\n'"${IMAGE_REPOSITORY}:${GITHUB_REF_NAME}"
+          else
+            chart_version="${base_chart_version}-sha.${short_sha}"
+            image_tags="${IMAGE_REPOSITORY}:sha-${GITHUB_SHA}"$'\n'"${IMAGE_REPOSITORY}:latest"
+          fi
+          {
+            echo "chart-version=${chart_version}"
+            echo "image-tags<<EOF"
+            echo "${image_tags}"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+      - name: Set up QEMU (for multi-platform builds)
+        uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push image
+        id: build
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
+        with:
+          context: apps/matrix-a2a-bridge
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.versions.outputs.image-tags }}
+      - name: Scan pushed image (trivy)
+        # Vulnerabilities only: the repo trivy.yaml also enables the license scanner, which
+        # flags the distroless base's GPL OS packages — a deliberate, documented inclusion
+        # (SPEC §10), not a CI-actionable finding.
+        run: mise exec -- trivy image --scanners vuln --exit-code 1 --severity HIGH,CRITICAL "${{ env.IMAGE_REPOSITORY }}@${{ steps.build.outputs.digest }}"
+      - name: Install cosign
+        uses: sigstore/cosign-installer@398d4b0eeef1380460a10c8013a76f728fb906ac # v3
+      - name: Sign the image (keyless OIDC)
+        run: cosign sign --yes "${{ env.IMAGE_REPOSITORY }}@${{ steps.build.outputs.digest }}"
+      - name: Generate the image SBOM with Syft
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ env.IMAGE_REPOSITORY }}@${{ steps.build.outputs.digest }}
+          artifact-name: matrix-a2a-bridge-${{ github.sha }}.spdx.json
+          output-file: matrix-a2a-bridge.spdx.json
+          format: spdx-json
+          upload-artifact: true
+          upload-release-assets: false
+      - name: Attest image provenance
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
+        with:
+          subject-name: ${{ env.IMAGE_REPOSITORY }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          push-to-registry: true
+      - name: Attach the SBOM attestation as an OCI referrer
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
+        with:
+          subject-name: ${{ env.IMAGE_REPOSITORY }}
+          subject-digest: ${{ steps.build.outputs.digest }}
+          sbom-path: matrix-a2a-bridge.spdx.json
+          push-to-registry: true
+      - name: Package and publish the Helm chart to OCI
+        id: chart
+        env:
+          CHART_VERSION: ${{ steps.versions.outputs.chart-version }}
+        run: |
+          mkdir -p dist
+          mise exec -- helm package apps/matrix-a2a-bridge/chart \
+            --destination dist \
+            --version "${CHART_VERSION}" \
+            --app-version "sha-${GITHUB_SHA:0:12}"
+          chart="dist/matrix-a2a-bridge-${CHART_VERSION}.tgz"
+          output=$(mise exec -- helm push "$chart" "oci://${CHART_REPOSITORY%/matrix-a2a-bridge}")
+          echo "$output"
+          digest=$(sed -n 's/^Digest: //p' <<<"$output")
+          [[ "$digest" =~ ^sha256:[0-9a-f]{64}$ ]] \
+            || { echo "Could not parse chart digest from helm push" >&2; exit 1; }
+          echo "digest=${digest}" >> "$GITHUB_OUTPUT"
+      - name: Sign and attest the Helm chart
+        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
+        with:
+          subject-name: ${{ env.CHART_REPOSITORY }}
+          subject-digest: ${{ steps.chart.outputs.digest }}
+          push-to-registry: true
+      - name: Sign the Helm chart for Flux verification
+        run: cosign sign --yes "${CHART_REPOSITORY}@${{ steps.chart.outputs.digest }}"
+      - name: Verify keyless image and chart signatures
+        run: |
+          identity='^https://github\.com/fmind-ai/fgentic/\.github/workflows/cd\.yml@refs/(heads/main|tags/v.*)$'
+          issuer='https://token.actions.githubusercontent.com'
+          cosign verify \
+            --certificate-identity-regexp "$identity" \
+            --certificate-oidc-issuer "$issuer" \
+            "${IMAGE_REPOSITORY}@${{ steps.build.outputs.digest }}"
+          cosign verify \
+            --certificate-identity-regexp "$identity" \
+            --certificate-oidc-issuer "$issuer" \
+            "${CHART_REPOSITORY}@${{ steps.chart.outputs.digest }}"
+      - name: Require public deploy artifacts before enabling keyless Flux pulls
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for package in matrix-a2a-bridge charts%2Fmatrix-a2a-bridge; do
+            visibility=$(gh api "/orgs/${{ github.repository_owner }}/packages/container/${package}" --jq .visibility)
+            if [[ "$visibility" != "public" ]]; then
+              echo "GHCR package ${package//%2F//} is ${visibility}; make it public before Flux is switched to keyless OCI verification." >&2
+              exit 1
+            fi
+          done
+      - name: Pin the digest in the deploy manifest
+        if: github.ref == 'refs/heads/main'
+        env:
+          CHART_DIGEST: ${{ steps.chart.outputs.digest }}
+        run: |
+          mise exec -- yq -i \
+            'with(select(.kind == "OCIRepository");
+              .spec.suspend = false |
+              .spec.ref.digest = strenv(CHART_DIGEST))' \
+            apps/matrix-a2a-bridge/deploy/helmrelease.yaml
+          mise exec -- yq -i \
+            'with(select(.kind == "HelmRelease");
+              .spec.chartRef = {
+                "kind": "OCIRepository",
+                "name": "matrix-a2a-bridge-chart",
+                "namespace": "flux-system"
+              } |
+              del(.spec.chart) |
+              .spec.values.image.tag = "sha-${{ github.sha }}@${{ steps.build.outputs.digest }}")' \
+            apps/matrix-a2a-bridge/deploy/helmrelease.yaml
+      - name: Commit the digest (Flux picks it up)
+        if: github.ref == 'refs/heads/main'
+        run: |
+          manifest=apps/matrix-a2a-bridge/deploy/helmrelease.yaml
+          attempts=5
+
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add "$manifest"
+          git diff --cached --quiet && exit 0
+          git commit -m "chore(bridge): pin image sha-${GITHUB_SHA::7} [skip ci]"
+
+          for attempt in $(seq 1 "$attempts"); do
+            git fetch origin main
+            if ! git rebase origin/main; then
+              conflicts=$(git diff --name-only --diff-filter=U)
+              if [ "$conflicts" != "$manifest" ]; then
+                echo "Digest-pin rebase has an unexpected conflict: $conflicts" >&2
+                git rebase --abort
+                exit 1
+              fi
+
+              # A queued digest publisher may have updated this CI-owned line first. Reapply
+              # this build's immutable digest; never resolve unrelated conflicts automatically.
+              git restore --source=REBASE_HEAD --worktree "$manifest"
+              CHART_DIGEST='${{ steps.chart.outputs.digest }}' mise exec -- yq -i \
+                'with(select(.kind == "OCIRepository");
+                  .spec.suspend = false |
+                  .spec.ref.digest = strenv(CHART_DIGEST))' \
+                "$manifest"
+              mise exec -- yq -i \
+                'with(select(.kind == "HelmRelease");
+                  .spec.chartRef = {
+                    "kind": "OCIRepository",
+                    "name": "matrix-a2a-bridge-chart",
+                    "namespace": "flux-system"
+                  } |
+                  del(.spec.chart) |
+                  .spec.values.image.tag = "sha-${{ github.sha }}@${{ steps.build.outputs.digest }}")' \
+                "$manifest"
+              git add "$manifest"
+              if git diff --cached --quiet; then
+                git rebase --skip
+              else
+                GIT_EDITOR=true git rebase --continue
+              fi
+            fi
+
+            if git push origin HEAD:main; then
+              exit 0
+            fi
+            if [ "$attempt" -eq "$attempts" ]; then
+              echo "Digest pin could not be pushed after $attempts attempts" >&2
+              exit 1
+            fi
+
+            delay=$((attempt + RANDOM % 5))
+            echo "main moved during push; retrying in ${delay}s ($attempt/$attempts)"
+            sleep "$delay"
+          done
+
+  release-sbom:
+    if: github.event_name == 'release'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Set lower-case release image path
+        run: echo "IMAGE_REPOSITORY=$(echo "ghcr.io/${{ github.repository_owner }}/matrix-a2a-bridge" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Attach the released image SBOM to the GitHub Release
+        uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
+        with:
+          image: ${{ env.IMAGE_REPOSITORY }}:${{ github.event.release.tag_name }}
+          artifact-name: matrix-a2a-bridge-${{ github.event.release.tag_name }}.spdx.json
+          output-file: matrix-a2a-bridge-${{ github.event.release.tag_name }}.spdx.json
+          format: spdx-json
+          upload-artifact: true
+          upload-release-assets: true

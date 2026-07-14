@@ -1,0 +1,67 @@
+# The cross-org lab exports only docs-qa. Compose this Component into infra/kagent so the base
+# Agent inventory, Helm values, and NetworkPolicy remain single-owner resources.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: kagent.dev
+      version: v1alpha2
+      kind: Agent
+      name: platform-helper
+      namespace: kagent
+    patch: |
+      $patch: delete
+      apiVersion: kagent.dev/v1alpha2
+      kind: Agent
+      metadata:
+        name: platform-helper
+        namespace: kagent
+  - target:
+      group: kagent.dev
+      version: v1alpha2
+      kind: Agent
+      name: scribe
+      namespace: kagent
+    patch: |
+      $patch: delete
+      apiVersion: kagent.dev/v1alpha2
+      kind: Agent
+      metadata:
+        name: scribe
+        namespace: kagent
+  # docs-qa has no tools. Remove the global MCP proxy, disable the bundled tool server, and turn
+  # off tracing because the federation overlay intentionally removes monitoring.
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: kagent
+      namespace: kagent
+    patch: |
+      - op: remove
+        path: /spec/values/proxy
+      - op: add
+        path: /spec/values/ui
+        value:
+          replicas: 0
+      - op: add
+        path: /spec/values/kmcp
+        value:
+          enabled: false
+      - op: add
+        path: /spec/values/kagent-tools/enabled
+        value: false
+      - op: replace
+        path: /spec/values/otel/tracing
+        value:
+          enabled: false
+  - target:
+      group: networking.k8s.io
+      version: v1
+      kind: NetworkPolicy
+      name: agent-zoo-egress
+      namespace: kagent
+    patch: |
+      # The fourth rule is the OTLP collector path; docs-qa retains only DNS, controller, and LLM.
+      - op: remove
+        path: /spec/egress/3

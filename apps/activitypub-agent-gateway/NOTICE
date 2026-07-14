@@ -1,0 +1,23 @@
+activitypub-agent-gateway
+Copyright 2026 Médéric Hurier (Fmind)
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE at
+the repository root).
+
+This app is a self-contained ActivityPub <-> A2A gateway, deliberately NOT bundled
+into apps/matrix-a2a-bridge, so the mautrix bridge stays AGPL-free and homeserver-
+portable (docs/adr/0014-activitypub-second-federation-transport.md).
+
+It embeds the following third-party components, all under permissive licenses:
+
+  - github.com/go-ap/activitypub        MIT
+  - github.com/a2aproject/a2a-go        Apache-2.0
+  - github.com/caarlos0/env             MIT
+  - github.com/prometheus/client_golang Apache-2.0
+  - github.com/gowebpki/jcs             Apache-2.0
+  - github.com/mr-tron/base58           MIT
+  - gopkg.in/yaml.v3                    MIT / Apache-2.0
+
+No AGPL dependency is present. Never add one: reaching kagent is done through the
+same a2a-go client the bridge uses, over agentgateway, so no agent holds a model
+credential.

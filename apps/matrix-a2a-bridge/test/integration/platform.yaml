@@ -1,0 +1,386 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bridge-integration
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: plain-agent
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: postgres-init
+  namespace: bridge-integration
+data:
+  00-databases.sql: |
+    CREATE DATABASE synapse ENCODING 'UTF8' LC_COLLATE 'C' LC_CTYPE 'C' TEMPLATE template0;
+    CREATE DATABASE bridge;
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agent-config
+  namespace: bridge-integration
+data:
+  agents.yaml: |
+    schemaVersion: 1
+    agents:
+      agent-integration:
+        namespace: kagent
+        name: integration-agent
+      # Available (same served agent) but sender-denied, so the !agents directory must exclude it.
+      agent-restricted:
+        namespace: kagent
+        name: integration-agent
+        allowedSenders: ["@nobody:integration.test"]
+      agent-plain:
+        url: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080/api/a2a/remote-agent
+        timeout: 5s
+        tokenBudget: 4096
+        cardIdentity:
+          name: Fgentic plain a2a-go agent
+          organization: Fgentic runtime-independence fixture
+          keyID: integration-p256-v1
+          publicKey:
+            kty: EC
+            crv: P-256
+            x: axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY
+            y: T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fixture-settings
+  namespace: bridge-integration
+data:
+  a2aStubDelay: 0s
+  agentCardRefreshInterval: 1s
+  concurrency: "2"
+  senderRatePerMinute: "0.01"
+  senderRateBurst: "1"
+  roomRatePerMinute: "60"
+  roomRateBurst: "10"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fixture-settings
+  namespace: plain-agent
+data:
+  a2aStubDelay: 0s
+  a2aStubHold: "false"
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: matrix-config
+  namespace: bridge-integration
+type: Opaque
+stringData:
+  homeserver.yaml: |
+    server_name: integration.test
+    pid_file: /data/homeserver.pid
+    public_baseurl: http://synapse:8008/
+    listeners:
+      - port: 8008
+        tls: false
+        type: http
+        x_forwarded: false
+        resources:
+          - names: [client, federation]
+            compress: false
+    database:
+      name: psycopg2
+      args:
+        user: postgres
+        database: synapse
+        host: postgres
+        port: 5432
+        cp_min: 1
+        cp_max: 5
+    log_config: /data/integration.test.log.config
+    media_store_path: /data/media_store
+    report_stats: false
+    macaroon_secret_key: integration-macaroon-key
+    form_secret: integration-form-key
+    signing_key_path: /data/integration.test.signing.key
+    trusted_key_servers: []
+    suppress_key_server_warning: true
+    enable_registration: true
+    enable_registration_without_verification: true
+    rc_message:
+      per_second: 1000
+      burst_count: 1000
+    # The load driver creates ten independent rooms and invites the same ghost to each. The
+    # pinned Synapse default allows only five invitations per user before a multi-minute retry;
+    # disable that unrelated guard so this fixture measures the bridge dispatcher.
+    rc_invites:
+      per_room:
+        per_second: 1000
+        burst_count: 1000
+      per_user:
+        per_second: 1000
+        burst_count: 1000
+      per_issuer:
+        per_second: 1000
+        burst_count: 1000
+    app_service_config_files:
+      - /config/registration.yaml
+  registration.yaml: |
+    id: matrix-a2a-bridge-integration
+    url: http://bridge:29331
+    as_token: integration-appservice-token
+    hs_token: integration-homeserver-token
+    sender_localpart: a2a-bridge
+    rate_limited: false
+    namespaces:
+      users:
+        - regex: '@a2a-bridge:integration\.test'
+          exclusive: true
+        - regex: '@agent-.*:integration\.test'
+          exclusive: true
+      aliases: []
+      rooms: []
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+  namespace: bridge-integration
+spec:
+  selector:
+    app.kubernetes.io/name: postgres
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: postgres
+  namespace: bridge-integration
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: postgres
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: postgres
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 70
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 70
+        runAsNonRoot: true
+        runAsUser: 70
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: postgres
+          image: docker.io/library/postgres:17.5-alpine@sha256:6567bca8d7bc8c82c5922425a0baee57be8402df92bae5eacad5f01ae9544daa
+          imagePullPolicy: IfNotPresent
+          env:
+            # Trust auth is confined to this disposable, non-routed kind namespace. It avoids
+            # committing a fake password while still exercising both Synapse and bridge DBs.
+            - name: POSTGRES_HOST_AUTH_METHOD
+              value: trust
+            - name: POSTGRES_USER
+              value: postgres
+            - name: PGDATA
+              value: /var/lib/postgresql/data/pgdata
+          ports:
+            - containerPort: 5432
+              name: postgres
+          readinessProbe:
+            exec:
+              command: [pg_isready, -U, postgres]
+            initialDelaySeconds: 2
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 30
+          # Initialization can be I/O-bound on the constrained local acceptance host. Keep
+          # steady-state liveness strict, but do not let it kill Postgres before initdb finishes.
+          startupProbe:
+            exec:
+              command: [pg_isready, -U, postgres]
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 90
+          livenessProbe:
+            exec:
+              command: [pg_isready, -U, postgres]
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+            - name: init
+              mountPath: /docker-entrypoint-initdb.d
+              readOnly: true
+            - name: run
+              mountPath: /var/run/postgresql
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: data
+          emptyDir: {}
+        - name: init
+          configMap:
+            name: postgres-init
+        - name: run
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: synapse
+  namespace: bridge-integration
+spec:
+  selector:
+    app.kubernetes.io/name: synapse
+  ports:
+    - name: client
+      port: 8008
+      targetPort: client
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: synapse
+  namespace: bridge-integration
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: synapse
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: synapse
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        fsGroup: 991
+        fsGroupChangePolicy: OnRootMismatch
+        runAsGroup: 991
+        runAsNonRoot: true
+        runAsUser: 991
+        seccompProfile:
+          type: RuntimeDefault
+      initContainers:
+        - name: generate-signing-key
+          image: docker.io/matrixdotorg/synapse:v1.155.0@sha256:a87d002fba8efba807af19a876f488f4a9d298d6b62f5bab66d14e311a355e99
+          imagePullPolicy: IfNotPresent
+          args: [generate]
+          env:
+            - name: SYNAPSE_SERVER_NAME
+              value: integration.test
+            - name: SYNAPSE_REPORT_STATS
+              value: "no"
+          resources:
+            requests:
+              cpu: 25m
+              memory: 64Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      containers:
+        - name: synapse
+          image: docker.io/matrixdotorg/synapse:v1.155.0@sha256:a87d002fba8efba807af19a876f488f4a9d298d6b62f5bab66d14e311a355e99
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: SYNAPSE_CONFIG_PATH
+              value: /config/homeserver.yaml
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+          ports:
+            - containerPort: 8008
+              name: client
+          startupProbe:
+            httpGet:
+              path: /_matrix/client/versions
+              port: client
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 60
+          readinessProbe:
+            httpGet:
+              path: /_matrix/client/versions
+              port: client
+            periodSeconds: 2
+            timeoutSeconds: 2
+            failureThreshold: 15
+          livenessProbe:
+            httpGet:
+              path: /_matrix/client/versions
+              port: client
+            periodSeconds: 10
+            timeoutSeconds: 2
+            failureThreshold: 6
+          resources:
+            requests:
+              cpu: 100m
+              memory: 384Mi
+            limits:
+              cpu: "1"
+              memory: 1536Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - name: config
+              mountPath: /config
+              readOnly: true
+            - name: data
+              mountPath: /data
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: config
+          secret:
+            secretName: matrix-config
+        - name: data
+          emptyDir: {}
+        - name: tmp
+          emptyDir: {}

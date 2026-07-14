@@ -1,0 +1,12 @@
+id: matrix-a2a-bridge
+url: http://matrix-a2a-bridge.bridge.svc.cluster.local:29331
+as_token: REDACTED_APP_TOKEN
+hs_token: REDACTED_SERVER_TOKEN
+sender_localpart: a2a-bridge
+rate_limited: false
+namespaces:
+  users:
+    - regex: '@a2a-bridge:matrix\.example'
+      exclusive: true
+    - regex: '@agent-.*:matrix\.example'
+      exclusive: true

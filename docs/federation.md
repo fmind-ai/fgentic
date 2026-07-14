@@ -1,0 +1,96 @@
+---
+type: Specification
+title: Federation Spec
+description: Cross-organization design: Matrix federation for the collaboration plane, A2A for the delegation plane (§8).
+---
+
+# Federation Spec (formerly SPEC §8) — the flagship differentiator, milestone M8
+
+Design position: **Matrix federation for the collaboration plane (humans + agents in shared rooms), A2A for the delegation plane (direct org-to-org machine calls)** — they compose rather than compete, and Fgentic ships both:
+
+The production operator workflow is the bilateral [partner federation onboarding runbook](federation-onboarding.md). Its public preflight checks reachability and discovery only; allowlists, room policy, A2A authorization, and contractual controls require separate operator evidence. The complementary [partner federation offboarding runbook](federation-offboarding.md) revokes a partner across every plane in safe order, with the content-free evidence each step leaves.
+
+### 8.1 What Matrix federation gives — stated honestly
+
+1. Identity is **org-level, not agent-level**: events are signed by the homeserver; org B can forge any `@user:org-b.com`, including its own agents. The honest claim is "cryptographically attributable to the partner organization". Per-agent identity is layered on with **A2A v1.0 Signed AgentCards** on the delegation plane.
+1. Room state and history replicate **fully and irrevocably** to every participating homeserver; redaction cross-server is best-effort ("gentlemen's agreement" — Matrix Foundation's own words). Data residency is a **contractual** control (DPA + mutual retention policy), not a technical one. The spec says so out loud; enterprises respect honesty about this more than silence.
+
+### 8.2 Required hardening (all git-declared)
+
+1. **Room version 12 minimum** for any federated room (Hydra fix for malicious state resets — CVE-2025-49090 class).
+1. **Closed federation**: Synapse `federation_domain_whitelist` (mutual, includes own domain + a reachable key notary), federation listener firewalled to partner IPs where feasible.
+1. **Server ACLs** (`m.room.server_acl`) allowlisting partner servers per room; `m.federate: false` on rooms that must never federate (it is immutable at creation — set it deliberately, always).
+1. **Synapse module callbacks** (`federated_user_may_invite`, `should_drop_federated_event`) as the programmatic policy border — this is Fgentic's open equivalent of the "Secure Border Gateway" that TI-Messenger mandates between parties (and which Element gates behind ESS Pro; ours is policy-as-code instead of a paid appliance).
+1. **Bridge sender policy** (D6): per-agent `allowedServers`/`allowedSenders`; federated senders deny-by-default — already implemented and tested, ahead of M8.
+
+The executable lab encodes the first four controls as one defense-in-depth contract. Every Synapse release sets `default_room_version: "12"`. Organizations A and B each allow exactly their own server and the partner in `federation_domain_whitelist`; the partner also serves as the reachable `trusted_key_servers` notary, so the proof has no public notary dependency. The denied control server is deliberately absent from both allowlists.
+
+Room creation is equally explicit. The bootstrap helper is the lab's supported federated-room constructor: it requests room version 12, sets `m.federate: true`, and installs an initial `m.room.server_acl` state event whose `allow` list contains only A and B and whose `allow_ip_literals` is `false`. Applying the ACL as initial state prevents an ungoverned-event race. A separate local-only room deliberately sets `m.federate: false`; this creation-time flag is the operational default for rooms that must never federate, because it cannot be changed later. Flux owns the homeserver configuration, while the bootstrap owns and verifies the per-room state.
+
+`apps/synapse-federation-policy` is the programmatic border loaded on A and B, but deliberately not C. Its strict, versioned JSON policy names the exact admitted sender servers, exact federated event types, and invite rule. Unknown fields, malformed identifiers, duplicate values, an empty allowlist, an unreadable file, or an invalid replacement deny every new event. `federated_user_may_invite` rejects an invite whose sender server is not admitted; `should_drop_federated_event` rejects an unadmitted sender server or event type. Synapse does not pass the authenticated transaction origin to these callbacks, so `federation_domain_whitelist` remains the transport-origin control.
+
+Each rejection emits one structured, content-free policy record with the reason, sender server, event type, room ID, event ID, policy digest, and policy counts; event content is never logged. Normal `/send` events reach the callback after signature and hash validation. Synapse invokes the invite endpoint's early drop callback before its signature check, so an invite-path record is diagnostic policy evidence, not authenticated attribution by itself; only the later accepted federation flow can supply that evidence.
+
+The module source is projected from the immutable, versioned `fgentic-synapse-federation-policy-v1` ConfigMap. The operator-edited policy uses the stable `fgentic-federation-policy` name so Kubernetes can update its full-directory projection without a `subPath` mount or workload rollout. Both volumes reach the ESS config-check hook and Synapse runtime. The module detects an atomically projected policy replacement on the next callback, validates the whole file before use, and logs its digest. Flux remains the only field manager: changing `policy.json` in git and reconciling the new source revision changes the border without rebuilding Synapse.
+
+Synapse 1.155.0 calls the drop callback once before staging an inbound PDU and may call it again while draining that room's staging queue. A policy tightening between those calls must not reverse the first admission: upstream's second-call drop path leaves the row in place and would otherwise select it forever. On a denial, the module therefore asks Synapse's database whether that exact `(room_id, event_id)` is already in `federation_inbound_events_staging`. An existing row is a local prior-admission fact and is allowed to drain; an absent row is a new event and remains denied. This query deliberately couples the workaround to the pinned Synapse schema without adding a table or retaining event content. Every Synapse upgrade must re-run the module and live reload gates; remove the workaround only after upstream deletes a staged row on its drop path.
+
+### 8.3 Cross-org delegation plane
+
+When org B should _invoke_ an agent in org A (not just converse with it), expose selected A2A endpoints through agentgateway on a dedicated Gateway listener with **JWT (OIDC federation between orgs) or mTLS** per A2A v1.0 security schemes, a Signed AgentCard published at the well-known path, and per-consumer quotas. Signed cards prove the declared agent identity; they do not replace transport authorization or authenticate the natural person behind a Matrix MXID.
+
+The outbound bridge half is implemented. An `agents.yaml` entry chooses exactly one local kagent `namespace`/`name` target or one remote target with an exact `url`, positive request `timeout`, scalar `tokenBudget`, and pinned `cardIdentity` (name, provider organization, protected key ID, and ES256 P-256 public JWK). The remote timeout is an additional whole-delegation ceiling combined with the bridge's global request/task timeouts. The token budget is partner-enforced extension metadata, not bridge-observed model-token accounting. The bridge fetches `<url>/.well-known/agent-card.json`, verifies the A2A v1.0 JWS over the JCS-canonical card under that public JWK, requires the configured identity, exact JSONRPC or HTTP+JSON interface, and token-budget extension, and revalidates it independently every five minutes. It never forwards the local agentgateway `A2A_API_KEY` to a remote URL. Unsigned, mismatched, or tampered cards quarantine the target before limiter admission or A2A dispatch with bounded `agent_card_untrusted` evidence. The provider-free kind fixture proves one valid remote mention round trip and the post-refresh tamper refusal.
+
+The federation profile implements the complementary inbound half for exactly one org-A agent. The only public invocation URL is `POST https://a2a.org-a.fgentic.localhost/api/a2a/kagent/docs-qa`; its card is the anonymous `GET` at the same URL plus `/.well-known/agent-card.json`. Traefik's `https-a2a` listener admits routes only from `agentgateway-system`, and those routes attach to agentgateway's separate `federation-a2a` listener on `:8081`. Both paths are exact matches: no prefix route publishes another Agent, and kagent itself remains a ClusterIP service behind namespace NetworkPolicy.
+
+The lifecycle substitutes the two organization hostnames into a tracked unsigned card, constructs the signing payload without `signatures`, normalizes A2A protobuf defaults, canonicalizes it with RFC 8785 JCS, and adds an ES256/P-256 JWS with a protected `kid`. Signing and remote verification use the same Go package. The corresponding verify-only public JWK is a non-secret ConfigMap artifact. The private PEM persists only in the lifecycle-owned `flux-system/fgentic-demo-bootstrap` Secret; that Secret also retains the public key ID so repeated lab starts keep the same trust anchor. Private material never enters the ephemeral Git snapshot, the served card, the public JWK, or a workload namespace. The lab verifier reads the JWK artifact directly; a production partner must receive and pin that trust anchor through a separately authenticated onboarding channel.
+
+Two edge-authentication patterns remain explicit:
+
+1. **OIDC JWT — implemented and proved by the lab.** Org B's Keycloak realm issues five-minute access tokens through `client_credentials`. agentgateway validates the exact issuer, `fgentic-a2a` audience, signature through the issuer's JWKS, and authorized-party claim `azp=org-b-a2a`. A missing, malformed, or wrong-audience token is unauthenticated; a valid token for a different client is unauthorized. This identifies the partner service client, not a Matrix user or natural person.
+1. **mTLS — documented alternative, not implemented by the lab.** A deployment may replace the JWT policy and card security scheme with a dedicated client-certificate listener that trusts an approved partner CA, maps an exact SAN to the consumer identity used by the quota descriptor, and owns certificate issuance, rotation, and revocation. It must retain the same exact routes, fail-closed authorization, and per-consumer quota contract; TLS termination without client-certificate validation is not this option.
+
+Every v1 `SendMessage` must carry `A2A-Version: 1.0` and the required token-budget extension with an integer `maxTokens` from 1 through the configured per-request ceiling. The version header selects kagent's v1 JSON-RPC binding rather than its compatibility-default v0.3 binding. After JWT validation, agentgateway passes `maxTokens` as the request cost to a fail-closed global rate-limit service keyed by the verified `azp`; `GetTask` is authenticated but makes no new reservation. This is admission accounting: it reserves the caller-declared maximum before kagent runs. The downstream LLM hop separately reports actual provider/model token metrics, but those series are aggregate and cannot be attributed to an `azp`, A2A task, or Matrix sender. Never report the reservation as consumed tokens or the aggregate model metric as per-consumer usage.
+
+Beyond that per-request token ceiling, a remote card may advertise **per-skill price quotes** through the fgentic-specific data-only extension `https://fgentic.fmind.ai/a2a/extensions/skill-quote/v1` — a set of `{skillId, unit, price, maxTokens}` entries carried inside the already-signed AgentCard, so the price is tamper-evident with zero new protocol machinery and a quote change re-signs the whole card atomically. Credit-units are **bilateral accounting units agreed between two organizations, never currency**, and the quote is **not a standard A2A field**. When an operator sets a per-remote `maxCost`, the bridge reads the quote from the _verified_ card and refuses — before spending a limiter token or dispatching A2A — any delegation whose highest advertised price exceeds `maxCost`, or whose card carries no usable quote, auditing `quote_over_budget`. Because the bridge cannot pin which skill a free-form room prompt will exercise, it compares the worst-case (highest) quoted price. This is discovery-time price transparency; it composes with future signed usage receipts (#141) and the bilateral credit ledger (#143), and its `{unit, price}` vocabulary is deliberately schema-adjacent to AP2 mandates so a later migration is a rename, not a redesign.
+
+No production remote or public Agent is configured by default. The listener, disposable credentials, signed artifacts, quota store, docs-qa Agent, and deterministic model are opt-in federation-lab resources; they make no provider or external-network connection.
+
+### 8.4 E2EE revisit (supersedes ADR 0008's scope)
+
+For federated rooms, "unencrypted" means the partner's server operators read everything, forever. Options, in order of preference: (a) keep federated agent rooms plaintext but **scoped** — dedicated per-project rooms, no sensitive-room federation, contractual controls (ship this first; it is what TI-Messenger-style deployments do in practice); (b) adopt appservice E2EE (mautrix crypto) later if demanded — acknowledged as officially "not recommended" and config-heavy. Document (a) as ADR 0008-bis when M8 federated-rooms work starts (issue #56).
+
+### 8.5 Disposable federation hardening lab
+
+`mise run fed:up` is the executable M8 baseline: two independently named participating Matrix homeservers plus one denied control homeserver in the separately owned `fgentic-fed` k3d cluster. The lab deliberately uses one Kubernetes control plane. That still exercises Matrix discovery, TLS, server signing, event replication, federation authorization, and rejection of an untrusted server while keeping cross-cluster routing out of the first acceptance boundary. It does **not** claim infrastructure or failure-domain isolation; use separate clusters when testing independent networks, control planes, or disaster recovery.
+
+| Organization | Matrix server name        | Namespace  | Synapse database | Lab role                |
+| ------------ | ------------------------- | ---------- | ---------------- | ----------------------- |
+| A            | `org-a.fgentic.localhost` | `matrix`   | `synapse`        | Federated participant   |
+| B            | `org-b.fgentic.localhost` | `matrix-b` | `synapse_b`      | Federated participant   |
+| C            | `org-c.fgentic.localhost` | `matrix-c` | `synapse_c`      | Denied negative control |
+
+All three homeservers are Synapse-only ESS Community releases. They share one CloudNativePG cluster but have separate roles, databases, credentials, and namespace-local credential copies. Each server owns its apex `/.well-known/matrix/server` delegation and local-CA certificate; the public lab CA is mounted as outbound federation trust. The same cluster additionally runs org B's machine-client Keycloak realm, agentgateway, the single docs-qa kagent Agent, and the deterministic demo-model endpoint for the delegation proof. It runs no MAS, Matrix-to-A2A appservice, external model, provider account, or paid service.
+
+Federation is closed between the two participants: A and B each admit exactly A and B through `federation_domain_whitelist`, and each trusts the other participant as its signing-key notary. C is routable only so the acceptance test can make a real federation attempt; it is not admitted by either participant's domain allowlist or the shared room's server ACL. Each Gateway listener also accepts `HTTPRoute` attachments only from its owning Matrix namespace (and the HTTP redirect only from `gateway`). The duplicated controls are intentional: ingress ownership and homeserver policy limit federation globally, while room state remains an independently replicated authorization boundary.
+
+Run the proof from a clean workstation with Docker, Git, and mise:
+
+```bash
+mise install
+mise run fed:up
+```
+
+The command creates or reuses only the owned `fgentic-fed` cluster and reconciles the federation profile through Flux. Before the Matrix proof, it verifies the exact served AgentCard bytes and ES256 signature, obtains an org-B client-credentials token, rejects missing/malformed credentials, wrong audience, wrong `azp`, invalid token budgets, unsupported methods, and unpublished Agent paths, then invokes docs-qa through the public route. The deterministic reply and an increase in aggregate model-token metrics prove the downstream A2A → kagent → model path; a second 3,000-token reservation in the 5,000-token window must return 429. This proves both per-consumer admission and aggregate actual-token telemetry without conflating them.
+
+The Matrix half provisions Alice on A, Bob on B, and Charlie on C; verifies the room-v12, ACL, and explicit federation state; and requires a message from each participant to arrive through the other homeserver. For the negative paths, Charlie's join must fail, a locally accepted C-signed transaction first proves the probe signature is valid, and that same signed federation send must be forbidden by both A and B. Bob then sends a disallowed custom event as the final event in a dedicated throwaway room: B must retain it, A must return `M_NOT_FOUND`, and A must log the exact content-free denial record without the event's unique content sentinel. Keeping this probe final avoids extending a room DAG after one participant deliberately dropped an event. The command leaves the cluster running so the homeservers, delegation boundary, and reconciliation state can be inspected. No provider connection or paid service is used.
+
+Run `mise run fed:policy-reload` for the stronger reconciliation proof. It starts from the canonical deny policy, records both Synapse pod UIDs, publishes an ephemeral local-git revision that admits only the probe event type, proves the event reaches A, and then reconciles the canonical deny policy again. The same pods must serve all three revisions, and the final denial must pass again. A failed drill deletes only the owned disposable lab rather than leaving the relaxed probe policy active.
+
+Remove the lab when inspection is complete:
+
+```bash
+mise run fed:down
+```
+
+Teardown is ownership-guarded and removes only the disposable federation cluster and its locally built images. The normal local, demo, and production profiles are separate and remain untouched.

@@ -1,0 +1,8 @@
+# CPU-only self-hosted model runtime selected by the agentgateway vLLM provider profile.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - serviceaccount.yaml
+  - model-cache.yaml
+  - helmrelease.yaml
+  - networkpolicy.yaml

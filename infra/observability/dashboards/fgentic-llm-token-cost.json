@@ -1,0 +1,140 @@
+{
+  "annotations": { "list": [] },
+  "description": "Provider-neutral LLM token usage, cost-catalog coverage, and the configured 15-minute token guard. Currency spend and per-agent attribution are shown only when a dedicated metric exists.",
+  "editable": false,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 1,
+  "id": null,
+  "links": [],
+  "liveNow": false,
+  "panels": [
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Token throughput from agentgateway's OpenTelemetry GenAI histogram, retaining the provider, requested model, route, and token type labels actually exported by v1.3.1.",
+      "fieldConfig": { "defaults": { "min": 0, "unit": "ops" }, "overrides": [] },
+      "gridPos": { "h": 9, "w": 16, "x": 0, "y": 0 },
+      "id": 1,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum by (gen_ai_system, gen_ai_request_model, route, gen_ai_token_type) (rate(agentgateway_gen_ai_client_token_usage_sum[$__rate_interval]))",
+          "legendFormat": "{{gen_ai_system}} / {{gen_ai_request_model}} / {{route}} / {{gen_ai_token_type}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Token rate by provider, model, and route",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Current provider-neutral token burn over the same 15-minute window used by LLMTokenBurnHigh, compared with the per-cluster platform-settings threshold.",
+      "fieldConfig": { "defaults": { "min": 0, "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 9, "w": 8, "x": 16, "y": 0 },
+      "id": 2,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum(system_model_token_type:agentgateway_gen_ai_client_token_usage_sum:increase15m)",
+          "legendFormat": "tokens used / 15m",
+          "range": true,
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "vector(${llm_usage_budget_15m})",
+          "legendFormat": "configured guard",
+          "range": true,
+          "refId": "B"
+        }
+      ],
+      "title": "15-minute token burn vs guard",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Whether agentgateway found an exact provider/model entry in its cost catalog. This is cost-signal coverage, not a currency-spend series.",
+      "fieldConfig": { "defaults": { "min": 0, "unit": "reqps" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 16, "x": 0, "y": 9 },
+      "id": 3,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "bottom", "showLegend": true },
+        "tooltip": { "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum by (status, gen_ai_system, gen_ai_request_model) (rate(agentgateway_cost_catalog_lookups_total[$__rate_interval]))",
+          "legendFormat": "{{status}} / {{gen_ai_system}} / {{gen_ai_request_model}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Cost-catalog lookup coverage",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "prometheus", "uid": "prometheus" },
+      "description": "Input/output token totals over the dashboard range, grouped only by labels exported by the pinned gateway.",
+      "fieldConfig": { "defaults": { "min": 0, "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 9 },
+      "id": 4,
+      "options": {
+        "legend": { "displayMode": "table", "placement": "right", "showLegend": true },
+        "pieType": "donut",
+        "reduceOptions": { "calcs": ["lastNotNull"], "fields": "", "values": false },
+        "tooltip": { "hideZeros": false, "mode": "multi", "sort": "desc" }
+      },
+      "targets": [
+        {
+          "datasource": { "type": "prometheus", "uid": "prometheus" },
+          "editorMode": "code",
+          "expr": "sum by (gen_ai_system, gen_ai_request_model, gen_ai_token_type) (increase(agentgateway_gen_ai_client_token_usage_sum[$__range]))",
+          "instant": true,
+          "legendFormat": "{{gen_ai_system}} / {{gen_ai_request_model}} / {{gen_ai_token_type}}",
+          "range": false,
+          "refId": "A"
+        }
+      ],
+      "title": "Token mix by provider and model",
+      "type": "piechart"
+    },
+    {
+      "datasource": { "type": "grafana", "uid": "-- Grafana --" },
+      "description": "The dashboard deliberately distinguishes measured signals from unavailable attribution.",
+      "gridPos": { "h": 5, "w": 24, "x": 0, "y": 17 },
+      "id": 5,
+      "options": {
+        "code": { "language": "plaintext", "showLineNumbers": false, "showMiniMap": false },
+        "content": "### Cost and agent-attribution boundary\n\nThe pinned agentgateway exports token histograms and cost-catalog **lookup status**, but no Prometheus currency-cost value. Its GenAI labels include provider, request/response model, and route, but no stable Fgentic agent identity. Exact currency spend and per-agent cost therefore require a versioned price catalog plus an explicit delegation-to-LLM correlation metric; this dashboard does not estimate or fabricate either value.",
+        "mode": "markdown"
+      },
+      "title": "Cost and agent-attribution boundary",
+      "transparent": true,
+      "type": "text"
+    }
+  ],
+  "refresh": "30s",
+  "schemaVersion": 41,
+  "tags": ["fgentic", "llm", "cost", "tokens"],
+  "templating": { "list": [] },
+  "time": { "from": "now-24h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "Fgentic — LLM Token & Cost Guard",
+  "uid": "fgentic-llm-token-cost",
+  "version": 1,
+  "weekStart": ""
+}

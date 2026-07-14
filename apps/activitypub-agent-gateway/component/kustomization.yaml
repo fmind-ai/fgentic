@@ -1,0 +1,20 @@
+# Namespace-neutral Kustomize Component projecting the ActivityPub federation border's mutable
+# allowlist (mirrors apps/synapse-federation-policy/). The gateway's verification CODE is the
+# immutable versioned source (the pinned image digest); only policy.json is mutable here.
+#
+# disableNameSuffixHash keeps the ConfigMap name stable so Kubernetes updates its atomic projection
+# in place — the gateway polls that file and hot-swaps the allowlist without a pod restart. A
+# consumer overlay selects this Component and sets the target namespace; Flux reconciling a changed
+# policy.json in git flips allow<->deny with no workload replacement (docs/fediverse.md §3).
+#
+# Default: an empty allowlist denies EVERY inbound (fail-closed). Operators add allowed_domains /
+# allowed_actors and let Flux reconcile.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+
+configMapGenerator:
+  - name: fgentic-activitypub-policy
+    files:
+      - policy.json=policy.json
+    options:
+      disableNameSuffixHash: true

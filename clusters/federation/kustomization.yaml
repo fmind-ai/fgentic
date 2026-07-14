@@ -1,0 +1,10 @@
+# Disposable provider-free federation and cross-organization delegation lab.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+  - platform-settings.yaml
+  - secrets.yaml
+components:
+  - ../base/provider-selection
+  - ../../infra/federation/cluster

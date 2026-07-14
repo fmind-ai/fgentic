@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "allowed_servers": [
+    "org-a.fgentic.localhost",
+    "org-b.fgentic.localhost"
+  ],
+  "allowed_event_types": [
+    "m.room.create",
+    "m.room.guest_access",
+    "m.room.history_visibility",
+    "m.room.join_rules",
+    "m.room.member",
+    "m.room.message",
+    "m.room.name",
+    "m.room.power_levels",
+    "m.room.server_acl"
+  ],
+  "invite_rule": "allow_from_allowed_servers"
+}

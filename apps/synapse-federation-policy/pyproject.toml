@@ -1,0 +1,94 @@
+[project]
+name = "fgentic-federation-policy"
+version = "0.1.0"
+description = "Fail-closed Synapse federation policy callbacks driven by versioned JSON"
+readme = "README.md"
+authors = [{ name = "Fmind AI" }]
+requires-python = ">=3.13,<3.14"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+dependencies = []
+
+[dependency-groups]
+dev = [
+  "pip-audit>=2.10.0",
+  "pytest>=9.0.0",
+  "pytest-cov>=7.0.0",
+  "ruff>=0.15.0",
+  "ty>=0.0.51,<0.1",
+  "validate-pyproject>=0.25.0",
+]
+
+[build-system]
+requires = ["uv_build>=0.11.28,<0.12.0"]
+build-backend = "uv_build"
+
+[tool.ruff]
+line-length = 120
+target-version = "py313"
+
+[tool.ruff.format]
+docstring-code-format = true
+line-ending = "lf"
+quote-style = "double"
+
+[tool.ruff.lint]
+select = [
+  "A",
+  "ARG",
+  "ASYNC",
+  "B",
+  "C4",
+  "E",
+  "ERA",
+  "F",
+  "FA",
+  "FURB",
+  "I",
+  "ISC",
+  "LOG",
+  "N",
+  "PERF",
+  "PGH",
+  "PIE",
+  "PTH",
+  "PT",
+  "Q",
+  "RET",
+  "RSE",
+  "RUF",
+  "S",
+  "SIM",
+  "SLF",
+  "T10",
+  "T20",
+  "TID",
+  "UP",
+  "W",
+]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = [
+  "S101",
+  "SLF001",
+]
+
+[tool.ty.environment]
+python-version = "3.13"
+
+[tool.ty.rules]
+all = "error"
+
+[tool.pytest.ini_options]
+addopts = ["-ra", "--strict-config", "--strict-markers"]
+testpaths = ["tests"]
+xfail_strict = true
+
+[tool.coverage.run]
+branch = true
+source = ["fgentic_federation_policy"]
+
+[tool.coverage.report]
+fail_under = 100
+show_missing = true
+skip_empty = true

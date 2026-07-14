@@ -1,0 +1,32 @@
+# The agentgateway control plane, co-located with its data-plane config (this Kustomization
+# depends on `controllers` for the CRDs chart). Split from the controllers layer so that layer
+# stays fast/health-checked and this one can gate the bridge.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: agentgateway
+  namespace: agentgateway-system
+spec:
+  interval: 30m
+  install:
+    remediation:
+      retries: -1 # self-heal: keep remediating failed installs (GitOps must converge unattended)
+  upgrade:
+    remediation:
+      retries: -1
+  dependsOn:
+    - name: agentgateway-crds
+  chartRef:
+    kind: OCIRepository
+    name: agentgateway
+    namespace: flux-system
+  # Control plane only; the data-plane proxy is spawned per-Gateway and shaped by
+  # AgentgatewayParameters (infra/agentgateway).
+  values:
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 500m
+        memory: 256Mi

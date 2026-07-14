@@ -1,0 +1,68 @@
+# ESS Community can safely replicate its stateless edge, authentication, and web components.
+# Synapse main remains a single fast-restart StatefulSet until the media-store decision (#62);
+# it intentionally has no PDB that could block a voluntary node drain.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - poddisruptionbudgets.yaml
+patches:
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: matrix-stack
+      namespace: matrix
+    patch: |
+      - op: add
+        path: /spec/values/elementWeb/replicas
+        value: 2
+      - op: add
+        path: /spec/values/elementWeb/resources
+        value:
+          requests: { cpu: 50m, memory: 64Mi }
+          limits: { cpu: 500m, memory: 256Mi }
+      - op: add
+        path: /spec/values/elementWeb/topologySpreadConstraints
+        value:
+          - maxSkew: 1
+            topologyKey: kubernetes.io/hostname
+            whenUnsatisfiable: DoNotSchedule
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/instance: ess-element-web
+      - op: add
+        path: /spec/values/matrixAuthenticationService/replicas
+        value: 2
+      - op: add
+        path: /spec/values/matrixAuthenticationService/resources
+        value:
+          requests: { cpu: 100m, memory: 256Mi }
+          limits: { cpu: "1", memory: 512Mi }
+      - op: add
+        path: /spec/values/matrixAuthenticationService/topologySpreadConstraints
+        value:
+          - maxSkew: 1
+            topologyKey: kubernetes.io/hostname
+            whenUnsatisfiable: DoNotSchedule
+            labelSelector:
+              matchLabels:
+                app.kubernetes.io/instance: ess-matrix-authentication-service
+      - op: add
+        path: /spec/values/haproxy
+        value:
+          replicas: 2
+          resources:
+            requests: { cpu: 100m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+          topologySpreadConstraints:
+            - maxSkew: 1
+              topologyKey: kubernetes.io/hostname
+              whenUnsatisfiable: DoNotSchedule
+              labelSelector:
+                matchLabels:
+                  app.kubernetes.io/instance: ess-haproxy
+      - op: add
+        path: /spec/values/synapse/resources
+        value:
+          requests: { cpu: 250m, memory: 512Mi }
+          limits: { cpu: "2", memory: 4Gi }

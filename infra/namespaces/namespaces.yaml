@@ -1,0 +1,163 @@
+# Every platform namespace, owned by ONE early Kustomization that depends only on cluster-scoped
+# admission policy. HelmRelease objects cannot be created in a namespace that does not exist yet
+# (install.createNamespace only covers the release target), and platform-secrets writes into
+# namespaces whose workloads depend on it (circular otherwise).
+# PSS: `restricted` where workloads comply; `baseline` where operators need more (documented).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cert-manager
+  labels:
+    fgentic.dev/managed: "true"
+    fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: small
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: gateway
+  labels:
+    fgentic.dev/managed: "true"
+    fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: small
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: cnpg-system
+  labels:
+    fgentic.dev/managed: "true"
+    fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: small
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: postgres
+  labels:
+    fgentic.dev/managed: "true"
+    fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: small
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: keycloak
+  labels:
+    fgentic.dev/managed: "true"
+    fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: small
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: matrix
+  labels:
+    fgentic.dev/managed: "true"
+    fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: core
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: agentgateway-system
+  labels:
+    fgentic.dev/managed: "true"
+    fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: small
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: kagent
+  labels:
+    fgentic.dev/managed: "true"
+    fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: core
+    # kagent's tool/agent pods need broader access than "restricted"; enforce baseline.
+    pod-security.kubernetes.io/enforce: baseline
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bridge
+  labels:
+    fgentic.dev/managed: "true"
+    fgentic.dev/quota-profile: small
+    # The local overlay deliberately side-loads matrix-a2a-bridge:local; keep this staged.
+    fgentic.dev/image-policy: audit
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: bridges
+  labels:
+    fgentic.dev/managed: "true"
+    fgentic.dev/image-policy: enforce
+    fgentic.dev/quota-profile: small
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: monitoring
+  labels:
+    fgentic.dev/managed: "true"
+    fgentic.dev/image-policy: audit
+    fgentic.dev/quota-profile: core
+    # node-exporter needs host access (hostNetwork/hostPath) — the one privileged namespace.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: privileged
+    pod-security.kubernetes.io/warn: privileged
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: trivy-system
+  labels:
+    fgentic.dev/managed: "true"
+    fgentic.dev/image-policy: enforce
+    fgentic.dev/quota-profile: small
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: models
+  labels:
+    fgentic.dev/managed: "true"
+    fgentic.dev/image-policy: enforce
+    fgentic.dev/quota-profile: compute
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

@@ -1,0 +1,144 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fgentic.fmind.ai/schemas/agents/v1",
+  "title": "Fgentic matrix-a2a-bridge agent routing map",
+  "description": "Version 1 of the fail-closed ghost routing, sender policy, and remote trust-pin configuration.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["agents"],
+  "properties": {
+    "schemaVersion": {
+      "description": "Configuration schema major version. Omission is accepted temporarily as deprecated v1 input.",
+      "type": "integer",
+      "const": 1
+    },
+    "bridgedOrigins": {
+      "type": "object",
+      "default": {},
+      "propertyNames": { "pattern": "^[a-z][a-z0-9-]{0,31}$" },
+      "additionalProperties": {
+        "type": "array",
+        "minItems": 1,
+        "uniqueItems": true,
+        "items": { "$ref": "#/$defs/mxidPattern" }
+      }
+    },
+    "agents": {
+      "type": "object",
+      "minProperties": 1,
+      "propertyNames": { "pattern": "^[0-9a-z._=+/\\-]+$" },
+      "additionalProperties": { "$ref": "#/$defs/agent" }
+    }
+  },
+  "$defs": {
+    "nonEmptyString": { "type": "string", "minLength": 1 },
+    "mxidPattern": {
+      "type": "string",
+      "pattern": "^@[0-9A-Za-z._=+/*\\-]+:[^:\\s]+$"
+    },
+    "agent": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "namespace": { "$ref": "#/$defs/nonEmptyString" },
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "url": { "type": "string", "format": "uri", "pattern": "^https?://" },
+        "description": { "type": "string" },
+        "avatarURL": { "type": "string", "pattern": "^mxc://[^/]+/.+$" },
+        "stage": {
+          "description": "Rollout stage. `dev` agents are invocable only in the bridge's configured staging rooms; `prod` (the default) is unrestricted. Valid for both local and remote targets.",
+          "enum": ["dev", "prod"]
+        },
+        "timeout": {
+          "type": "string",
+          "pattern": "^(?:[0-9]+(?:\\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))+$"
+        },
+        "tokenBudget": { "type": "integer", "minimum": 1 },
+        "cardIdentity": { "$ref": "#/$defs/cardIdentity" },
+        "extensions": {
+          "description": "Additional A2A extension URIs to activate on a remote delegation, beyond the always-on token-budget contract. Also the allowlist of required card extensions the bridge accepts.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "type": "string", "format": "uri", "pattern": "^https://" }
+        },
+        "maxCost": {
+          "description": "Highest per-skill credit-unit price the bridge will pay this remote. When set, the verified card must advertise a skill quote within it or the delegation fails closed (quote_over_budget). Credit-units are bilateral accounting units, not currency.",
+          "type": "integer",
+          "minimum": 1
+        },
+        "allowMedia": {
+          "description": "Opt this remote mapping into moving file bytes across the org boundary in either direction (#115). Omitted or false keeps the boundary closed to files: inbound room files are refused and the remote's artifact bytes are withheld. Remote targets only; local media is governed solely by the global MIME/size policy.",
+          "type": "boolean"
+        },
+        "mtls": {
+          "description": "A2A v1.0 mutual-TLS client-certificate material presented to this remote endpoint (#244). Paths reference files projected from a SOPS-managed Secret; never inline PEM. Remote targets only. A verified card that declares an mTLS security scheme without this fails closed.",
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["clientCertFile", "clientKeyFile"],
+          "properties": {
+            "clientCertFile": { "$ref": "#/$defs/nonEmptyString" },
+            "clientKeyFile": { "$ref": "#/$defs/nonEmptyString" },
+            "serverCAFile": {
+              "description": "Optional PEM bundle pinning the roots that verify the partner's server certificate; omitted defers to the system trust store.",
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "allowedServers": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        },
+        "allowedSenders": {
+          "type": "array",
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/mxidPattern" }
+        }
+      },
+      "oneOf": [
+        {
+          "required": ["namespace", "name"],
+          "not": {
+            "anyOf": [
+              { "required": ["url"] },
+              { "required": ["timeout"] },
+              { "required": ["tokenBudget"] },
+              { "required": ["cardIdentity"] },
+              { "required": ["extensions"] },
+              { "required": ["maxCost"] },
+              { "required": ["allowMedia"] },
+              { "required": ["mtls"] }
+            ]
+          }
+        },
+        {
+          "required": ["url", "timeout", "tokenBudget", "cardIdentity"],
+          "not": { "anyOf": [{ "required": ["namespace"] }, { "required": ["name"] }] }
+        }
+      ]
+    },
+    "cardIdentity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "organization", "keyID", "publicKey"],
+      "properties": {
+        "name": { "$ref": "#/$defs/nonEmptyString" },
+        "organization": { "$ref": "#/$defs/nonEmptyString" },
+        "keyID": { "$ref": "#/$defs/nonEmptyString" },
+        "publicKey": { "$ref": "#/$defs/publicKey" }
+      }
+    },
+    "publicKey": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["kty", "crv", "x", "y"],
+      "properties": {
+        "kty": { "const": "EC" },
+        "crv": { "const": "P-256" },
+        "x": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" },
+        "y": { "type": "string", "pattern": "^[A-Za-z0-9_-]{43}$" }
+      }
+    }
+  }
+}

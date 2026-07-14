@@ -1,0 +1,16 @@
+# kagent talks OpenAI-protocol to agentgateway (baseUrl below); agentgateway forwards to the real
+# provider (${llm_model} from platform-settings) holding the ONLY model credential. So kagent
+# carries no raw model key — only the agentgateway endpoint. (apiKeySecret is a placeholder
+# token agentgateway ignores; for a caller-side dev key, put it in the SOPS `kagent-model-auth`.)
+apiVersion: kagent.dev/v1alpha2
+kind: ModelConfig
+metadata:
+  name: agentgateway-model
+  namespace: kagent
+spec:
+  provider: OpenAI
+  model: ${llm_model}
+  apiKeySecret: kagent-model-auth
+  apiKeySecretKey: OPENAI_API_KEY
+  openAI:
+    baseUrl: http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080/v1

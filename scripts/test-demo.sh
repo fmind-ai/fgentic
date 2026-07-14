@@ -1,0 +1,671 @@
+#!/usr/bin/env bash
+# Offline contract checks for the credential-free evaluation lifecycle and its embedded model.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly ROOT_DIR
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo-check.XXXXXX")"
+readonly WORK_DIR
+readonly DEMO="${ROOT_DIR}/scripts/demo.sh"
+readonly REPLY_FILTER="${ROOT_DIR}/scripts/lib/demo-reply.jq"
+readonly SEED_STATE_FILTER="${ROOT_DIR}/scripts/lib/demo-seed-state.jq"
+readonly EXPECTED_DEMO_REPLY="Fgentic's deterministic evaluation model is working through agentgateway and kagent."
+readonly -a DEMO_SEED_SOURCES=(
+	"${ROOT_DIR}/scripts/seed-demo.sh"
+	"${REPLY_FILTER}"
+	"${SEED_STATE_FILTER}"
+)
+readonly -a DEMO_SOURCES=(
+	"${DEMO}"
+	"${ROOT_DIR}/scripts/lib.sh"
+	"${ROOT_DIR}/scripts/lib/demo-config.sh"
+	"${ROOT_DIR}/scripts/lib/demo-cluster.sh"
+	"${ROOT_DIR}/scripts/lib/demo-secrets.sh"
+	"${ROOT_DIR}/scripts/lib/demo-federation.sh"
+)
+readonly -a SHARED_HELPER_ENTRYPOINTS=(
+	"${ROOT_DIR}/scripts/demo.sh"
+	"${ROOT_DIR}/scripts/federation.sh"
+	"${ROOT_DIR}/scripts/reload-federation-policy.sh"
+	"${ROOT_DIR}/scripts/seed-demo.sh"
+	"${ROOT_DIR}/scripts/seed-federation.sh"
+)
+trap 'rm -rf "${WORK_DIR}"' EXIT INT TERM
+
+assert_yq() {
+	local expression="$1"
+	local document="$2"
+	local message="$3"
+	yq --exit-status "${expression}" "${document}" >/dev/null || {
+		echo "error: ${message}" >&2
+		exit 1
+	}
+}
+
+reply_fixture() {
+	local body="$1"
+	local sender="${2:-@agent-docs-qa:fgentic.localhost}"
+	local msgtype="${3:-m.notice}"
+	jq --null-input --compact-output --arg body "${body}" --arg sender "${sender}" \
+		--arg msgtype "${msgtype}" '{
+      events_before: [],
+      events_after: [{
+        event_id: "$reply",
+        type: "m.room.message",
+        sender: $sender,
+        content: {
+          msgtype: $msgtype,
+          body: $body,
+          "m.relates_to": {"m.in_reply_to": {event_id: "$probe"}}
+        }
+      }]
+    }'
+}
+
+replacement_fixture() {
+	local body="$1"
+	local sender="${2:-@agent-docs-qa:fgentic.localhost}"
+	local replacement_sender="${3:-${sender}}"
+	local replaced_event_id="${4:-\$reply}"
+	local replacement_msgtype="${5:-m.notice}"
+	local placeholder_body="${6:---- BEGIN FGENTIC BRIDGE PROVENANCE ---
+untrusted request
+--- END UNTRUSTED MATRIX CONTENT ---}"
+	jq --null-input --compact-output --arg body "${body}" --arg sender "${sender}" \
+		--arg replacement_sender "${replacement_sender}" \
+		--arg replaced_event_id "${replaced_event_id}" \
+		--arg replacement_msgtype "${replacement_msgtype}" \
+		--arg placeholder_body "${placeholder_body}" '{
+      events_before: [],
+      events_after: [
+        {
+          event_id: "$reply",
+          type: "m.room.message",
+          sender: $sender,
+          content: {
+            msgtype: "m.notice",
+            body: $placeholder_body,
+            "m.relates_to": {"m.in_reply_to": {event_id: "$probe"}}
+          }
+        },
+        {
+          event_id: "$replacement",
+          type: "m.room.message",
+          sender: $replacement_sender,
+          content: {
+            msgtype: "m.notice",
+            body: ("* " + $body),
+            "m.new_content": {msgtype: $replacement_msgtype, body: $body},
+            "m.relates_to": {rel_type: "m.replace", event_id: $replaced_event_id}
+          }
+        }
+      ]
+    }'
+}
+
+reply_fixture_matches() {
+	local provider="${1:-demo}"
+	local model="${2:-fgentic-demo}"
+	jq --exit-status --arg sender '@agent-docs-qa:fgentic.localhost' --arg event_id '$probe' \
+		--arg provider "${provider}" --arg model "${model}" \
+		--arg expected_demo_reply "${EXPECTED_DEMO_REPLY}" \
+		--from-file "${REPLY_FILTER}" >/dev/null
+}
+
+bash -n "${DEMO_SOURCES[@]}" "${ROOT_DIR}/scripts/seed-demo.sh"
+(
+	# The Secret key already names the caller. Its value must be one Agentgateway credential record,
+	# not another caller-name map, or every bridge request is rejected as an unknown API key.
+	# shellcheck source=scripts/lib/demo-secrets.sh
+	source "${ROOT_DIR}/scripts/lib/demo-secrets.sh"
+	secret_calls=()
+	apply_secret() {
+		secret_calls+=("$*")
+	}
+	apply_a2a_secrets fixture-key
+	[ "${#secret_calls[@]}" -eq 2 ]
+	server_prefix='agentgateway-system a2a-bridge-callers --from-literal=matrix-a2a-bridge='
+	[[ "${secret_calls[0]}" == "${server_prefix}"* ]]
+	server_document="${secret_calls[0]#"${server_prefix}"}"
+	jq --exit-status '
+    .key == "fixture-key" and
+    .metadata == {"workload": "matrix-a2a-bridge"} and
+    (has("matrix-a2a-bridge") | not)
+  ' <<<"${server_document}" >/dev/null
+	[ "${secret_calls[1]}" = \
+		'bridge a2a-bridge-credential --from-literal=token=fixture-key' ]
+)
+rg --fixed-strings \
+	'kubectl apply --server-side --kustomize "${SNAPSHOT_DIR}/infra/policies"' \
+	"${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null || {
+	echo 'error: demo bootstrap does not install admission before namespaces' >&2
+	exit 1
+}
+rg --fixed-strings 'render_bootstrap_namespaces | kubectl apply --filename -' \
+	"${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null || {
+	echo 'error: demo bootstrap does not apply the rendered Namespace-only stream' >&2
+	exit 1
+}
+(
+	# Exercise the exact lifecycle helper, not a parallel test-only composition. Bootstrap creates
+	# only the Namespaces needed by CA/secrets; Flux later owns substituted quota admission.
+	# shellcheck source=scripts/lib/demo-cluster.sh
+	source "${ROOT_DIR}/scripts/lib/demo-cluster.sh"
+	SNAPSHOT_DIR="${ROOT_DIR}"
+	PROFILE=demo
+	render_bootstrap_namespaces >"${WORK_DIR}/demo-bootstrap-namespaces.yaml"
+	PROFILE=federation
+	render_bootstrap_namespaces >"${WORK_DIR}/federation-bootstrap-namespaces.yaml"
+)
+for stream in demo-bootstrap-namespaces.yaml federation-bootstrap-namespaces.yaml; do
+	if rg --fixed-strings '${quota_' "${WORK_DIR}/${stream}" >/dev/null; then
+		echo "error: ${stream} contains unresolved quota substitution" >&2
+		exit 1
+	fi
+	yq eval-all --exit-status -o=json \
+		'[select(.kind != "Namespace")] | length == 0' "${WORK_DIR}/${stream}" >/dev/null || {
+		echo "error: ${stream} contains a non-Namespace bootstrap object" >&2
+		exit 1
+	}
+done
+demo_bootstrap_names="$(
+	yq eval-all -o=json '[select(.kind == "Namespace") | .metadata.name] | sort' \
+		"${WORK_DIR}/demo-bootstrap-namespaces.yaml" | jq --compact-output .
+)"
+[ "${demo_bootstrap_names}" = \
+	'["agentgateway-system","bridge","bridges","cert-manager","cnpg-system","gateway","kagent","keycloak","matrix","models","monitoring","postgres"]' ] || {
+	echo "error: demo bootstrap Namespace set drifted: ${demo_bootstrap_names}" >&2
+	exit 1
+}
+federation_bootstrap_names="$(
+	yq eval-all -o=json '[select(.kind == "Namespace") | .metadata.name] | sort' \
+		"${WORK_DIR}/federation-bootstrap-namespaces.yaml" | jq --compact-output .
+)"
+[ "${federation_bootstrap_names}" = \
+	'["agentgateway-system","cert-manager","cnpg-system","gateway","kagent","keycloak","matrix","matrix-b","matrix-c","models","postgres"]' ] || {
+	echo "error: federation bootstrap Namespace set drifted: ${federation_bootstrap_names}" >&2
+	exit 1
+}
+rg --fixed-strings 'scripts/test-admission-policies.sh" --runtime' \
+	"${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null || {
+	echo 'error: demo acceptance omits the admission runtime contract' >&2
+	exit 1
+}
+rg --fixed-strings 'wait --for=create deployment/agentgateway-proxy' \
+	"${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null || {
+	echo 'error: demo seeding does not wait for the agentgateway data plane to exist' >&2
+	exit 1
+}
+rg --fixed-strings 'rollout status deployment/agentgateway-proxy' \
+	"${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null || {
+	echo 'error: demo seeding does not wait for the agentgateway data plane' >&2
+	exit 1
+}
+if (
+	cd "${WORK_DIR}"
+	env -u ROOT_DIR FGENTIC_CA_DIR="${WORK_DIR}/missing-ca" \
+		"${ROOT_DIR}/scripts/seed-demo.sh"
+) >"${WORK_DIR}/seed-startup.txt" 2>&1; then
+	echo 'error: demo seeder unexpectedly started without a local CA' >&2
+	exit 1
+fi
+rg --fixed-strings 'local CA certificate not found' "${WORK_DIR}/seed-startup.txt" >/dev/null || {
+	echo 'error: demo seeder failed before validating its local CA dependency' >&2
+	cat "${WORK_DIR}/seed-startup.txt" >&2
+	exit 1
+}
+(
+	# Validate the generated cluster config without creating a cluster. Both disposable profiles
+	# need the explicit disk floor; only federation moves ingress to its alternate loopback.
+	# shellcheck source=scripts/lib/demo-config.sh
+	source "${ROOT_DIR}/scripts/lib/demo-config.sh"
+	CLUSTER_NAME=fgentic-demo-fixture
+	FEDERATION_LOOPBACK=127.0.0.2
+	PROFILE=demo
+	render_k3d_config "${WORK_DIR}/demo-k3d.yaml"
+	PROFILE=federation
+	render_k3d_config "${WORK_DIR}/federation-k3d.yaml"
+	for config in demo-k3d.yaml federation-k3d.yaml; do
+		assert_yq \
+			'.options.k3s.extraArgs[] |
+        select(.arg == "--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<1Gi,imagefs.available<1Gi,nodefs.inodesFree<5%,imagefs.inodesFree<5%") |
+        (.nodeFilters | ((length == 1) and (.[0] == "server:*")))' \
+			"${WORK_DIR}/${config}" "${config} omits the disposable-cluster eviction floor"
+		audit_policy_source="$(yq -er '.files[] |
+      select(.destination == "/etc/fgentic/audit-policy.yaml") | .source' \
+			"${WORK_DIR}/${config}")"
+		[[ "${audit_policy_source}" != /* ]] || {
+			echo "error: ${config} embeds a host-specific audit-policy path" >&2
+			exit 1
+		}
+		cmp "${ROOT_DIR}/infra/k3d-audit-policy.yaml" \
+			"${WORK_DIR}/${audit_policy_source}" >/dev/null || {
+			echo "error: ${config} has no resolvable audit-policy source" >&2
+			exit 1
+		}
+	done
+	assert_yq '.ports[0].port == "127.0.0.1:80:80" and .ports[1].port == "127.0.0.1:443:443"' \
+		"${WORK_DIR}/demo-k3d.yaml" 'demo ingress ports changed'
+	assert_yq '.ports[0].port == "127.0.0.2:80:80" and .ports[1].port == "127.0.0.2:443:443"' \
+		"${WORK_DIR}/federation-k3d.yaml" 'federation ingress ports changed'
+)
+for entrypoint in "${SHARED_HELPER_ENTRYPOINTS[@]}"; do
+	rg --fixed-strings 'source "${ROOT_DIR}/scripts/lib.sh"' "${entrypoint}" >/dev/null || {
+		echo "error: ${entrypoint#"${ROOT_DIR}/"} does not source the shared script library" >&2
+		exit 1
+	}
+done
+for helper in die require_command bootstrap_secret_value request_status; do
+	definitions="$(rg --files-with-matches "^${helper}\\(\\)" \
+		"${ROOT_DIR}/scripts/lib.sh" "${SHARED_HELPER_ENTRYPOINTS[@]}" | wc -l)"
+	[ "${definitions}" -eq 1 ] || {
+		echo "error: shared helper ${helper} has ${definitions} definitions" >&2
+		exit 1
+	}
+done
+"${DEMO}" --help >"${WORK_DIR}/help.txt"
+rg --fixed-strings 'deterministic in-cluster response stub' "${WORK_DIR}/help.txt" >/dev/null
+rg --fixed-strings 'FGENTIC_ALLOW_PAID_PROVIDER=yes' "${WORK_DIR}/help.txt" >/dev/null
+rg --fixed-strings 'FGENTIC_DEMO_CACHE_DIR' "${WORK_DIR}/help.txt" >/dev/null
+if FGENTIC_DEMO_CLUSTER=fgentic "${DEMO}" down \
+	>"${WORK_DIR}/reserved-cluster.txt" 2>&1; then
+	echo 'error: demo teardown accepted the reserved fgentic cluster name' >&2
+	exit 1
+fi
+rg --fixed-strings 'must be fgentic-demo' "${WORK_DIR}/reserved-cluster.txt" >/dev/null
+
+fake_bin="${WORK_DIR}/fake-bin"
+mkdir -p "${fake_bin}"
+cat >"${fake_bin}/k3d" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+state="${FAKE_DOCKER_STATE:?}"
+case "${1:-} ${2:-}" in
+"cluster list")
+	if [ -f "${state}/cluster" ]; then
+		printf '[{"name":"%s"}]\n' "${FAKE_CLUSTER_NAME:?}"
+	else
+		printf '[]\n'
+	fi
+	;;
+"cluster delete")
+	printf 'cluster-delete\n' >>"${state}/commands"
+	rm -f "${state}/cluster"
+	if [ "${FAKE_TEARDOWN_SCENARIO:?}" = clean ]; then
+		rm -f "${state}/container" "${state}/network" "${state}/volume"
+	fi
+	;;
+*) exit 2 ;;
+esac
+EOF
+cat >"${fake_bin}/docker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+state="${FAKE_DOCKER_STATE:?}"
+case "${1:-}" in
+inspect)
+	[ -f "${state}/container" ] || exit 1
+	if [ "${FAKE_TEARDOWN_SCENARIO:?}" = foreign ]; then
+		printf 'foreign\n'
+	else
+		printf 'true\n'
+	fi
+	;;
+ps)
+	[ -f "${state}/container" ] && printf 'owned-container\n'
+	;;
+rm)
+	shift
+	[ "${1:-}" = --force ] && shift
+	for container_id in "$@"; do
+		printf 'container-rm:%s\n' "${container_id}" >>"${state}/commands"
+	done
+	rm -f "${state}/container"
+	;;
+network)
+	case "${2:-}" in
+	inspect)
+		[ -f "${state}/network" ] || exit 1
+		printf 'k3d\n'
+		;;
+	rm)
+		printf 'network-rm\n' >>"${state}/commands"
+		rm -f "${state}/network"
+		;;
+	*) exit 2 ;;
+	esac
+	;;
+volume)
+	case "${2:-}" in
+	inspect)
+		[ -f "${state}/volume" ] || exit 1
+		printf 'k3d/%s\n' "${FAKE_CLUSTER_NAME:?}"
+		;;
+	rm)
+		printf 'volume-rm\n' >>"${state}/commands"
+		rm -f "${state}/volume"
+		;;
+	*) exit 2 ;;
+	esac
+	;;
+images) ;;
+image) ;;
+*) exit 2 ;;
+esac
+EOF
+chmod +x "${fake_bin}/docker" "${fake_bin}/k3d"
+
+run_teardown_fixture() {
+	local scenario="$1"
+	local state="${WORK_DIR}/teardown-${scenario}"
+	mkdir -p "${state}"
+	touch "${state}/cluster" "${state}/container" "${state}/network" "${state}/volume"
+	if [ "${scenario}" = foreign ]; then
+		if PATH="${fake_bin}:${PATH}" FAKE_DOCKER_STATE="${state}" \
+			FAKE_CLUSTER_NAME=fgentic-demo-teardown FAKE_TEARDOWN_SCENARIO="${scenario}" \
+			FGENTIC_DEMO_CLUSTER=fgentic-demo-teardown "${DEMO}" down \
+			>"${state}/output" 2>&1; then
+			echo 'error: demo teardown removed a foreign control cluster' >&2
+			exit 1
+		fi
+		rg --fixed-strings 'refusing to delete' "${state}/output" >/dev/null
+		[ -f "${state}/cluster" ] && [ -f "${state}/container" ] &&
+			[ -f "${state}/network" ] && [ -f "${state}/volume" ] || {
+			echo 'error: foreign teardown fixture was mutated' >&2
+			exit 1
+		}
+		return
+	fi
+
+	PATH="${fake_bin}:${PATH}" FAKE_DOCKER_STATE="${state}" \
+		FAKE_CLUSTER_NAME=fgentic-demo-teardown FAKE_TEARDOWN_SCENARIO="${scenario}" \
+		FGENTIC_DEMO_CLUSTER=fgentic-demo-teardown "${DEMO}" down \
+		>"${state}/output"
+	for resource in cluster container network volume; do
+		[ ! -e "${state}/${resource}" ] || {
+			echo "error: ${scenario} teardown retained ${resource}" >&2
+			exit 1
+		}
+	done
+	rg --fixed-strings 'were preserved' "${state}/output" >/dev/null
+}
+
+run_teardown_fixture clean
+run_teardown_fixture transient
+run_teardown_fixture foreign
+rg --fixed-strings 'container-rm:owned-container' \
+	"${WORK_DIR}/teardown-transient/commands" >/dev/null
+rg --fixed-strings 'network-rm' "${WORK_DIR}/teardown-transient/commands" >/dev/null
+rg --fixed-strings 'volume-rm' "${WORK_DIR}/teardown-transient/commands" >/dev/null
+
+kubectl kustomize "${ROOT_DIR}/clusters/demo" >"${WORK_DIR}/cluster.yaml"
+assert_yq \
+	'select(.kind == "ConfigMap" and .metadata.name == "platform-settings") |
+    .data.llm_provider == "demo" and
+    .data.llm_model == "fgentic-demo" and
+    .data.demo_bridge_tag == "local" and
+    .data.mas_local_login_enabled == "true" and
+    .data.llm_usage_budget_15m == "100000"' \
+	"${WORK_DIR}/cluster.yaml" 'demo platform settings are incomplete'
+assert_yq \
+	'select(.kind == "Kustomization" and .metadata.name == "agentgateway-provider") |
+    .spec.path == "./infra/agentgateway/providers/profiles/demo"' \
+	"${WORK_DIR}/cluster.yaml" 'provider-selection did not select the demo inventory'
+for omitted_layer in observability observability-monitors keycloak trivy-operator; do
+	if yq --unwrapScalar \
+		'select(.kind == "Kustomization") | .metadata.name' \
+		"${WORK_DIR}/cluster.yaml" | rg --fixed-strings --line-regexp "${omitted_layer}" >/dev/null; then
+		echo "error: small profile still contains ${omitted_layer}" >&2
+		exit 1
+	fi
+done
+assert_yq \
+	'select(.kind == "Kustomization" and .metadata.name == "namespaces") |
+    ((.spec.patches | length) == 3 and
+     ([.spec.patches[] | select(
+       .target.kind == "Namespace" and
+       .target.name == "trivy-system" and
+       (.patch | contains("$patch: delete"))
+     )] | length) == 1 and
+     ([.spec.patches[] | select(
+       .target.kind == "ResourceQuota" and
+       .target.name == "compute-budget" and
+       .target.namespace == "trivy-system" and
+       (.patch | contains("$patch: delete"))
+     )] | length) == 1 and
+     ([.spec.patches[] | select(
+       .target.kind == "LimitRange" and
+       .target.name == "container-defaults" and
+       .target.namespace == "trivy-system" and
+       (.patch | contains("$patch: delete"))
+     )] | length) == 1)' \
+	"${WORK_DIR}/cluster.yaml" 'demo namespace inventory still owns Trivy resources'
+assert_yq \
+	'select(.kind == "Kustomization" and .metadata.name == "platform-secrets") |
+    .spec.path == "./clusters/demo/empty" and (.spec.decryption == null)' \
+	"${WORK_DIR}/cluster.yaml" 'demo secret inventory must be empty and non-SOPS'
+assert_yq \
+	'select(.kind == "Kustomization" and .metadata.name == "bridge") |
+    ((.spec.patches[0].patch | contains("matrix-a2a-bridge")) and
+     (.spec.patches[0].patch | contains("pullPolicy: Never")))' \
+	"${WORK_DIR}/cluster.yaml" 'demo bridge is not pinned to the side-loaded image'
+
+kubectl kustomize "${ROOT_DIR}/infra/agentgateway" >"${WORK_DIR}/agentgateway.yaml"
+assert_yq \
+	'select(.kind == "NetworkPolicy" and .metadata.name == "agentgateway-default-deny-ingress") |
+    (((.spec.podSelector | tag) == "!!map") and
+     ((.spec.podSelector | length) == 0) and
+     ((.spec.policyTypes | length) == 1) and
+     (.spec.policyTypes[0] == "Ingress") and
+     (((.spec | has("ingress")) | not)))' \
+	"${WORK_DIR}/agentgateway.yaml" 'agentgateway namespace does not fail closed for ingress'
+assert_yq \
+	'select(.kind == "NetworkPolicy" and .metadata.name == "agentgateway-allow-agents") |
+    (.spec.podSelector.matchLabels."app.kubernetes.io/name" == "agentgateway-proxy" and
+     .spec.ingress[0].from[0].namespaceSelector.matchLabels."kubernetes.io/metadata.name" == "bridge" and
+     .spec.ingress[0].from[1].namespaceSelector.matchLabels."kubernetes.io/metadata.name" == "kagent" and
+     .spec.ingress[0].ports[0].port == 8080 and .spec.ingress[0].ports[0].protocol == "TCP" and
+     (.spec.ingress[0].from | length) == 2 and
+     (.spec.ingress[0].ports | length) == 1 and
+     .spec.ingress[1].from[0].namespaceSelector.matchLabels."kubernetes.io/metadata.name" == "monitoring" and
+     .spec.ingress[1].ports[0].port == 15020 and .spec.ingress[1].ports[0].protocol == "TCP" and
+     (.spec.ingress[1].from | length) == 1 and
+     (.spec.ingress[1].ports | length) == 1 and
+     (.spec.ingress | length) == 2)' \
+	"${WORK_DIR}/agentgateway.yaml" 'agentgateway data-plane ingress is not port scoped'
+assert_yq \
+	'select(.kind == "NetworkPolicy" and .metadata.name == "agentgateway-allow-xds") |
+    (.spec.podSelector.matchLabels."app.kubernetes.io/name" == "agentgateway" and
+     .spec.ingress[0].from[0].namespaceSelector.matchLabels."kubernetes.io/metadata.name" == "agentgateway-system" and
+     .spec.ingress[0].from[0].podSelector.matchLabels."app.kubernetes.io/name" == "agentgateway-proxy" and
+     .spec.ingress[0].ports[0].port == 9978 and .spec.ingress[0].ports[0].protocol == "TCP" and
+     (.spec.ingress[0].from | length) == 1 and
+     (.spec.ingress[0].ports | length) == 1 and
+     (.spec.ingress | length) == 1)' \
+	"${WORK_DIR}/agentgateway.yaml" 'agentgateway xDS ingress is not restricted to its proxy'
+
+kubectl kustomize "${ROOT_DIR}/infra/flux" >"${WORK_DIR}/controllers.yaml"
+assert_yq \
+	'select(.kind == "HelmRelease" and .metadata.name == "traefik") |
+    .spec.timeout == "10m"' \
+	"${WORK_DIR}/controllers.yaml" \
+	'Traefik Helm actions must tolerate constrained-host startup'
+
+kubectl kustomize "${ROOT_DIR}/infra/agentgateway/providers/profiles/demo" \
+	>"${WORK_DIR}/provider.yaml"
+assert_yq \
+	"select(.kind == \"AgentgatewayBackend\" and .metadata.name == \"llm-demo\") |
+    .spec.ai.provider.openai.model == \"\${llm_model}\" and
+    .spec.ai.provider.host == \"demo-llm.models.svc.cluster.local\" and
+    .spec.ai.provider.port == 80" \
+	"${WORK_DIR}/provider.yaml" 'demo AgentgatewayBackend contract changed'
+assert_yq \
+	'select(.kind == "Deployment" and .metadata.name == "demo-llm") |
+    .spec.template.spec.automountServiceAccountToken == false and
+    .spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem == true and
+    (.spec.template.spec.containers[0].image | contains("python:3.14-slim@sha256:"))' \
+	"${WORK_DIR}/provider.yaml" 'demo model workload is not pinned and hardened'
+
+yq --unwrapScalar \
+	'select(.kind == "ConfigMap" and .metadata.name == "demo-llm") | .data."server.py"' \
+	"${WORK_DIR}/provider.yaml" >"${WORK_DIR}/server.py"
+python -m py_compile "${WORK_DIR}/server.py"
+rg --fixed-strings 'chat.completion' "${WORK_DIR}/server.py" >/dev/null
+rg --fixed-strings 'data: [DONE]' "${WORK_DIR}/server.py" >/dev/null
+
+rg --fixed-strings 'mcp-agent-callers' "${DEMO_SOURCES[@]}" >/dev/null
+rg --fixed-strings 'platform-helper-mcp-credential' "${DEMO_SOURCES[@]}" >/dev/null
+rg --regexp 'SOURCE_BASE_IMAGE="[^" ]+@sha256:[0-9a-f]{64}"' \
+	"${DEMO_SOURCES[@]}" >/dev/null
+rg --regexp 'SOURCE_GIT_PACKAGES="git=[^ ]+ git-daemon=[^ ]+ busybox-extras=[^"]+"' \
+	"${DEMO_SOURCES[@]}" >/dev/null
+rg --fixed-strings 'git-http-backend' "${DEMO_SOURCES[@]}" >/dev/null
+rg --fixed-strings 'http://fgentic-demo-source.flux-system.svc.cluster.local:8080/cgi-bin/git/repo.git' \
+	"${DEMO_SOURCES[@]}" >/dev/null
+for retry_contract in \
+	'if flux reconcile source git flux-system --timeout=2m >/dev/null &&' \
+	"expected_revision=\"main@sha1:\${SOURCE_REVISION}\"" \
+	"! kustomizations=\"\$(kubectl --namespace flux-system get kustomizations --output json)\"" \
+	"! helmreleases=\"\$(kubectl get helmreleases --all-namespaces --output json)\""; do
+	rg --fixed-strings "${retry_contract}" "${DEMO_SOURCES[@]}" >/dev/null || {
+		echo "error: demo lifecycle does not retry transient API failures" >&2
+		exit 1
+	}
+done
+for lease_contract in \
+	'configure_ephemeral_flux_controllers' \
+	'FLUX_LEADER_ELECTION_LEASE_DURATION="180s"' \
+	'FLUX_LEADER_ELECTION_RENEW_DEADLINE="170s"' \
+	'FLUX_LEADER_ELECTION_RETRY_PERIOD="30s"' \
+	"--leader-election-lease-duration=\${FLUX_LEADER_ELECTION_LEASE_DURATION}" \
+	"--leader-election-renew-deadline=\${FLUX_LEADER_ELECTION_RENEW_DEADLINE}" \
+	"--leader-election-retry-period=\${FLUX_LEADER_ELECTION_RETRY_PERIOD}"; do
+	rg --fixed-strings -- "${lease_contract}" "${DEMO_SOURCES[@]}" >/dev/null || {
+		echo "error: ephemeral Flux controllers omit ${lease_contract}" >&2
+		exit 1
+	}
+done
+rg --fixed-strings '#lobby:fgentic.localhost' "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
+rg --fixed-strings 'creation_content: {"m.federate": false}' \
+	"${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
+rg --fixed-strings '/state/m.room.create' "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
+for contract in \
+	'create_lobby' \
+	'publish_lobby_alias' \
+	'set_lobby_canonical_alias' \
+	'lobby_has_canonical_alias' \
+	'retire_legacy_lobby_alias' \
+	'Migrating legacy #lobby to immutable local-only federation policy.' \
+	'#lobby is not local-only after reconciliation' \
+	'--request DELETE'; do
+	rg --fixed-strings -- "${contract}" "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
+done
+rg --fixed-strings '/api/admin/v1/users' "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null
+for contract in \
+	'all_probes_have_replies' \
+	'probe_event_ids' \
+	'/_matrix/client/v3/rooms/${encoded_room}/context/${encoded_event}?limit=50' \
+	'.source_revision == $source_revision' \
+	'Fgentic'"'"'s deterministic evaluation model is working through agentgateway and kagent.' \
+	'.content.msgtype == "m.notice"' \
+	'source_revision: $source_revision'; do
+	rg --fixed-strings -- "${contract}" "${DEMO_SEED_SOURCES[@]}" >/dev/null || {
+		echo "error: demo seeder omits the per-agent reply contract: ${contract}" >&2
+		exit 1
+	}
+done
+if rg --fixed-strings 'first_ghost=' "${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null; then
+	echo 'error: demo seeder still proves only the first mapped agent' >&2
+	exit 1
+fi
+if rg --fixed-strings '/send/m.room.message/demo-${ghost}' \
+	"${ROOT_DIR}/scripts/seed-demo.sh" >/dev/null; then
+	echo 'error: demo seeder puts an unescaped ghost localpart in a Matrix transaction path' >&2
+	exit 1
+fi
+
+reply_fixture "${EXPECTED_DEMO_REPLY}" | reply_fixture_matches || {
+	echo 'error: demo reply predicate rejected the exact deterministic model response' >&2
+	exit 1
+}
+replacement_fixture "${EXPECTED_DEMO_REPLY}" | reply_fixture_matches || {
+	echo 'error: demo reply predicate rejected the streamed Matrix replacement response' >&2
+	exit 1
+}
+replacement_fixture 'A useful model response.' |
+	reply_fixture_matches vertex google/gemini-2.5-flash || {
+	echo 'error: demo reply predicate rejected a successful configured-model replacement' >&2
+	exit 1
+}
+if replacement_fixture "${EXPECTED_DEMO_REPLY}" \
+	'@agent-docs-qa:fgentic.localhost' '@agent-scribe:fgentic.localhost' |
+	reply_fixture_matches; then
+	echo 'error: demo reply predicate accepted a replacement from the wrong ghost' >&2
+	exit 1
+fi
+if replacement_fixture "${EXPECTED_DEMO_REPLY}" \
+	'@agent-docs-qa:fgentic.localhost' '@agent-docs-qa:fgentic.localhost' '$other' |
+	reply_fixture_matches; then
+	echo 'error: demo reply predicate accepted a replacement for another event' >&2
+	exit 1
+fi
+if replacement_fixture "${EXPECTED_DEMO_REPLY}" \
+	'@agent-docs-qa:fgentic.localhost' '@agent-docs-qa:fgentic.localhost' '$reply' 'm.text' |
+	reply_fixture_matches; then
+	echo 'error: demo reply predicate accepted a replacement with the wrong message type' >&2
+	exit 1
+fi
+if reply_fixture '--- BEGIN FGENTIC BRIDGE PROVENANCE ---' |
+	reply_fixture_matches vertex google/gemini-2.5-flash; then
+	echo 'error: demo reply predicate accepted the streaming provenance envelope' >&2
+	exit 1
+fi
+if replacement_fixture '⚠️ agent failed after starting.' \
+	'@agent-docs-qa:fgentic.localhost' '@agent-docs-qa:fgentic.localhost' \
+	'$reply' 'm.notice' 'Processing request' |
+	reply_fixture_matches vertex google/gemini-2.5-flash; then
+	echo 'error: demo reply predicate accepted a placeholder before a terminal failure' >&2
+	exit 1
+fi
+for rejected_reply in \
+	'⚠️ could not reach agent "agent-docs-qa" — see the bridge logs.' \
+	'🛑 canceled by @alice:fgentic.localhost.' \
+	'⏳ working on it…' \
+	'(the agent returned no content)' \
+	'   '; do
+	if reply_fixture "${rejected_reply}" |
+		reply_fixture_matches vertex google/gemini-2.5-flash; then
+		echo "error: demo reply predicate accepted a non-success notice: ${rejected_reply}" >&2
+		exit 1
+	fi
+done
+if jq --null-input --compact-output '{events_before: [], events_after: []}' |
+	reply_fixture_matches; then
+	echo 'error: demo reply predicate accepted a missing reply' >&2
+	exit 1
+fi
+
+ghosts_json='["agent-docs-qa","agent-platform-helper","agent-scribe"]'
+seed_state='{"version":2,"provider":"demo","model":"fgentic-demo","source_revision":"main@sha1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","probe_event_ids":{"agent-docs-qa":"$1","agent-platform-helper":"$2","agent-scribe":"$3"}}'
+seed_state_matches() {
+	local source_revision="$1"
+	jq --exit-status --arg provider demo --arg model fgentic-demo \
+		--arg source_revision "${source_revision}" --argjson ghosts "${ghosts_json}" \
+		--from-file "${SEED_STATE_FILTER}" >/dev/null <<<"${seed_state}"
+}
+seed_state_matches 'main@sha1:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' || {
+	echo 'error: demo seed-state predicate rejected the reconciled source revision' >&2
+	exit 1
+}
+if seed_state_matches 'main@sha1:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb'; then
+	echo 'error: demo seed-state predicate reused proof from an older source revision' >&2
+	exit 1
+fi
+
+if rg -n 'mas_password_login_enabled|llm_token_budget_15m' \
+	"${ROOT_DIR}/clusters/demo" "${DEMO_SOURCES[@]}"; then
+	echo 'error: demo path uses a retired platform-setting name' >&2
+	exit 1
+fi
+
+echo 'Demo install contracts passed.'

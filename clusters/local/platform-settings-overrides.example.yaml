@@ -1,0 +1,21 @@
+# Local, UNTRACKED override for values that must not live in git — e.g. your real GCP project ID.
+#
+# Every cluster Kustomization lists this ConfigMap AFTER `platform-settings` in its Flux
+# `substituteFrom` with `optional: true`, so any key set here wins over the committed placeholder
+# at reconcile time (clusters/base/infrastructure.yaml). It is NOT reconciled from git — it lives
+# only in your cluster, so copy it, set your values, and apply it once per cluster:
+#
+#   cp clusters/local/platform-settings-overrides.example.yaml \
+#      clusters/local/platform-settings-overrides.yaml   # the copy is gitignored
+#   $EDITOR clusters/local/platform-settings-overrides.yaml
+#   kubectl apply -f clusters/local/platform-settings-overrides.yaml
+#   flux reconcile kustomization infra --with-source   # pick up the override
+#
+# Re-apply after recreating the cluster. See docs/forking.md for the full adapt-a-fork checklist.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-settings-overrides
+  namespace: flux-system
+data:
+  gcp_project: your-gcp-project # <-- set your real GCP project ID here (kept out of git)

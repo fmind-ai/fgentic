@@ -1,0 +1,436 @@
+# Root task vocabulary for the Fgentic platform (infra + orchestration).
+# Each application under apps/ is self-contained and carries its own mise.toml. This root delegates
+# app-scoped tasks so `mise run <task>` drives the whole monorepo. mise is the single source of truth
+# for WHAT each check does; lefthook (git hooks) and GitHub Actions only decide WHEN.
+
+[settings.task]
+run_auto_install = false # fail fast in hooks/CI on a missing tool (never silently install)
+
+# Pinned infra toolchain (reproducible local + CI). Each app pins its own toolchain separately.
+[tools]
+age = "latest"
+dprint = "latest"
+flux2 = "latest"
+gitleaks = "latest"
+git-cliff = "latest"
+lefthook = "latest"
+promtool = "latest"
+actionlint = "latest"
+kubeconform = "latest"
+trivy = "latest"
+terraform = "latest"
+helm = "latest"
+jq = "latest"
+xh = "0.26.1"
+"github:helm-unittest/helm-unittest" = { version = "1.1.1", rename_exe = "helm-unittest" }
+kind = "0.32.0"
+k3d = "5.9.0"
+kubectl = "1.35.0"
+python = "3.14.6"
+ripgrep = "latest"
+sops = "latest"
+yq = "latest"
+
+# --- Aggregate vocabulary (install / format / check / test / build / watch) ---
+
+[tasks.install]
+alias = "i"
+description = "Install git hooks and application toolchains"
+depends = ["install:hooks", "install:apps"]
+
+[tasks."install:hooks"]
+description = "Install git hooks (lefthook)"
+run = "lefthook install"
+
+[tasks."install:apps"]
+description = "Install all application toolchains and locked environments"
+depends = ["install:bridge", "install:gateway", "install:policy"]
+
+[tasks."install:bridge"]
+description = "Install the bridge toolchain"
+run = "mise --cd apps/matrix-a2a-bridge install"
+
+[tasks."install:gateway"]
+description = "Install the ActivityPub agent gateway toolchain"
+run = "mise --cd apps/activitypub-agent-gateway install"
+
+[tasks."install:policy"]
+description = "Install the Synapse policy toolchain and locked environment"
+run = [
+  "mise --cd apps/synapse-federation-policy install",
+  "mise --cd apps/synapse-federation-policy run install",
+]
+
+[tasks.format]
+alias = "f"
+description = "Format everything (config/markup, Terraform, and applications)"
+depends = ["format:dprint", "format:terraform", "format:app", "format:gateway", "format:policy"]
+
+[tasks."format:dprint"]
+description = "Format JSON, Markdown, TOML, YAML at the repo root + infra/docs (dprint)"
+run = "dprint fmt"
+
+[tasks."format:terraform"]
+description = "Canonicalise Terraform formatting"
+run = "terraform fmt -recursive infra"
+
+[tasks."format:app"]
+description = "Format the application (delegates to apps/matrix-a2a-bridge)"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run format"
+
+[tasks."format:gateway"]
+description = "Format the ActivityPub agent gateway"
+dir = "apps/activitypub-agent-gateway"
+run = "mise run format"
+
+[tasks."format:policy"]
+description = "Format the Synapse federation policy application"
+dir = "apps/synapse-federation-policy"
+run = "mise run format"
+
+[tasks.check]
+alias = "c"
+description = "Run every static check (config, Terraform, manifests, scans, workflows, and apps)"
+depends = [
+  "check:format",
+  "check:terraform",
+  "check:manifests",
+  "check:charts",
+  "check:overlays",
+  "check:production-ha",
+  "check:scan",
+  "check:leaks",
+  "check:prometheus",
+  "check:dashboards",
+  "check:reference-grants",
+  "check:a2a-authorization",
+  "check:admission-policies",
+  "check:resource-quotas",
+  "check:mcp-governance",
+  "check:audit-attribution",
+  "check:kubernetes-audit",
+  "check:postgres-audit",
+  "check:trivy-operator",
+  "check:secret-rotation",
+  "check:supply-chain",
+  "check:agent-zoo",
+  "check:demo",
+  "check:federation",
+  "check:federation-onboarding",
+  "check:smoke-workflow",
+  "check:mautrix-bridges",
+  "check:github-actions",
+  "check:workflows",
+  "check:app",
+  "check:gateway",
+  "check:policy",
+]
+
+[tasks."check:format"]
+alias = "cf"
+description = "Verify config/markup formatting (dprint)"
+run = "dprint check"
+
+[tasks."check:terraform"]
+alias = "ct"
+description = "Terraform fmt-check + validate (no backend/creds needed)"
+run = """
+terraform fmt -check -recursive infra
+for dir in infra/terraform infra/terraform/bootstrap; do
+  [ -d "$dir" ] || continue
+  terraform -chdir="$dir" init -backend=false -input=false >/dev/null
+  terraform -chdir="$dir" validate
+done
+"""
+
+[tasks."check:manifests"]
+alias = "cm"
+description = "Schema-validate the Helm chart render + raw manifests (kubeconform)"
+run = "bash scripts/kubeconform.sh"
+
+[tasks."check:charts"]
+description = "Unit-test bridge Helm chart conditionals and security-critical values"
+run = "helm-unittest apps/matrix-a2a-bridge/chart"
+
+[tasks."check:overlays"]
+description = "Flux-build and schema-validate the local and GCP cluster overlays"
+run = "bash scripts/check-flux-overlays.sh"
+
+[tasks."check:production-ha"]
+description = "Prove the opt-in production replica, PDB, and resource contract"
+run = "bash scripts/test-production-ha.sh"
+
+[tasks."check:scan"]
+alias = "cn"
+description = "Fail on HIGH/CRITICAL IaC, manifest, and Dockerfile misconfigurations"
+run = """
+# Non-runnable placeholders let Trivy render the generic required-value bridge chart instead of
+# skipping it. Exact deployable values remain covered by check/test:mautrix-bridges.
+trivy config --config trivy.yaml --exit-code 1 \
+  --tf-vars infra/terraform/terraform.tfvars.example \
+  --helm-set-string image.repository=scan.invalid/mautrix \
+  --helm-set-string image.digest=sha256:0000000000000000000000000000000000000000000000000000000000000000 \
+  --helm-set-string secret.name=scan-fixture \
+  --helm-set-string config.content=scan-fixture \
+  .
+"""
+
+[tasks."check:leaks"]
+alias = "cs"
+description = "Audit git history for leaked secrets (gitleaks); --staged auto-appends for pre-commit"
+run = "gitleaks git --log-opts=\"--max-count=100\" --verbose"
+
+[tasks."check:prometheus"]
+description = "Validate and unit-test Prometheus recording and alert rules"
+run = "bash scripts/test-prometheus-rules.sh"
+
+[tasks."check:dashboards"]
+description = "Validate declarative Grafana dashboard provisioning, panels, and PromQL contracts"
+run = "bash scripts/test-grafana-dashboards.sh"
+
+[tasks."check:reference-grants"]
+description = "Audit cross-namespace Gateway API backends and their ReferenceGrants"
+run = "bash scripts/check-reference-grants.sh && bash scripts/test-reference-grants.sh"
+
+[tasks."check:a2a-authorization"]
+description = "Validate the fail-closed A2A API-key and CEL authorization contract"
+run = "bash scripts/test-a2a-authorization.sh"
+
+[tasks."check:admission-policies"]
+description = "Validate the fail-closed Kubernetes admission policy and Flux bootstrap contract"
+run = "bash scripts/test-admission-policies.sh"
+
+[tasks."check:resource-quotas"]
+description = "Validate namespace quota profiles, defaults, and Flux substitution offline"
+run = "bash scripts/test-resource-quotas.sh"
+
+[tasks."check:mcp-governance"]
+description = "Validate the fail-closed per-agent MCP route, tool allowlist, and audit contract"
+run = "bash scripts/test-mcp-governance.sh"
+
+[tasks."check:audit-attribution"]
+description = "Test the content-free attribution evidence collector with offline fixtures"
+run = "bash scripts/test-audit-attribution.sh"
+
+[tasks."check:kubernetes-audit"]
+description = "Validate the metadata-only k3s API audit policy and bounded local log configuration"
+run = "bash scripts/test-kubernetes-audit.sh"
+
+[tasks."check:postgres-audit"]
+description = "Validate the DDL/ROLE-only pgAudit configuration and SQL-suppressed JSON projection"
+run = "bash scripts/test-postgres-audit.sh"
+
+[tasks."check:trivy-operator"]
+description = "Validate the pinned, least-privilege, structurally optional CVE drift scanner"
+run = "bash scripts/test-trivy-operator.sh"
+
+[tasks."check:secret-rotation"]
+description = "Test selective SOPS rotation and cross-consumer invariants with offline fixtures"
+run = "bash scripts/test-rotate-secrets.sh"
+
+[tasks."check:supply-chain"]
+description = "Validate signed OCI bootstrap/active invariants and CD attestation controls"
+run = "bash scripts/check-supply-chain.sh"
+
+[tasks."check:agent-zoo"]
+description = "Render and test the sample agents, tool RBAC, bridge mappings, and welcome copy"
+run = "bash scripts/test-agent-zoo.sh"
+
+[tasks."check:demo"]
+description = "Validate the credential-free demo overlay, lifecycle script, and embedded model"
+run = "bash scripts/test-demo.sh"
+
+[tasks."check:federation"]
+description = "Validate the offline federation topology, room policy, and denied control"
+run = "bash scripts/test-federation.sh"
+
+[tasks."check:federation-onboarding"]
+description = "Test the read-only partner federation preflight with offline fixtures"
+run = "bash scripts/test-fed-check.sh"
+
+[tasks."check:smoke-workflow"]
+description = "Validate nightly demo, policy conformance, diagnostics, and issue tracking"
+run = "bash scripts/test-smoke-workflow.sh"
+
+[tasks."check:github-actions"]
+description = "Require every remote GitHub Action to use an immutable commit with a version hint"
+run = "bash scripts/check-github-actions.sh"
+
+[tasks."check:mautrix-bridges"]
+description = "Render and validate optional mautrix runtimes, privacy defaults, secrets, and composable Flux layers"
+run = "bash scripts/test-mautrix-bridges.sh"
+
+[tasks."test:network-policies"]
+description = "Probe allow and deny paths on the active reconciled cluster"
+run = "bash scripts/test-network-policies.sh"
+
+[tasks."test:network-policies:kind"]
+description = "Run policy conformance and its deletion guard in an isolated kind cluster"
+run = "bash scripts/test-network-policies-kind.sh"
+
+[tasks."test:a2a-authorization"]
+description = "Exercise unauthorized and authorized requests against the pinned agentgateway runtime"
+run = "bash scripts/test-a2a-authorization.sh --runtime"
+
+[tasks."test:admission-policies"]
+description = "Exercise admission denials on an explicitly selected disposable/local cluster"
+run = "bash scripts/test-admission-policies.sh --runtime"
+
+[tasks."test:resource-quotas"]
+description = "Scale an agent Deployment past quota in an isolated disposable kind cluster"
+run = "bash scripts/test-resource-quotas.sh --runtime"
+
+[tasks."test:mcp-governance"]
+description = "Exercise MCP authentication, tool filtering, backend routing, and content-free audit records"
+run = "bash scripts/test-mcp-governance.sh --runtime"
+
+[tasks."test:kubernetes-audit"]
+description = "Patch and read a Secret against an isolated API-audited k3d cluster"
+run = "bash scripts/test-kubernetes-audit.sh --runtime"
+
+[tasks."test:postgres-audit"]
+description = "Exercise pgAudit and CNPG JSON stdout in an isolated disposable kind cluster"
+run = "bash scripts/test-postgres-audit.sh --runtime"
+
+[tasks."test:mautrix-bridges"]
+description = "Validate exact pinned mautrix images without contacting external networks"
+run = "bash scripts/test-mautrix-bridges.sh --runtime"
+
+[tasks."check:workflows"]
+alias = "cw"
+description = "Lint GitHub Actions workflows (actionlint)"
+run = "actionlint"
+
+[tasks."check:app"]
+description = "Run the application's static checks (delegates to apps/matrix-a2a-bridge)"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run check"
+
+[tasks."check:gateway"]
+description = "Run the ActivityPub agent gateway static checks"
+dir = "apps/activitypub-agent-gateway"
+run = "mise run check"
+
+[tasks."check:policy"]
+description = "Run the Synapse federation policy static checks"
+dir = "apps/synapse-federation-policy"
+run = "mise run check"
+
+[tasks."test:app"]
+description = "Run the application test suite (delegates to apps/matrix-a2a-bridge)"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run test"
+
+[tasks."test:gateway"]
+description = "Run the ActivityPub agent gateway test suite"
+dir = "apps/activitypub-agent-gateway"
+run = "mise run test"
+
+[tasks."test:policy"]
+description = "Run the Synapse federation policy unit suite"
+dir = "apps/synapse-federation-policy"
+run = "mise run test"
+
+[tasks.test]
+alias = "t"
+description = "Run deterministic application and pinned external-bridge runtime tests"
+depends = ["test:app", "test:gateway", "test:policy", "test:mautrix-bridges", "test:kagent-trace-privacy"]
+
+[tasks."test:integration"]
+description = "Run the bridge's kind-based Matrix appservice integration test"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run test:integration"
+
+[tasks."test:availability"]
+description = "Run the bridge's graceful-drain and persistent-deduplication scenario"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run test:availability"
+
+[tasks."test:tracing"]
+description = "Render the tracing stack and prove an OTLP span reaches Jaeger locally"
+run = "bash scripts/test-tracing.sh"
+
+[tasks."test:kagent-trace-privacy"]
+description = "Prove the pinned kagent runtime suppresses content in exported traces"
+run = "bash scripts/test-kagent-trace-privacy.sh"
+
+[tasks."test:trivy-operator"]
+description = "Prove Trivy report creation, metrics, RBAC, bounds, and cleanup in owned k3d"
+run = "bash scripts/test-trivy-operator.sh --runtime"
+
+[tasks."test:load"]
+description = "Run the bridge dispatcher load regression scenario"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run test:load"
+
+[tasks."eval:models"]
+description = "Evaluate the three sample agents against an approved local model profile"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run eval:models"
+
+[tasks.build]
+alias = "b"
+description = "Build all application artifacts"
+depends = ["build:bridge", "build:gateway", "build:policy"]
+
+[tasks."build:bridge"]
+description = "Build the production bridge image"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run build:image"
+
+[tasks."build:gateway"]
+description = "Build the production ActivityPub agent gateway image"
+dir = "apps/activitypub-agent-gateway"
+run = "mise run build:image"
+
+[tasks."build:policy"]
+description = "Build the standalone Synapse policy package"
+dir = "apps/synapse-federation-policy"
+run = "mise run build"
+
+[tasks.watch]
+alias = "w"
+description = "Run the local Kubernetes dev loop (Skaffold)"
+run = "skaffold dev"
+
+# --- Local cluster lifecycle (k3d) ---
+
+[tasks."cluster:up"]
+description = "Create the local k3d cluster (binds loopback 80/443 for *.fgentic.localhost)"
+dir = "infra"
+run = """
+docker info >/dev/null 2>&1 || { echo "Error: Docker daemon is not running"; exit 1; }
+k3d cluster create --config k3d-config.yaml
+"""
+
+[tasks."cluster:down"]
+description = "Delete the local k3d cluster"
+run = "k3d cluster delete fgentic"
+
+[tasks."demo:up"]
+description = "Install and seed the small evaluation profile without GitHub credentials"
+run = "bash scripts/demo.sh up"
+
+[tasks."demo:down"]
+description = "Delete only the ephemeral fgentic-demo evaluation cluster"
+run = "bash scripts/demo.sh down"
+
+[tasks."fed:up"]
+description = "Reconcile and prove the provider-free federation hardening lab"
+run = "bash scripts/federation.sh up"
+
+[tasks."fed:down"]
+description = "Delete only the owned fgentic-fed federation cluster"
+run = "bash scripts/federation.sh down"
+
+[tasks."fed:policy-reload"]
+description = "Prove a Flux policy allow/deny reload without restarting Synapse"
+run = "bash scripts/reload-federation-policy.sh"
+
+[tasks."bridge:load"]
+description = "Build the bridge image and side-load it into the local k3d cluster (matrix-a2a-bridge:local)"
+run = """
+docker build -t matrix-a2a-bridge:local apps/matrix-a2a-bridge
+k3d image import --cluster fgentic matrix-a2a-bridge:local
+"""

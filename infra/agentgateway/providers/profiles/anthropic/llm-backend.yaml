@@ -1,0 +1,16 @@
+# Native Anthropic egress. agentgateway converts the callers' OpenAI-compatible requests to the
+# Messages API, moves its default Bearer credential to x-api-key, and adds anthropic-version.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: llm-anthropic
+  namespace: agentgateway-system
+spec:
+  ai:
+    provider:
+      anthropic:
+        model: ${llm_model}
+  policies:
+    auth:
+      secretRef:
+        name: anthropic-secret

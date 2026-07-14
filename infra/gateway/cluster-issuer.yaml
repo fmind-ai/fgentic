@@ -1,0 +1,52 @@
+# cert-manager ClusterIssuers — portable TLS, selected per-cluster via ${cluster_issuer} in
+# platform-settings. All three are always declared (an issuer without its account/CA secret is
+# simply not-ready and unused); the Gateway annotation picks the active one.
+#
+# ACME (public deployments): HTTP-01 solved through the Gateway API (a temporary HTTPRoute on
+# fgentic-gateway). Use letsencrypt-staging first to avoid rate limits, then letsencrypt-prod.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-staging
+spec:
+  acme:
+    server: https://acme-staging-v02.api.letsencrypt.org/directory
+    email: ${acme_email}
+    privateKeySecretRef:
+      name: letsencrypt-staging-account
+    solvers:
+      - http01:
+          gatewayHTTPRoute:
+            parentRefs:
+              - name: fgentic-gateway
+                namespace: gateway
+                kind: Gateway
+---
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: letsencrypt-prod
+spec:
+  acme:
+    server: https://acme-v02.api.letsencrypt.org/directory
+    email: ${acme_email}
+    privateKeySecretRef:
+      name: letsencrypt-prod-account
+    solvers:
+      - http01:
+          gatewayHTTPRoute:
+            parentRefs:
+              - name: fgentic-gateway
+                namespace: gateway
+                kind: Gateway
+---
+# Local/dev CA (ACME cannot issue *.localhost): scripts/local-ca.sh generates a CA keypair,
+# stores it as Secret `local-ca` in cert-manager's namespace, and installs it in the host trust
+# store so browsers/curl accept https://chat.${server_name} on k3d.
+apiVersion: cert-manager.io/v1
+kind: ClusterIssuer
+metadata:
+  name: local-ca
+spec:
+  ca:
+    secretName: local-ca

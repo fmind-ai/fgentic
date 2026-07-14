@@ -1,0 +1,221 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: demo-llm
+  namespace: models
+data:
+  server.py: |
+    import json
+    from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from typing import Any, cast
+
+    RESPONSE_TEXT = (
+        "Fgentic's deterministic evaluation model is working through agentgateway and kagent."
+    )
+
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, _message_format: str, *_args: object) -> None:
+            return
+
+        def write_json(self, status: int, document: dict[str, Any]) -> None:
+            body = json.dumps(document, separators=(",", ":")).encode()
+            self.send_response(status)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def do_GET(self) -> None:
+            if self.path in ("/health", "/healthz"):
+                self.write_json(200, {"status": "ok"})
+                return
+            if self.path == "/v1/models":
+                self.write_json(
+                    200,
+                    {
+                        "object": "list",
+                        "data": [
+                            {
+                                "id": "fgentic-demo",
+                                "object": "model",
+                                "owned_by": "fgentic",
+                            }
+                        ],
+                    },
+                )
+                return
+            self.write_json(404, {"error": {"message": "not found"}})
+
+        def do_POST(self) -> None:
+            if self.path != "/v1/chat/completions":
+                self.write_json(404, {"error": {"message": "not found"}})
+                return
+
+            try:
+                size = int(self.headers.get("Content-Length", "0"))
+                untrusted_request: Any = json.loads(self.rfile.read(size) or b"{}")
+            except (ValueError, json.JSONDecodeError):
+                self.write_json(400, {"error": {"message": "invalid JSON"}})
+                return
+            if not isinstance(untrusted_request, dict):
+                self.write_json(400, {"error": {"message": "request must be an object"}})
+                return
+            request = cast(dict[str, Any], untrusted_request)
+
+            model = request.get("model", "fgentic-demo")
+            if not isinstance(model, str) or not model:
+                self.write_json(400, {"error": {"message": "model must be a string"}})
+                return
+            if request.get("stream"):
+                chunks: tuple[dict[str, Any], ...] = (
+                    {
+                        "id": "chatcmpl-fgentic-demo",
+                        "object": "chat.completion.chunk",
+                        "created": 0,
+                        "model": model,
+                        "choices": [
+                            {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
+                        ],
+                    },
+                    {
+                        "id": "chatcmpl-fgentic-demo",
+                        "object": "chat.completion.chunk",
+                        "created": 0,
+                        "model": model,
+                        "choices": [
+                            {"index": 0, "delta": {"content": RESPONSE_TEXT}, "finish_reason": None}
+                        ],
+                    },
+                    {
+                        "id": "chatcmpl-fgentic-demo",
+                        "object": "chat.completion.chunk",
+                        "created": 0,
+                        "model": model,
+                        "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                    },
+                    {
+                        "id": "chatcmpl-fgentic-demo",
+                        "object": "chat.completion.chunk",
+                        "created": 0,
+                        "model": model,
+                        "choices": [],
+                        "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                    },
+                )
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream")
+                self.send_header("Cache-Control", "no-cache")
+                self.end_headers()
+                for chunk in chunks:
+                    self.wfile.write(f"data: {json.dumps(chunk, separators=(',', ':'))}\n\n".encode())
+                self.wfile.write(b"data: [DONE]\n\n")
+                return
+
+            self.write_json(
+                200,
+                {
+                    "id": "chatcmpl-fgentic-demo",
+                    "object": "chat.completion",
+                    "created": 0,
+                    "model": model,
+                    "choices": [
+                        {
+                            "index": 0,
+                            "message": {"role": "assistant", "content": RESPONSE_TEXT},
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 1, "completion_tokens": 1, "total_tokens": 2},
+                },
+            )
+
+
+    ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: demo-llm
+  namespace: models
+  labels:
+    app.kubernetes.io/name: demo-llm
+    app.kubernetes.io/part-of: fgentic
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: demo-llm
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: demo-llm
+        app.kubernetes.io/part-of: fgentic
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: server
+          # Multi-architecture manifest digest for Python 3.14.6 slim, pinned for reproducibility.
+          image: python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
+          imagePullPolicy: IfNotPresent
+          command:
+            - python3
+            - -B
+            - /app/server.py
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 2
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: http
+            periodSeconds: 10
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 24Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: source
+              mountPath: /app
+              readOnly: true
+      volumes:
+        - name: source
+          configMap:
+            name: demo-llm
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: demo-llm
+  namespace: models
+  labels:
+    app.kubernetes.io/name: demo-llm
+spec:
+  selector:
+    app.kubernetes.io/name: demo-llm
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
+      protocol: TCP

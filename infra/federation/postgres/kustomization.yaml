@@ -1,0 +1,82 @@
+# Federation CNPG inventory: three homeservers plus the provider-free Keycloak/kagent plane.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - database.yaml
+patches:
+  - target:
+      group: postgresql.cnpg.io
+      version: v1
+      kind: Cluster
+      name: platform-pg
+      namespace: postgres
+    patch: |
+      - op: remove
+        path: /spec/backup
+      - op: remove
+        path: /spec/serviceAccountTemplate
+      - op: replace
+        path: /spec/monitoring/enablePodMonitor
+        value: false
+      - op: replace
+        path: /spec/managed/roles
+        value:
+          - name: synapse
+            login: true
+            passwordSecret:
+              name: pg-synapse
+          - name: synapse_b
+            login: true
+            passwordSecret:
+              name: pg-synapse-b
+          - name: synapse_c
+            login: true
+            passwordSecret:
+              name: pg-synapse-c
+          - name: kagent
+            login: true
+            passwordSecret:
+              name: pg-kagent
+          - name: keycloak
+            login: true
+            passwordSecret:
+              name: pg-keycloak
+      - op: replace
+        path: /spec/postgresql/pg_hba
+        value:
+          - hostssl synapse synapse all scram-sha-256
+          - hostssl synapse_b synapse_b all scram-sha-256
+          - hostssl synapse_c synapse_c all scram-sha-256
+          - hostssl kagent kagent all scram-sha-256
+          - hostssl keycloak keycloak all scram-sha-256
+          - hostssl all all all reject
+          - hostnossl all all all reject
+  - target:
+      group: postgresql.cnpg.io
+      version: v1
+      kind: ScheduledBackup
+      name: platform-pg-nightly
+      namespace: postgres
+    patch: |
+      $patch: delete
+      apiVersion: postgresql.cnpg.io/v1
+      kind: ScheduledBackup
+      metadata:
+        name: platform-pg-nightly
+        namespace: postgres
+  - target: { group: postgresql.cnpg.io, version: v1, kind: Database, name: mas }
+    patch: |
+      $patch: delete
+      apiVersion: postgresql.cnpg.io/v1
+      kind: Database
+      metadata:
+        name: mas
+        namespace: postgres
+  - target: { group: postgresql.cnpg.io, version: v1, kind: Database, name: bridge }
+    patch: |
+      $patch: delete
+      apiVersion: postgresql.cnpg.io/v1
+      kind: Database
+      metadata:
+        name: bridge
+        namespace: postgres

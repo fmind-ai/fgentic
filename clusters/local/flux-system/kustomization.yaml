@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - gotk-components.yaml
+  - gotk-sync.yaml
+# Constrained-host tuning: the shared workstation can starve the k3d API server; default 15s
+# leases then flap leader election and crash-loop the controllers. Longer leases ride out the
+# hiccups (single-replica controllers — leadership contention is not a concern).
+patches:
+  - target:
+      kind: Deployment
+      labelSelector: app.kubernetes.io/part-of=flux
+    patch: |
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --leader-election-lease-duration=180s
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --leader-election-renew-deadline=170s
+      - op: add
+        path: /spec/template/spec/containers/0/args/-
+        value: --leader-election-retry-period=30s

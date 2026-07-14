@@ -1,0 +1,57 @@
+# Keep the provider-free delegation namespaces, omit unrelated stacks, and add homeservers B/C.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - namespace.yaml
+  - resource-quotas.yaml
+patches:
+  - target: { kind: Namespace, name: bridge }
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: bridge
+  - target: { kind: Namespace, name: bridges }
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: bridges
+  - target: { kind: Namespace, name: monitoring }
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: monitoring
+  - target: { kind: Namespace, name: trivy-system }
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: trivy-system
+  # These Namespaces are omitted from the federation lab, so their namespaced admission objects
+  # must be omitted in the same component build.
+  - target:
+      kind: ResourceQuota
+      name: compute-budget
+      namespace: bridge|bridges|monitoring|trivy-system
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: ResourceQuota
+      metadata:
+        name: compute-budget
+  - target:
+      kind: LimitRange
+      name: container-defaults
+      namespace: bridge|bridges|monitoring|trivy-system
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: LimitRange
+      metadata:
+        name: container-defaults

@@ -1,0 +1,9 @@
+# The shared Flux Kustomization DAG, included by every cluster overlay (clusters/local,
+# clusters/gcp). Deployment-specific values (domain, GCP project, issuer, model) are NOT here —
+# each overlay ships a `platform-settings` ConfigMap that the Kustomizations below substitute
+# via postBuild (flux envsubst), so the same manifests serve every environment.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - infrastructure.yaml
+  - apps.yaml
