@@ -318,7 +318,8 @@ render_bootstrap_namespaces() {
 	# cluster-scoped objects here: the early Flux namespace layer owns quotas and LimitRanges after
 	# platform-settings substitution, before any dependent workload can reconcile.
 	kubectl kustomize "${namespace_layer}" |
-		yq 'select(.kind == "Namespace")'
+		PROFILE="${PROFILE}" yq 'select(.kind == "Namespace" and
+      (strenv(PROFILE) != "demo" or .metadata.name != "trivy-system"))'
 }
 
 demo_up() {

@@ -10,6 +10,52 @@ resources:
 components:
   - ../base/provider-selection
 patches:
+  # The scanner is absent from evaluation, including its otherwise early-owned namespace budget.
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: namespaces
+      namespace: flux-system
+    patch: |
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: namespaces
+        namespace: flux-system
+      spec:
+        patches:
+          - target:
+              kind: Namespace
+              name: trivy-system
+            patch: |
+              $patch: delete
+              apiVersion: v1
+              kind: Namespace
+              metadata:
+                name: trivy-system
+          - target:
+              kind: ResourceQuota
+              name: compute-budget
+              namespace: trivy-system
+            patch: |
+              $patch: delete
+              apiVersion: v1
+              kind: ResourceQuota
+              metadata:
+                name: compute-budget
+                namespace: trivy-system
+          - target:
+              kind: LimitRange
+              name: container-defaults
+              namespace: trivy-system
+            patch: |
+              $patch: delete
+              apiVersion: v1
+              kind: LimitRange
+              metadata:
+                name: container-defaults
+                namespace: trivy-system
   # Evaluation omits the optional IdP and observability stacks. Local password auth is created
   # through MAS's supported Admin API, while production remains SSO-first and fully monitored.
   - target:
@@ -50,6 +96,19 @@ patches:
       kind: Kustomization
       metadata:
         name: observability-monitors
+        namespace: flux-system
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: trivy-operator
+      namespace: flux-system
+    patch: |
+      $patch: delete
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: trivy-operator
         namespace: flux-system
   - target:
       group: kustomize.toolkit.fluxcd.io

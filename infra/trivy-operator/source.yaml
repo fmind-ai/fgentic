@@ -1,0 +1,21 @@
+# The upstream release commit is immutable. Using the chart from that exact source revision binds
+# the chart and CRDs to operator v0.32.0 without trusting a mutable Helm repository index.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: trivy-operator
+  namespace: flux-system
+spec:
+  interval: 24h
+  timeout: 2m
+  url: https://github.com/aquasecurity/trivy-operator.git
+  ref:
+    # renovate: datasource=github-tags depName=aquasecurity/trivy-operator versioning=semver
+    # trivy-operator-version: v0.32.0
+    commit: 1006872c1463e81a40d48298145625aefef2a02f
+  ignore: |
+    /*
+    !/deploy/
+    /deploy/*
+    !/deploy/helm/
+    !/deploy/helm/**

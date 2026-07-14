@@ -14,7 +14,7 @@ Delivery is Flux v2, pull-based. **Never `kubectl apply` / `helm upgrade` by han
 
 `clusters/base/infrastructure.yaml` + `apps.yaml` define Flux Kustomizations, one per `infra/` directory, ordered by `dependsOn`:
 
-`namespaces` → `platform-secrets` + `controllers` (infra/flux) + `observability` → `gateway`, `postgres`, `agentgateway` → `matrix` (ESS), `kagent`, `observability-monitors` → `bridge` (apps/matrix-a2a-bridge/deploy).
+`namespaces` → `platform-secrets` + `controllers` (infra/flux) + `observability` + `trivy-operator` → `gateway`, `postgres`, `agentgateway` → `matrix` (ESS), `kagent`, `observability-monitors` → `bridge` (apps/matrix-a2a-bridge/deploy). `observability-monitors` depends only on `observability`: a feed-sensitive scanner failure must not block the platform's existing monitors. `trivy-operator` is retained by `local`/`gcp` and deleted structurally, together with `observability-monitors`, by `demo`/`federation`.
 
 1. `namespaces` is dependency-free and owns **every** Namespace + PSS labels — HelmReleases/Secrets cannot land in namespaces that don't exist, and per-layer namespaces deadlock the DAG. New namespace ⇒ add it to `infra/namespaces/`.
 1. `HelmRelease.dependsOn` may only reference other HelmReleases — to depend on anything else, wrap in a Flux Kustomization and use its `dependsOn` (that's why apps get their own Kustomization).
