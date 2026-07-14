@@ -67,17 +67,18 @@ The output deliberately sets `trust_level` to `public_unauthenticated_probe` and
 
 Each operator supplies authenticated or local evidence for the following controls. Hash or link to the reviewed evidence rather than copying secrets or room content.
 
-| Gate                  | Required control                                                                                                                                                               | Evidence owner records                                             |
-| --------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------ |
-| DNS and TLS           | Apex `/.well-known` delegates to the agreed DNS server; publicly trusted certificate covers every advertised name; renewal is monitored                                        | Public preflight plus certificate/renewal monitor reference        |
-| Closed federation     | `federation_domain_whitelist` contains only the local and approved partner server names; network ingress is restricted to partner addresses where stable addressing permits it | Redacted effective config and Git revision                         |
-| Signing-key retrieval | The approved partner is reachable as configured; any notary choice and failure behavior are documented                                                                         | Effective Synapse config and negative test                         |
-| Room version          | Federated rooms use room version 12 or newer                                                                                                                                   | Authenticated room-version state query                             |
-| Server ACL            | Initial `m.room.server_acl` permits only approved servers and sets `allow_ip_literals: false`                                                                                  | Authenticated room-state query                                     |
-| Non-federated rooms   | Rooms outside the agreement are created with immutable `m.federate: false` state                                                                                               | Creation policy and representative state query                     |
-| Policy border         | Synapse callbacks admit only agreed sender servers and event types and emit content-free denial evidence                                                                       | Policy digest, deployment revision, positive and negative test IDs |
-| Bridge sender policy  | Every invocable agent has an exact `allowedServers`/`allowedSenders` decision; federated senders remain deny-by-default                                                        | Reviewed agent mapping and denied mention evidence                 |
-| Observability         | Alerts cover federation failures and policy denials without logging message content                                                                                            | Monitor references and alert-routing owner                         |
+| Gate                   | Required control                                                                                                                                                               | Evidence owner records                                               |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| DNS and TLS            | Apex `/.well-known` delegates to the agreed DNS server; publicly trusted certificate covers every advertised name; renewal is monitored                                        | Public preflight plus certificate/renewal monitor reference          |
+| Closed federation      | `federation_domain_whitelist` contains only the local and approved partner server names; network ingress is restricted to partner addresses where stable addressing permits it | Redacted effective config and Git revision                           |
+| Signing-key retrieval  | The approved partner is reachable as configured; any notary choice and failure behavior are documented                                                                         | Effective Synapse config and negative test                           |
+| Room version           | Federated rooms use room version 12 or newer                                                                                                                                   | Authenticated room-version state query                               |
+| Membership and history | Room is private; initial `m.room.join_rules` is `invite`, initial `m.room.history_visibility` is `joined`, and membership contains only approved users and agents              | Authenticated join-rules, history-visibility, and membership queries |
+| Server ACL             | Initial `m.room.server_acl` permits only approved servers and sets `allow_ip_literals: false`                                                                                  | Authenticated room-state query                                       |
+| Non-federated rooms    | Rooms outside the agreement are created with immutable `m.federate: false` state                                                                                               | Creation policy and representative state query                       |
+| Policy border          | Synapse callbacks admit only agreed sender servers and event types and emit content-free denial evidence                                                                       | Policy digest, deployment revision, positive and negative test IDs   |
+| Bridge sender policy   | Every invocable agent has an exact `allowedServers`/`allowedSenders` decision; federated senders remain deny-by-default                                                        | Reviewed agent mapping and denied mention evidence                   |
+| Observability          | Alerts cover federation failures and policy denials without logging message content                                                                                            | Monitor references and alert-routing owner                           |
 
 Before activation, both operators run their own deterministic checks and retain the clean revision:
 
@@ -92,13 +93,14 @@ Use `mise run fed:up` as the provider-free reference proof for Fgentic's room-v1
 
 Approve the smallest useful collaboration surface:
 
-1. Name the exact rooms, owners, purpose, allowed data classification, retention class, and participating server names.
+1. Name the exact rooms, owners, purpose, allowed data classification, retention class, and participating server names. Apply [ADR 0015](adr/0015-federated-room-encryption.md): v1 federated agent rooms may carry public or explicitly partner-approved non-public data only; restricted, regulated, secret, and authentication material is prohibited.
 1. Create a new dedicated room rather than federating an existing history-bearing room.
+1. Create it as private and install `m.room.join_rules: invite` plus `m.room.history_visibility: joined` in the initial state. Invite only the exact approved users and agents; a server ACL does not restrict users on an admitted server.
 1. Install room version and `m.room.server_acl` state at creation so no ungoverned event window exists.
 1. Invite a low-privilege test user from each organization and verify one message in each direction.
 1. Attempt a join and event from an unapproved server; both must fail and produce content-free evidence.
 1. Add agents only after the human collaboration controls pass. For every agent, record exact allowed Matrix senders/servers and a business owner.
-1. Keep sensitive or unrelated rooms local with `m.federate: false`; removing a partner from an ACL does not retract history already replicated to its homeserver.
+1. Keep sensitive or unrelated rooms local with `m.federate: false`; removing a partner from an ACL does not retract history already replicated to its homeserver. Put the room's plaintext/replication warning, purpose, allowed class, and owner in visible room guidance.
 
 ## 6. A2A delegation agreement
 
