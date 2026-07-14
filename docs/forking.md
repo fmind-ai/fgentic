@@ -57,11 +57,10 @@ To keep your real GCP project (or any value) untracked while committing a portab
 cp clusters/local/platform-settings-overrides.example.yaml \
    clusters/local/platform-settings-overrides.yaml     # the copy is gitignored
 $EDITOR clusters/local/platform-settings-overrides.yaml  # set gcp_project, etc.
-kubectl apply -f clusters/local/platform-settings-overrides.yaml
-flux reconcile kustomization infra --with-source
+mise run cluster:overrides   # applies the ConfigMap + reconciles (idempotent)
 ```
 
-Re-apply it after recreating the cluster. The committed `platform-settings.yaml` keeps a `your-gcp-project` placeholder so nothing private lands in git.
+`mise run cluster:overrides` wraps the `kubectl apply` + `flux reconcile kustomization flux-system --with-source` (the platform is split into many Kustomizations rooted at `flux-system`; consumers pick up the value on their next reconcile) and is safe to re-run — **do it after every cluster recreate**, since the override is untracked and a recreate loses it (Vertex then falls back to the `your-gcp-project` placeholder). The committed `platform-settings.yaml` keeps that placeholder so nothing private lands in git.
 
 ## 6. Flux Git source
 

@@ -408,6 +408,30 @@ k3d cluster create --config k3d-config.yaml
 description = "Delete the local k3d cluster"
 run = "k3d cluster delete fgentic"
 
+[tasks."cluster:overrides"]
+description = "Apply the gitignored local platform-settings-overrides (real gcp_project, etc.) and reconcile"
+run = """
+# The one sanctioned `kubectl apply` outside GitOps: this ConfigMap holds values kept OUT of git
+# (e.g. the real gcp_project) and Flux lists it AFTER `platform-settings` in every Kustomization's
+# substituteFrom, so its keys win at reconcile. Idempotent — re-run after every cluster recreate.
+# See docs/forking.md §5. Absent file is non-fatal: the committed `your-gcp-project` placeholder stays.
+override=clusters/local/platform-settings-overrides.yaml
+if [ ! -f "$override" ]; then
+  echo "No $override yet — copy the template and set your private values (kept out of git):"
+  echo "  cp clusters/local/platform-settings-overrides.example.yaml $override"
+  echo "Skipping: the committed placeholder (your-gcp-project) stays in effect."
+  exit 0
+fi
+kubectl --context k3d-fgentic apply -f "$override"
+# Request an immediate re-render of every layer so the new values take effect. `flux reconcile`
+# blocks on full-DAG readiness (can hang on a converging cluster), so annotate directly — this
+# returns at once. Post-recreate, the ConfigMap is already present as each layer first reconciles,
+# so this is just an accelerator, not a correctness requirement.
+kubectl --context k3d-fgentic -n flux-system annotate kustomization --all --overwrite \
+  "reconcile.fluxcd.io/requestedAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
+echo "Applied platform-settings-overrides and requested a reconcile of all Flux layers."
+"""
+
 [tasks."demo:up"]
 description = "Install and seed the small evaluation profile without GitHub credentials"
 run = "bash scripts/demo.sh up"

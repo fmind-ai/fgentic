@@ -8,10 +8,10 @@
 #   cp clusters/local/platform-settings-overrides.example.yaml \
 #      clusters/local/platform-settings-overrides.yaml   # the copy is gitignored
 #   $EDITOR clusters/local/platform-settings-overrides.yaml
-#   kubectl apply -f clusters/local/platform-settings-overrides.yaml
-#   flux reconcile kustomization infra --with-source   # pick up the override
+#   mise run cluster:overrides   # kubectl apply + reconcile root flux-system (idempotent)
 #
-# Re-apply after recreating the cluster. See docs/forking.md for the full adapt-a-fork checklist.
+# Re-apply (re-run the task) after recreating the cluster. See docs/forking.md for the full
+# adapt-a-fork checklist.
 apiVersion: v1
 kind: ConfigMap
 metadata:
