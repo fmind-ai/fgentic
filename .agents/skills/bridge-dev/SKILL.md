@@ -1,6 +1,6 @@
 ---
 name: bridge-dev
-description: Develop the matrix-a2a-bridge Go appservice — setup, inner loop (skaffold or side-load into k3d), validation gates, and the licensing constraints. Use when changing code under apps/matrix-a2a-bridge/.
+description: Develop the matrix-a2a-bridge Go appservice — setup, focused tests, the repo-owned lightweight cluster loop, validation gates, and licensing constraints. Use when changing code under apps/matrix-a2a-bridge/.
 metadata:
   author: Médéric Hurier (Fmind)
   created: 2026-07-11
@@ -38,11 +38,15 @@ The bridge is self-contained under `apps/matrix-a2a-bridge/` (own Go module, mis
 1. `mise run test:integration` (root) — kind + real-Synapse driver (`test/integration/cmd/driver`) proving `@mention → A2A → reply`, dedup, rate limit, tampered-card fail-close. Needs Docker; ~4 min; slow/flaky under host contention, so CI's clean runner is authoritative. Extend `runBasic` to prove new end-to-end behavior. A `messageContent` with a nil `Mentions.UserIDs` serializes `"user_ids": null` → Synapse `M_BAD_JSON`; send `[]string{}` for a mention-less message.
 1. `mise run check:federation` — **offline** federation contracts (signing, whitelist/policy/ACL, denied control); the deterministic proof for AgentCard-signing and revocation invariants without spinning up `fed:up`.
 
-## Testing a change on the live local cluster (two paths)
+## Testing a change on the lightweight development cluster
 
-1. **Inner loop — `mise run watch`** (skaffold dev, from the repo root): rebuilds the image on change and deploys the chart into ns `bridge` with the fresh digest. The rest of the platform (ESS, agentgateway, kagent, Postgres) must already be up via Flux (matrix-agents bootstrap runbook). Note skaffold temporarily takes over the Helm release from Flux — Flux reconverges to the git state afterwards.
-1. **One-shot — `mise run bridge:load`**: builds `matrix-a2a-bridge:local` and imports it into k3d, then `kubectl -n bridge rollout restart deploy/matrix-a2a-bridge`. This works because the local overlay (`clusters/local/kustomization.yaml`) pins the bridge HelmRelease to `matrix-a2a-bridge:local` with `pullPolicy: Never` — local clusters never pull from GHCR.
-1. Verify end-to-end with the matrix-agents "verify the flow" runbook (`@mention → A2A → reply`); logs: `kubectl -n bridge logs deploy/matrix-a2a-bridge`.
+1. **Bootstrap/reuse — `mise run dev:up`**: creates and seeds `fgentic-demo` only on the first run. Later runs start the owned cluster, wait for the existing bridge, and print access details without rebuilding the source/bridge images, reinstalling Flux, reconciling the platform, or reseeding.
+1. **One-shot — `mise run dev:reload`**: builds the current bridge under the exact `pullPolicy: Never` tag already requested by the demo HelmRelease, imports it with k3d's portable auto mode, and restarts only `deployment/matrix-a2a-bridge`. It uses a temporary kubeconfig and rejects a foreign same-named cluster.
+1. **Watch — `mise run watch`**: the repo-pinned Watchexec watches only bridge Go/module/Dockerfile inputs and calls `dev:reload` after changes. It does not take Helm ownership away from Flux.
+1. **Lifecycle — `dev:status`, `dev:stop`, `dev:down`**: inspect, release active CPU/RAM while retaining state, or delete only the owned demo. Run `mise run demo:up` after chart, manifest, agent-map, or profile changes so Flux reconciles a new checkout snapshot and the seeded end-to-end acceptance repeats.
+1. Verify an interactive change in `#lobby:fgentic.localhost`; for diagnostics, export only the repo-owned kubeconfig with `export KUBECONFIG="$(mise exec -- k3d kubeconfig write fgentic-demo)"`, then follow the matrix-agents flow runbook. Do not switch the global context.
+
+The older `mise run bridge:load` path is reserved for the optional production-shaped `fgentic` local cluster. It now generates an isolated kubeconfig and restarts the bridge, but the full cluster should be used only for Keycloak SSO, observability/tracing, Trivy, SOPS, or full GitOps behavior omitted from demo.
 
 ## Local run without a cluster
 

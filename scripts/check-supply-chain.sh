@@ -61,7 +61,7 @@ assert_source '.spec.verify.matchOIDCIdentity | length' "1"
 assert_source '.spec.verify.matchOIDCIdentity[0].issuer' '^https://token.actions.githubusercontent.com$'
 assert_source '.spec.verify.matchOIDCIdentity[0].subject' '^https://github\.com/fmind-ai/fgentic/\.github/workflows/cd\.yml@refs/heads/main$'
 
-suspended="$(source_value '.spec.suspend')"
+suspended="$(source_value '.spec.suspend | tostring')"
 if [ "${suspended}" = "true" ]; then
   # Before the first publication, the OCI source must be inert and Helm must retain the local
   # chart. Any mixed state would either reconcile a phantom artifact or bypass verification.
