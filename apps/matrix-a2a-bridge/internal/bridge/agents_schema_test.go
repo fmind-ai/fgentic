@@ -81,9 +81,9 @@ func TestAgentsSchemaExtensions(t *testing.T) {
 			"    timeout: 12s\n    tokenBudget: 8192\n" + extensions +
 			"    cardIdentity:\n      name: Partner\n      organization: Partner Corp\n      keyID: k1\n      " + key + "\n")
 	}
-	valid := remote("    extensions: [https://fgentic.fmind.ai/a2a/extensions/skill-quote/v1]\n    maxCost: 25\n    allowMedia: true\n")
+	valid := remote("    extensions: [https://fgentic.fmind.ai/a2a/extensions/skill-quote/v1]\n    maxCost: 25\n    allowMedia: true\n    mtls:\n      clientCertFile: /etc/mtls/client.crt\n      clientKeyFile: /etc/mtls/client.key\n")
 	if err := schema.Validate(yamlInstance(t, valid)); err != nil {
-		t.Fatalf("valid remote+extensions+maxCost+allowMedia rejected: %v", err)
+		t.Fatalf("valid remote+extensions+maxCost+allowMedia+mtls rejected: %v", err)
 	}
 	rejects := map[string][]byte{
 		"non-https extension": remote("    extensions: [http://partner.example/ext]\n"),
@@ -94,6 +94,9 @@ func TestAgentsSchemaExtensions(t *testing.T) {
 			"    name: k8s\n    maxCost: 25\n"),
 		"allowMedia on local target": []byte("schemaVersion: 1\nagents:\n  agent-k8s:\n    namespace: kagent\n" +
 			"    name: k8s\n    allowMedia: true\n"),
+		"mtls on local target": []byte("schemaVersion: 1\nagents:\n  agent-k8s:\n    namespace: kagent\n" +
+			"    name: k8s\n    mtls:\n      clientCertFile: /c\n      clientKeyFile: /k\n"),
+		"mtls missing clientKeyFile": remote("    mtls:\n      clientCertFile: /c\n"),
 	}
 	for name, document := range rejects {
 		t.Run(name, func(t *testing.T) {

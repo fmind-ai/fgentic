@@ -6,6 +6,8 @@ package bridge
 import (
 	"bytes"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -83,9 +85,23 @@ type agentConfig struct {
 	// refused and the remote's artifact bytes are withheld from the room. Remote targets only — local
 	// media is governed solely by the global MIME/size policy.
 	AllowMedia *bool `yaml:"allowMedia,omitempty"`
+	// MTLS pins the client certificate the bridge presents to this remote endpoint for A2A v1.0
+	// transport-layer mutual authentication (#244). Remote targets only; the cert/key are SOPS-managed
+	// files mounted into the pod, never inline PEM in this document.
+	MTLS *mtlsConfig `yaml:"mtls,omitempty"`
 
 	AllowedServers []string `yaml:"allowedServers,omitempty"`
 	AllowedSenders []string `yaml:"allowedSenders,omitempty"`
+}
+
+// mtlsConfig references the client-certificate material for a remote mTLS mapping (#244). Paths point
+// at files projected from a SOPS-managed Secret; plaintext PEM is never committed to agents.yaml.
+type mtlsConfig struct {
+	ClientCertFile string `yaml:"clientCertFile"`
+	ClientKeyFile  string `yaml:"clientKeyFile"`
+	// ServerCAFile optionally pins the roots used to verify the partner's server certificate; empty
+	// defers to the system trust store.
+	ServerCAFile string `yaml:"serverCAFile,omitempty"`
 }
 
 type cardIdentityConfig struct {
@@ -242,8 +258,8 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 		if namespace == "" || name == "" {
 			return nil, fmt.Errorf("agent %q: both namespace and name are required for a local target", ghost)
 		}
-		if cfg.Timeout != nil || cfg.TokenBudget != nil || cfg.CardIdentity != nil || len(cfg.Extensions) > 0 || cfg.MaxCost != nil || cfg.AllowMedia != nil {
-			return nil, fmt.Errorf("agent %q: timeout, tokenBudget, cardIdentity, extensions, maxCost, and allowMedia are only valid for a url target", ghost)
+		if cfg.Timeout != nil || cfg.TokenBudget != nil || cfg.CardIdentity != nil || len(cfg.Extensions) > 0 || cfg.MaxCost != nil || cfg.AllowMedia != nil || cfg.MTLS != nil {
+			return nil, fmt.Errorf("agent %q: timeout, tokenBudget, cardIdentity, extensions, maxCost, allowMedia, and mtls are only valid for a url target", ghost)
 		}
 		ref.target, err = a2aclient.NewLocalTarget(fmt.Sprintf("/api/a2a/%s/%s", namespace, name))
 	} else {
@@ -303,11 +319,56 @@ func compileRemoteTarget(cfg *agentConfig) (a2aclient.Target, time.Duration, err
 	if err != nil {
 		return a2aclient.Target{}, 0, err
 	}
-	target, err := a2aclient.NewRemoteTarget(rawURL, identity, *cfg.TokenBudget, cfg.Extensions)
+	opts, err := compileMTLS(cfg.MTLS)
+	if err != nil {
+		return a2aclient.Target{}, 0, err
+	}
+	target, err := a2aclient.NewRemoteTarget(rawURL, identity, *cfg.TokenBudget, cfg.Extensions, opts...)
 	if err != nil {
 		return a2aclient.Target{}, 0, err
 	}
 	return target, *cfg.Timeout, nil
+}
+
+// compileMTLS loads the client certificate/key (and optional server CA) for a remote mTLS mapping and
+// returns it as a NewRemoteTarget option (#244). The material is read fail-fast at config time; a
+// digest of the loaded bytes becomes the target-ID fingerprint so a cert rotation re-verifies the
+// card and re-keys queued work. It returns no option when mTLS is unconfigured.
+func compileMTLS(cfg *mtlsConfig) ([]a2aclient.RemoteOption, error) {
+	if cfg == nil {
+		return nil, nil
+	}
+	if cfg.ClientCertFile == "" || cfg.ClientKeyFile == "" {
+		return nil, fmt.Errorf("url target mtls requires both clientCertFile and clientKeyFile")
+	}
+	certPEM, err := os.ReadFile(cfg.ClientCertFile)
+	if err != nil {
+		return nil, fmt.Errorf("read mtls clientCertFile: %w", err)
+	}
+	keyPEM, err := os.ReadFile(cfg.ClientKeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("read mtls clientKeyFile: %w", err)
+	}
+	certificate, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, fmt.Errorf("load mtls client certificate: %w", err)
+	}
+	digest := sha256.New()
+	digest.Write(certPEM)
+	var roots *x509.CertPool
+	if cfg.ServerCAFile != "" {
+		caPEM, err := os.ReadFile(cfg.ServerCAFile)
+		if err != nil {
+			return nil, fmt.Errorf("read mtls serverCAFile: %w", err)
+		}
+		roots = x509.NewCertPool()
+		if !roots.AppendCertsFromPEM(caPEM) {
+			return nil, fmt.Errorf("mtls serverCAFile %q contains no valid certificate", cfg.ServerCAFile)
+		}
+		digest.Write(caPEM)
+	}
+	fingerprint := hex.EncodeToString(digest.Sum(nil))
+	return []a2aclient.RemoteOption{a2aclient.WithClientTLS(certificate, roots, fingerprint)}, nil
 }
 
 func configuredString(value *string) string {

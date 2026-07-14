@@ -154,6 +154,10 @@ type Client struct {
 	mu           sync.RWMutex
 	cache        map[string]cachedTarget
 	refreshLocks sync.Map
+	// remoteTransports memoizes the per-target mTLS RoundTripper (keyed by target ID) so the card
+	// fetch and the SDK client reuse one connection pool instead of cloning a fresh transport on every
+	// periodic refresh (#244). A cert rotation yields a new target ID and therefore a new entry.
+	remoteTransports sync.Map
 }
 
 // New returns a Client that resolves agents relative to baseURL (e.g. the agentgateway proxy).
@@ -346,16 +350,35 @@ func (c *Client) clientFor(ctx context.Context, target Target) (*sdk.Client, err
 	return client, nil
 }
 
-func (c *Client) remoteSDKHTTPClient(targetID string, generation uint64) *http.Client {
+func (c *Client) remoteSDKHTTPClient(target Target, generation uint64) *http.Client {
 	return &http.Client{
 		Transport: &generationTransport{
-			base:       c.remoteHTTPClient.Transport,
+			base:       c.remoteUserTransport(target),
 			client:     c,
-			targetID:   targetID,
+			targetID:   target.ID(),
 			generation: generation,
 		},
 		CheckRedirect: c.remoteHTTPClient.CheckRedirect,
 	}
+}
+
+// remoteUserTransport returns the RoundTripper for dialing a remote target. Without configured mTLS
+// it reuses the shared remote transport (a userTransport with no API key), preserving existing
+// behavior. With mTLS (#244) it wraps a per-target http.Transport — cloned from DefaultTransport to
+// keep its timeouts/proxy behavior — pinned to the mapping's client certificate and optional server
+// roots, in its own userTransport that likewise carries no local gateway credential.
+func (c *Client) remoteUserTransport(target Target) http.RoundTripper {
+	tlsConfig := target.clientTLSConfig()
+	if tlsConfig == nil {
+		return c.remoteHTTPClient.Transport
+	}
+	if cached, ok := c.remoteTransports.Load(target.ID()); ok {
+		return cached.(http.RoundTripper)
+	}
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = tlsConfig
+	shared, _ := c.remoteTransports.LoadOrStore(target.ID(), &userTransport{base: transport})
+	return shared.(http.RoundTripper)
 }
 
 func buildSDKClient(ctx context.Context, card *a2a.AgentCard, httpClient *http.Client, activatedExtensions []string) (*sdk.Client, error) {

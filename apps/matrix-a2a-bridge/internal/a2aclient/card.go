@@ -34,6 +34,23 @@ var ErrRemoteTargetUntrusted = errors.New("remote A2A target has no verified Age
 // (a negotiation gap, not a signature or identity mismatch — docs/bridge.md §6).
 var ErrRemoteExtensionUnsupported = fmt.Errorf("%w: required A2A extension is not activated", ErrRemoteTargetUntrusted)
 
+// ErrRemoteMutualTLSRequired marks a verified card that declares an A2A mTLS security scheme while
+// its mapping configured no client certificate. It wraps ErrRemoteTargetUntrusted so the target is
+// quarantined fail-closed, with a distinct terminal reason (a transport-auth gap, not a signature or
+// identity mismatch — #244).
+var ErrRemoteMutualTLSRequired = fmt.Errorf("%w: card requires mTLS but no client certificate is configured", ErrRemoteTargetUntrusted)
+
+// cardRequiresMutualTLS reports whether a verified AgentCard declares an A2A mutual-TLS security
+// scheme in its securitySchemes map.
+func cardRequiresMutualTLS(card *a2a.AgentCard) bool {
+	for _, scheme := range card.SecuritySchemes {
+		if _, ok := scheme.(a2a.MutualTLSSecurityScheme); ok {
+			return true
+		}
+	}
+	return false
+}
+
 type cachedTarget struct {
 	client       *sdk.Client
 	card         *a2a.AgentCard
@@ -67,7 +84,10 @@ func (c *Client) resolveRemoteAgentCard(ctx context.Context, target Target) (*a2
 		}
 	}
 
-	resp, err := c.remoteHTTPClient.Do(req)
+	// The card is fetched over the same endpoint the delegation dials, so it must present the same
+	// per-target client certificate when mTLS is configured (#244).
+	cardClient := &http.Client{Transport: c.remoteUserTransport(target), CheckRedirect: c.remoteHTTPClient.CheckRedirect}
+	resp, err := cardClient.Do(req)
 	if err != nil {
 		// Availability failures do not revoke a previously verified identity. The explicit
 		// periodic refresh policy will retry; trust failures still quarantine immediately.
@@ -137,8 +157,14 @@ func (c *Client) resolveRemoteAgentCard(ctx context.Context, target Target) (*a2
 		// err may wrap ErrRemoteExtensionUnsupported; quarantineRemote preserves it for the audit.
 		return nil, c.quarantineRemote(target, err)
 	}
+	// A card that requires mTLS but whose mapping configured no client certificate is refused: the
+	// partner demands transport auth the bridge cannot present, and trusting it anyway would be a
+	// silent downgrade of the declared scheme (#244).
+	if cardRequiresMutualTLS(card) && !target.requiresClientCert() {
+		return nil, c.quarantineRemote(target, ErrRemoteMutualTLSRequired)
+	}
 	generation := nextGeneration(previous.generation)
-	client, err := buildSDKClient(ctx, card, c.remoteSDKHTTPClient(target.ID(), generation), target.ActivatedExtensions())
+	client, err := buildSDKClient(ctx, card, c.remoteSDKHTTPClient(target, generation), target.ActivatedExtensions())
 	if err != nil {
 		return nil, c.quarantineRemote(target, fmt.Errorf("build client from verified card: %w", err))
 	}

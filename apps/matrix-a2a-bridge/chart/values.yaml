@@ -44,8 +44,10 @@ config:
   # entirely; a positive cap turns it on. mediaMaxBytes caps one file, mediaMaxTotalBytes the summed
   # bytes of one delegation in each direction. mediaMimeAllowlist is exact type/subtype (no
   # wildcards); empty here keeps the bridge's built-in default document/image set.
-  mediaMaxBytes: 10485760 # 10 MiB per file; set 0 to disable media
-  mediaMaxTotalBytes: 26214400 # 25 MiB per delegation per direction
+  # Keep byte counts as decimal strings. Helm loads unquoted large YAML numbers as floats and can
+  # render them in exponent notation, which the bridge's strict int64 boundary correctly rejects.
+  mediaMaxBytes: "10485760" # 10 MiB per file; set "0" to disable media
+  mediaMaxTotalBytes: "26214400" # 25 MiB per delegation per direction
   mediaMimeAllowlist: [] # e.g. ["text/csv","application/pdf","image/png"]; empty = built-in default
 
 # Postgres backing the bridge state (mautrix StateStore + contexts + event dedup — SPEC §5).
@@ -159,3 +161,16 @@ revisionHistoryLimit: 3
 nodeSelector: {}
 tolerations: []
 affinity: {}
+
+# Extra pod volumes and container mounts, e.g. to project a SOPS-managed mTLS client-cert Secret at
+# the paths a remote mapping's `mtls:` block references (#244). Example:
+#   extraVolumes:
+#     - name: mtls-partner-reviewer
+#       secret:
+#         secretName: bridge-mtls-partner-reviewer
+#   extraVolumeMounts:
+#     - name: mtls-partner-reviewer
+#       mountPath: /etc/matrix-a2a-bridge/mtls/partner-reviewer
+#       readOnly: true
+extraVolumes: []
+extraVolumeMounts: []

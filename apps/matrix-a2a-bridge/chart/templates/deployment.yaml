@@ -1,6 +1,8 @@
 {{- if ne (int .Values.replicaCount) 1 }}
 {{- fail "matrix-a2a-bridge requires replicaCount=1 to preserve per-room ordering" }}
 {{- end }}
+{{- $mediaMaxBytes := include "matrix-a2a-bridge.nonNegativeDecimal" (list "config.mediaMaxBytes" .Values.config.mediaMaxBytes) }}
+{{- $mediaMaxTotalBytes := include "matrix-a2a-bridge.nonNegativeDecimal" (list "config.mediaMaxTotalBytes" .Values.config.mediaMaxTotalBytes) }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -85,9 +87,9 @@ spec:
             - name: RATE_LIMIT_BUCKET_CAPACITY
               value: {{ .Values.config.rateLimitBucketCapacity | quote }}
             - name: MEDIA_MAX_BYTES
-              value: {{ .Values.config.mediaMaxBytes | quote }}
+              value: {{ $mediaMaxBytes | quote }}
             - name: MEDIA_MAX_TOTAL_BYTES
-              value: {{ .Values.config.mediaMaxTotalBytes | quote }}
+              value: {{ $mediaMaxTotalBytes | quote }}
             {{- if .Values.config.mediaMimeAllowlist }}
             - name: MEDIA_MIME_ALLOWLIST
               value: {{ join "," .Values.config.mediaMimeAllowlist | quote }}
@@ -131,6 +133,9 @@ spec:
               # symlink, which the bridge polls. A subPath mount would stay frozen forever.
               mountPath: /etc/matrix-a2a-bridge/agents
               readOnly: true
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
           livenessProbe:
             httpGet:
               path: /_matrix/mau/live
@@ -154,6 +159,9 @@ spec:
         - name: agents
           configMap:
             name: {{ include "matrix-a2a-bridge.fullname" . }}-agents
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

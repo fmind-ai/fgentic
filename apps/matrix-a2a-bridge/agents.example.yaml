@@ -65,12 +65,20 @@ agents:
   # boundary in either direction (#115). Omitted/false keeps the boundary closed to files: inbound
   # room files are refused and the remote's artifact bytes are withheld. Files still pass the global
   # MEDIA_MIME_ALLOWLIST + size caps regardless. Local agents always move media (in-cluster).
+  # `mtls` (optional, remote only) presents a client certificate to the partner for A2A v1.0
+  # transport mutual authentication (#244). clientCertFile/clientKeyFile (and optional serverCAFile)
+  # reference SOPS-managed files mounted into the pod — never inline PEM here. A verified card that
+  # declares an mtls security scheme without this configured fails closed.
   # agent-partner-reviewer:
   #   url: https://agents.partner.example/a2a/reviewer
   #   timeout: 30s
   #   tokenBudget: 4096
   #   maxCost: 8192
   #   allowMedia: true
+  #   mtls:
+  #     clientCertFile: /etc/matrix-a2a-bridge/mtls/partner-reviewer/tls.crt
+  #     clientKeyFile: /etc/matrix-a2a-bridge/mtls/partner-reviewer/tls.key
+  #     serverCAFile: /etc/matrix-a2a-bridge/mtls/partner-reviewer/ca.crt
   #   extensions:
   #     - https://fgentic.fmind.ai/a2a/extensions/skill-quote/v1
   #   cardIdentity:
