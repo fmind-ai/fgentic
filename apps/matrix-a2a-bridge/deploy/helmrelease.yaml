@@ -47,7 +47,7 @@ spec:
   values:
     image:
       repository: ghcr.io/fmind-ai/matrix-a2a-bridge
-      tag: sha-6bc5efefae9520529268da4ca7399e3abefd53d2@sha256:a9452fa9f2ca88aed89864500d12065dbacaa25b932ff3e83dbd248a10f8f948 # CI overwrites with sha-<git>@sha256:<digest>
+      tag: sha-bcd0a18c754dd9d6d923c63c3b9ff4747c2e694a@sha256:bdc04af181880fb17582cafe859a4122e274189f8795ee8676ea2ba7fac51417 # v0.1.0 build; CI re-pins on the next bridge change to main
     config:
       serverName: ${server_name}
       agentCardRefreshInterval: 5m
