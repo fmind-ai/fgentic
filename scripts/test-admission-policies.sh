@@ -80,6 +80,27 @@ static_contract() {
   require_validation_fragment "approved-agent-references.fgentic.dev" \
     "managed Agents cannot override the reviewed pod runtime" ".extraContainers"
   require_validation_fragment "approved-agent-references.fgentic.dev" \
+    "managed Agents must disable every reviewed GenAI trace-content path" \
+    'ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS'
+  require_validation_fragment "approved-agent-references.fgentic.dev" \
+    "managed Agents must disable every reviewed GenAI trace-content path" \
+    'OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT'
+  require_validation_fragment "approved-agent-references.fgentic.dev" \
+    "managed Agents must disable every reviewed GenAI trace-content path" \
+    'TRACELOOP_TRACE_CONTENT'
+  require_validation_fragment "approved-agent-references.fgentic.dev" \
+    "managed Agents must disable every reviewed GenAI trace-content path" \
+    'size(object.spec.declarative.deployment.env) == 3'
+  require_validation_fragment "approved-agent-references.fgentic.dev" \
+    "managed Agents must disable every reviewed GenAI trace-content path" \
+    'has(e.value)'
+  require_validation_fragment "approved-agent-references.fgentic.dev" \
+    "managed Agents must disable every reviewed GenAI trace-content path" \
+    'e.value == "false"'
+  require_validation_fragment "approved-agent-references.fgentic.dev" \
+    "managed Agents must disable every reviewed GenAI trace-content path" \
+    '!has(e.valueFrom)'
+  require_validation_fragment "approved-agent-references.fgentic.dev" \
     "tool references must target the reviewed kagent-tool-server RemoteMCPServer" \
     "t.mcpServer.namespace"
   require_validation_fragment "approved-agent-references.fgentic.dev" \
@@ -378,6 +399,13 @@ spec:
       serviceAccountName: agent-zoo-runtime
       labels:
         fgentic.dev/agent-zoo: "true"
+      env:
+        - name: ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS
+          value: "false"
+        - name: OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT
+          value: "false"
+        - name: TRACELOOP_TRACE_CONTENT
+          value: "false"
     tools:
       - type: McpServer
         headersFrom:
@@ -488,8 +516,20 @@ EOF
     yq '.metadata.name = "agent-tool-bypass" | .spec.declarative.tools = [{"type": "Agent", "agent": {"name": "another-agent"}}]' |
     expect_agent_denied "only platform-helper may declare exactly one governed tool server"
   agent_manifest "${agent_namespace}" |
-    yq '.spec.declarative.deployment.env = [{"name": "ESCAPE", "value": "true"}]' |
-    expect_agent_denied "managed Agents cannot override the reviewed pod runtime"
+    yq 'del(.spec.declarative.deployment.env[0])' |
+    expect_agent_denied "managed Agents must disable every reviewed GenAI trace-content path"
+  agent_manifest "${agent_namespace}" |
+    yq '.spec.declarative.deployment.env[0].value = "true"' |
+    expect_agent_denied "managed Agents must disable every reviewed GenAI trace-content path"
+  agent_manifest "${agent_namespace}" |
+    yq '.spec.declarative.deployment.env[2].name = "ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"' |
+    expect_agent_denied "managed Agents must disable every reviewed GenAI trace-content path"
+  agent_manifest "${agent_namespace}" |
+    yq '.spec.declarative.deployment.env[0].valueFrom.fieldRef.fieldPath = "metadata.name"' |
+    expect_agent_denied "managed Agents must disable every reviewed GenAI trace-content path"
+  agent_manifest "${agent_namespace}" |
+    yq '.spec.declarative.deployment.env += [{"name": "ESCAPE", "value": "false"}]' |
+    expect_agent_denied "managed Agents must disable every reviewed GenAI trace-content path"
   agent_manifest "${agent_namespace}" |
     yq '.spec.declarative.tools[0].mcpServer.namespace = "other"' |
     expect_agent_denied "tool references must target the reviewed kagent-tool-server RemoteMCPServer"

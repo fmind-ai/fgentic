@@ -41,6 +41,10 @@ for agent in docs-qa platform-helper scribe; do
     "${tmp_dir}/agent-zoo.yaml" \
     "${agent} must use the unprivileged shared runtime ServiceAccount"
   assert_yq \
+    "select(.kind == \"Agent\" and .metadata.name == \"${agent}\" and (.spec.declarative.deployment.env | length) == 3 and ([.spec.declarative.deployment.env[] | select(.value == \"false\" and (has(\"valueFrom\") | not))] | length) == 3 and ([.spec.declarative.deployment.env[] | select(.name == \"ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS\")] | length) == 1 and ([.spec.declarative.deployment.env[] | select(.name == \"OTEL_INSTRUMENTATION_GENAI_CAPTURE_MESSAGE_CONTENT\")] | length) == 1 and ([.spec.declarative.deployment.env[] | select(.name == \"TRACELOOP_TRACE_CONTENT\")] | length) == 1)" \
+    "${tmp_dir}/agent-zoo.yaml" \
+    "${agent} must disable exactly the three reviewed GenAI trace-content paths"
+  assert_yq \
     "select(.kind == \"Agent\" and .metadata.name == \"${agent}\") | .spec.declarative.systemMessage | contains(\"zoo/untrusted-content\")" \
     "${tmp_dir}/agent-zoo.yaml" \
     "${agent} must import the prompt-injection boundary"
