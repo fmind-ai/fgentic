@@ -6,7 +6,7 @@ Licensed under the Apache License, Version 2.0 (see LICENSE).
 Third-party notices
 -------------------
 
-The matrix-a2a-bridge binary/image embeds the following third-party library
+The matrix-a2a-bridge binary/image embeds the following third-party libraries
 distributed under the Mozilla Public License 2.0 (MPL-2.0):
 
   maunium.net/go/mautrix (mautrix/go)
@@ -14,5 +14,10 @@ distributed under the Mozilla Public License 2.0 (MPL-2.0):
   License: MPL-2.0 (https://www.mozilla.org/en-US/MPL/2.0/)
   Used unmodified; source code is available at the URL above.
 
-All other Go dependencies are distributed under permissive licenses
+  go.mau.fi/util (mautrix/go-util)
+  https://github.com/mautrix/go-util
+  License: MPL-2.0 (https://www.mozilla.org/en-US/MPL/2.0/)
+  Used unmodified; source code is available at the URL above.
+
+All remaining Go dependencies are distributed under permissive licenses
 (Apache-2.0, MIT, BSD); see each module's LICENSE in the Go module proxy.
