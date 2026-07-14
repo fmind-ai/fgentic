@@ -17,7 +17,7 @@ description: What Fgentic is, why it matters, and the end-to-end architecture of
 
 ### 1.1 Naming (decided 2026-07-10)
 
-The product name is **Fgentic** ("federated + agentic" — the name literally encodes the value proposition); the repo/artifact slug is `fgentic`. The reference deployment lives at **`fgentic.fmind.ai`** (the Matrix server_name; hosts `chat.`/`matrix.`/`auth.fgentic.fmind.ai`) in the GCP project **`fgentic-ai`**. A vendor-neutral name is also a foundation-donation prerequisite (trademark transfers to LF).
+The product name is **Fgentic** ("federated + agentic" — the name literally encodes the value proposition); the repo/artifact slug is `fgentic`. The reference deployment lives at **`fgentic.fmind.ai`** (the Matrix server_name; hosts `chat.`/`matrix.`/`auth.fgentic.fmind.ai`); its GCP project is deployment-specific (set in `terraform.tfvars` and `clusters/gcp/platform-settings.yaml`, never hardcoded in shared manifests). A vendor-neutral name is also a foundation-donation prerequisite (trademark transfers to LF).
 
 ---
 
@@ -57,4 +57,4 @@ The `@mention → A2A → reply` flow stands, amended by the async delegation mo
 
 Deliberately **not** defaulted on (the "regulated-industry" tier, documented only): CMEK/etcd encryption, Binary Authorization, Backup for GKE. Worth adding when a Vertex/Gemini backend is used: bind agentgateway's KSA via Workload Identity instead of an API-key Secret — the chokepoint becomes credential-_less_.
 
-Bootstrap order: apply `bootstrap/` first (local state, creates `fgentic-ai-tfstate`), then `terraform init -migrate-state` in the main module. Bucket names are global — `fgentic-ai-tfstate` / `fgentic-ai-pg-backups` each live in one place if they must change (bootstrap variable; `pg_backups_bucket_name` + `infra/postgres/cluster.yaml`).
+Bootstrap order: apply `bootstrap/` first (local state, creates the versioned state bucket), then `terraform init -backend-config="bucket=<state_bucket_name>" -migrate-state` in the main module — the bucket is deployment-specific and never committed. Bucket names are globally unique: set them via the bootstrap `state_bucket_name` variable and `pg_backups_bucket_name` (which must match `infra/postgres/cluster.yaml`); no personal project is hardcoded.

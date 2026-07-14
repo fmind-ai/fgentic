@@ -15,9 +15,11 @@ data:
   # creates + trusts it) — *.localhost is not ACME-issuable.
   cluster_issuer: local-ca
   acme_email: mederic.hurier@fmind.dev # unused locally (ACME issuers stay idle)
-  # The GCP project is REAL even locally: agentgateway calls Vertex AI with it (ADC secret via
-  # scripts/local-adc.sh). The backup/ingress settings stay inert (stripped by the overlay).
-  gcp_project: fgentic-ai
+  # Set your own GCP project for the Vertex profile (agentgateway calls Vertex AI with it, ADC
+  # secret via scripts/local-adc.sh); the default `demo` provider needs none. To override without
+  # editing this tracked file, create a `platform-settings-overrides` ConfigMap (see the header).
+  # The backup/ingress settings stay inert (stripped by the overlay).
+  gcp_project: your-gcp-project
   pg_backups_bucket: unused-local
   ingress_ip_name: unused-local
   # Selects infra/agentgateway/providers/profiles/<llm_provider>; switching to an installed

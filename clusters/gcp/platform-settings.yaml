@@ -10,8 +10,8 @@ data:
   server_name: fgentic.fmind.ai
   cluster_issuer: letsencrypt-prod # switch to letsencrypt-staging while testing DNS/ACME
   acme_email: mederic.hurier@fmind.dev
-  gcp_project: fgentic-ai
-  pg_backups_bucket: fgentic-ai-pg-backups
+  gcp_project: your-gcp-project
+  pg_backups_bucket: your-gcp-project-pg-backups
   ingress_ip_name: fgentic-ingress-ip
   # Selects infra/agentgateway/providers/profiles/<llm_provider>; switching to an installed
   # profile needs only these settings plus that profile's per-cluster SOPS Secret.

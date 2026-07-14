@@ -27,7 +27,7 @@ variable "region" {
 
 variable "state_bucket_name" {
   type        = string
-  default     = "fgentic-ai-tfstate"
+  default     = "fgentic-tfstate"
   description = "Globally-unique name of the Terraform state bucket (must match the parent module's backend config)"
 }
 

@@ -57,7 +57,7 @@ variable "regional" {
 
 variable "pg_backups_bucket_name" {
   type        = string
-  default     = "fgentic-ai-pg-backups"
+  default     = "fgentic-pg-backups"
   description = "Globally-unique GCS bucket for CloudNativePG WAL archiving + base backups (must match infra/postgres/cluster.yaml)"
 }
 

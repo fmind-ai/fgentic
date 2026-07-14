@@ -8,10 +8,11 @@ terraform {
     }
   }
 
-  # Remote state in the versioned GCS bucket created by the bootstrap/ module (apply it first,
-  # then `terraform init -migrate-state` here). GCS gives native state locking.
+  # Remote state in the versioned GCS bucket created by the bootstrap/ module (apply it first).
+  # The bucket name is deployment-specific, so it is NOT hardcoded here — pass it at init:
+  #   terraform init -backend-config="bucket=<your state_bucket_name>" -migrate-state
+  # (use the bucket from bootstrap/'s `state_bucket` output). GCS gives native state locking.
   backend "gcs" {
-    bucket = "fgentic-ai-tfstate" # = bootstrap/ state_bucket_name
     prefix = "fgentic"
   }
 }
