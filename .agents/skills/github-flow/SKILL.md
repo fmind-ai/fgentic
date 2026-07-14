@@ -42,6 +42,7 @@ Repo: `fmind-ai/fgentic` (public, Apache-2.0). All work is issue-driven; automat
 1. `ci.yml` (push to main + PRs): `mise run format` → `check` → `test` → **clean-tree assert** (`git status --porcelain` empty) — unformatted files or generated drift fail CI even if checks pass.
 1. `cd.yml` (push to main touching `apps/matrix-a2a-bridge/**`): multi-arch image build → push to GHCR → trivy vuln scan (HIGH/CRITICAL fails) → cosign keyless sign → pins the immutable digest into `apps/matrix-a2a-bridge/deploy/helmrelease.yaml` and commits it back with `[skip ci]`. **CI is the only writer of that digest line** — never edit it by hand; Flux deploys whatever digest is in git.
 1. After a bridge merge, `main` moves again (the digest commit) — `git pull --rebase` before pushing.
+1. `main` is protected by the `protect-main` ruleset: **force-pushes, branch deletion, and non-linear history are blocked**. Normal fast-forward pushes and the CD digest-pin commit still work; there is deliberately no repo-level PR/status-check rule (it would block the `github-actions[bot]` digest push). Never rewrite `main`'s history — a deliberate rewrite is maintainer-only (temporarily disable the ruleset). Full rationale in [.agents/AGENTS.md](../../AGENTS.md).
 
 ## Releases & security
 
