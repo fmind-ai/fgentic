@@ -26,6 +26,10 @@ func TestParsePlaintextCommand(t *testing.T) {
 				kind: plaintextCommandAsk, agent: "k8s", prompt: "inspect the pod\nwithout changing it",
 			},
 		},
+		"ask alias": {
+			body: "!ask k8s inspect the pod",
+			want: plaintextCommand{kind: plaintextCommandAsk, agent: "k8s", prompt: "inspect the pod"},
+		},
 		"agents": {
 			body: "/agents",
 			want: plaintextCommand{kind: plaintextCommandAgents},
@@ -36,6 +40,10 @@ func TestParsePlaintextCommand(t *testing.T) {
 		},
 		"budget": {
 			body: "/budget",
+			want: plaintextCommand{kind: plaintextCommandBudget},
+		},
+		"budget alias": {
+			body: "!budget",
 			want: plaintextCommand{kind: plaintextCommandBudget},
 		},
 		"missing ask prompt": {
@@ -53,6 +61,10 @@ func TestParsePlaintextCommand(t *testing.T) {
 		"unknown": {
 			body: "/delegate k8s prompt",
 			want: plaintextCommand{kind: plaintextCommandInvalid},
+		},
+		"unrelated bang command": {
+			body: "!deploy k8s",
+			want: plaintextCommand{},
 		},
 	}
 	for name, tt := range tests {
@@ -199,6 +211,7 @@ func TestAskCommandDurableIntakeUsesTheMentionJobContract(t *testing.T) {
 	body := transactionBody(
 		t,
 		transactionEvent("$ask-command", "@alice:"+ownServer, "/ask k8s inspect the pod"),
+		transactionEvent("$ask-alias", "@alice:"+ownServer, "!ask k8s inspect the service"),
 		transactionEvent("$bridged-command", "@slack_U123:"+ownServer, "/ask slack inspect the channel"),
 		transactionEvent("$unknown-command", "@alice:"+ownServer, "/delegate k8s inspect"),
 		transactionEvent("$foreign-agent", "@alice:"+ownServer, "/ask @agent-k8s:partner.example inspect"),
@@ -208,13 +221,14 @@ func TestAskCommandDurableIntakeUsesTheMentionJobContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("delegationsFromTransaction: %v", err)
 	}
-	if len(jobs) != 2 {
-		t.Fatalf("command jobs = %d, want 2", len(jobs))
+	if len(jobs) != 3 {
+		t.Fatalf("command jobs = %d, want 3", len(jobs))
 	}
 	want := []struct {
 		eventID, ghost, prompt, origin string
 	}{
 		{"$ask-command", "agent-k8s", "inspect the pod", "matrix"},
+		{"$ask-alias", "agent-k8s", "inspect the service", "matrix"},
 		{"$bridged-command", "agent-slack", "inspect the channel", "bridge"},
 	}
 	for index, expected := range want {

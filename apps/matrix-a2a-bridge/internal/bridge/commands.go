@@ -12,8 +12,10 @@ import (
 
 const (
 	askCommand      = "/ask"
+	askAlias        = "!ask"
 	agentsCommand   = "/agents"
 	budgetCommand   = "/budget"
+	budgetAlias     = "!budget"
 	commandScope    = "/commands"
 	maxBudgetAgents = maxDirectoryAgents
 )
@@ -44,11 +46,11 @@ type textMessageClassification struct {
 
 func parsePlaintextCommand(body string) plaintextCommand {
 	name, rest := splitLeadingToken(body)
-	if !strings.HasPrefix(name, "/") {
+	if !strings.HasPrefix(name, "/") && name != askAlias && name != budgetAlias {
 		return plaintextCommand{}
 	}
 	switch name {
-	case askCommand:
+	case askCommand, askAlias:
 		agent, prompt := splitLeadingToken(rest)
 		if agent == "" || prompt == "" {
 			return plaintextCommand{kind: plaintextCommandInvalid}
@@ -60,7 +62,7 @@ func parsePlaintextCommand(body string) plaintextCommand {
 			return plaintextCommand{kind: plaintextCommandInvalid}
 		}
 		return plaintextCommand{kind: plaintextCommandAgents, query: query}
-	case budgetCommand:
+	case budgetCommand, budgetAlias:
 		if strings.TrimSpace(rest) != "" {
 			return plaintextCommand{kind: plaintextCommandInvalid}
 		}
@@ -151,11 +153,11 @@ func (b *Bridge) handleCommandNotice(
 }
 
 func commandHelpText() string {
-	return "Command not recognized. Use /ask <agent> <prompt>, /agents [name], or /budget."
+	return "Command not recognized. Use !ask <agent> <prompt>, !agents [name], or !budget. The /ask, /agents, and /budget forms also work when your Matrix client sends leading slashes unchanged."
 }
 
 func unknownCommandAgentText() string {
-	return "No invocable agent with that name is available. Run /agents to list agents you may use."
+	return "No invocable agent with that name is available. Run !agents to list agents you may use."
 }
 
 func (b *Bridge) budgetText(senderID id.UserID, roomID id.RoomID) string {
