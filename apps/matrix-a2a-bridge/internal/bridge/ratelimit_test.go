@@ -88,6 +88,32 @@ func TestLimiterSnapshotDoesNotCreateRefreshOrConsumeBucket(t *testing.T) {
 	}
 }
 
+func TestLimiterSnapshotReflectsUnseenKeyCapacityWithoutSweeping(t *testing.T) {
+	clock := &limiterTestClock{now: time.Unix(1_700_000_000, 0)}
+	limits := newLimitersWithClock(60, 3, 1, clock.Now)
+	if !limits.Allow("occupant") {
+		t.Fatal("initial bucket was rejected")
+	}
+
+	if got := limits.snapshot("unseen").available; got != 0 {
+		t.Fatalf("unseen snapshot at map capacity = %d, want 0", got)
+	}
+	if len(limits.buckets) != 1 {
+		t.Fatal("capacity snapshot mutated limiter map")
+	}
+
+	clock.Advance(idleEviction + limiterSweepInterval)
+	if got := limits.snapshot("unseen").available; got != 3 {
+		t.Fatalf("unseen snapshot with a sweepable idle bucket = %d, want 3", got)
+	}
+	if _, exists := limits.buckets["occupant"]; !exists {
+		t.Fatal("snapshot swept the reusable idle bucket")
+	}
+	if !limits.Allow("unseen") {
+		t.Fatal("reserve disagreed with the sweepable snapshot")
+	}
+}
+
 func TestBridgeLimiterMapsUseConfiguredCapacity(t *testing.T) {
 	b := testBridge(t)
 	for name, limits := range map[string]*limiters{

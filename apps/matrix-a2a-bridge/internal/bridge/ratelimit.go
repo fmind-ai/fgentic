@@ -111,13 +111,17 @@ func reserveNow(limiter *rate.Limiter, now time.Time) (limiterReservation, bool)
 }
 
 // snapshot reports the current whole-request availability without creating, refreshing, or
-// consuming a bucket. An unseen key therefore has the full configured burst available.
+// consuming a bucket. An unseen key reports zero when reserve would fail closed at map capacity;
+// an already-idle bucket counts as reusable only when reserve's bounded sweep is due.
 func (l *limiters) snapshot(key string) limiterSnapshot {
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	available := float64(l.burst)
+	now := l.now()
+	available := 0.0
 	if b, ok := l.buckets[key]; ok {
-		available = b.lim.TokensAt(l.now())
+		available = b.lim.TokensAt(now)
+	} else if l.canAdmitUnseen(now) {
+		available = float64(l.burst)
 	}
 	available = max(0, min(float64(l.burst), available))
 	return limiterSnapshot{
@@ -125,6 +129,21 @@ func (l *limiters) snapshot(key string) limiterSnapshot {
 		burst:     l.burst,
 		available: int(math.Floor(available)),
 	}
+}
+
+func (l *limiters) canAdmitUnseen(now time.Time) bool {
+	if len(l.buckets) < l.capacity {
+		return true
+	}
+	if !l.nextSweep.IsZero() && now.Before(l.nextSweep) {
+		return false
+	}
+	for _, b := range l.buckets {
+		if now.Sub(b.lastUsed) > idleEviction {
+			return true
+		}
+	}
+	return false
 }
 
 // sweep drops idle buckets. The caller holds mu, and capacity strictly bounds the scan.
