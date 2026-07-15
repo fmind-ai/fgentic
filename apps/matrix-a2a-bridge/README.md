@@ -124,6 +124,8 @@ Invite `@a2a-bridge:<server-name>` or one of the mapped ghosts into an unencrypt
 !agents
 ```
 
+Element clients interpret leading `/` commands before sending a message. Use the client-safe `!ask <agent> <prompt>`, `!agents [name]`, and `!budget` forms in Element. The bridge also accepts `/ask`, `/agents`, and `/budget` from clients and integrations that send leading slashes unchanged.
+
 The bridge replies with the agents authorized for your exact Matrix identity. Use the full MXID shown in that reply when mentioning an agent, for example `@agent-platform-helper:fgentic.fmind.ai inspect the bridge pod`.
 
 Use `!agents <name>` (for example, `!agents platform-helper`) to inspect one authorized agent's bounded description and declared skills. Remote mappings whose Signed AgentCard is not currently trusted remain visible as unavailable, but the bridge hides their cached metadata until trust is restored.

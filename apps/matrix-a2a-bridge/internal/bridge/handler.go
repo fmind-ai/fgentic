@@ -328,6 +328,10 @@ func (b *Bridge) HandleMessage(ctx context.Context, evt *event.Event) {
 	// m.notice is bot output by Matrix convention (our ghosts reply with it); never treating it as a
 	// delegating message breaks agent-to-agent reply loops (SPEC §4 F8). A media message that mentions
 	// an agent IS a delegation carrying an inbound file (#115); every other non-text type is ignored.
+	var (
+		targets targetResolution
+		prompt  string
+	)
 	switch {
 	case msg.MsgType == event.MsgText:
 		// A threaded reply answering a paused agent question resumes that task instead of starting a
@@ -337,14 +341,51 @@ func (b *Bridge) HandleMessage(ctx context.Context, evt *event.Event) {
 		}
 		if isAgentDirectoryCommand(msg.Body) {
 			if b.markEventProcessed(ctx, evt) != dedupVerdictDuplicate {
-				b.handleAgentDirectory(ctx, evt)
+				b.handleAgentDirectory(ctx, evt, agentDirectoryQuery(msg.Body))
 			}
 			return
+		}
+		classification := b.classifyTextMessage(evt, msg)
+		command := classification.command
+		switch command.kind {
+		case plaintextCommandAgents:
+			if b.markEventProcessed(ctx, evt) != dedupVerdictDuplicate {
+				b.handleAgentDirectory(ctx, evt, command.query)
+			}
+			return
+		case plaintextCommandBudget:
+			if b.markEventProcessed(ctx, evt) != dedupVerdictDuplicate {
+				b.handleCommandNotice(ctx, evt, budgetCommand, func() string {
+					return b.budgetText(evt.Sender, evt.RoomID)
+				})
+			}
+			return
+		case plaintextCommandInvalid:
+			if b.markEventProcessed(ctx, evt) != dedupVerdictDuplicate {
+				b.handleCommandNotice(ctx, evt, commandScope, commandHelpText)
+			}
+			return
+		case plaintextCommandAsk:
+			if !classification.knownAgent ||
+				len(classification.targets.allowed) == 0 && len(classification.targets.deniedBridged) == 0 {
+				if b.markEventProcessed(ctx, evt) != dedupVerdictDuplicate {
+					b.handleCommandNotice(ctx, evt, commandScope, unknownCommandAgentText)
+				}
+				return
+			}
+			targets = classification.targets
+			prompt = classification.prompt
+		case plaintextCommandNone:
+			targets = classification.targets
+			prompt = classification.prompt
 		}
 	case !msg.MsgType.IsMedia():
 		return
 	}
-	targets := b.resolveTargets(evt, msg)
+	if msg.MsgType.IsMedia() {
+		targets = b.resolveTargets(evt, msg)
+		prompt = b.stripMentions(msg.Body)
+	}
 	if len(targets.allowed) == 0 && len(targets.deniedBridged) == 0 {
 		return
 	}
@@ -371,7 +412,6 @@ func (b *Bridge) HandleMessage(ctx context.Context, evt *event.Event) {
 		}
 		return
 	}
-	prompt := b.stripMentions(msg.Body)
 	for _, localpart := range targets.allowed {
 		b.enqueueResolvedTarget(ctx, evt, localpart, prompt, targets.refs[localpart], targets.sender, dedupVerdict)
 	}

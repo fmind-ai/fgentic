@@ -343,10 +343,28 @@ func (b *Bridge) delegationsFromEvent(evt *event.Event) ([]state.NewDelegation, 
 	if msg == nil {
 		return nil, nil
 	}
+	var (
+		targets targetResolution
+		prompt  string
+	)
 	switch {
 	case msg.MsgType == event.MsgText:
 		if isAgentDirectoryCommand(msg.Body) {
 			return nil, nil
+		}
+		classification := b.classifyTextMessage(evt, msg)
+		switch classification.command.kind {
+		case plaintextCommandAsk:
+			if !classification.knownAgent {
+				return nil, nil
+			}
+			targets = classification.targets
+			prompt = classification.prompt
+		case plaintextCommandAgents, plaintextCommandBudget, plaintextCommandInvalid:
+			return nil, nil
+		case plaintextCommandNone:
+			targets = classification.targets
+			prompt = classification.prompt
 		}
 	case msg.MsgType.IsMedia():
 		// Media is eligible only when it addresses a target; resolveTargets below decides that.
@@ -354,7 +372,10 @@ func (b *Bridge) delegationsFromEvent(evt *event.Event) ([]state.NewDelegation, 
 		return nil, nil
 	}
 
-	targets := b.resolveTargets(evt, msg)
+	if msg.MsgType.IsMedia() {
+		targets = b.resolveTargets(evt, msg)
+		prompt = b.stripMentions(msg.Body)
+	}
 	localparts := append(append([]string(nil), targets.allowed...), targets.deniedBridged...)
 	if len(localparts) == 0 {
 		return nil, nil
@@ -372,7 +393,6 @@ func (b *Bridge) delegationsFromEvent(evt *event.Event) ([]state.NewDelegation, 
 	if err != nil {
 		return nil, fmt.Errorf("encode durable payload for event %q: %w", evt.ID, err)
 	}
-	prompt := b.stripMentions(msg.Body)
 	jobs := make([]state.NewDelegation, 0, len(localparts))
 	for _, localpart := range localparts {
 		ref := targets.refs[localpart]
