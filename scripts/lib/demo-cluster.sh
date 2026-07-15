@@ -338,6 +338,13 @@ require_valid_teardown_receipt() {
 		teardown_receipt_fail "malformed or stale teardown receipt for ${CLUSTER_NAME}"
 }
 
+require_no_pending_teardown() {
+	local operation="$1"
+	teardown_receipt_exists || return 0
+	require_valid_teardown_receipt
+	die "${CLUSTER_NAME} teardown recovery is pending; run the matching down command before ${operation}"
+}
+
 write_teardown_receipt() {
 	local container_id container_output image_id image_output network_output receipt state_dir
 	local server_id temporary volume name volume_output
@@ -1196,10 +1203,7 @@ demo_up() {
 		require_command "${command}"
 	done
 	docker info >/dev/null 2>&1 || die "Docker daemon is not running"
-	if teardown_receipt_exists; then
-		require_valid_teardown_receipt
-		die "${CLUSTER_NAME} teardown recovery is pending; run the matching down command before up"
-	fi
+	require_no_pending_teardown up
 	if [ -n "${FGENTIC_DEMO_CACHE_DIR:-}" ]; then
 		docker buildx version >/dev/null 2>&1 ||
 			die "FGENTIC_DEMO_CACHE_DIR requires Docker buildx"
@@ -1400,8 +1404,7 @@ demo_stop() {
 	local image_volume_bytes retained_bytes
 	local before_output running_output
 	require_cluster_runtime
-	teardown_receipt_exists &&
-		die "${CLUSTER_NAME} teardown recovery is pending; stop cannot preserve partial state"
+	require_no_pending_teardown stop
 	require_owned_evaluation_cluster
 	before_output="$(cluster_container_ids)" ||
 		die "could not inspect ${CLUSTER_NAME} containers before stopping"

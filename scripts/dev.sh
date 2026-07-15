@@ -78,6 +78,7 @@ configure_kubeconfig() {
 }
 
 start_cluster() {
+	require_no_pending_teardown 'development reuse'
 	require_owned_cluster
 	k3d cluster start "${CLUSTER_NAME}" >/dev/null 2>&1 || true
 	configure_kubeconfig
@@ -142,6 +143,9 @@ dev_reload() {
 
 dev_status() {
 	require_runtime
+	if teardown_receipt_exists; then
+		exec "${ROOT_DIR}/scripts/demo.sh" status
+	fi
 	if ! cluster_exists; then
 		echo "Fgentic development cluster is not created (run 'mise run dev:up')."
 		return
@@ -163,6 +167,7 @@ dev_status() {
 
 dev_stop() {
 	require_runtime
+	require_no_pending_teardown 'development stop'
 	require_owned_cluster
 	k3d cluster stop "${CLUSTER_NAME}" >/dev/null
 	echo "Stopped ${CLUSTER_NAME}; its state and images are preserved."

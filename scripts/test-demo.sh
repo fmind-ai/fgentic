@@ -565,6 +565,46 @@ rg --fixed-strings \
 run_dev_fixture stop
 rg --fixed-strings 'k3d cluster stop fgentic-demo' "${dev_fake_state}/commands" >/dev/null
 
+dev_receipt_dir="${dev_fake_state}/lifecycle/cluster-teardown"
+mkdir -p "${dev_receipt_dir}"
+jq --null-input '{
+  schema: "fgentic.cluster-teardown.v1",
+  profile: "demo",
+  cluster: "fgentic-demo",
+  owner: "true",
+  generation: "container-server-id",
+  containers: [{id: "container-server-id", name: "k3d-fgentic-demo-server-0"}],
+  network: {id: "network-id", name: "k3d-fgentic-demo", cluster_label: "fgentic-demo"},
+  volumes: [{
+    name: "k3d-fgentic-demo-images",
+    created_at: "2026-07-15T00:00:00Z",
+    kind: "images",
+    attachments: ["container-server-id"]
+  }],
+  images: []
+}' >"${dev_receipt_dir}/fgentic-demo.json"
+for action in up reload stop; do
+	: >"${dev_fake_state}/commands"
+	if PATH="${dev_fake_bin}:${PATH}" \
+		KUBECONFIG="${WORK_DIR}/must-not-be-used" \
+		FAKE_DEV_COMMANDS="${dev_fake_state}/commands" \
+		FGENTIC_DEMO_STATE_DIR="${dev_fake_state}/lifecycle" \
+		"${DEV}" "${action}" >"${dev_fake_state}/${action}-pending.txt" 2>&1; then
+		echo "error: dev:${action} ignored pending teardown recovery" >&2
+		exit 1
+	fi
+	rg --fixed-strings 'teardown recovery is pending' \
+		"${dev_fake_state}/${action}-pending.txt" >/dev/null
+	[ ! -s "${dev_fake_state}/commands" ] || {
+		echo "error: dev:${action} mutated pending teardown state" >&2
+		exit 1
+	}
+done
+[ -f "${dev_receipt_dir}/fgentic-demo.json" ] || {
+	echo 'error: blocked development action cleared the teardown receipt' >&2
+	exit 1
+}
+
 : >"${dev_fake_state}/commands"
 if PATH="${dev_fake_bin}:${PATH}" FAKE_DEV_COMMANDS="${dev_fake_state}/commands" \
 	FAKE_DEV_OWNER=foreign "${DEV}" reload >"${dev_fake_state}/foreign.txt" 2>&1; then
