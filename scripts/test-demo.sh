@@ -316,7 +316,7 @@ demo_bootstrap_names="$(
 		"${WORK_DIR}/demo-bootstrap-namespaces.yaml" | jq --compact-output .
 )"
 [ "${demo_bootstrap_names}" = \
-	'["agentgateway-system","bridge","bridges","cert-manager","cnpg-system","gateway","kagent","keycloak","matrix","models","monitoring","postgres"]' ] || {
+	'["agentgateway-system","bridge","bridges","cert-manager","cnpg-system","gateway","kagent","keycloak","knowledge","matrix","models","monitoring","postgres"]' ] || {
 	echo "error: demo bootstrap Namespace set drifted: ${demo_bootstrap_names}" >&2
 	exit 1
 }
@@ -325,7 +325,7 @@ federation_bootstrap_names="$(
 		"${WORK_DIR}/federation-bootstrap-namespaces.yaml" | jq --compact-output .
 )"
 [ "${federation_bootstrap_names}" = \
-	'["agentgateway-system","cert-manager","cnpg-system","gateway","kagent","keycloak","matrix","matrix-b","matrix-c","models","postgres"]' ] || {
+	'["agentgateway-system","cert-manager","cnpg-system","gateway","kagent","keycloak","knowledge","matrix","matrix-b","matrix-c","models","postgres"]' ] || {
 	echo "error: federation bootstrap Namespace set drifted: ${federation_bootstrap_names}" >&2
 	exit 1
 }

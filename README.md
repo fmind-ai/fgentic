@@ -59,7 +59,7 @@ Data-flow details and async/long-task behavior: [docs/bridge.md](docs/bridge.md)
 | Optional network interop   | Digest-pinned mautrix Slack/Telegram appservices; disabled until selected and accepted                      | `bridges`             |
 | Optional reference IdP     | Keycloak 26.7 via the KeycloakX chart                                                                       | `keycloak`            |
 | Optional self-hosted model | vLLM CPU + pinned Qwen2.5-0.5B demo model                                                                   | `models`              |
-| Shared state               | CloudNativePG: one database per core service and per enabled external bridge                                | `postgres`            |
+| Shared state               | CloudNativePG: scoped service databases plus the composed pgvector knowledge store                          | `postgres`            |
 | Web ingress + TLS          | Gateway API (Traefik) + cert-manager (Let's Encrypt)                                                        | `gateway`             |
 | Observability              | kube-prometheus-stack: Prometheus · Grafana · Alertmanager ([docs/observability.md](docs/observability.md)) | `monitoring`          |
 | Runtime image security     | Trivy Operator: continuous HIGH/CRITICAL feed-drift reports and alert                                       | `trivy-system`        |

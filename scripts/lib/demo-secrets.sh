@@ -127,6 +127,8 @@ create_ephemeral_secrets() {
 			--from-literal=pg-mas="$(random_hex 24)" \
 			--from-literal=pg-bridge="$(random_hex 24)" \
 			--from-literal=pg-kagent="$(random_hex 24)" \
+			--from-literal=pg-knowledge-owner="$(random_hex 24)" \
+			--from-literal=pg-knowledge-retrieval="$(random_hex 24)" \
 			--from-literal=as-token="$(random_hex 32)" \
 			--from-literal=hs-token="$(random_hex 32)" \
 			--from-literal=a2a-key="$(random_hex 32)" \
@@ -135,10 +137,38 @@ create_ephemeral_secrets() {
 			--from-literal=demo-password="$(random_hex 24)"
 	fi
 
+	# A retained demo cluster may predate a newly introduced credential. Merge only missing keys so
+	# upgrades self-heal without rotating any established identity or dropping unknown bootstrap data.
+	local bootstrap_json key key_spec value_length
+	local -a missing_bootstrap_arguments=()
+	bootstrap_json="$(kubectl --namespace flux-system get secret fgentic-demo-bootstrap --output json)"
+	for key_spec in \
+		pg-synapse:24 pg-mas:24 pg-bridge:24 pg-kagent:24 \
+		pg-knowledge-owner:24 pg-knowledge-retrieval:24 \
+		as-token:32 hs-token:32 a2a-key:32 mcp-platform-helper-key:32 \
+		mas-admin-client:32 demo-password:24; do
+		key="${key_spec%%:*}"
+		value_length="${key_spec##*:}"
+		if [ -z "$(jq -r --arg key "${key}" '.data[$key] // ""' <<<"${bootstrap_json}")" ]; then
+			missing_bootstrap_arguments+=("--from-literal=${key}=$(random_hex "${value_length}")")
+		fi
+	done
+	if [ "${#missing_bootstrap_arguments[@]}" -gt 0 ]; then
+		kubectl --namespace flux-system create secret generic fgentic-demo-bootstrap \
+			"${missing_bootstrap_arguments[@]}" --dry-run=client --output=json |
+			jq --compact-output '{data: .data}' |
+			kubectl --namespace flux-system patch secret fgentic-demo-bootstrap \
+				--type=merge --patch-file /dev/stdin \
+			>/dev/null
+	fi
+	bootstrap_json=""
+
 	PG_SYNAPSE="$(bootstrap_secret_value pg-synapse)"
 	PG_MAS="$(bootstrap_secret_value pg-mas)"
 	PG_BRIDGE="$(bootstrap_secret_value pg-bridge)"
 	PG_KAGENT="$(bootstrap_secret_value pg-kagent)"
+	PG_KNOWLEDGE_OWNER="$(bootstrap_secret_value pg-knowledge-owner)"
+	PG_KNOWLEDGE_RETRIEVAL="$(bootstrap_secret_value pg-knowledge-retrieval)"
 	AS_TOKEN="$(bootstrap_secret_value as-token)"
 	HS_TOKEN="$(bootstrap_secret_value hs-token)"
 	A2A_KEY="$(bootstrap_secret_value a2a-key)"
@@ -156,6 +186,12 @@ create_ephemeral_secrets() {
 		--from-literal=username=bridge --from-literal=password="${PG_BRIDGE}"
 	apply_secret postgres pg-kagent --type=kubernetes.io/basic-auth \
 		--from-literal=username=kagent --from-literal=password="${PG_KAGENT}"
+	apply_secret postgres pg-knowledge-owner --type=kubernetes.io/basic-auth \
+		--from-literal=username=knowledge_owner --from-literal=password="${PG_KNOWLEDGE_OWNER}"
+	apply_secret postgres pg-knowledge-retrieval --type=kubernetes.io/basic-auth \
+		--from-literal=username=knowledge_retrieval --from-literal=password="${PG_KNOWLEDGE_RETRIEVAL}"
+	apply_secret knowledge pg-knowledge-retrieval --type=kubernetes.io/basic-auth \
+		--from-literal=username=knowledge_retrieval --from-literal=password="${PG_KNOWLEDGE_RETRIEVAL}"
 	apply_secret kagent kagent-db \
 		--from-literal=url="postgresql://kagent:${PG_KAGENT}@platform-pg-rw.postgres.svc.cluster.local:5432/kagent?sslmode=require"
 	apply_secret kagent kagent-model-auth \

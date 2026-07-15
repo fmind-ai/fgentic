@@ -24,6 +24,11 @@ Supported secret sets:
   db-bridge        Bridge database role + derived connection URL
   db-kagent        kagent database role + derived connection URL
   db-core          All four core database roles + derived connection URLs
+  db-knowledge-owner
+                    Knowledge schema-owner role only; never copied to a workload namespace
+  db-knowledge-retrieval
+                    Knowledge retrieval role and its identical namespace-local copy
+  knowledge-db     Both knowledge database roles and the retrieval namespace copy
   provider         Selected API provider key; unsupported for ambient Vertex/self-hosted vLLM
   keycloak-db      Keycloak database role and both namespace copies
   slack            Optional mautrix-slack DB password + appservice registration tokens
@@ -77,6 +82,7 @@ fi
 declare -a TARGET_FILES=()
 GEN_SET=""
 DB_MODE=""
+KNOWLEDGE_DB_MODE=""
 LLM_PROVIDER=""
 MODEL_SECRET_ENV=""
 MODEL_SECRET_FILE=""
@@ -136,6 +142,21 @@ db-core)
 	DB_MODE="all"
 	TARGET_FILES=(postgres-roles.sops.yaml matrix-a2a-bridge-db.sops.yaml kagent.sops.yaml)
 	;;
+db-knowledge-owner)
+	GEN_SET="knowledge-db"
+	KNOWLEDGE_DB_MODE="owner"
+	TARGET_FILES=(knowledge-db.sops.yaml)
+	;;
+db-knowledge-retrieval)
+	GEN_SET="knowledge-db"
+	KNOWLEDGE_DB_MODE="retrieval"
+	TARGET_FILES=(knowledge-db.sops.yaml)
+	;;
+knowledge-db)
+	GEN_SET="knowledge-db"
+	KNOWLEDGE_DB_MODE="all"
+	TARGET_FILES=(knowledge-db.sops.yaml)
+	;;
 provider)
 	resolve_provider_target
 	GEN_SET="provider"
@@ -168,10 +189,12 @@ keycloak-client)
 all)
 	GEN_SET="rotatable"
 	DB_MODE="all"
+	KNOWLEDGE_DB_MODE="all"
 	TARGET_FILES=(
 		postgres-roles.sops.yaml
 		matrix-a2a-bridge-db.sops.yaml
 		kagent.sops.yaml
+		knowledge-db.sops.yaml
 		matrix-a2a-bridge-registration.sops.yaml
 		a2a-authorization.sops.yaml
 		mcp-authorization.sops.yaml
@@ -284,6 +307,30 @@ if [ -n "${DB_MODE}" ]; then
 		;;
 	esac
 	export PG_SYNAPSE PG_MAS PG_BRIDGE PG_KAGENT
+fi
+
+# The owner and retrieval roles share one ciphertext file so each selective rotation can rebuild
+# the complete contract without ever creating mismatched retrieval copies. Preserve the unrelated
+# role in memory and export both values to the generator.
+if [ -n "${KNOWLEDGE_DB_MODE}" ]; then
+	KNOWLEDGE_DB_FILE="${SECRETS_DIR}/knowledge-db.sops.yaml"
+	PG_KNOWLEDGE_OWNER="$(secret_value "${KNOWLEDGE_DB_FILE}" postgres pg-knowledge-owner '.stringData.password')"
+	PG_KNOWLEDGE_RETRIEVAL="$(secret_value "${KNOWLEDGE_DB_FILE}" postgres pg-knowledge-retrieval '.stringData.password')"
+	OLD_PG_KNOWLEDGE_OWNER="${PG_KNOWLEDGE_OWNER}"
+	OLD_PG_KNOWLEDGE_RETRIEVAL="${PG_KNOWLEDGE_RETRIEVAL}"
+	case "${KNOWLEDGE_DB_MODE}" in
+	owner) PG_KNOWLEDGE_OWNER="$(openssl rand -hex 24)" ;;
+	retrieval) PG_KNOWLEDGE_RETRIEVAL="$(openssl rand -hex 24)" ;;
+	all)
+		PG_KNOWLEDGE_OWNER="$(openssl rand -hex 24)"
+		PG_KNOWLEDGE_RETRIEVAL="$(openssl rand -hex 24)"
+		;;
+	*)
+		echo "error: invalid knowledge database rotation mode: ${KNOWLEDGE_DB_MODE}" >&2
+		exit 1
+		;;
+	esac
+	export PG_KNOWLEDGE_OWNER PG_KNOWLEDGE_RETRIEVAL
 fi
 
 # Registration sender localparts are generated once and become stable appservice identities.
@@ -455,6 +502,47 @@ validate_keycloak_db() {
 	assert_changed "${old_password}" "${postgres_password}" "Keycloak database password"
 }
 
+validate_knowledge_db() {
+	local new_file="${STAGE_DIR}/knowledge-db.sops.yaml"
+	local owner_password retrieval_password workload_retrieval_password
+	local owner_username retrieval_username workload_retrieval_username
+	owner_password="$(secret_value "${new_file}" postgres pg-knowledge-owner '.stringData.password')"
+	retrieval_password="$(secret_value "${new_file}" postgres pg-knowledge-retrieval '.stringData.password')"
+	workload_retrieval_password="$(secret_value "${new_file}" knowledge pg-knowledge-retrieval '.stringData.password')"
+	owner_username="$(secret_value "${new_file}" postgres pg-knowledge-owner '.stringData.username')"
+	retrieval_username="$(secret_value "${new_file}" postgres pg-knowledge-retrieval '.stringData.username')"
+	workload_retrieval_username="$(secret_value "${new_file}" knowledge pg-knowledge-retrieval '.stringData.username')"
+
+	assert_equal "${owner_username}" "knowledge_owner" "knowledge owner username drifted"
+	assert_equal "${retrieval_username}" "knowledge_retrieval" "knowledge retrieval username drifted"
+	assert_equal "${retrieval_username}" "${workload_retrieval_username}" "knowledge retrieval usernames differ"
+	assert_equal "${retrieval_password}" "${workload_retrieval_password}" "knowledge retrieval passwords differ"
+	assert_equal "${owner_password}" "${PG_KNOWLEDGE_OWNER}" "unexpected knowledge owner database value"
+	assert_equal "${retrieval_password}" "${PG_KNOWLEDGE_RETRIEVAL}" "unexpected knowledge retrieval database value"
+	case "${KNOWLEDGE_DB_MODE}" in
+	owner)
+		assert_changed "${OLD_PG_KNOWLEDGE_OWNER}" "${owner_password}" "knowledge owner database password"
+		assert_equal "${OLD_PG_KNOWLEDGE_RETRIEVAL}" "${retrieval_password}" \
+			"knowledge retrieval password changed during owner-only rotation"
+		;;
+	retrieval)
+		assert_equal "${OLD_PG_KNOWLEDGE_OWNER}" "${owner_password}" \
+			"knowledge owner password changed during retrieval-only rotation"
+		assert_changed "${OLD_PG_KNOWLEDGE_RETRIEVAL}" "${retrieval_password}" \
+			"knowledge retrieval database password"
+		;;
+	all)
+		assert_changed "${OLD_PG_KNOWLEDGE_OWNER}" "${owner_password}" "knowledge owner database password"
+		assert_changed "${OLD_PG_KNOWLEDGE_RETRIEVAL}" "${retrieval_password}" \
+			"knowledge retrieval database password"
+		;;
+	*)
+		echo "error: invalid knowledge database validation mode: ${KNOWLEDGE_DB_MODE}" >&2
+		exit 1
+		;;
+	esac
+}
+
 validate_slack() {
 	local old_file="${SECRETS_DIR}/mautrix-slack.sops.yaml"
 	local new_file="${STAGE_DIR}/mautrix-slack.sops.yaml"
@@ -576,7 +664,8 @@ case "${SECRET_SET}" in
 appservice) validate_appservice ;;
 a2a) validate_a2a ;;
 mcp) validate_mcp ;;
-db-*) validate_databases ;;
+db-knowledge-* | knowledge-db) validate_knowledge_db ;;
+db-synapse | db-mas | db-bridge | db-kagent | db-core) validate_databases ;;
 provider) validate_provider ;;
 keycloak-db) validate_keycloak_db ;;
 slack) validate_slack ;;
@@ -588,6 +677,7 @@ all)
 	validate_a2a
 	validate_mcp
 	validate_keycloak_db
+	validate_knowledge_db
 	if [ -n "${MODEL_SECRET_FILE}" ]; then
 		validate_provider
 	fi
@@ -629,6 +719,10 @@ mcp)
 	;;
 db-synapse | db-mas | db-bridge | db-kagent | db-core | keycloak-db)
 	echo "Restart order: wait for CNPG managedRolesStatus to match the Secret resourceVersion, then restart the named consumer(s)."
+	;;
+db-knowledge-owner | db-knowledge-retrieval | knowledge-db)
+	echo "Restart order: wait for the affected CNPG DatabaseRole resource(s) to reconcile," \
+		"then restart the retrieval consumer when its credential changed."
 	;;
 slack)
 	echo "Restart order: wait for the slackbridge CNPG role, restart Synapse, then restart mautrix-slack."

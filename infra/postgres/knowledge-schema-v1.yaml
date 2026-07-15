@@ -1,0 +1,587 @@
+# Immutable v1 knowledge-store migration. Future schema changes get a new ConfigMap and Job name;
+# retaining the completed Job prevents Flux from replaying a successful migration every interval.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: knowledge-schema-v1
+  namespace: postgres
+immutable: true
+data:
+  schema.sql: |
+    BEGIN;
+
+    SELECT pg_advisory_xact_lock(hashtextextended('fgentic:knowledge-schema:v1', 0));
+
+    REVOKE ALL ON DATABASE knowledge FROM PUBLIC;
+    GRANT CONNECT ON DATABASE knowledge TO knowledge_owner, knowledge_retrieval;
+
+    REVOKE ALL ON SCHEMA public FROM PUBLIC;
+    GRANT USAGE ON SCHEMA public TO knowledge_owner, knowledge_retrieval;
+
+    CREATE SCHEMA IF NOT EXISTS knowledge AUTHORIZATION knowledge_owner;
+    ALTER SCHEMA knowledge OWNER TO knowledge_owner;
+    REVOKE ALL ON SCHEMA knowledge FROM PUBLIC;
+    GRANT USAGE ON SCHEMA knowledge TO knowledge_retrieval;
+
+    CREATE OR REPLACE FUNCTION knowledge.is_dns1123_label(value text)
+    RETURNS boolean
+    LANGUAGE sql
+    IMMUTABLE
+    STRICT
+    PARALLEL SAFE
+    SET search_path = pg_catalog
+    AS $function$
+      SELECT octet_length(value) BETWEEN 1 AND 63
+        AND value ~ '^[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$';
+    $function$;
+
+    CREATE OR REPLACE FUNCTION knowledge.is_bounded_clean_text(
+      value text,
+      max_bytes integer
+    )
+    RETURNS boolean
+    LANGUAGE sql
+    IMMUTABLE
+    STRICT
+    PARALLEL SAFE
+    SET search_path = pg_catalog
+    AS $function$
+      SELECT max_bytes BETWEEN 1 AND 65536
+        AND octet_length(value) BETWEEN 1 AND max_bytes
+        AND value !~ '^[[:space:]]'
+        AND value !~ '[[:space:]]$'
+        AND value !~ '[[:cntrl:]]';
+    $function$;
+
+    -- Accept the current Matrix v1.19 user-ID grammar, not a localpart or deprecated historical
+    -- localpart. IP literals are parsed by PostgreSQL after the Matrix server-name shape check.
+    CREATE OR REPLACE FUNCTION knowledge.is_full_mxid(value text)
+    RETURNS boolean
+    LANGUAGE plpgsql
+    IMMUTABLE
+    STRICT
+    PARALLEL SAFE
+    SET search_path = pg_catalog
+    AS $function$
+    DECLARE
+      separator integer;
+      server_name text;
+      host_match text[];
+      host_name text;
+    BEGIN
+      IF octet_length(value) NOT BETWEEN 4 AND 255 THEN
+        RETURN false;
+      END IF;
+
+      separator := strpos(value, ':');
+      IF separator <= 2
+        OR substring(value FROM 1 FOR 1) <> '@'
+        OR substring(value FROM 2 FOR separator - 2) !~ '^[a-z0-9._=/+-]+$'
+      THEN
+        RETURN false;
+      END IF;
+
+      server_name := substring(value FROM separator + 1);
+      IF server_name LIKE '[%' THEN
+        host_match := regexp_match(
+          server_name,
+          '^\[([0-9A-Fa-f:.]{2,45})\](?::[0-9]{1,5})?$'
+        );
+        IF host_match IS NULL THEN
+          RETURN false;
+        END IF;
+        BEGIN
+          RETURN family(host_match[1]::inet) = 6;
+        EXCEPTION
+          WHEN invalid_text_representation THEN
+            RETURN false;
+        END;
+      END IF;
+
+      host_match := regexp_match(server_name, '^([^:]+)(?::[0-9]{1,5})?$');
+      IF host_match IS NULL THEN
+        RETURN false;
+      END IF;
+      host_name := host_match[1];
+
+      IF host_name ~ '^[0-9]{1,3}(\.[0-9]{1,3}){3}$' THEN
+        BEGIN
+          RETURN family(host_name::inet) = 4;
+        EXCEPTION
+          WHEN invalid_text_representation THEN
+            RETURN false;
+        END;
+      END IF;
+
+      RETURN octet_length(host_name) BETWEEN 1 AND 255
+        AND host_name ~ '^[A-Za-z0-9.-]+$';
+    END;
+    $function$;
+
+    CREATE OR REPLACE FUNCTION knowledge.is_valid_principal_array(
+      value jsonb,
+      max_items integer
+    )
+    RETURNS boolean
+    LANGUAGE plpgsql
+    IMMUTABLE
+    STRICT
+    PARALLEL SAFE
+    SET search_path = pg_catalog, knowledge
+    AS $function$
+    DECLARE
+      principal jsonb;
+      kind text;
+    BEGIN
+      IF max_items NOT BETWEEN 1 AND 64
+        OR jsonb_typeof(value) IS DISTINCT FROM 'array'
+        OR jsonb_array_length(value) > max_items
+      THEN
+        RETURN false;
+      END IF;
+
+      FOR principal IN SELECT item FROM jsonb_array_elements(value) AS principals(item)
+      LOOP
+        IF jsonb_typeof(principal) IS DISTINCT FROM 'object'
+          OR jsonb_typeof(principal->'kind') IS DISTINCT FROM 'string'
+          OR jsonb_typeof(principal->'principal') IS DISTINCT FROM 'string'
+          OR NOT knowledge.is_full_mxid(principal->>'principal')
+        THEN
+          RETURN false;
+        END IF;
+
+        kind := principal->>'kind';
+        IF kind = 'matrix' THEN
+          IF NOT principal ?& ARRAY['kind', 'principal']
+            OR principal - ARRAY['kind', 'principal'] <> '{}'::jsonb
+          THEN
+            RETURN false;
+          END IF;
+        ELSIF kind = 'bridged_matrix' THEN
+          IF NOT principal ?& ARRAY['kind', 'network', 'principal']
+            OR principal - ARRAY['kind', 'network', 'principal'] <> '{}'::jsonb
+            OR jsonb_typeof(principal->'network') IS DISTINCT FROM 'string'
+            OR NOT knowledge.is_dns1123_label(principal->>'network')
+          THEN
+            RETURN false;
+          END IF;
+        ELSE
+          RETURN false;
+        END IF;
+      END LOOP;
+
+      RETURN NOT EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements(value) AS principals(item)
+        GROUP BY item
+        HAVING count(*) > 1
+      );
+    END;
+    $function$;
+
+    CREATE OR REPLACE FUNCTION knowledge.is_valid_group_array(
+      value jsonb,
+      max_items integer
+    )
+    RETURNS boolean
+    LANGUAGE plpgsql
+    IMMUTABLE
+    STRICT
+    PARALLEL SAFE
+    SET search_path = pg_catalog
+    AS $function$
+    DECLARE
+      group_name text;
+    BEGIN
+      IF max_items NOT BETWEEN 1 AND 64
+        OR jsonb_typeof(value) IS DISTINCT FROM 'array'
+        OR jsonb_array_length(value) > max_items
+        OR EXISTS (
+          SELECT 1
+          FROM jsonb_array_elements(value) AS groups(item)
+          WHERE jsonb_typeof(item) IS DISTINCT FROM 'string'
+        )
+      THEN
+        RETURN false;
+      END IF;
+
+      FOR group_name IN SELECT jsonb_array_elements_text(value)
+      LOOP
+        IF group_name !~ '^partner/[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?/[a-z0-9]([-a-z0-9]{0,61}[a-z0-9])?$' THEN
+          RETURN false;
+        END IF;
+      END LOOP;
+
+      RETURN NOT EXISTS (
+        SELECT 1
+        FROM jsonb_array_elements_text(value) AS groups(group_value)
+        GROUP BY group_value
+        HAVING count(*) > 1
+      );
+    END;
+    $function$;
+
+    CREATE OR REPLACE FUNCTION knowledge.is_valid_metadata(value jsonb)
+    RETURNS boolean
+    LANGUAGE plpgsql
+    IMMUTABLE
+    STRICT
+    PARALLEL SAFE
+    SET search_path = pg_catalog, knowledge
+    AS $function$
+    DECLARE
+      source jsonb;
+      source_key text;
+      source_value text;
+      max_bytes integer;
+      principal_count integer;
+      group_count integer;
+    BEGIN
+      IF jsonb_typeof(value) IS DISTINCT FROM 'object'
+        OR octet_length(value::text) > 65536
+        OR NOT value ?& ARRAY[
+          'source',
+          'classification',
+          'allowed_principals',
+          'allowed_groups'
+        ]
+        OR value - ARRAY[
+          'source',
+          'classification',
+          'allowed_principals',
+          'allowed_groups'
+        ] <> '{}'::jsonb
+      THEN
+        RETURN false;
+      END IF;
+
+      source := value->'source';
+      IF jsonb_typeof(source) IS DISTINCT FROM 'object'
+        OR NOT source ? 'id'
+        OR source - ARRAY['id', 'title', 'locator', 'revision', 'location'] <> '{}'::jsonb
+      THEN
+        RETURN false;
+      END IF;
+
+      FOREACH source_key IN ARRAY ARRAY['id', 'title', 'locator', 'revision', 'location']
+      LOOP
+        IF source ? source_key THEN
+          IF jsonb_typeof(source->source_key) IS DISTINCT FROM 'string' THEN
+            RETURN false;
+          END IF;
+
+          source_value := source->>source_key;
+          max_bytes := CASE source_key
+            WHEN 'locator' THEN 2048
+            WHEN 'revision' THEN 255
+            ELSE 512
+          END;
+          IF NOT knowledge.is_bounded_clean_text(source_value, max_bytes) THEN
+            RETURN false;
+          END IF;
+        END IF;
+      END LOOP;
+
+      IF jsonb_typeof(value->'classification') IS DISTINCT FROM 'string'
+        OR value->>'classification' NOT IN (
+          'public',
+          'approved_non_public',
+          'restricted',
+          'regulated',
+          'secret',
+          'authentication'
+        )
+        OR NOT knowledge.is_valid_principal_array(value->'allowed_principals', 64)
+        OR NOT knowledge.is_valid_group_array(value->'allowed_groups', 64)
+      THEN
+        RETURN false;
+      END IF;
+
+      principal_count := jsonb_array_length(value->'allowed_principals');
+      group_count := jsonb_array_length(value->'allowed_groups');
+      RETURN principal_count + group_count > 0;
+    END;
+    $function$;
+
+    CREATE TABLE IF NOT EXISTS knowledge.schema_migrations (
+      version integer PRIMARY KEY,
+      applied_at timestamptz NOT NULL DEFAULT statement_timestamp()
+    );
+
+    CREATE TABLE IF NOT EXISTS knowledge.chunks (
+      chunk_id text PRIMARY KEY,
+      content text NOT NULL,
+      embedding vector(1024) NOT NULL,
+      metadata jsonb NOT NULL,
+      CONSTRAINT chunks_chunk_id_valid CHECK (
+        knowledge.is_bounded_clean_text(chunk_id, 512)
+      ),
+      CONSTRAINT chunks_content_valid CHECK (
+        octet_length(content) BETWEEN 1 AND 65536
+        AND content ~ '[^[:space:]]'
+      ),
+      CONSTRAINT chunks_embedding_nonzero CHECK (vector_norm(embedding) > 0),
+      CONSTRAINT chunks_metadata_valid CHECK (knowledge.is_valid_metadata(metadata))
+    );
+
+    CREATE INDEX IF NOT EXISTS chunks_classification_idx
+      ON knowledge.chunks ((metadata->>'classification'));
+    CREATE INDEX IF NOT EXISTS chunks_principals_gin_idx
+      ON knowledge.chunks USING gin ((metadata->'allowed_principals') jsonb_path_ops);
+    CREATE INDEX IF NOT EXISTS chunks_groups_gin_idx
+      ON knowledge.chunks USING gin ((metadata->'allowed_groups'));
+    CREATE INDEX IF NOT EXISTS chunks_source_id_idx
+      ON knowledge.chunks ((metadata #>> '{source,id}'));
+    CREATE INDEX IF NOT EXISTS chunks_embedding_hnsw_idx
+      ON knowledge.chunks USING hnsw (embedding vector_cosine_ops)
+      WITH (m = 16, ef_construction = 64);
+
+    -- The strict ACL path deliberately does not use HNSW: pgvector applies dynamic filters after
+    -- an approximate scan. Materialize the indexed authorization subset, then exact-rank it.
+    CREATE OR REPLACE FUNCTION knowledge.search_authorized_matrix(
+      query_embedding vector(1024),
+      allowed_classifications text[],
+      audience jsonb,
+      max_results integer DEFAULT 10
+    )
+    RETURNS TABLE (
+      chunk_id text,
+      content text,
+      metadata jsonb,
+      cosine_distance double precision
+    )
+    LANGUAGE sql
+    STABLE
+    STRICT
+    PARALLEL SAFE
+    SET search_path = pg_catalog, knowledge, public
+    AS $function$
+      WITH authorized AS MATERIALIZED (
+        SELECT chunks.chunk_id, chunks.content, chunks.embedding, chunks.metadata
+        FROM knowledge.chunks
+        WHERE (
+            allowed_classifications = ARRAY['public']::text[]
+            OR allowed_classifications = ARRAY['approved_non_public', 'public']::text[]
+          )
+          AND max_results BETWEEN 1 AND 100
+          AND vector_norm(query_embedding) > 0
+          AND knowledge.is_valid_principal_array(audience, 16)
+          AND audience <> '[]'::jsonb
+          AND (chunks.metadata->>'classification') = ANY (allowed_classifications)
+          AND (chunks.metadata->'allowed_principals') @> audience
+      )
+      SELECT
+        authorized.chunk_id,
+        authorized.content,
+        authorized.metadata,
+        authorized.embedding <=> query_embedding AS cosine_distance
+      FROM authorized
+      ORDER BY cosine_distance, authorized.chunk_id
+      LIMIT GREATEST(LEAST(max_results, 100), 0);
+    $function$;
+
+    CREATE OR REPLACE FUNCTION knowledge.search_authorized_groups(
+      query_embedding vector(1024),
+      allowed_classifications text[],
+      groups text[],
+      max_results integer DEFAULT 10
+    )
+    RETURNS TABLE (
+      chunk_id text,
+      content text,
+      metadata jsonb,
+      cosine_distance double precision
+    )
+    LANGUAGE sql
+    STABLE
+    STRICT
+    PARALLEL SAFE
+    SET search_path = pg_catalog, knowledge, public
+    AS $function$
+      WITH authorized AS MATERIALIZED (
+        SELECT chunks.chunk_id, chunks.content, chunks.embedding, chunks.metadata
+        FROM knowledge.chunks
+        WHERE (
+            allowed_classifications = ARRAY['public']::text[]
+            OR allowed_classifications = ARRAY['approved_non_public', 'public']::text[]
+          )
+          AND max_results BETWEEN 1 AND 100
+          AND vector_norm(query_embedding) > 0
+          AND cardinality(groups) BETWEEN 1 AND 16
+          AND knowledge.is_valid_group_array(to_jsonb(groups), 16)
+          AND (chunks.metadata->>'classification') = ANY (allowed_classifications)
+          AND (chunks.metadata->'allowed_groups') ?| groups
+      )
+      SELECT
+        authorized.chunk_id,
+        authorized.content,
+        authorized.metadata,
+        authorized.embedding <=> query_embedding AS cosine_distance
+      FROM authorized
+      ORDER BY cosine_distance, authorized.chunk_id
+      LIMIT GREATEST(LEAST(max_results, 100), 0);
+    $function$;
+
+    ALTER DEFAULT PRIVILEGES FOR ROLE knowledge_owner IN SCHEMA knowledge
+      REVOKE ALL ON TABLES FROM PUBLIC;
+    ALTER DEFAULT PRIVILEGES FOR ROLE knowledge_owner IN SCHEMA knowledge
+      REVOKE EXECUTE ON FUNCTIONS FROM PUBLIC;
+
+    REVOKE ALL ON ALL TABLES IN SCHEMA knowledge FROM PUBLIC;
+    REVOKE ALL ON ALL FUNCTIONS IN SCHEMA knowledge FROM PUBLIC;
+    GRANT SELECT ON knowledge.chunks TO knowledge_retrieval;
+    GRANT EXECUTE ON FUNCTION knowledge.is_dns1123_label(text) TO knowledge_retrieval;
+    GRANT EXECUTE ON FUNCTION knowledge.is_full_mxid(text) TO knowledge_retrieval;
+    GRANT EXECUTE ON FUNCTION knowledge.is_valid_principal_array(jsonb, integer)
+      TO knowledge_retrieval;
+    GRANT EXECUTE ON FUNCTION knowledge.is_valid_group_array(jsonb, integer)
+      TO knowledge_retrieval;
+    GRANT EXECUTE ON FUNCTION knowledge.search_authorized_matrix(
+      vector,
+      text[],
+      jsonb,
+      integer
+    ) TO knowledge_retrieval;
+    GRANT EXECUTE ON FUNCTION knowledge.search_authorized_groups(
+      vector,
+      text[],
+      text[],
+      integer
+    ) TO knowledge_retrieval;
+
+    INSERT INTO knowledge.schema_migrations (version)
+    VALUES (1)
+    ON CONFLICT (version) DO NOTHING;
+
+    COMMIT;
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: knowledge-schema-v1
+  namespace: postgres
+  labels:
+    app.kubernetes.io/name: knowledge-schema
+    app.kubernetes.io/instance: v1
+    app.kubernetes.io/component: database-migration
+    app.kubernetes.io/part-of: fgentic
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: knowledge-schema
+        app.kubernetes.io/instance: v1
+        app.kubernetes.io/component: database-migration
+        app.kubernetes.io/part-of: fgentic
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: schema
+          # Keep the exact v1 client image immutable with this historical migration artifact.
+          image: ghcr.io/cloudnative-pg/postgresql:17.10-202607130907-system-trixie@sha256:c141aec61cab8da3e215aebe0fa155e78442fbb41c982a86743915a967e12af9
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              attempt=1
+              while true; do
+                if version="$(
+                  psql --no-psqlrc --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+                    --command="SELECT extversion FROM pg_extension WHERE extname = 'vector' AND EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'knowledge_retrieval')" \
+                    2>/dev/null
+                )" && [ "$${version}" = "0.8.5" ]; then
+                  exec psql --no-psqlrc --set=ON_ERROR_STOP=1 --file=/schema/schema.sql
+                fi
+                echo "waiting for the knowledge database, roles, and vector 0.8.5 (attempt $${attempt})" >&2
+                attempt=$((attempt + 1))
+                sleep 5
+              done
+          env:
+            - name: PGHOST
+              value: platform-pg-rw.postgres.svc.cluster.local
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: knowledge
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: pg-knowledge-owner
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-knowledge-owner
+                  key: password
+            - name: PGSSLMODE
+              value: require
+            - name: PGCONNECT_TIMEOUT
+              value: "3"
+            - name: HOME
+              value: /tmp
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+              ephemeral-storage: 8Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+              ephemeral-storage: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: schema
+              mountPath: /schema
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: schema
+          configMap:
+            name: knowledge-schema-v1
+        - name: tmp
+          emptyDir:
+            sizeLimit: 8Mi
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: knowledge-schema-v1
+  namespace: postgres
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: knowledge-schema
+      app.kubernetes.io/instance: v1
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: platform-pg
+      ports:
+        - protocol: TCP
+          port: 5432

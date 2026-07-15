@@ -132,6 +132,7 @@ depends = [
   "check:audit-attribution",
   "check:kubernetes-audit",
   "check:postgres-audit",
+  "check:knowledge-store",
   "check:trivy-operator",
   "check:secret-rotation",
   "check:supply-chain",
@@ -262,6 +263,10 @@ run = "bash scripts/test-kubernetes-audit.sh"
 description = "Validate the DDL/ROLE-only pgAudit configuration and SQL-suppressed JSON projection"
 run = "bash scripts/test-postgres-audit.sh"
 
+[tasks."check:knowledge-store"]
+description = "Validate the pgvector image, scoped roles, ACL schema, indexes, and migration Job"
+run = "bash scripts/test-knowledge-store.sh"
+
 [tasks."check:trivy-operator"]
 description = "Validate the pinned, least-privilege, structurally optional CVE drift scanner"
 run = "bash scripts/test-trivy-operator.sh"
@@ -333,6 +338,10 @@ run = "bash scripts/test-kubernetes-audit.sh --runtime"
 [tasks."test:postgres-audit"]
 description = "Exercise pgAudit and CNPG JSON stdout in an isolated disposable kind cluster"
 run = "bash scripts/test-postgres-audit.sh --runtime"
+
+[tasks."test:knowledge-store"]
+description = "Exercise the pgvector ACL schema and plans in an isolated disposable kind cluster"
+run = "bash scripts/test-knowledge-store.sh --runtime"
 
 [tasks."test:mautrix-bridges"]
 description = "Validate exact pinned mautrix images without contacting external networks"

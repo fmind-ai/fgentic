@@ -19,6 +19,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 - [Forking & Adapting](forking.md) - the checklist to run Fgentic under your own org, domain, GCP project, and registry
 - [Identity and SSO](identity.md) - MAS as the Matrix OIDC authority, Keycloak as the reference upstream IdP
 - [Model Provider Profiles](models.md) - per-cluster model backends behind agentgateway (D16)
+- [Sovereign Grounding Store](grounding.md) - the composed CNPG + pgvector schema, ACL metadata, and exact-ranking contract (D18)
 - [External-Network Interop](interop.md) - opt-in Slack/Telegram bridges as governed identity boundaries
 - [Public Surface Stability Contract](stability.md) - stability tiers for surfaces partners pin
 
