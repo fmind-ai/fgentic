@@ -4,14 +4,17 @@ metadata:
   name: demo-llm
   namespace: models
 data:
+  response.txt: |
+    Fgentic's deterministic evaluation model is working through agentgateway and kagent.
   server.py: |
     import json
+    import os
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+    from pathlib import Path
     from typing import Any, cast
 
-    RESPONSE_TEXT = (
-        "Fgentic's deterministic evaluation model is working through agentgateway and kagent."
-    )
+    SOURCE_DIR = Path(os.environ.get("SOURCE_DIR", "/app"))
+    RESPONSE_TEXT = (SOURCE_DIR / "response.txt").read_text(encoding="utf-8").strip()
 
 
     class Handler(BaseHTTPRequestHandler):
@@ -131,7 +134,12 @@ data:
             )
 
 
-    ThreadingHTTPServer(("0.0.0.0", 8080), Handler).serve_forever()
+    server = ThreadingHTTPServer(
+        (os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8080"))), Handler
+    )
+    if port_file := os.environ.get("PORT_FILE"):
+        Path(port_file).write_text(str(server.server_address[1]), encoding="utf-8")
+    server.serve_forever()
 ---
 apiVersion: apps/v1
 kind: Deployment

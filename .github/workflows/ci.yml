@@ -27,6 +27,8 @@ jobs:
         run: mise run check
       - name: Run tests
         run: mise run test
+      - name: Run deterministic golden agent gate
+        run: mise run eval:golden
       - name: Verify no changes
         run: test -z "$(git status --porcelain)"
   bridge-integration:

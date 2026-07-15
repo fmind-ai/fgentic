@@ -226,6 +226,12 @@ The v1.3.1 histogram records `input`, `output`, and—when the provider reports 
 
 Static rendering and schema validation prove only that a profile is structurally valid. Closing an API-provider acceptance criterion additionally requires a real, low-token request through the local cluster and an end-to-end Matrix mention, followed by the PromQL check above. vLLM additionally requires `/health`, `/v1/models`, direct and agentgateway chat checks; a failed external request from both serving and proxy Pods; a blocked request from an unrelated namespace; a successful Prometheus scrape; and the generic ingress/egress NetworkPolicy conformance probe. Never treat an `Accepted=True` backend, a synthetic Secret, or a deny manifest on a broken policy engine as runtime proof.
 
+## Deterministic reference-agent golden gate
+
+`mise run eval:golden` is the zero-egress, zero-token CI gate for the three shipped reference Agents. It extracts and starts the checked-in `demo` model on an ephemeral loopback port, then binds one fixed task per Agent to the exact checked-in Agent spec, only the ConfigMap prompt fragments that Agent imports, and the response returned by that stub. The comparator is byte-for-byte deterministic; a changed expected response, Agent tool/config contract, or referenced prompt fragment fails until the golden fixture receives explicit review.
+
+This gate detects source-contract and deterministic-response regression. It does not claim that the constant demo model understood the prompt, exercised an Agent tool, or produced a useful live-model answer. Real semantic quality remains the approved profile run below and the separate sovereign judge lane in issue #355.
+
 ## Model-profile quality evaluation
 
 From the repository root, one approved live run is:
