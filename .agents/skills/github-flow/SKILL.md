@@ -16,7 +16,7 @@ Repo: `fmind-ai/fgentic` (public, Apache-2.0). All work is issue-driven; automat
 1. List milestones: `gh api repos/fmind-ai/fgentic/milestones --jq '.[] | "\(.number) \(.title) — \(.open_issues) open"'`. Find an epic: `gh issue list --label kind/epic --milestone "<title>"`.
 1. Labels: `agent-ready` = groomed, pick up as-is · `needs-human` = blocked on a maintainer decision/account/approval/spend — do the preparable parts, then hand off explicitly · `area/*` (bridge, infra, identity, matrix, models, federation, observability, security, ci, docs, community) · `kind/*` (feature, fix, test, chore, docs, research, epic).
 1. Issue bodies cite `SPEC §N` — resolve via the mapping table in [.agents/AGENTS.md](../../AGENTS.md).
-1. Standing rules: never start M8 (federation) items before its epic says the lab topology exists; never merge anything that assumes a single homeserver forever; settled designs (D1–D16, ADRs) are revisited by proposing a new ADR, not a drive-by PR.
+1. Standing rules: never start M8 (federation) items before its epic says the lab topology exists; never merge anything that assumes a single homeserver forever; settled designs (the current `D<n>` register and ADRs) are revisited by proposing a new ADR, not a drive-by PR.
 
 ## Picking up an issue
 
@@ -29,7 +29,7 @@ Repo: `fmind-ai/fgentic` (public, Apache-2.0). All work is issue-driven; automat
 
 1. Issue body format: `## Context` (why, citing `D<n>`/`SPEC §N`) · `## Tasks` (checkboxes, each independently verifiable) · `## Acceptance criteria` (observable outcomes, not implementation). Label with exactly one `kind/*`, the `area/*`s it touches, and `agent-ready` **only if** the tasks + criteria are executable without a maintainer decision (else `needs-human`, naming the blocking part). Always assign a milestone.
 1. Epic body format (one per milestone, `kind/epic`): a paragraph with the theme, sweep-order rationale, and definition of done, then `## Issues (sweep top-to-bottom)` as a checklist of `#N` references — closing keywords in PRs tick it automatically.
-1. Before opening a design-changing issue, check D1–D16 and the ADRs: settled designs need a proposed ADR (see the docs-spec skill), not an issue asking to relitigate.
+1. Before opening a design-changing issue, check the current `D<n>` register and ADRs: settled designs need a proposed ADR (see the docs-spec skill), not an issue asking to relitigate.
 
 ## Pull requests
 

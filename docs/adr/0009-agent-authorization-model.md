@@ -10,6 +10,8 @@ Status: Proposed
 
 Approval gate: a human must approve this ADR in [issue #19](https://github.com/fmind-ai/fgentic/issues/19) before implementation issues are created. Nothing below is a settled design decision yet.
 
+Scope note: accepted [ADR 0017](0017-permission-aware-identity-binding.md) independently governs content-row ACLs and the audience of grounded Matrix output. It neither accepts nor depends on this proposal's IdP group reconciler; Matrix retrieval v1 uses typed exact full-principal ACLs and no group mapping.
+
 ## Context
 
 Enterprise identity providers express access through groups and roles, while the bridge receives Matrix events containing a room ID and the sender's Matrix ID (MXID). It does not receive the user's upstream OIDC token or claims. The pinned ESS `26.6.2` chart contains MAS `1.19.0` and Synapse `1.155.0`; in that exact MAS version, upstream claim imports are limited to the subject, MXID localpart, display name, email, and account name. There is no persistent group attribute in the [MAS upstream provider schema](https://github.com/element-hq/matrix-authentication-service/blob/v1.19.0/crates/config/src/sections/upstream_oauth2.rs).
