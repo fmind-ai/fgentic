@@ -63,7 +63,7 @@ spec:
               metadata:
                 name: aggregate-exposed-secret-reports-view
   values:
-    targetNamespaces: cert-manager,gateway,cnpg-system,postgres,keycloak,matrix,agentgateway-system,kagent,bridge,bridges,monitoring,models
+    targetNamespaces: cert-manager,gateway,cnpg-system,postgres,knowledge,keycloak,matrix,agentgateway-system,kagent,bridge,bridges,monitoring,models
     targetWorkloads: pod,replicaset,statefulset,daemonset,cronjob,job
     operator:
       scanJobTTL: 30s

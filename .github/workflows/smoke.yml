@@ -76,7 +76,8 @@ jobs:
           quota_contract='
             ([.items[].metadata.namespace] | sort) ==
               ["agentgateway-system", "bridge", "bridges", "cert-manager", "cnpg-system",
-               "gateway", "kagent", "keycloak", "matrix", "models", "monitoring", "postgres"] and
+               "gateway", "kagent", "keycloak", "knowledge", "matrix", "models", "monitoring",
+               "postgres"] and
             all(.items[];
               .metadata.name == "compute-budget" and
               (.status.hard | keys | sort) ==

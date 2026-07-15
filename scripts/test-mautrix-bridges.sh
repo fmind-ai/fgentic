@@ -305,7 +305,7 @@ for role in slackbridge telegrambridge; do
 done
 assert_yq \
 	'select(.kind == "Cluster" and .metadata.name == "platform-pg") |
-	 ((.spec.postgresql.pg_hba | sort | join(",")) == "hostnossl all all all reject,hostssl all all all reject,hostssl bridge bridge all scram-sha-256,hostssl kagent kagent all scram-sha-256,hostssl keycloak keycloak all scram-sha-256,hostssl mas mas all scram-sha-256,hostssl slackbridge slackbridge all scram-sha-256,hostssl synapse synapse all scram-sha-256,hostssl telegrambridge telegrambridge all scram-sha-256" and
+	 ((.spec.postgresql.pg_hba | sort | join(",")) == "hostnossl all all all reject,hostssl all all all reject,hostssl bridge bridge all scram-sha-256,hostssl kagent kagent all scram-sha-256,hostssl keycloak keycloak all scram-sha-256,hostssl knowledge knowledge_owner all scram-sha-256,hostssl knowledge knowledge_retrieval all scram-sha-256,hostssl mas mas all scram-sha-256,hostssl slackbridge slackbridge all scram-sha-256,hostssl synapse synapse all scram-sha-256,hostssl telegrambridge telegrambridge all scram-sha-256" and
 	 .spec.postgresql.pg_hba[-2] == "hostssl all all all reject" and
 	 .spec.postgresql.pg_hba[-1] == "hostnossl all all all reject")' \
 	"${postgres_render}" "Postgres HBA no longer enforces one TLS database per tenant role"
@@ -469,7 +469,7 @@ for role in slackbridge telegrambridge; do
 done
 assert_yq \
 	'select(.kind == "Cluster" and .metadata.name == "platform-pg") |
-	 ((.spec.postgresql.pg_hba | sort | join(",")) == "hostnossl all all all reject,hostssl all all all reject,hostssl bridge bridge all scram-sha-256,hostssl kagent kagent all scram-sha-256,hostssl keycloak keycloak all scram-sha-256,hostssl mas mas all scram-sha-256,hostssl synapse synapse all scram-sha-256" and
+	 ((.spec.postgresql.pg_hba | sort | join(",")) == "hostnossl all all all reject,hostssl all all all reject,hostssl bridge bridge all scram-sha-256,hostssl kagent kagent all scram-sha-256,hostssl keycloak keycloak all scram-sha-256,hostssl knowledge knowledge_owner all scram-sha-256,hostssl knowledge knowledge_retrieval all scram-sha-256,hostssl mas mas all scram-sha-256,hostssl synapse synapse all scram-sha-256" and
 	 .spec.postgresql.pg_hba[-2] == "hostssl all all all reject" and
 	 .spec.postgresql.pg_hba[-1] == "hostnossl all all all reject")' \
 	"${offboard_postgres_render}" "offboarding retained an external-bridge HBA login path"

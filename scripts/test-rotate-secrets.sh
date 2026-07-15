@@ -85,6 +85,10 @@ pg_password() {
 	secret_value postgres-roles.sops.yaml postgres "pg-$1" '.stringData.password'
 }
 
+knowledge_password() {
+	secret_value knowledge-db.sops.yaml postgres "pg-knowledge-$1" '.stringData.password'
+}
+
 exercise_db_role() { # exercise_db_role <role> <expected changed files...>
 	local role="$1"
 	local old_synapse old_mas old_bridge old_kagent new_value
@@ -340,6 +344,38 @@ assert_equal \
 assert_changed_files keycloak-db.sops.yaml
 commit_fixture "rotate Keycloak database fixture"
 
+# Knowledge owner and retrieval credentials rotate independently while the two retrieval copies
+# remain exact. The schema-owner credential must never be projected into the workload namespace.
+OLD_KNOWLEDGE_OWNER="$(knowledge_password owner)"
+OLD_KNOWLEDGE_RETRIEVAL="$(knowledge_password retrieval)"
+"${ROTATOR}" fixture.localhost local db-knowledge-owner >/dev/null
+NEW_KNOWLEDGE_OWNER="$(knowledge_password owner)"
+assert_changed "${OLD_KNOWLEDGE_OWNER}" "${NEW_KNOWLEDGE_OWNER}" "knowledge owner database password"
+assert_equal "${OLD_KNOWLEDGE_RETRIEVAL}" "$(knowledge_password retrieval)" \
+	"knowledge retrieval changed during owner-only rotation"
+assert_equal \
+	"$(knowledge_password retrieval)" \
+	"$(secret_value knowledge-db.sops.yaml knowledge pg-knowledge-retrieval '.stringData.password')" \
+	"knowledge retrieval copies differ"
+expect_failure secret_value knowledge-db.sops.yaml knowledge pg-knowledge-owner '.stringData.password'
+assert_changed_files knowledge-db.sops.yaml
+commit_fixture "rotate knowledge owner fixture"
+
+OLD_KNOWLEDGE_OWNER="$(knowledge_password owner)"
+OLD_KNOWLEDGE_RETRIEVAL="$(knowledge_password retrieval)"
+"${ROTATOR}" fixture.localhost local db-knowledge-retrieval >/dev/null
+NEW_KNOWLEDGE_RETRIEVAL="$(knowledge_password retrieval)"
+assert_equal "${OLD_KNOWLEDGE_OWNER}" "$(knowledge_password owner)" \
+	"knowledge owner changed during retrieval-only rotation"
+assert_changed "${OLD_KNOWLEDGE_RETRIEVAL}" "${NEW_KNOWLEDGE_RETRIEVAL}" \
+	"knowledge retrieval database password"
+assert_equal \
+	"${NEW_KNOWLEDGE_RETRIEVAL}" \
+	"$(secret_value knowledge-db.sops.yaml knowledge pg-knowledge-retrieval '.stringData.password')" \
+	"knowledge retrieval copies differ"
+assert_changed_files knowledge-db.sops.yaml
+commit_fixture "rotate knowledge retrieval fixture"
+
 OLD_CLIENT="$(secret_value keycloak-bootstrap.sops.yaml keycloak keycloak-credentials '.stringData.FGENTIC_CLIENT_SECRET')"
 OLD_ADMIN="$(secret_value keycloak-bootstrap.sops.yaml keycloak keycloak-credentials '.stringData.KC_BOOTSTRAP_ADMIN_PASSWORD')"
 OLD_ALICE="$(secret_value keycloak-bootstrap.sops.yaml keycloak keycloak-credentials '.stringData.FGENTIC_ALICE_PASSWORD')"
@@ -373,6 +409,8 @@ BEFORE_ALL_MAS="$(pg_password mas)"
 BEFORE_ALL_BRIDGE="$(pg_password bridge)"
 BEFORE_ALL_KAGENT="$(pg_password kagent)"
 BEFORE_ALL_KEYCLOAK="$(secret_value keycloak-db.sops.yaml postgres pg-keycloak '.stringData.password')"
+BEFORE_ALL_KNOWLEDGE_OWNER="$(knowledge_password owner)"
+BEFORE_ALL_KNOWLEDGE_RETRIEVAL="$(knowledge_password retrieval)"
 BEFORE_ALL_PROVIDER="$(provider_key)"
 OPENAI_API_KEY="fixture-provider-full-3333333333333333333"
 export OPENAI_API_KEY
@@ -394,12 +432,20 @@ assert_changed "${BEFORE_ALL_MAS}" "$(pg_password mas)" "full MAS DB password"
 assert_changed "${BEFORE_ALL_BRIDGE}" "$(pg_password bridge)" "full bridge DB password"
 assert_changed "${BEFORE_ALL_KAGENT}" "$(pg_password kagent)" "full kagent DB password"
 assert_changed "${BEFORE_ALL_KEYCLOAK}" "$(secret_value keycloak-db.sops.yaml postgres pg-keycloak '.stringData.password')" "full Keycloak DB password"
+assert_changed "${BEFORE_ALL_KNOWLEDGE_OWNER}" "$(knowledge_password owner)" "full knowledge owner DB password"
+assert_changed "${BEFORE_ALL_KNOWLEDGE_RETRIEVAL}" "$(knowledge_password retrieval)" \
+	"full knowledge retrieval DB password"
+assert_equal \
+	"$(knowledge_password retrieval)" \
+	"$(secret_value knowledge-db.sops.yaml knowledge pg-knowledge-retrieval '.stringData.password')" \
+	"full knowledge retrieval copies differ"
 assert_changed "${BEFORE_ALL_PROVIDER}" "$(provider_key)" "full provider key"
 assert_changed_files \
 	a2a-authorization.sops.yaml \
 	agentgateway-openai.sops.yaml \
 	kagent.sops.yaml \
 	keycloak-db.sops.yaml \
+	knowledge-db.sops.yaml \
 	matrix-a2a-bridge-db.sops.yaml \
 	mcp-authorization.sops.yaml \
 	matrix-a2a-bridge-registration.sops.yaml \

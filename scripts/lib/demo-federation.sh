@@ -216,6 +216,7 @@ create_federation_secrets() {
 	# Preserve existing lab identities while making upgrades self-healing when a new homeserver is
 	# added to an already running, ownership-labelled cluster.
 	for key in pg-synapse pg-synapse-b pg-synapse-c pg-keycloak pg-kagent \
+		pg-knowledge-owner pg-knowledge-retrieval \
 		alice-password bob-password charlie-password keycloak-admin-password \
 		fgentic-client-secret fgentic-alice-password fgentic-bob-password \
 		org-b-a2a-client-secret untrusted-a2a-client-secret \
@@ -233,12 +234,15 @@ create_federation_secrets() {
 	bootstrap_json=""
 	value=""
 
-	local pg_synapse pg_synapse_b pg_synapse_c pg_keycloak pg_kagent namespace
+	local pg_synapse pg_synapse_b pg_synapse_c pg_keycloak pg_kagent
+	local pg_knowledge_owner pg_knowledge_retrieval namespace
 	pg_synapse="$(bootstrap_secret_value pg-synapse)"
 	pg_synapse_b="$(bootstrap_secret_value pg-synapse-b)"
 	pg_synapse_c="$(bootstrap_secret_value pg-synapse-c)"
 	pg_keycloak="$(bootstrap_secret_value pg-keycloak)"
 	pg_kagent="$(bootstrap_secret_value pg-kagent)"
+	pg_knowledge_owner="$(bootstrap_secret_value pg-knowledge-owner)"
+	pg_knowledge_retrieval="$(bootstrap_secret_value pg-knowledge-retrieval)"
 	apply_secret postgres pg-synapse --type=kubernetes.io/basic-auth \
 		--from-literal=username=synapse --from-literal=password="${pg_synapse}"
 	apply_secret matrix pg-synapse --type=kubernetes.io/basic-auth \
@@ -257,6 +261,12 @@ create_federation_secrets() {
 		--from-literal=username=keycloak --from-literal=password="${pg_keycloak}"
 	apply_secret postgres pg-kagent --type=kubernetes.io/basic-auth \
 		--from-literal=username=kagent --from-literal=password="${pg_kagent}"
+	apply_secret postgres pg-knowledge-owner --type=kubernetes.io/basic-auth \
+		--from-literal=username=knowledge_owner --from-literal=password="${pg_knowledge_owner}"
+	apply_secret postgres pg-knowledge-retrieval --type=kubernetes.io/basic-auth \
+		--from-literal=username=knowledge_retrieval --from-literal=password="${pg_knowledge_retrieval}"
+	apply_secret knowledge pg-knowledge-retrieval --type=kubernetes.io/basic-auth \
+		--from-literal=username=knowledge_retrieval --from-literal=password="${pg_knowledge_retrieval}"
 	apply_secret kagent kagent-db \
 		--from-literal=url="postgresql://kagent:${pg_kagent}@platform-pg-rw.postgres.svc.cluster.local:5432/kagent?sslmode=require"
 	apply_secret kagent kagent-model-auth \

@@ -5,4 +5,5 @@ kind: Kustomization
 resources:
   - cluster.yaml
   - databases.yaml
+  - knowledge-schema-v1.yaml
   - scheduledbackup.yaml

@@ -44,7 +44,8 @@ case "${FORCE}" in
 	;;
 esac
 case "${SECRET_SET}" in
-all | rotatable | appservice | a2a | mcp | db-core | keycloak-db | provider | bootstrap | slack | telegram) ;;
+all | rotatable | appservice | a2a | mcp | db-core | keycloak-db | knowledge-db | \
+	provider | bootstrap | slack | telegram) ;;
 *)
 	echo "error: unsupported internal secret set: ${SECRET_SET}" >&2
 	exit 2
@@ -189,6 +190,8 @@ PG_MAS="${PG_MAS:-$(openssl rand -hex 24)}"
 PG_BRIDGE="${PG_BRIDGE:-$(openssl rand -hex 24)}"
 PG_KAGENT="${PG_KAGENT:-$(openssl rand -hex 24)}"
 PG_KEYCLOAK="${PG_KEYCLOAK:-$(openssl rand -hex 24)}"
+PG_KNOWLEDGE_OWNER="${PG_KNOWLEDGE_OWNER:-$(openssl rand -hex 24)}"
+PG_KNOWLEDGE_RETRIEVAL="${PG_KNOWLEDGE_RETRIEVAL:-$(openssl rand -hex 24)}"
 PG_SLACKBRIDGE="${PG_SLACKBRIDGE:-$(openssl rand -hex 24)}"
 PG_TELEGRAMBRIDGE="${PG_TELEGRAMBRIDGE:-$(openssl rand -hex 24)}"
 AS_TOKEN="${AS_TOKEN:-$(openssl rand -hex 32)}"
@@ -342,6 +345,46 @@ stringData:
 EOF
 	)"
 	emit keycloak-db.sops.yaml "${KEYCLOAK_DB}"
+fi
+
+# Knowledge ingestion owns the schema while retrieval is read-only. Keep the two independent role
+# passwords and the retrieval workload copy in one coherent ciphertext transaction; never project
+# the owner credential outside the postgres namespace.
+if want knowledge-db; then
+	KNOWLEDGE_DB="$(
+		cat <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg-knowledge-owner
+  namespace: postgres
+type: kubernetes.io/basic-auth
+stringData:
+  username: knowledge_owner
+  password: ${PG_KNOWLEDGE_OWNER}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg-knowledge-retrieval
+  namespace: postgres
+type: kubernetes.io/basic-auth
+stringData:
+  username: knowledge_retrieval
+  password: ${PG_KNOWLEDGE_RETRIEVAL}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg-knowledge-retrieval
+  namespace: knowledge
+type: kubernetes.io/basic-auth
+stringData:
+  username: knowledge_retrieval
+  password: ${PG_KNOWLEDGE_RETRIEVAL}
+EOF
+	)"
+	emit knowledge-db.sops.yaml "${KNOWLEDGE_DB}"
 fi
 
 # Startup import is bootstrap-only: Keycloak skips an existing realm. Preserve this file even on

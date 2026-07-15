@@ -59,22 +59,25 @@ Use `scripts/fed-check.sh partner.example` only to observe public Matrix discove
 
 `scripts/rotate-secrets.sh <server_name> <local|gcp> <secret-set>` rewrites reviewed SOPS ciphertext only. It never reconciles Flux, restarts a workload, prints a secret, or overwrites a dirty encrypted file. It stages and decrypt-validates every output before replacing the first tracked file. Run one set at a time unless this is a planned full drill.
 
-| Secret set        | Rotated material                                                | Blast radius and reload                                                                                         |
-| ----------------- | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `appservice`      | `as_token` and `hs_token`, identical in `matrix` and `bridge`   | Matrix→bridge delivery pauses while Synapse and the bridge hold different copies; restart Synapse, then bridge. |
-| `a2a`             | Bridge workload API key, identical at agentgateway and bridge   | Agent delegation fails after the policy adopts the new key until the bridge restarts; human Matrix chat stays.  |
-| `mcp`             | platform-helper MCP API key, identical at gateway and kagent    | Tool calls fail after the policy adopts the new key until the kagent controller regenerates platform-helper.    |
-| `db-synapse`      | Synapse role and both namespace copies                          | Homeserver database reconnects; wait for CNPG, then restart Synapse.                                            |
-| `db-mas`          | MAS role and both namespace copies                              | New login/token operations pause during the MAS restart; existing Matrix sessions remain.                       |
-| `db-bridge`       | Bridge role and derived `DATABASE_URL`                          | Agent delegation pauses during the bridge restart; persistent context and dedup state remain in Postgres.       |
-| `db-kagent`       | kagent role and derived URL                                     | A2A agent execution pauses during the controller restart.                                                       |
-| `db-core`         | All four core roles and derived URLs                            | Combined blast radius of the four rows above.                                                                   |
-| `provider`        | Selected Mistral/Anthropic/OpenAI/Azure OpenAI API key          | Model calls only; agentgateway consumes the Secret dynamically. Vertex and vLLM have no tracked provider key.   |
-| `keycloak-db`     | Keycloak role and both namespace copies                         | New SSO redirects pause during the Keycloak restart; existing Matrix sessions remain.                           |
-| `keycloak-client` | The live `fgentic` OIDC client secret mirrored for MAS/recovery | SSO is unavailable between live Keycloak rotation and MAS reload; explicit acknowledgement is mandatory.        |
-| `slack`           | Slack bridge DB password and matching AS/HS tokens              | Wait for `slackbridge`, then restart Synapse and only `mautrix-slack`; provider app-login state remains in DB.  |
-| `telegram`        | Telegram bridge DB password and matching AS/HS tokens           | Wait for `telegrambridge`, then restart Synapse and only `mautrix-telegram`; API ID/hash and sender stay fixed. |
-| `all`             | Core automatable rows only                                      | Excludes optional networks, Keycloak client, bootstrap admin, and demo users; rotate those explicitly.          |
+| Secret set               | Rotated material                                                | Blast radius and reload                                                                                         |
+| ------------------------ | --------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `appservice`             | `as_token` and `hs_token`, identical in `matrix` and `bridge`   | Matrix→bridge delivery pauses while Synapse and the bridge hold different copies; restart Synapse, then bridge. |
+| `a2a`                    | Bridge workload API key, identical at agentgateway and bridge   | Agent delegation fails after the policy adopts the new key until the bridge restarts; human Matrix chat stays.  |
+| `mcp`                    | platform-helper MCP API key, identical at gateway and kagent    | Tool calls fail after the policy adopts the new key until the kagent controller regenerates platform-helper.    |
+| `db-synapse`             | Synapse role and both namespace copies                          | Homeserver database reconnects; wait for CNPG, then restart Synapse.                                            |
+| `db-mas`                 | MAS role and both namespace copies                              | New login/token operations pause during the MAS restart; existing Matrix sessions remain.                       |
+| `db-bridge`              | Bridge role and derived `DATABASE_URL`                          | Agent delegation pauses during the bridge restart; persistent context and dedup state remain in Postgres.       |
+| `db-kagent`              | kagent role and derived URL                                     | A2A agent execution pauses during the controller restart.                                                       |
+| `db-core`                | All four core roles and derived URLs                            | Combined blast radius of the four rows above.                                                                   |
+| `db-knowledge-owner`     | Knowledge schema-owner role in `postgres` only                  | No workload restart; wait for its `DatabaseRole`, then prove the new owner login cannot reach another database. |
+| `db-knowledge-retrieval` | Retrieval role and identical `postgres`/`knowledge` copies      | Wait for its `DatabaseRole`; restart the retrieval consumer from #333 once that consumer exists.                |
+| `knowledge-db`           | Both knowledge roles and the retrieval namespace copy           | Combined blast radius of the two knowledge rows; the owner credential remains absent from `knowledge`.          |
+| `provider`               | Selected Mistral/Anthropic/OpenAI/Azure OpenAI API key          | Model calls only; agentgateway consumes the Secret dynamically. Vertex and vLLM have no tracked provider key.   |
+| `keycloak-db`            | Keycloak role and both namespace copies                         | New SSO redirects pause during the Keycloak restart; existing Matrix sessions remain.                           |
+| `keycloak-client`        | The live `fgentic` OIDC client secret mirrored for MAS/recovery | SSO is unavailable between live Keycloak rotation and MAS reload; explicit acknowledgement is mandatory.        |
+| `slack`                  | Slack bridge DB password and matching AS/HS tokens              | Wait for `slackbridge`, then restart Synapse and only `mautrix-slack`; provider app-login state remains in DB.  |
+| `telegram`               | Telegram bridge DB password and matching AS/HS tokens           | Wait for `telegrambridge`, then restart Synapse and only `mautrix-telegram`; API ID/hash and sender stay fixed. |
+| `all`                    | Automatable core and knowledge rows                             | Excludes optional networks, Keycloak client, bootstrap admin, and demo users; rotate those explicitly.          |
 
 ### Prepare, generate, and reconcile
 
@@ -99,7 +102,7 @@ Use `scripts/fed-check.sh partner.example` only to observe public Matrix discove
 
 ### Database-role ordering
 
-CloudNativePG reports the exact `postgres`-namespace Secret resource version applied to each managed role. Wait for equality before restarting a consumer; `Cluster Ready=True` alone does not prove that the new password reached PostgreSQL.
+CloudNativePG reports the exact `postgres`-namespace Secret resource version applied to each role. Wait for equality before restarting a consumer; `Cluster Ready=True` alone does not prove that the new password reached PostgreSQL. The five legacy roles report through the `Cluster`; the two knowledge roles report directly on their `DatabaseRole` resources.
 
 ```bash
 wait_role() {
@@ -111,6 +114,19 @@ wait_role() {
 }
 
 wait_role synapse # use mas, bridge, kagent, or keycloak for the other sets
+
+wait_database_role() {
+  resource="$1"
+  secret="$2"
+  secret_rv="$(kubectl -n postgres get secret "${secret}" -o jsonpath='{.metadata.resourceVersion}')"
+  until [ "$(kubectl -n postgres get databaserole "${resource}" -o jsonpath='{.status.secretResourceVersion}')" = "${secret_rv}" ] &&
+    [ "$(kubectl -n postgres get databaserole "${resource}" -o jsonpath='{.status.applied}')" = true ]; do
+    sleep 2
+  done
+}
+
+wait_database_role knowledge-owner pg-knowledge-owner
+wait_database_role knowledge-retrieval pg-knowledge-retrieval
 ```
 
 After the relevant wait succeeds, restart only its consumer:
@@ -138,6 +154,8 @@ kubectl -n keycloak rollout status statefulset/keycloak --timeout=5m
 ```
 
 For `db-core`, wait for all four core roles before restarting Synapse, MAS, kagent, and finally the bridge. Restarting the bridge last avoids loading its new database password before both its dependency and the role are ready.
+
+For a knowledge-role rotation, use `wait_database_role` for only the affected resource and prove the new login before retiring the old credential. The schema owner has no workload to restart and its Secret must remain absent from `knowledge`. The retrieval consumer is introduced by #333; once deployed, restart only that consumer after `knowledge-retrieval` reports the new Secret resource version.
 
 ### Appservice, A2A, MCP, and provider ordering
 
@@ -198,7 +216,7 @@ KEYCLOAK_CLIENT_UPDATED=yes \
 
 After commit/reconciliation, restart `deployment/ess-matrix-authentication-service`, complete a fresh SSO login, then `unset FGENTIC_CLIENT_SECRET`. The script proves the MAS and Keycloak recovery copies match and that the bootstrap admin/Alice/Bob fields did not change.
 
-For `all`, reconcile once, wait for all five CNPG roles, restart Keycloak, Synapse, MAS, and kagent, wait for the A2A/MCP policies and provider backend, then restart the bridge last. Complete a fresh SSO login, one platform-helper tool call, its MCP audit record, and an `@mention` round trip before revoking the old provider key.
+For `all`, reconcile once, wait for the five legacy CNPG roles and both knowledge `DatabaseRole` resources, restart Keycloak, Synapse, MAS, and kagent, wait for the A2A/MCP policies and provider backend, then restart the bridge last. Complete a fresh SSO login, one platform-helper tool call, its MCP audit record, a knowledge-role login check, and an `@mention` round trip before revoking the old provider key.
 
 ### Rehearsal and downtime record
 

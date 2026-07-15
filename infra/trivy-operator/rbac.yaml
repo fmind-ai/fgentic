@@ -1,5 +1,5 @@
 # The chart's generated ClusterRole is intentionally disabled. Keep workload and report access
-# namespaced by binding this reusable role only in the 12 platform-owned namespaces.
+# namespaced by binding this reusable role only in the 13 platform-owned namespaces.
 apiVersion: v1
 kind: ServiceAccount
 metadata:
@@ -140,7 +140,7 @@ rules:
       - watch
   # MultiNamespace mode always adds the operator namespace to its cache for centralized Jobs.
   # Its install-mode predicate excludes these workloads from scanning, so cache reads belong to
-  # this runtime Role without adding report mutation or a thirteenth target RoleBinding.
+  # this runtime Role without adding report mutation or a fourteenth target RoleBinding.
   - apiGroups:
       - ""
     resources:
@@ -279,6 +279,20 @@ kind: RoleBinding
 metadata:
   name: trivy-operator-target
   namespace: postgres
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: trivy-operator-target
+subjects:
+  - kind: ServiceAccount
+    name: trivy-operator
+    namespace: trivy-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: trivy-operator-target
+  namespace: knowledge
 roleRef:
   apiGroup: rbac.authorization.k8s.io
   kind: ClusterRole

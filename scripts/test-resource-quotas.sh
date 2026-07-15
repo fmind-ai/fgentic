@@ -209,8 +209,19 @@ assert_static_contract() {
     yq eval-all -o=json '[select(.kind == "Namespace")]' "${NAMESPACE_FILE}" |
       yq -r '.[].metadata.name' | sort
   )"
-  [[ "$(wc -l <<<"${expected_namespaces}" | tr -d ' ')" -eq 13 ]] ||
-    fail "expected all thirteen shared namespaces to be quota-managed"
+  [[ "$(wc -l <<<"${expected_namespaces}" | tr -d ' ')" -eq 14 ]] ||
+    fail "expected all fourteen shared namespaces to be quota-managed"
+
+  yq -e '
+    select(.kind == "Namespace" and .metadata.name == "knowledge") |
+    select(.metadata.labels."fgentic.dev/managed" == "true") |
+    select(.metadata.labels."fgentic.dev/image-policy" == "enforce") |
+    select(.metadata.labels."fgentic.dev/quota-profile" == "small") |
+    select(.metadata.labels."pod-security.kubernetes.io/enforce" == "restricted") |
+    select(.metadata.labels."pod-security.kubernetes.io/audit" == "restricted") |
+    select(.metadata.labels."pod-security.kubernetes.io/warn" == "restricted")
+  ' "${NAMESPACE_FILE}" >/dev/null ||
+    fail "knowledge must be a managed, image-enforced, small, restricted-PSS namespace"
 
   local federation_namespaces repository_namespaces repository_quota_namespaces
   local repository_limit_namespaces
@@ -219,15 +230,15 @@ assert_static_contract() {
       "${NAMESPACE_FILE}" "${FEDERATION_NAMESPACE_FILE}" |
       yq -r '.[].metadata.name' | sort
   )"
-  [[ "$(wc -l <<<"${federation_namespaces}" | tr -d ' ')" -eq 15 ]] ||
-    fail "expected the shared and federation namespace sources to own fifteen namespaces"
+  [[ "$(wc -l <<<"${federation_namespaces}" | tr -d ' ')" -eq 16 ]] ||
+    fail "expected the shared and federation namespace sources to own sixteen namespaces"
   repository_namespaces="$(
     yq eval-all -o=json '[select(.kind == "Namespace")]' \
       "${NAMESPACE_FILE}" "${FEDERATION_NAMESPACE_FILE}" "${ACTIVITYPUB_NAMESPACE_FILE}" |
       yq -r '.[].metadata.name' | sort
   )"
-  [[ "$(wc -l <<<"${repository_namespaces}" | tr -d ' ')" -eq 16 ]] ||
-    fail "expected all sixteen repository-owned namespaces to be quota-managed"
+  [[ "$(wc -l <<<"${repository_namespaces}" | tr -d ' ')" -eq 17 ]] ||
+    fail "expected all seventeen repository-owned namespaces to be quota-managed"
   repository_quota_namespaces="$(
     yq eval-all -o=json \
       '[select(.kind == "ResourceQuota" and .metadata.name == "compute-budget")]' \
@@ -253,7 +264,7 @@ assert_static_contract() {
     ' "${NAMESPACE_FILE}" "${FEDERATION_NAMESPACE_FILE}" "${ACTIVITYPUB_NAMESPACE_FILE}"
   )"
   yq -e '
-    select(length == 16) |
+    select(length == 17) |
     [.[] | test("^(small|core|compute)$")] |
     select(all)
   ' <<<"${profiles}" >/dev/null || fail "every platform Namespace needs a known quota profile"
@@ -323,8 +334,8 @@ assert_static_contract() {
   effective_namespaces="$(
     sorted_managed_namespaces <<<"${federation_rendered}"
   )"
-  [[ "$(wc -l <<<"${effective_namespaces}" | tr -d ' ')" -eq 11 ]] ||
-    fail "the effective federation overlay must own exactly eleven namespaces"
+  [[ "$(wc -l <<<"${effective_namespaces}" | tr -d ' ')" -eq 12 ]] ||
+    fail "the effective federation overlay must own exactly twelve namespaces"
   effective_quota_namespaces="$(
     sorted_names ResourceQuota <<<"${federation_rendered}"
   )"

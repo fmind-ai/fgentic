@@ -32,6 +32,7 @@ readonly -a TARGET_NAMESPACES=(
 	gateway
 	cnpg-system
 	postgres
+	knowledge
 	keycloak
 	matrix
 	agentgateway-system

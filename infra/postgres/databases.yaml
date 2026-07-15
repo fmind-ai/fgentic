@@ -63,3 +63,66 @@ spec:
   name: keycloak
   owner: keycloak
   encoding: UTF8
+---
+# Knowledge-store roles use the first-class CNPG role API so their powerful attributes and
+# retention policy remain explicit without extending the Cluster's legacy inline role list.
+apiVersion: postgresql.cnpg.io/v1
+kind: DatabaseRole
+metadata:
+  name: knowledge-owner
+  namespace: postgres
+spec:
+  cluster:
+    name: platform-pg
+  name: knowledge_owner
+  ensure: present
+  login: true
+  inherit: false
+  superuser: false
+  createdb: false
+  createrole: false
+  replication: false
+  bypassrls: false
+  connectionLimit: 4
+  passwordSecret:
+    name: pg-knowledge-owner
+  databaseRoleReclaimPolicy: retain
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: DatabaseRole
+metadata:
+  name: knowledge-retrieval
+  namespace: postgres
+spec:
+  cluster:
+    name: platform-pg
+  name: knowledge_retrieval
+  ensure: present
+  login: true
+  inherit: false
+  superuser: false
+  createdb: false
+  createrole: false
+  replication: false
+  bypassrls: false
+  connectionLimit: 16
+  passwordSecret:
+    name: pg-knowledge-retrieval
+  databaseRoleReclaimPolicy: retain
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: knowledge
+  namespace: postgres
+spec:
+  cluster:
+    name: platform-pg
+  name: knowledge
+  owner: knowledge_owner
+  encoding: UTF8
+  databaseReclaimPolicy: retain
+  extensions:
+    - name: vector
+      ensure: present
+      version: "0.8.5"
