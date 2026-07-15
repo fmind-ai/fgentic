@@ -22,6 +22,16 @@ render_k3d_config() {
         .ports[0].port = (strenv(FED_LOOPBACK) + ":80:80") |
         .ports[1].port = (strenv(FED_LOOPBACK) + ":443:443")
       ' "${output}"
+		if [ "${FEDERATION_CONSTRAINED:-no}" = yes ]; then
+			# k3s otherwise grows a host-sized Go heap on the single disposable server. These are
+			# creation-time process settings, so lifecycle ownership records the capacity mode.
+			yq --inplace '
+          .env += [
+            {"envVar": "GOGC=50", "nodeFilters": ["server:*"]},
+            {"envVar": "GOMEMLIMIT=1GiB", "nodeFilters": ["server:*"]}
+          ]
+        ' "${output}"
+		fi
 	fi
 
 	# k3d resolves a relative `files.source` beside the rendered config, not beside the process's

@@ -20,7 +20,7 @@ assert_yq() {
 	yq --exit-status "${expression}" "${document}" >/dev/null || fail "${message}"
 }
 
-for command in base64 flux git jq kubectl mise openssl rg tr yq; do
+for command in awk base64 cmp cp cut flux git jq kubectl mise openssl rg tr yq; do
 	command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
 done
 
@@ -28,7 +28,11 @@ readonly LIFECYCLE="${ROOT_DIR}/scripts/federation.sh"
 readonly SEED="${ROOT_DIR}/scripts/seed-federation.sh"
 readonly RELOAD="${ROOT_DIR}/scripts/reload-federation-policy.sh"
 readonly CLUSTER_OVERLAY="${ROOT_DIR}/clusters/federation"
+readonly CONSTRAINED_OVERLAY="${ROOT_DIR}/clusters/federation-constrained"
 readonly FEDERATION_ROOT="${ROOT_DIR}/infra/federation"
+readonly CONSTRAINED_COMPONENT="${FEDERATION_ROOT}/constrained"
+readonly RESOURCE_TRACE="${ROOT_DIR}/scripts/lib/federation-resources.sh"
+readonly DEMO_CLUSTER="${ROOT_DIR}/scripts/lib/demo-cluster.sh"
 readonly POLICY_APP="${ROOT_DIR}/apps/synapse-federation-policy"
 readonly POLICY_DOCUMENT="${POLICY_APP}/policy/policy.json"
 readonly POLICY_MODULE="${POLICY_APP}/src/fgentic_federation_policy/__init__.py"
@@ -45,7 +49,8 @@ readonly -a DEMO_SOURCES=(
 	"${ROOT_DIR}/scripts/demo.sh"
 	"${ROOT_DIR}/scripts/lib.sh"
 	"${ROOT_DIR}/scripts/lib/demo-config.sh"
-	"${ROOT_DIR}/scripts/lib/demo-cluster.sh"
+	"${DEMO_CLUSTER}"
+	"${RESOURCE_TRACE}"
 	"${ROOT_DIR}/scripts/lib/demo-secrets.sh"
 	"${ROOT_DIR}/scripts/lib/demo-federation.sh"
 )
@@ -61,6 +66,9 @@ readonly -a SEED_SOURCES=(
 # shellcheck source=scripts/lib/federation-contract-topology.sh
 source "${ROOT_DIR}/scripts/lib/federation-contract-topology.sh"
 
+# shellcheck source=scripts/lib/federation-contract-constrained.sh
+source "${ROOT_DIR}/scripts/lib/federation-contract-constrained.sh"
+
 # shellcheck source=scripts/lib/federation-contract-policy.sh
 source "${ROOT_DIR}/scripts/lib/federation-contract-policy.sh"
 
@@ -74,6 +82,7 @@ source "${ROOT_DIR}/scripts/lib/federation-contract-reload.sh"
 source "${ROOT_DIR}/scripts/lib/federation-contract-acceptance.sh"
 
 check_federation_topology
+check_federation_constrained
 check_federation_policy
 check_federation_signing
 check_federation_reload

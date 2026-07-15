@@ -1,0 +1,49 @@
+# Bound both the controller and its generated single-proxy data plane for the one-route lab.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: agentgateway
+      namespace: agentgateway-system
+    patch: |
+      - op: replace
+        path: /spec/values/resources/requests/memory
+        value: 64Mi
+      - op: replace
+        path: /spec/values/resources/limits/memory
+        value: 192Mi
+      # The pinned chart derives GOMEMLIMIT from the hard limit. Point that existing env entry at
+      # the 64 MiB request instead, preserving the 192 MiB burst ceiling without duplicate names.
+      - op: add
+        path: /spec/postRenderers
+        value:
+          - kustomize:
+              patches:
+                - target:
+                    group: apps
+                    version: v1
+                    kind: Deployment
+                    name: agentgateway
+                  patch: |
+                    - op: replace
+                      path: /spec/template/spec/containers/0/env/0/valueFrom/resourceFieldRef/resource
+                      value: requests.memory
+                    - op: add
+                      path: /spec/template/spec/containers/0/env/-
+                      value: {name: GOGC, value: "25"}
+  - target:
+      group: agentgateway.dev
+      version: v1alpha1
+      kind: AgentgatewayParameters
+      name: secured
+      namespace: agentgateway-system
+    patch: |
+      - op: replace
+        path: /spec/resources/requests/memory
+        value: 64Mi
+      - op: replace
+        path: /spec/resources/limits/memory
+        value: 192Mi

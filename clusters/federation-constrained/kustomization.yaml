@@ -1,0 +1,9 @@
+# Opt-in constrained-host variant of the permanent federation acceptance rig. Keeping this
+# entrypoint beside the canonical overlay lets it reuse every identity, Secret inventory, and
+# admission ceiling while adding only the laptop-sized workload tuning and serialized DAG.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../federation
+components:
+  - ../../infra/federation/constrained

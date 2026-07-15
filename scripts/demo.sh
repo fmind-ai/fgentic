@@ -27,12 +27,18 @@ source "${ROOT_DIR}/scripts/lib.sh"
 
 usage() {
 	cat <<'EOF'
-usage: scripts/demo.sh up|down
+usage: scripts/demo.sh up|status|stop|down
 
 Environment:
   FGENTIC_DEMO_CLUSTER       k3d cluster name (default: fgentic-demo)
   FGENTIC_DEMO_TIMEOUT       reconciliation timeout (default: 15m)
   FGENTIC_DEMO_CACHE_DIR     optional persistent BuildKit cache directory
+  FGENTIC_FED_CONSTRAINED    federation profile only: yes enables the opt-in laptop budget
+  FGENTIC_FED_NO_PROGRESS_TIMEOUT
+                             constrained federation no-progress timeout (default: 20m)
+  FGENTIC_FED_MAX_TIMEOUT    constrained federation absolute timeout (default: 60m)
+  FGENTIC_FED_TRACE          federation profile only: yes writes a content-free resource trace
+  FGENTIC_FED_TRACE_DIR      optional trace parent directory
   FGENTIC_FED_POLICY_PROBE   federation profile only: deny (default) or allow; allow mutates only
                              the ephemeral Git snapshot used by the disposable lab
   FGENTIC_LLM_PROVIDER       demo (default), vllm, vertex, mistral, anthropic,
@@ -56,6 +62,8 @@ EOF
 source "${ROOT_DIR}/scripts/lib/demo-config.sh"
 # shellcheck source=scripts/lib/demo-cluster.sh
 source "${ROOT_DIR}/scripts/lib/demo-cluster.sh"
+# shellcheck source=scripts/lib/federation-resources.sh
+source "${ROOT_DIR}/scripts/lib/federation-resources.sh"
 # shellcheck source=scripts/lib/demo-secrets.sh
 source "${ROOT_DIR}/scripts/lib/demo-secrets.sh"
 # shellcheck source=scripts/lib/demo-federation.sh
@@ -71,12 +79,16 @@ case "${PROFILE}" in
 demo)
 	CLUSTER_NAME="${FGENTIC_DEMO_CLUSTER:-${DEFAULT_CLUSTER_NAME}}"
 	OVERLAY_PATH="clusters/demo"
+	PLATFORM_SETTINGS_PATH="${OVERLAY_PATH}/platform-settings.yaml"
 	SEED_SCRIPT="scripts/seed-demo.sh"
 	OWNER_LABEL="true"
 	;;
 federation)
 	CLUSTER_NAME="${FGENTIC_DEMO_CLUSTER:-${FEDERATION_CLUSTER_NAME}}"
+	FEDERATION_CONSTRAINED="${FGENTIC_FED_CONSTRAINED:-no}"
 	OVERLAY_PATH="clusters/federation"
+	[ "${FEDERATION_CONSTRAINED}" = "yes" ] && OVERLAY_PATH="clusters/federation-constrained"
+	PLATFORM_SETTINGS_PATH="clusters/federation/platform-settings.yaml"
 	SEED_SCRIPT="scripts/seed-federation.sh"
 	OWNER_LABEL="federation"
 	;;
@@ -84,6 +96,13 @@ federation)
 esac
 DEMO_TIMEOUT="${FGENTIC_DEMO_TIMEOUT:-15m}"
 FEDERATION_POLICY_PROBE="${FGENTIC_FED_POLICY_PROBE:-deny}"
+FEDERATION_CONSTRAINED="${FEDERATION_CONSTRAINED:-no}"
+FEDERATION_CAPACITY_MODE=standard
+if [ "${PROFILE}" = federation ] && [ "${FEDERATION_CONSTRAINED}" = yes ]; then
+	FEDERATION_CAPACITY_MODE=constrained
+fi
+FEDERATION_NO_PROGRESS_TIMEOUT="${FGENTIC_FED_NO_PROGRESS_TIMEOUT:-20m}"
+FEDERATION_MAX_TIMEOUT="${FGENTIC_FED_MAX_TIMEOUT:-60m}"
 FEDERATION_GATEWAY_IP=""
 BRIDGE_TAG="demo-${RANDOM}-$$"
 SOURCE_IMAGE="fgentic-demo-source-${CLUSTER_NAME}:${BRIDGE_TAG}"
@@ -104,10 +123,30 @@ if [ "${PROFILE}" = "federation" ]; then
 	allow | deny) ;;
 	*) die "FGENTIC_FED_POLICY_PROBE must be allow or deny" ;;
 	esac
+	case "${FEDERATION_CONSTRAINED}" in
+	yes | no) ;;
+	*) die "FGENTIC_FED_CONSTRAINED must be yes or no" ;;
+	esac
+	case "${FGENTIC_FED_TRACE:-no}" in
+	yes | no) ;;
+	*) die "FGENTIC_FED_TRACE must be yes or no" ;;
+	esac
+	[[ "${FEDERATION_NO_PROGRESS_TIMEOUT}" =~ ^[1-9][0-9]*[smh]$ ]] ||
+		die "invalid FGENTIC_FED_NO_PROGRESS_TIMEOUT"
+	[[ "${FEDERATION_MAX_TIMEOUT}" =~ ^[1-9][0-9]*[smh]$ ]] ||
+		die "invalid FGENTIC_FED_MAX_TIMEOUT"
+	FEDERATION_NO_PROGRESS_SECONDS="$(timeout_seconds "${FEDERATION_NO_PROGRESS_TIMEOUT}")"
+	FEDERATION_MAX_SECONDS="$(timeout_seconds "${FEDERATION_MAX_TIMEOUT}")"
+	if [ "${FEDERATION_CONSTRAINED}" = "yes" ] &&
+		((FEDERATION_NO_PROGRESS_SECONDS >= FEDERATION_MAX_SECONDS)); then
+		die "FGENTIC_FED_NO_PROGRESS_TIMEOUT must be shorter than FGENTIC_FED_MAX_TIMEOUT"
+	fi
 fi
 
 case "$1" in
 up) demo_up ;;
+status) demo_status ;;
+stop) demo_stop ;;
 down) demo_down ;;
 -h | --help)
 	usage
