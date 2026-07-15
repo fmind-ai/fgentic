@@ -152,6 +152,7 @@ cat >"${eval_dir}/golden.json" <<EOF
 {
   "schema_version": "fgentic.agent.eval.v1",
   "agent": "${name}",
+  "agent_contract_sha256": "pending",
   "scenarios": [
     {
       "id": "${name}-01-smoke",
@@ -210,6 +211,23 @@ kagent_replaced=true
 cp "${tmp_dir}/new-kagent-kustomization.yaml" "${kagent_kustomization}"
 bridge_replaced=true
 cp "${tmp_dir}/new-bridge-kustomization.yaml" "${bridge_kustomization}"
+
+# Pin the effective Agent spec plus every imported prompt fragment. The digest makes later prompt,
+# tool, model, and deployment drift an explicit golden-fixture review instead of a silent change.
+kustomize build "${repo_root}/infra/kagent" >"${tmp_dir}/effective-kagent.yaml" \
+  || fail "scaffolded kagent resources do not render"
+contract_sha256="$(
+  mise --cd "${source_root}/apps/matrix-a2a-bridge" exec -- \
+    go run ./cmd/agent-contract \
+    --agent "${name}" \
+    --manifest "${tmp_dir}/effective-kagent.yaml"
+)" || fail "could not calculate the scaffolded Agent contract digest"
+[[ "${contract_sha256}" =~ ^[0-9a-f]{64}$ ]] \
+  || fail "scaffolded Agent contract digest is invalid"
+jq --arg digest "${contract_sha256}" \
+  '.agent_contract_sha256 = $digest' \
+  "${eval_dir}/golden.json" >"${tmp_dir}/golden.json"
+cp "${tmp_dir}/golden.json" "${eval_dir}/golden.json"
 committed=true
 
 printf '%s\n' \

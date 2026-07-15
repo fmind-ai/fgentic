@@ -13,8 +13,8 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// GoldenSchemaVersion identifies the checked-in reference-agent regression contract.
-const GoldenSchemaVersion = "fgentic.eval.golden.v1"
+// AgentGoldenSchemaVersion identifies the per-Agent deterministic regression contract.
+const AgentGoldenSchemaVersion = "fgentic.agent.eval.v1"
 
 const maxGoldenAnswerBytes = 1 << 20
 
@@ -23,22 +23,15 @@ var (
 	includePattern = regexp.MustCompile(`\{\{include "zoo/([a-z0-9-]+)"\}\}`)
 )
 
-// GoldenSuite pins one deterministic task and effective source contract per shipped agent.
-type GoldenSuite struct {
-	SchemaVersion string       `json:"schema_version"`
-	Cases         []GoldenCase `json:"cases"`
+// AgentGoldenSuite pins deterministic tasks and the effective source contract for one Agent.
+type AgentGoldenSuite struct {
+	SchemaVersion       string     `json:"schema_version"`
+	Agent               Agent      `json:"agent"`
+	AgentContractSHA256 string     `json:"agent_contract_sha256"`
+	Scenarios           []Scenario `json:"scenarios"`
 }
 
-// GoldenCase binds an existing evaluation scenario to the exact deterministic demo result.
-type GoldenCase struct {
-	ScenarioID          string `json:"scenario_id"`
-	Agent               Agent  `json:"agent"`
-	Prompt              string `json:"prompt"`
-	ExpectedAnswer      string `json:"expected_answer"`
-	AgentContractSHA256 string `json:"agent_contract_sha256"`
-}
-
-// GoldenAnswers contains the deterministic stub output captured for each golden task.
+// GoldenAnswers contains deterministic stub output captured for every checked-in task.
 type GoldenAnswers struct {
 	Answers []GoldenAnswer `json:"answers"`
 }
@@ -49,7 +42,7 @@ type GoldenAnswer struct {
 	Answer     string `json:"answer"`
 }
 
-// GoldenResult describes one verified checked-in agent contract.
+// GoldenResult describes one verified Agent scenario and source contract.
 type GoldenResult struct {
 	ScenarioID          string
 	Agent               Agent
@@ -70,25 +63,25 @@ type agentContract struct {
 	PromptFragments map[string]string `json:"prompt_fragments"`
 }
 
-// DecodeGoldenSuite strictly decodes the versioned fixture.
-func DecodeGoldenSuite(input io.Reader) (GoldenSuite, error) {
+// DecodeAgentGoldenSuite strictly decodes one versioned per-Agent fixture.
+func DecodeAgentGoldenSuite(input io.Reader) (AgentGoldenSuite, error) {
 	decoder := json.NewDecoder(input)
 	decoder.DisallowUnknownFields()
-	var suite GoldenSuite
+	var suite AgentGoldenSuite
 	if err := decoder.Decode(&suite); err != nil {
-		return GoldenSuite{}, fmt.Errorf("decode golden suite: %w", err)
+		return AgentGoldenSuite{}, fmt.Errorf("decode Agent golden suite: %w", err)
 	}
 	var extra any
 	if err := decoder.Decode(&extra); !errors.Is(err, io.EOF) {
 		if err == nil {
-			return GoldenSuite{}, fmt.Errorf("decode golden suite: multiple JSON values")
+			return AgentGoldenSuite{}, fmt.Errorf("decode Agent golden suite: multiple JSON values")
 		}
-		return GoldenSuite{}, fmt.Errorf("decode golden suite trailer: %w", err)
+		return AgentGoldenSuite{}, fmt.Errorf("decode Agent golden suite trailer: %w", err)
 	}
 	return suite, nil
 }
 
-// DecodeGoldenAnswers strictly decodes the bounded output captured from the demo stub.
+// DecodeGoldenAnswers strictly decodes bounded output captured from the demo stub.
 func DecodeGoldenAnswers(input io.Reader) (GoldenAnswers, error) {
 	limited := io.LimitReader(input, maxGoldenAnswerBytes+1)
 	encoded, err := io.ReadAll(limited)
@@ -114,135 +107,175 @@ func DecodeGoldenAnswers(input io.Reader) (GoldenAnswers, error) {
 	return answers, nil
 }
 
-// VerifyGoldenSuite binds the fixture to the shipped Agent sources and deployed demo response.
-func VerifyGoldenSuite(
-	suite GoldenSuite,
-	scenarios []Scenario,
+// VerifyAgentGoldenSuites binds every fixture to one rendered Agent and the demo response.
+func VerifyAgentGoldenSuites(
+	suites []AgentGoldenSuite,
 	agentManifests io.Reader,
 	promptManifest io.Reader,
 	actualAnswers GoldenAnswers,
 ) ([]GoldenResult, error) {
-	if err := validateGoldenSuite(suite, scenarios); err != nil {
-		return nil, err
-	}
 	agents, err := decodeDocuments(agentManifests, "Agent")
 	if err != nil {
-		return nil, fmt.Errorf("decode agent manifests: %w", err)
+		return nil, fmt.Errorf("decode Agent manifests: %w", err)
 	}
 	prompts, err := namedConfigMapData(promptManifest, "agent-zoo-prompts")
 	if err != nil {
-		return nil, fmt.Errorf("decode prompt manifest: %w", err)
+		return nil, fmt.Errorf("decode Agent prompts: %w", err)
 	}
-	if len(agents) != len(suite.Cases) {
-		return nil, fmt.Errorf("shipped Agent count = %d, golden cases = %d", len(agents), len(suite.Cases))
+	if len(suites) != len(agents) {
+		return nil, fmt.Errorf("rendered Agent count = %d, golden fixture count = %d", len(agents), len(suites))
 	}
-	answersByScenario, err := indexGoldenAnswers(actualAnswers, suite)
+
+	answersByScenario, err := indexGoldenAnswers(actualAnswers)
 	if err != nil {
 		return nil, err
 	}
-
-	results := make([]GoldenResult, 0, len(suite.Cases))
-	for _, golden := range suite.Cases {
-		agent, found := agents[string(golden.Agent)]
+	seenAgents := make(map[Agent]struct{}, len(suites))
+	seenScenarios := make(map[string]struct{})
+	results := make([]GoldenResult, 0, len(actualAnswers.Answers))
+	for _, suite := range suites {
+		if err := validateAgentGoldenSuite(suite, seenAgents, seenScenarios); err != nil {
+			return nil, err
+		}
+		agent, found := agents[string(suite.Agent)]
 		if !found {
-			return nil, fmt.Errorf("golden agent %q is absent from shipped manifests", golden.Agent)
+			return nil, fmt.Errorf("golden Agent %q is absent from rendered manifests", suite.Agent)
 		}
-		digest, err := contractDigest(agent, prompts)
-		if err != nil {
-			return nil, fmt.Errorf("golden agent %q: %w", golden.Agent, err)
+		digest, digestErr := contractDigest(agent, prompts)
+		if digestErr != nil {
+			return nil, fmt.Errorf("golden Agent %q: %w", suite.Agent, digestErr)
 		}
-		if digest != golden.AgentContractSHA256 {
+		if digest != suite.AgentContractSHA256 {
 			return nil, fmt.Errorf(
-				"golden agent %q contract sha256 = %s, fixture requires %s",
-				golden.Agent,
+				"golden Agent %q contract sha256 = %s, fixture requires %s",
+				suite.Agent,
 				digest,
-				golden.AgentContractSHA256,
+				suite.AgentContractSHA256,
 			)
 		}
-		score, err := ScoreAnswer(
-			answersByScenario[golden.ScenarioID],
-			Rubric{Kind: RubricExact, Expected: []string{golden.ExpectedAnswer}},
-		)
-		if err != nil {
-			return nil, fmt.Errorf("score golden scenario %q: %w", golden.ScenarioID, err)
+		for _, scenario := range suite.Scenarios {
+			answer, found := answersByScenario[scenario.ID]
+			if !found {
+				return nil, fmt.Errorf("deterministic demo answer for golden scenario %q is missing", scenario.ID)
+			}
+			score, scoreErr := ScoreAnswer(answer, scenario.Rubric)
+			if scoreErr != nil {
+				return nil, fmt.Errorf("score golden scenario %q: %w", scenario.ID, scoreErr)
+			}
+			if score.Verdict != VerdictPass {
+				return nil, fmt.Errorf("golden scenario %q failed: %s", scenario.ID, score.Reason)
+			}
+			results = append(results, GoldenResult{
+				ScenarioID:          scenario.ID,
+				Agent:               suite.Agent,
+				AgentContractSHA256: digest,
+			})
 		}
-		if score.Verdict != VerdictPass {
-			return nil, fmt.Errorf("golden scenario %q failed: %s", golden.ScenarioID, score.Reason)
+	}
+	for name := range agents {
+		if _, found := seenAgents[Agent(name)]; !found {
+			return nil, fmt.Errorf("rendered Agent %q has no evals/%s/golden.json fixture", name, name)
 		}
-		results = append(results, GoldenResult{
-			ScenarioID:          golden.ScenarioID,
-			Agent:               golden.Agent,
-			AgentContractSHA256: digest,
-		})
+	}
+	if len(answersByScenario) != len(seenScenarios) {
+		return nil, fmt.Errorf("deterministic demo answer count = %d, golden scenario count = %d", len(answersByScenario), len(seenScenarios))
 	}
 	return results, nil
 }
 
-func indexGoldenAnswers(answers GoldenAnswers, suite GoldenSuite) (map[string]string, error) {
-	if len(answers.Answers) != len(suite.Cases) {
-		return nil, fmt.Errorf("demo answer count = %d, golden cases = %d", len(answers.Answers), len(suite.Cases))
+// AgentContractDigest returns the stable effective contract hash for one rendered Agent.
+func AgentContractDigest(agentName string, agentManifests io.Reader, promptManifest io.Reader) (string, error) {
+	agents, err := decodeDocuments(agentManifests, "Agent")
+	if err != nil {
+		return "", fmt.Errorf("decode Agent manifests: %w", err)
 	}
+	agent, found := agents[agentName]
+	if !found {
+		return "", fmt.Errorf("Agent %q is absent from rendered manifests", agentName)
+	}
+	prompts, err := namedConfigMapData(promptManifest, "agent-zoo-prompts")
+	if err != nil {
+		return "", fmt.Errorf("decode Agent prompts: %w", err)
+	}
+	digest, err := contractDigest(agent, prompts)
+	if err != nil {
+		return "", fmt.Errorf("Agent %q: %w", agentName, err)
+	}
+	return digest, nil
+}
+
+func indexGoldenAnswers(answers GoldenAnswers) (map[string]string, error) {
 	indexed := make(map[string]string, len(answers.Answers))
 	for _, answer := range answers.Answers {
 		if _, duplicate := indexed[answer.ScenarioID]; duplicate {
-			return nil, fmt.Errorf("duplicate demo answer for scenario %q", answer.ScenarioID)
+			return nil, fmt.Errorf("duplicate deterministic demo answer for scenario %q", answer.ScenarioID)
 		}
 		if strings.TrimSpace(answer.Answer) == "" {
-			return nil, fmt.Errorf("demo answer for scenario %q must be non-empty", answer.ScenarioID)
+			return nil, fmt.Errorf("deterministic demo answer for scenario %q must be non-empty", answer.ScenarioID)
 		}
 		indexed[answer.ScenarioID] = answer.Answer
-	}
-	for _, golden := range suite.Cases {
-		if _, found := indexed[golden.ScenarioID]; !found {
-			return nil, fmt.Errorf("demo answer for golden scenario %q is missing", golden.ScenarioID)
-		}
 	}
 	return indexed, nil
 }
 
-func validateGoldenSuite(suite GoldenSuite, scenarios []Scenario) error {
-	if suite.SchemaVersion != GoldenSchemaVersion {
-		return fmt.Errorf("golden schema_version = %q, want %q", suite.SchemaVersion, GoldenSchemaVersion)
+func validateAgentGoldenSuite(
+	suite AgentGoldenSuite,
+	seenAgents map[Agent]struct{},
+	seenScenarios map[string]struct{},
+) error {
+	if suite.SchemaVersion != AgentGoldenSchemaVersion {
+		return fmt.Errorf("golden Agent %q schema_version = %q, want %q", suite.Agent, suite.SchemaVersion, AgentGoldenSchemaVersion)
 	}
-	if err := ValidateScenarios(scenarios); err != nil {
-		return err
+	if strings.TrimSpace(string(suite.Agent)) == "" {
+		return fmt.Errorf("golden fixture Agent is required")
 	}
-	scenarioByID := make(map[string]Scenario, len(scenarios))
-	for _, scenario := range scenarios {
-		scenarioByID[scenario.ID] = scenario
+	if _, duplicate := seenAgents[suite.Agent]; duplicate {
+		return fmt.Errorf("duplicate golden fixture for Agent %q", suite.Agent)
 	}
-	seenAgents := make(map[Agent]struct{}, len(suite.Cases))
-	seenScenarios := make(map[string]struct{}, len(suite.Cases))
-	for _, golden := range suite.Cases {
-		scenario, found := scenarioByID[golden.ScenarioID]
-		if !found {
-			return fmt.Errorf("golden scenario %q is not in the fixed evaluation suite", golden.ScenarioID)
-		}
-		if _, duplicate := seenScenarios[golden.ScenarioID]; duplicate {
-			return fmt.Errorf("duplicate golden scenario %q", golden.ScenarioID)
-		}
-		seenScenarios[golden.ScenarioID] = struct{}{}
-		if _, duplicate := seenAgents[golden.Agent]; duplicate {
-			return fmt.Errorf("duplicate golden agent %q", golden.Agent)
-		}
-		seenAgents[golden.Agent] = struct{}{}
-		if scenario.Agent != golden.Agent || scenario.Prompt != golden.Prompt {
-			return fmt.Errorf("golden scenario %q agent or prompt drifted from the fixed suite", golden.ScenarioID)
-		}
-		if strings.TrimSpace(golden.ExpectedAnswer) == "" {
-			return fmt.Errorf("golden scenario %q expected answer is required", golden.ScenarioID)
-		}
-		if !sha256Pattern.MatchString(golden.AgentContractSHA256) {
-			return fmt.Errorf("golden scenario %q agent contract sha256 is invalid", golden.ScenarioID)
-		}
+	seenAgents[suite.Agent] = struct{}{}
+	if !sha256Pattern.MatchString(suite.AgentContractSHA256) {
+		return fmt.Errorf("golden Agent %q contract sha256 is invalid", suite.Agent)
 	}
-	for _, agent := range []Agent{AgentPlatformHelper, AgentDocsQA, AgentScribe} {
-		if _, found := seenAgents[agent]; !found {
-			return fmt.Errorf("golden suite has no case for shipped agent %q", agent)
+	if len(suite.Scenarios) == 0 {
+		return fmt.Errorf("golden Agent %q has no scenarios", suite.Agent)
+	}
+	for _, scenario := range suite.Scenarios {
+		if strings.TrimSpace(scenario.ID) == "" || strings.TrimSpace(scenario.Prompt) == "" {
+			return fmt.Errorf("golden Agent %q scenario id and prompt must be non-empty", suite.Agent)
+		}
+		if scenario.Agent != suite.Agent {
+			return fmt.Errorf("golden scenario %q names Agent %q, fixture names %q", scenario.ID, scenario.Agent, suite.Agent)
+		}
+		if _, duplicate := seenScenarios[scenario.ID]; duplicate {
+			return fmt.Errorf("duplicate golden scenario %q", scenario.ID)
+		}
+		seenScenarios[scenario.ID] = struct{}{}
+		if scenario.Rubric.Kind == RubricOptionalLLMJudge {
+			return fmt.Errorf("golden scenario %q must use a deterministic rubric", scenario.ID)
+		}
+		if err := validateRubric(scenario.ID, scenario.Rubric); err != nil {
+			return err
 		}
 	}
-	if len(suite.Cases) != len(seenAgents) {
-		return fmt.Errorf("golden suite must contain exactly one case per shipped agent")
+	return nil
+}
+
+func validateRubric(scenarioID string, rubric Rubric) error {
+	switch rubric.Kind {
+	case RubricExact:
+		if len(rubric.Expected) != 1 {
+			return fmt.Errorf("scenario %q exact rubric needs one expected value", scenarioID)
+		}
+	case RubricContains:
+		if len(rubric.Expected) == 0 {
+			return fmt.Errorf("scenario %q contains rubric needs expected values", scenarioID)
+		}
+	case RubricRegex:
+		if _, err := regexp.Compile(rubric.Pattern); err != nil {
+			return fmt.Errorf("scenario %q regex rubric: %w", scenarioID, err)
+		}
+	default:
+		return fmt.Errorf("scenario %q has non-deterministic or unknown rubric %q", scenarioID, rubric.Kind)
 	}
 	return nil
 }

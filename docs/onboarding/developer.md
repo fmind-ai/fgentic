@@ -28,7 +28,7 @@ Read [Bridge §6](../bridge.md#6-async-delegation-as-implemented), [D5](../desig
 Run focused deterministic checks first:
 
 ```bash
-mise run check:agent-zoo
+mise run check:agents
 mise --cd apps/matrix-a2a-bridge run test
 ```
 

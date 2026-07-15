@@ -8,26 +8,10 @@ import (
 const goldenTestAgents = `apiVersion: kagent.dev/v1alpha2
 kind: Agent
 metadata:
-  name: platform-helper
+  name: helper
 spec:
   declarative:
-    systemMessage: '{{include "zoo/common"}} platform'
----
-apiVersion: kagent.dev/v1alpha2
-kind: Agent
-metadata:
-  name: docs-qa
-spec:
-  declarative:
-    systemMessage: '{{include "zoo/common"}} docs'
----
-apiVersion: kagent.dev/v1alpha2
-kind: Agent
-metadata:
-  name: scribe
-spec:
-  declarative:
-    systemMessage: '{{include "zoo/common"}} scribe'
+    systemMessage: '{{include "zoo/common"}} helper'
 `
 
 const goldenTestPrompts = `apiVersion: v1
@@ -38,92 +22,104 @@ data:
   common: shared boundary
 `
 
-func TestVerifyGoldenSuite(t *testing.T) {
+func TestVerifyAgentGoldenSuites(t *testing.T) {
 	suite := goldenTestSuite(t)
-	results, err := VerifyGoldenSuite(
-		suite,
-		Scenarios(),
+	results, err := VerifyAgentGoldenSuites(
+		[]AgentGoldenSuite{suite},
 		strings.NewReader(goldenTestAgents),
 		strings.NewReader(goldenTestPrompts),
-		goldenTestAnswers(suite),
+		GoldenAnswers{Answers: []GoldenAnswer{{ScenarioID: "helper-smoke", Answer: "deterministic answer"}}},
 	)
 	if err != nil {
-		t.Fatalf("VerifyGoldenSuite: %v", err)
+		t.Fatalf("VerifyAgentGoldenSuites: %v", err)
 	}
-	if len(results) != 3 {
-		t.Fatalf("len(results) = %d, want 3", len(results))
+	if len(results) != 1 {
+		t.Fatalf("len(results) = %d, want 1", len(results))
 	}
 }
 
-func TestVerifyGoldenSuiteRejectsAnswerRegression(t *testing.T) {
+func TestVerifyAgentGoldenSuitesRejectsAnswerRegression(t *testing.T) {
 	suite := goldenTestSuite(t)
-	suite.Cases[0].ExpectedAnswer = "changed answer"
-	_, err := VerifyGoldenSuite(
-		suite,
-		Scenarios(),
+	suite.Scenarios[0].Rubric.Expected = []string{"changed answer"}
+	_, err := VerifyAgentGoldenSuites(
+		[]AgentGoldenSuite{suite},
 		strings.NewReader(goldenTestAgents),
 		strings.NewReader(goldenTestPrompts),
-		goldenTestAnswers(suite),
+		GoldenAnswers{Answers: []GoldenAnswer{{ScenarioID: "helper-smoke", Answer: "deterministic answer"}}},
 	)
 	if err == nil || !strings.Contains(err.Error(), "failed") {
-		t.Fatalf("VerifyGoldenSuite error = %v, want answer regression", err)
+		t.Fatalf("VerifyAgentGoldenSuites error = %v, want answer regression", err)
 	}
 }
 
-func TestVerifyGoldenSuiteRejectsAgentContractDrift(t *testing.T) {
+func TestVerifyAgentGoldenSuitesRejectsAgentContractDrift(t *testing.T) {
 	suite := goldenTestSuite(t)
-	drifted := strings.Replace(goldenTestAgents, "platform'", "platform changed'", 1)
-	_, err := VerifyGoldenSuite(
-		suite,
-		Scenarios(),
+	drifted := strings.Replace(goldenTestAgents, "helper'", "helper changed'", 1)
+	_, err := VerifyAgentGoldenSuites(
+		[]AgentGoldenSuite{suite},
 		strings.NewReader(drifted),
 		strings.NewReader(goldenTestPrompts),
-		goldenTestAnswers(suite),
+		GoldenAnswers{Answers: []GoldenAnswer{{ScenarioID: "helper-smoke", Answer: "deterministic answer"}}},
 	)
 	if err == nil || !strings.Contains(err.Error(), "contract sha256") {
-		t.Fatalf("VerifyGoldenSuite error = %v, want contract drift", err)
+		t.Fatalf("VerifyAgentGoldenSuites error = %v, want contract drift", err)
 	}
 }
 
-func goldenTestAnswers(suite GoldenSuite) GoldenAnswers {
-	answers := make([]GoldenAnswer, 0, len(suite.Cases))
-	for _, golden := range suite.Cases {
-		answers = append(answers, GoldenAnswer{ScenarioID: golden.ScenarioID, Answer: "deterministic answer"})
+func TestVerifyAgentGoldenSuitesRejectsMissingFixture(t *testing.T) {
+	agents := goldenTestAgents + `---
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: orphan
+spec:
+  declarative:
+    systemMessage: '{{include "zoo/common"}} orphan'
+`
+	_, err := VerifyAgentGoldenSuites(
+		[]AgentGoldenSuite{goldenTestSuite(t)},
+		strings.NewReader(agents),
+		strings.NewReader(goldenTestPrompts),
+		GoldenAnswers{Answers: []GoldenAnswer{{ScenarioID: "helper-smoke", Answer: "deterministic answer"}}},
+	)
+	if err == nil || !strings.Contains(err.Error(), "fixture count") {
+		t.Fatalf("VerifyAgentGoldenSuites error = %v, want fixture count mismatch", err)
 	}
-	return GoldenAnswers{Answers: answers}
 }
 
-func goldenTestSuite(t *testing.T) GoldenSuite {
+func TestVerifyAgentGoldenSuitesRejectsOptionalJudge(t *testing.T) {
+	suite := goldenTestSuite(t)
+	suite.Scenarios[0].Rubric = Rubric{Kind: RubricOptionalLLMJudge, Description: "review"}
+	_, err := VerifyAgentGoldenSuites(
+		[]AgentGoldenSuite{suite},
+		strings.NewReader(goldenTestAgents),
+		strings.NewReader(goldenTestPrompts),
+		GoldenAnswers{Answers: []GoldenAnswer{{ScenarioID: "helper-smoke", Answer: "deterministic answer"}}},
+	)
+	if err == nil || !strings.Contains(err.Error(), "deterministic rubric") {
+		t.Fatalf("VerifyAgentGoldenSuites error = %v, want deterministic rubric error", err)
+	}
+}
+
+func goldenTestSuite(t *testing.T) AgentGoldenSuite {
 	t.Helper()
-	agents, err := decodeDocuments(strings.NewReader(goldenTestAgents), "Agent")
+	digest, err := AgentContractDigest(
+		"helper",
+		strings.NewReader(goldenTestAgents),
+		strings.NewReader(goldenTestPrompts),
+	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompts, err := namedConfigMapData(strings.NewReader(goldenTestPrompts), "agent-zoo-prompts")
-	if err != nil {
-		t.Fatal(err)
+	return AgentGoldenSuite{
+		SchemaVersion:       AgentGoldenSchemaVersion,
+		Agent:               "helper",
+		AgentContractSHA256: digest,
+		Scenarios: []Scenario{{
+			ID:     "helper-smoke",
+			Agent:  "helper",
+			Prompt: "confirm",
+			Rubric: Rubric{Kind: RubricExact, Expected: []string{"deterministic answer"}},
+		}},
 	}
-	caseIDs := map[Agent]string{
-		AgentPlatformHelper: "platform-helper-01-secret-boundary",
-		AgentDocsQA:         "docs-qa-03-room-encryption",
-		AgentScribe:         "scribe-04-missing-thread",
-	}
-	scenarios := Scenarios()
-	cases := make([]GoldenCase, 0, len(caseIDs))
-	for _, agent := range []Agent{AgentPlatformHelper, AgentDocsQA, AgentScribe} {
-		digest, digestErr := contractDigest(agents[string(agent)], prompts)
-		if digestErr != nil {
-			t.Fatal(digestErr)
-		}
-		for _, scenario := range scenarios {
-			if scenario.ID == caseIDs[agent] {
-				cases = append(cases, GoldenCase{
-					ScenarioID: scenario.ID, Agent: agent, Prompt: scenario.Prompt,
-					ExpectedAnswer: "deterministic answer", AgentContractSHA256: digest,
-				})
-				break
-			}
-		}
-	}
-	return GoldenSuite{SchemaVersion: GoldenSchemaVersion, Cases: cases}
 }

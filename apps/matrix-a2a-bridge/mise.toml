@@ -96,7 +96,11 @@ description = "Evaluate the three sample agents against the selected local model
 run = "bash scripts/eval-models.sh"
 
 [tasks."eval:golden"]
-description = "Verify shipped Agent contracts against the deterministic demo response"
+description = "Verify every in-repo Agent contract against the deterministic demo response"
+run = "bash scripts/eval-golden.sh"
+
+[tasks."test:agents-golden"]
+description = "Run every in-repo Agent golden task against the zero-spend loopback model"
 run = "bash scripts/eval-golden.sh"
 
 [tasks.format]

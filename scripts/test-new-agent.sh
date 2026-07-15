@@ -66,6 +66,7 @@ mapping_sender="$(yq -er '.patches[0].patch | from_yaml | .[0].value.allowedSend
 jq -e '
   .schema_version == "fgentic.agent.eval.v1" and
   .agent == "demo-helper" and
+  (.agent_contract_sha256 | test("^[0-9a-f]{64}$")) and
   .scenarios[0].agent == "demo-helper" and
   .scenarios[0].rubric.kind == "exact" and
   (.scenarios[0].rubric.expected | length) == 1
@@ -103,8 +104,54 @@ if ! (
   bash "${repo_root}/scripts/test-agent-zoo.sh"
 ) >"${tmp_dir}/agent-zoo.log" 2>&1; then
   cat "${tmp_dir}/agent-zoo.log" >&2
-  fail "generated scaffold does not pass the exact check:agent-zoo contract"
+  fail "generated scaffold does not pass the exact check:agents contract"
 fi
+
+expect_authoring_failure() {
+  local case_name="$1"
+  local expected="$2"
+  if (
+    cd "${tmp_dir}"
+    bash "${repo_root}/scripts/test-agent-zoo.sh"
+  ) >"${tmp_dir}/${case_name}.log" 2>&1; then
+    fail "${case_name} authoring drift unexpectedly passed"
+  fi
+  rg -q "${expected}" "${tmp_dir}/${case_name}.log" \
+    || {
+      cat "${tmp_dir}/${case_name}.log" >&2
+      fail "${case_name} drift did not produce the actionable validation error"
+    }
+}
+
+cp "${mapping_component}" "${tmp_dir}/mapping-component.yaml"
+yq -i '.patches[0].patch = ((.patches[0].patch | from_yaml) | .[0].value.name = "missing-agent" | to_yaml)' \
+  "${mapping_component}"
+expect_authoring_failure orphan-mapping 'must resolve to the matching kagent Agent'
+cp "${tmp_dir}/mapping-component.yaml" "${mapping_component}"
+
+yq -i '.patches[0].patch = ((.patches[0].patch | from_yaml) | .[0].value.allowedSenders = ["@*:${server_name}"] | to_yaml)' \
+  "${mapping_component}"
+expect_authoring_failure wildcard-sender 'wildcards and widened allowlists are forbidden'
+cp "${tmp_dir}/mapping-component.yaml" "${mapping_component}"
+
+yq -i '.patches[0].patch = ((.patches[0].patch | from_yaml) | .[0].value.allowedSenders += ["@bob:${server_name}"] | to_yaml)' \
+  "${mapping_component}"
+expect_authoring_failure widened-allowlist 'wildcards and widened allowlists are forbidden'
+cp "${tmp_dir}/mapping-component.yaml" "${mapping_component}"
+
+yq -i '.patches[0].patch = ((.patches[0].patch | from_yaml) | .[0].value.stage = "canary" | to_yaml)' \
+  "${mapping_component}"
+expect_authoring_failure invalid-stage 'agent mapping validation failed'
+cp "${tmp_dir}/mapping-component.yaml" "${mapping_component}"
+
+cp "${agent_manifest}" "${tmp_dir}/agent.yaml"
+yq -i '.spec.declarative.a2aConfig.skills = []' "${agent_manifest}"
+expect_authoring_failure missing-skill 'must advertise at least one A2A skill'
+cp "${tmp_dir}/agent.yaml" "${agent_manifest}"
+
+yq -i 'del(.spec.declarative.deployment.serviceAccountName)' "${agent_manifest}"
+expect_authoring_failure missing-service-account 'must use the unprivileged shared runtime ServiceAccount'
+cp "${tmp_dir}/agent.yaml" "${agent_manifest}"
 
 if FGENTIC_REPO_ROOT="${tmp_dir}" bash "${repo_root}/scripts/new-agent.sh" demo-helper \
   >"${tmp_dir}/duplicate.out" 2>"${tmp_dir}/duplicate.err"; then
