@@ -164,7 +164,13 @@ func (c *Client) resolveRemoteAgentCard(ctx context.Context, target Target) (*a2
 		return nil, c.quarantineRemote(target, ErrRemoteMutualTLSRequired)
 	}
 	generation := nextGeneration(previous.generation)
-	client, err := buildSDKClient(ctx, card, c.remoteSDKHTTPClient(target, generation), target.ActivatedExtensions())
+	generationState := c.remoteGeneration(target.ID())
+	client, err := buildSDKClient(
+		ctx,
+		card,
+		c.remoteSDKHTTPClient(target, generationState, generation),
+		target.ActivatedExtensions(),
+	)
 	if err != nil {
 		return nil, c.quarantineRemote(target, fmt.Errorf("build client from verified card: %w", err))
 	}
@@ -178,6 +184,7 @@ func (c *Client) resolveRemoteAgentCard(ctx context.Context, target Target) (*a2
 		generation:   generation,
 	}
 	c.mu.Lock()
+	generationState.Store(generation)
 	c.cache[target.ID()] = installed
 	c.mu.Unlock()
 	c.log.Info(
@@ -201,7 +208,9 @@ func (c *Client) refreshLock(targetID string) *sync.Mutex {
 // the audit can report a distinct terminal reason.
 func (c *Client) quarantineRemote(target Target, cause error) error {
 	c.mu.Lock()
-	c.cache[target.ID()] = cachedTarget{generation: nextGeneration(c.cache[target.ID()].generation)}
+	generation := nextGeneration(c.cache[target.ID()].generation)
+	c.remoteGeneration(target.ID()).Store(generation)
+	c.cache[target.ID()] = cachedTarget{generation: generation}
 	c.mu.Unlock()
 	c.log.Warn("quarantined remote a2a agent", "target", target.String(), "reason", cause.Error())
 	return fmt.Errorf("%w: %s: %w", ErrRemoteTargetUntrusted, target.String(), cause)

@@ -85,24 +85,36 @@ type userTransport struct {
 	apiKey string
 }
 
-// generationTransport holds the cache read lock through the HTTP handoff. A quarantine or
-// verified-card replacement therefore completes only after older requests have crossed the
-// transport boundary, and a client copied before that state change cannot start afterwards.
+// generationTransport fences remote calls against trust changes without holding the global cache
+// lock across network I/O. The second check prevents a response from an in-flight stale generation
+// from reaching the SDK after a concurrent quarantine or verified-card replacement completes.
 type generationTransport struct {
 	base       http.RoundTripper
-	client     *Client
-	targetID   string
-	generation uint64
+	generation *atomic.Uint64
+	expected   uint64
 }
 
 func (t *generationTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	t.client.mu.RLock()
-	defer t.client.mu.RUnlock()
-	cached := t.client.cache[t.targetID]
-	if !cached.ready || cached.client == nil || cached.generation != t.generation {
-		return nil, fmt.Errorf("remote transport trust generation changed: %w", ErrRemoteTargetUntrusted)
+	if err := t.validateGeneration(); err != nil {
+		return nil, err
 	}
-	return t.base.RoundTrip(req)
+	resp, roundTripErr := t.base.RoundTrip(req)
+	if err := t.validateGeneration(); err != nil {
+		if resp != nil && resp.Body != nil {
+			if closeErr := resp.Body.Close(); closeErr != nil {
+				err = errors.Join(err, fmt.Errorf("close stale remote transport response: %w", closeErr))
+			}
+		}
+		return nil, err
+	}
+	return resp, roundTripErr
+}
+
+func (t *generationTransport) validateGeneration() error {
+	if t.generation.Load() != t.expected {
+		return fmt.Errorf("remote transport trust generation changed: %w", ErrRemoteTargetUntrusted)
+	}
+	return nil
 }
 
 func (t *userTransport) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -206,6 +218,9 @@ type Client struct {
 	mu           sync.RWMutex
 	cache        map[string]cachedTarget
 	refreshLocks sync.Map
+	// remoteGenerations provides a lock-free per-target trust fence for remote network calls. Card
+	// installation and quarantine advance it while updating cache under the short cache write lock.
+	remoteGenerations sync.Map
 	// remoteTransports memoizes the per-target mTLS RoundTripper (keyed by target ID) so the card
 	// fetch and the SDK client reuse one connection pool instead of cloning a fresh transport on every
 	// periodic refresh (#244). A cert rotation yields a new target ID and therefore a new entry.
@@ -483,16 +498,20 @@ func bindLocalJSONRPCInterface(card *a2a.AgentCard, endpoint string) (*a2a.Agent
 	return nil, fmt.Errorf("agent card has no A2A %s JSON-RPC interface", a2a.Version)
 }
 
-func (c *Client) remoteSDKHTTPClient(target Target, generation uint64) *http.Client {
+func (c *Client) remoteSDKHTTPClient(target Target, generation *atomic.Uint64, expected uint64) *http.Client {
 	return &http.Client{
 		Transport: &generationTransport{
 			base:       c.remoteUserTransport(target),
-			client:     c,
-			targetID:   target.ID(),
 			generation: generation,
+			expected:   expected,
 		},
 		CheckRedirect: c.remoteHTTPClient.CheckRedirect,
 	}
+}
+
+func (c *Client) remoteGeneration(targetID string) *atomic.Uint64 {
+	generation, _ := c.remoteGenerations.LoadOrStore(targetID, &atomic.Uint64{})
+	return generation.(*atomic.Uint64)
 }
 
 // remoteUserTransport returns the RoundTripper for dialing a remote target. Without configured mTLS
