@@ -39,7 +39,7 @@ const (
 	ghostDisplayName     = "Fgentic bridge integration stub"
 	replyText            = "integration reply"
 	plainReplyText       = "plain A2A reply"
-	rateLimitedReplyText = "⚠️ rate limit reached — please retry in a moment."
+	rateLimitedReplyText = "⚠️ This agent has reached a request limit. Please wait a moment before trying again."
 )
 
 type fixture struct {

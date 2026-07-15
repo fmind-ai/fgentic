@@ -203,7 +203,7 @@ func TestAdmitAppserviceTransactionCapacityDenialAuditsTerminalOutcome(t *testin
 		},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			b := testBridge(t)
+			b, _, _, _, recorder := pollingHarness(t, &scriptedA2AClient{})
 			b.cfg.RoomQueueCapacity = test.roomCapacity
 			b.cfg.GlobalQueueCapacity = test.globalCapacity
 			var output strings.Builder
@@ -232,6 +232,26 @@ func TestAdmitAppserviceTransactionCapacityDenialAuditsTerminalOutcome(t *testin
 			if got := counterValue(t, delegationsTotal.WithLabelValues("agent-k8s", outcomeQueueFull)); got != before+1 {
 				t.Fatalf("queue-full metric = %v, want %v", got, before+1)
 			}
+			if events := recorder.snapshot(); len(events) != 0 {
+				t.Fatalf("capacity notice was sent before transaction consumption: %#v", events)
+			}
+			b.NotifyDurableQueue()
+			select {
+			case notice := <-b.capacityNotices:
+				b.emitCapacityNotice(t.Context(), notice)
+			case <-time.After(time.Second):
+				t.Fatal("capacity notice was not released after transaction consumption")
+			}
+			events := recorder.snapshot()
+			if len(events) != 1 ||
+				events[0].MsgType != event.MsgNotice ||
+				events[0].Body != failureMessage(test.wantReason, "agent-k8s", 0) {
+				t.Fatalf("capacity notice = %#v", events)
+			}
+			raw := recorder.rawSnapshot(t)
+			if len(raw) != 1 || raw[0][automatedMixinKey] != true {
+				t.Fatalf("capacity notice missing %s: %#v", automatedMixinKey, raw)
+			}
 
 			audits := auditRecords(t, output.String())
 			if len(audits) != 1 ||
@@ -256,6 +276,39 @@ func TestAdmitAppserviceTransactionCapacityDenialAuditsTerminalOutcome(t *testin
 				t.Fatalf("capacity tombstone = (%+v, %v, %v)", denied, found, err)
 			}
 		})
+	}
+}
+
+func TestCapacityNoticeHandoffRemainsBounded(t *testing.T) {
+	b := testBridge(t)
+	b.cfg.RoomQueueCapacity = 10
+	b.cfg.GlobalQueueCapacity = 1
+	b.capacityNoticeLimit = 1
+	if _, err := b.AdmitAppserviceTransaction(
+		t.Context(), "txn-capacity-bound-first", transactionBody(
+			t,
+			transactionEvent("$capacity-bound-first", "@alice:"+ownServer, "@agent-k8s first"),
+		),
+	); err != nil {
+		t.Fatalf("seed capacity: %v", err)
+	}
+	result, err := b.AdmitAppserviceTransaction(
+		t.Context(), "txn-capacity-bound-overflow", transactionBody(
+			t,
+			transactionEvent("$capacity-bound-overflow-1", "@alice:"+ownServer, "@agent-k8s second"),
+			transactionEvent("$capacity-bound-overflow-2", "@alice:"+ownServer, "@agent-k8s third"),
+		),
+	)
+	if err != nil || len(result.CapacityDenied) != 2 {
+		t.Fatalf("overflow admission = (%+v, %v), want two denials", result, err)
+	}
+	if got := len(b.pendingCapacity); got != 1 {
+		t.Fatalf("pending capacity notices = %d, want fixed limit 1", got)
+	}
+	b.NotifyDurableQueue()
+	if len(b.pendingCapacity) != 0 || len(b.capacityNotices) != 1 {
+		t.Fatalf("released capacity handoff = (pending %d, queued %d), want (0, 1)",
+			len(b.pendingCapacity), len(b.capacityNotices))
 	}
 }
 

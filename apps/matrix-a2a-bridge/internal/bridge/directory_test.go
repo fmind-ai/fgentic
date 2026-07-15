@@ -93,7 +93,7 @@ func TestAgentDirectoryUsesDedicatedNoticeLimits(t *testing.T) {
 			if len(events) != 1 {
 				t.Fatalf("Matrix events = %d, want one directory then silent suppression", len(events))
 			}
-			if events[0].Body == rateLimitedText {
+			if events[0].Body == failureMessage(errorRateLimit, "", 0) {
 				t.Fatalf("directory response used amplifying rate-limit text: %q", events[0].Body)
 			}
 			if client.callCount != 0 {
@@ -133,7 +133,7 @@ agents:
 	if len(events) != 1 || !strings.Contains(events[0].Body, "No mapped agents are available") {
 		t.Fatalf("denied bridged directory flood events = %#v, want one bounded response", events)
 	}
-	if events[0].Body == rateLimitedText {
+	if events[0].Body == failureMessage(errorRateLimit, "", 0) {
 		t.Fatalf("denied bridged directory flood emitted rate-limit amplification: %q", events[0].Body)
 	}
 	sender := b.agents.IdentifySender(senderID)

@@ -80,9 +80,57 @@ func (b *Bridge) HoldDurableExecutionUntilTransactionConsumed() func() {
 // NotifyDurableQueue wakes the ledger coordinator after mautrix has consumed an accepted
 // transaction or exact replay. It is safe before Start and coalesces concurrent notifications.
 func (b *Bridge) NotifyDurableQueue() {
+	b.releaseCapacityNotices()
 	if b.durableQueue != nil {
 		b.durableQueue.Notify()
 	}
+}
+
+// capacityNotice carries only content-free Matrix correlation fields. Capacity-denied job rows are
+// terminal tombstones without a payload, so the post-ACK UX handoff must never retain the prompt.
+type capacityNotice struct {
+	eventID id.EventID
+	roomID  id.RoomID
+	sender  senderIdentity
+	agent   string
+	reason  string
+}
+
+// releaseCapacityNotices runs after mautrix consumes the admitted transaction. A fixed-size channel
+// keeps failure UX independent from and no larger than the configured durable work boundary.
+func (b *Bridge) releaseCapacityNotices() {
+	b.capacityNoticeMu.Lock()
+	pending := b.pendingCapacity
+	b.pendingCapacity = nil
+	b.capacityNoticeMu.Unlock()
+	for _, notice := range pending {
+		select {
+		case b.capacityNotices <- notice:
+		default:
+			b.log.Info(
+				"suppressing capacity notice because its bounded queue is full",
+				"ghost", notice.agent,
+				"room", notice.roomID,
+			)
+		}
+	}
+}
+
+func (b *Bridge) runCapacityNotices(ctx context.Context) {
+	defer b.watchWG.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case notice := <-b.capacityNotices:
+			b.emitCapacityNotice(ctx, notice)
+		}
+	}
+}
+
+func (b *Bridge) emitCapacityNotice(ctx context.Context, notice capacityNotice) {
+	evt := &event.Event{ID: notice.eventID, RoomID: notice.roomID, Sender: notice.sender.mxid}
+	b.postFailureForTarget(ctx, evt, notice.sender, notice.agent, notice.reason)
 }
 
 func (b *Bridge) executeDurableJobAfterTransactionConsumption(ctx context.Context, job state.Job) {
@@ -240,6 +288,23 @@ func (b *Bridge) recordCapacityDenials(
 			rateLimitVerdict:  rateLimitVerdictNotChecked,
 			targetFingerprint: job.TargetFingerprint,
 		})
+		b.capacityNoticeMu.Lock()
+		if len(b.pendingCapacity) < b.capacityNoticeLimit {
+			b.pendingCapacity = append(b.pendingCapacity, capacityNotice{
+				eventID: evt.ID,
+				roomID:  evt.RoomID,
+				sender:  sender,
+				agent:   job.GhostLocalpart,
+				reason:  denial.Reason,
+			})
+		} else {
+			b.log.Info(
+				"suppressing capacity notice because its pending handoff is full",
+				"ghost", job.GhostLocalpart,
+				"room", job.RoomID,
+			)
+		}
+		b.capacityNoticeMu.Unlock()
 	}
 }
 
