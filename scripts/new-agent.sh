@@ -49,9 +49,9 @@ cleanup() {
 }
 trap cleanup EXIT
 
-kustomize build "${repo_root}/infra/kagent" >"${tmp_dir}/current-kagent.yaml" \
+kubectl kustomize "${repo_root}/infra/kagent" >"${tmp_dir}/current-kagent.yaml" \
   || fail "current kagent resources do not render"
-kustomize build "${repo_root}/apps/matrix-a2a-bridge/deploy" >"${tmp_dir}/current-bridge.yaml" \
+kubectl kustomize "${repo_root}/apps/matrix-a2a-bridge/deploy" >"${tmp_dir}/current-bridge.yaml" \
   || fail "current bridge resources do not render"
 if AGENT_NAME="${name}" yq eval-all -e \
   'select(.kind == "Agent" and .metadata.name == strenv(AGENT_NAME))' \
@@ -190,7 +190,7 @@ jq -e --arg name "${name}" \
    (.scenarios | length) == 1 and .scenarios[0].agent == $name and
    .scenarios[0].rubric.kind == "exact" and (.scenarios[0].rubric.expected | length) == 1' \
   "${eval_dir}/golden.json" >/dev/null
-kustomize build "${agent_dir}" >/dev/null
+kubectl kustomize "${agent_dir}" >/dev/null
 cat >"${tmp_dir}/agents.yaml" <<EOF
 schemaVersion: 1
 agents:
@@ -214,7 +214,7 @@ cp "${tmp_dir}/new-bridge-kustomization.yaml" "${bridge_kustomization}"
 
 # Pin the effective Agent spec plus every imported prompt fragment. The digest makes later prompt,
 # tool, model, and deployment drift an explicit golden-fixture review instead of a silent change.
-kustomize build "${repo_root}/infra/kagent" >"${tmp_dir}/effective-kagent.yaml" \
+kubectl kustomize "${repo_root}/infra/kagent" >"${tmp_dir}/effective-kagent.yaml" \
   || fail "scaffolded kagent resources do not render"
 contract_sha256="$(
   mise --cd "${source_root}/apps/matrix-a2a-bridge" exec -- \

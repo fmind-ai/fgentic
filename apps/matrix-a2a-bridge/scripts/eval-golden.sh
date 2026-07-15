@@ -74,7 +74,7 @@ while IFS= read -r golden; do
 done < <(jq -ec '.scenarios[] | {id, prompt}' "${evals_dir}"/*/golden.json)
 jq -s '{answers:.}' "${workdir}/answers.jsonl" >"${workdir}/answers.json"
 
-kustomize build "${repo_root}/infra/kagent" >"${workdir}/agents.yaml"
+kubectl kustomize "${repo_root}/infra/kagent" >"${workdir}/agents.yaml"
 go run ./cmd/eval-golden \
 	--evals "${evals_dir}" \
 	--agents "${workdir}/agents.yaml" \

@@ -72,8 +72,8 @@ jq -e '
   (.scenarios[0].rubric.expected | length) == 1
 ' "${golden_fixture}" >/dev/null || fail "generated golden fixture is invalid"
 
-kustomize build "${tmp_dir}/infra/kagent" >"${tmp_dir}/kagent.yaml"
-kustomize build "${tmp_dir}/apps/matrix-a2a-bridge/deploy" >"${tmp_dir}/bridge-release.yaml"
+kubectl kustomize "${tmp_dir}/infra/kagent" >"${tmp_dir}/kagent.yaml"
+kubectl kustomize "${tmp_dir}/apps/matrix-a2a-bridge/deploy" >"${tmp_dir}/bridge-release.yaml"
 
 yq eval-all -e '
   select(.kind == "Agent" and .metadata.name == "demo-helper") |
