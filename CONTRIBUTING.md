@@ -4,7 +4,7 @@ Thanks for considering a contribution — human or AI agent, the rules are the s
 
 ## Where to start
 
-1. The backlog is the set of [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones) (M0–M24 — the milestones page is the current source of truth), each with a `kind/epic` tracker issue listing its issues in sweep order. **Pickup is scoped by the `track/*` labels, not raw milestone order:** work `track/v1` (the Definitive v1 scope — see the [focus board #316](https://github.com/fmind-ai/fgentic/issues/316)) first, ordered by `priority/p0 → p1 → p2`; leave `track/vision` until v1 ships.
+1. The backlog is the current set of [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones) (the milestones page is the source of truth), each with a `kind/epic` tracker issue listing its issues in sweep order. **Pickup is scoped by the `track/*` labels, not raw milestone order:** work `track/v1` (the Definitive v1 scope — see the [focus board #316](https://github.com/fmind-ai/fgentic/issues/316)) first, ordered by `priority/p0 → p1 → p2`; leave `track/vision` until v1 ships.
 1. Issues labeled **`agent-ready`** are groomed with tasks and acceptance criteria — pick one up as-is. Issues labeled **`needs-human`** wait on a maintainer decision, account, approval, or spend — you can prepare the work, but flag the blocking part.
 1. Issues labeled **`good first issue`** are the friendliest entry points.
 1. For anything not covered by an issue, open one first — especially before changing a settled design (the `D<n>` register in [docs/design-decisions.md](docs/design-decisions.md) and the ADRs in [docs/adr/](docs/adr/) are revisited by proposing a new ADR, not by a drive-by PR).
