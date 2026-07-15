@@ -17,6 +17,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 - [Licensing & Foundation Strategy](licensing.md) - Apache-2.0 rationale, AGPL boundaries, homeserver triggers (§10)
 - [Roadmap](roadmap.md) - phase history and the mapping to GitHub milestones M0–M24 (§13)
 - [Forking & Adapting](forking.md) - the checklist to run Fgentic under your own org, domain, GCP project, and registry
+- [Exit Strategy](exit-strategy.md) - per-layer replacement targets, migration boundaries, one-way doors, and required exit evidence
 - [Identity and SSO](identity.md) - MAS as the Matrix OIDC authority, Keycloak as the reference upstream IdP
 - [Model Provider Profiles](models.md) - per-cluster model backends behind agentgateway (D16)
 - [Sovereign Grounding Store](grounding.md) - the composed CNPG + pgvector schema, ACL metadata, and exact-ranking contract (D18)
