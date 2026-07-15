@@ -8,6 +8,8 @@ description: Source optional Matrix authentication and event evidence from pinne
 
 Status: Accepted
 
+Decision register: [D19](../design-decisions.md)
+
 Implementation: #300 owns the reference-IdP event contract; #157 owns the optional durable query store; #418 owns the Synapse/MAS adapters and the executable schemas and negative gates in this ADR.
 
 ## Context
