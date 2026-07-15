@@ -356,8 +356,9 @@ func TestRemoteCardTrustFailureQuarantinesAndRemovesDirectoryEntry(t *testing.T)
 	if profile.Status != profileStatusRejected || profile.Description == "Signed purpose" || client.IsReady(profileTarget(t, agents, "agent-remote")) {
 		t.Fatalf("quarantined profile = %+v, ready=%v", profile, client.ready)
 	}
-	if directory := b.agentDirectoryText(id.NewUserID("alice", ownServer)); strings.Contains(directory, "@agent-remote:") {
-		t.Fatalf("directory advertises rejected target: %s", directory)
+	if directory := b.agentDirectoryText(id.NewUserID("alice", ownServer)); !containsAll(directory, "@agent-remote:"+ownServer, "unavailable", "capabilities hidden") ||
+		strings.Contains(directory, "Signed purpose") {
+		t.Fatalf("directory rejected target entry: %s", directory)
 	}
 	if err := b.syncProfilesChecked(t.Context(), agents.Entries(), true); err == nil {
 		t.Fatal("post-quarantine network failure unexpectedly succeeded")
@@ -366,8 +367,9 @@ func TestRemoteCardTrustFailureQuarantinesAndRemovesDirectoryEntry(t *testing.T)
 	if profile.Status != profileStatusUnavailable {
 		t.Fatalf("post-quarantine profile status = %q, want unavailable", profile.Status)
 	}
-	if directory := b.agentDirectoryText(id.NewUserID("alice", ownServer)); strings.Contains(directory, "@agent-remote:") {
-		t.Fatalf("directory advertises unavailable target: %s", directory)
+	if directory := b.agentDirectoryText(id.NewUserID("alice", ownServer)); !containsAll(directory, "@agent-remote:"+ownServer, "unavailable", "capabilities hidden") ||
+		strings.Contains(directory, "Signed purpose") {
+		t.Fatalf("directory unavailable target entry: %s", directory)
 	}
 }
 

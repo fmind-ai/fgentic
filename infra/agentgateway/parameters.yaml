@@ -1,3 +1,7 @@
+# Model identity, residency, classification, and capability policy live only in
+# providers/model-catalog.yaml. This object configures the proxy process and must not duplicate
+# fields that future admission/routing policy (#339) reads from that governed inventory.
+#
 # Secure the per-Gateway data-plane proxy. agentgateway hardcodes the generated Service to
 # type: LoadBalancer (a PUBLIC L4 LB — an unauthenticated internet-facing LLM/A2A oracle). Force
 # it to ClusterIP: the only consumers are in-cluster (the bridge + kagent), so no LB is needed.

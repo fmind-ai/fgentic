@@ -1,0 +1,30 @@
+# Governed identity and policy inventory. Routing and serving stay owned by agentgateway/vLLM;
+# future admission and routing policy must consume this file instead of copying these fields.
+schemaVersion: 1
+models:
+  - profile: demo
+    genAiSystem: openai
+    model: fgentic-demo
+    residency: self-hosted
+    allowedClassification: public
+    capabilities:
+      - chat
+  - profile: vllm
+    genAiSystem: openai
+    model: Qwen/Qwen2.5-0.5B-Instruct
+    residency: self-hosted
+    # This is a routing ceiling, not compliance approval; the deployment must separately prove
+    # its NetworkPolicy, storage, backup, access, and room-handling controls.
+    allowedClassification: regulated
+    capabilities:
+      - chat
+  - profile: vertex
+    genAiSystem: gcp.vertex_ai
+    model: google/gemini-2.5-flash
+    # The model identity does not prove an account's region or processing contract, so the
+    # committed entry stays conservative even when an operator selects an EU Vertex region.
+    residency: global
+    allowedClassification: public
+    capabilities:
+      - chat
+    costRef: fgentic.eval.pricing.v1

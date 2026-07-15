@@ -1,5 +1,6 @@
-# Replace only the provider segment of the agentgateway-provider Flux path. Keeping the path prefix
-# here fail-fast validates llm_provider: an unknown profile points Flux at a missing directory.
+# Replace only the provider segment of the agentgateway-provider Flux path. `check:model-catalog`
+# validates each tracked llm_provider/llm_model pair against the governed inventory before this
+# selection reaches Flux. Keeping the path prefix still makes an unknown profile fail at render time.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 replacements:

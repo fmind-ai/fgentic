@@ -1,7 +1,7 @@
 ---
 type: Roadmap
 title: Roadmap
-description: Phase history and the mapping from retired phases to GitHub milestones M0–M24; the forward roadmap lives on GitHub (§13).
+description: Phase history and the mapping from retired phases to dated GitHub milestone snapshots; the forward roadmap lives on GitHub (§13).
 ---
 
 # Roadmap (formerly SPEC §13)

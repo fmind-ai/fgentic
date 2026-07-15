@@ -417,7 +417,7 @@ func TestBridgedSenderPolicyDenialPostsNoticeAndAudit(t *testing.T) {
 		t.Errorf("denied delegation metric = %v, want %v", got, deniedBefore+1)
 	}
 	events := recorder.snapshot()
-	if len(events) != 1 || events[0].Body != policyDeniedText || events[0].MsgType != event.MsgNotice {
+	if len(events) != 1 || events[0].Body != failureMessage(errorSenderPolicy, "agent-k8s", 0) || events[0].MsgType != event.MsgNotice {
 		t.Fatalf("denied bridged sender Matrix events = %#v, want one policy notice", events)
 	}
 	audits := auditRecords(t, output.String())
@@ -640,7 +640,7 @@ func TestQueuedBridgedSenderCannotBeDowngradedByOriginReload(t *testing.T) {
 		t.Fatalf("downgraded queued bridge origin made %d A2A calls", client.callCount)
 	}
 	events := recorder.snapshot()
-	if len(events) != 1 || events[0].Body != policyDeniedText {
+	if len(events) != 1 || events[0].Body != failureMessage(errorSenderPolicy, "agent-k8s", 0) {
 		t.Fatalf("downgraded queued bridge origin Matrix events = %#v, want policy notice", events)
 	}
 	audits := auditRecords(t, output.String())
@@ -767,7 +767,7 @@ func TestBridgedSenderDispatchUsesOriginAwareRateLimitKey(t *testing.T) {
 		t.Errorf("rate-limited delegation metric = %v, want %v", got, rateLimitedBefore+1)
 	}
 	events := recorder.snapshot()
-	if len(events) != 1 || events[0].Body != rateLimitedText {
+	if len(events) != 1 || events[0].Body != failureMessage(errorRateLimit, "", 0) {
 		t.Fatalf("rate-limited bridged dispatch Matrix events = %#v", events)
 	}
 	audits := auditRecords(t, output.String())
@@ -806,7 +806,7 @@ func TestAllowedBridgedRateLimitNoticesAreBounded(t *testing.T) {
 		t.Fatalf("rate-limited bridged flood made %d A2A calls", client.callCount)
 	}
 	events := recorder.snapshot()
-	if len(events) != 1 || events[0].Body != rateLimitedText {
+	if len(events) != 1 || events[0].Body != failureMessage(errorRateLimit, "", 0) {
 		t.Fatalf("rate-limited bridged flood events = %#v, want one bounded notice", events)
 	}
 	audits := auditRecords(t, output.String())
@@ -868,8 +868,9 @@ func TestDispatcherOverflowFailsClosedBeforeAdmission(t *testing.T) {
 			if client.callCount != 0 {
 				t.Fatalf("queue overflow made %d A2A calls", client.callCount)
 			}
-			if events := recorder.snapshot(); len(events) != 0 {
-				t.Fatalf("queue overflow emitted Matrix replies: %#v", events)
+			if events := recorder.snapshot(); len(events) != 1 ||
+				events[0].Body != failureMessage(tt.wantReason, "agent-k8s", 0) {
+				t.Fatalf("queue overflow Matrix replies = %#v, want one bounded failure notice", events)
 			}
 			if got := counterValue(t, queueFullMetric); got != queueFullBefore+1 {
 				t.Errorf("queue overflow metric = %v, want %v", got, queueFullBefore+1)
@@ -1430,8 +1431,8 @@ func TestDispatchUsesFallbackForEmptyTerminalMessage(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("Matrix events = %d, want one reply", len(events))
 	}
-	if got := events[0].Body; got != emptyReplyText {
-		t.Fatalf("reply body = %q, want %q", got, emptyReplyText)
+	if got := events[0].Body; got != failureMessage(errorEmptyReply, "agent-k8s", 0) {
+		t.Fatalf("reply body = %q, want empty-reply failure", got)
 	}
 	if got := events[0].RelatesTo.GetReplyTo(); got != evt.ID {
 		t.Fatalf("reply target = %q, want %q", got, evt.ID)
@@ -1440,10 +1441,10 @@ func TestDispatchUsesFallbackForEmptyTerminalMessage(t *testing.T) {
 	if len(audits) != 1 {
 		t.Fatalf("terminal audit records = %d, want exactly 1", len(audits))
 	}
-	if audits[0]["outcome"] != outcomeOK || audits[0]["terminal_stage"] != "message_result" {
-		t.Fatalf("terminal audit outcome = (%v, %v), want (ok, message_result)", audits[0]["outcome"], audits[0]["terminal_stage"])
+	if audits[0]["outcome"] != outcomeFailed || audits[0]["terminal_stage"] != "message_result" {
+		t.Fatalf("terminal audit outcome = (%v, %v), want (failed, message_result)", audits[0]["outcome"], audits[0]["terminal_stage"])
 	}
-	if audits[0]["terminal_reason"] != "completed" ||
+	if audits[0]["terminal_reason"] != errorEmptyReply ||
 		audits[0]["dedup_verdict"] != string(dedupVerdictAccepted) ||
 		audits[0]["rate_limit_verdict"] != string(rateLimitVerdictAllowed) {
 		t.Fatalf("terminal audit verdicts = (%v, %v, %v)", audits[0]["terminal_reason"], audits[0]["dedup_verdict"], audits[0]["rate_limit_verdict"])
@@ -1477,7 +1478,7 @@ func TestRateLimitedDispatchEmitsExplicitAuditVerdict(t *testing.T) {
 		t.Fatalf("rate-limited dispatch made %d A2A calls", client.callCount)
 	}
 	events := recorder.snapshot()
-	if len(events) != 1 || events[0].Body != rateLimitedText {
+	if len(events) != 1 || events[0].Body != failureMessage(errorRateLimit, "", 0) {
 		t.Fatalf("rate-limit Matrix replies = %#v, want one standard notice", events)
 	}
 	audits := auditRecords(t, output.String())
@@ -1535,9 +1536,10 @@ func TestAwaitTaskPollsWithCappedBackoffAndEmptyReplyFallback(t *testing.T) {
 	if events[0].Body != workingText {
 		t.Fatalf("placeholder body = %q, want %q", events[0].Body, workingText)
 	}
-	assertEdit(t, events[1], emptyReplyText)
-	if audit.outcome != outcomeOK || audit.terminalStage != "task_result" || audit.taskID != "task-1" {
-		t.Fatalf("long-task audit = %+v, want completed task_result for task-1", audit)
+	assertEdit(t, events[1], failureMessage(errorEmptyReply, "agent-k8s", 0))
+	if audit.outcome != outcomeFailed || audit.terminalStage != "task_result" ||
+		audit.terminalReason != errorEmptyReply || audit.taskID != "task-1" {
+		t.Fatalf("long-task audit = %+v, want empty-reply failure for task-1", audit)
 	}
 }
 
@@ -1640,7 +1642,7 @@ func TestAwaitTaskTimeoutIsDeterministic(t *testing.T) {
 	if events[0].Body != workingText {
 		t.Fatalf("placeholder body = %q, want %q", events[0].Body, workingText)
 	}
-	assertEdit(t, events[1], `⚠️ agent "agent-k8s" did not finish within 0s.`)
+	assertEdit(t, events[1], failureMessage(errorTaskTimeout, "agent-k8s", 0))
 	if audit.outcome != outcomeTimeout || audit.terminalStage != "task_poll" || audit.taskID != "task-timeout" {
 		t.Fatalf("timeout audit = %+v, want timeout task_poll for task-timeout", audit)
 	}
@@ -1652,26 +1654,35 @@ func TestDispatchRefusesQuarantinedRemoteBeforeAdmission(t *testing.T) {
 		t.Fatalf("LoadAgents: %v", err)
 	}
 	client := &scriptedA2AClient{remoteReady: false}
-	b := testBridge(t)
+	b, _, evt, _, recorder := pollingHarness(t, client)
 	b.agents = agents
 	b.client = client
 	b.profiles = newProfileStore(agents.Entries())
 	var output strings.Builder
 	setBridgeLogOutput(b, &output)
 
-	evt, _ := msgEvent(id.NewUserID("alice", ownServer), "@agent-remote inspect the pod")
+	evt.Sender = id.NewUserID("alice", ownServer)
 	evt.ID = "$remote-untrusted"
 	ref, ok := agents.Lookup("agent-remote")
 	if !ok {
 		t.Fatal("agent-remote fixture missing")
 	}
 	sender := agents.IdentifySender(evt.Sender)
+	intent := b.as.Intent(id.NewUserID("agent-remote", ownServer))
+	intent.Registered = true
+	if err := b.as.StateStore.SetMembership(t.Context(), evt.RoomID, intent.UserID, event.MembershipJoin); err != nil {
+		t.Fatalf("SetMembership: %v", err)
+	}
 	b.dispatchResolvedTarget(
 		t.Context(), evt, "agent-remote", "inspect the pod", ref, sender, dedupVerdictAccepted,
 	)
 
 	if client.callCount != 0 {
 		t.Fatalf("A2A calls = %d, want zero", client.callCount)
+	}
+	events := recorder.snapshot()
+	if len(events) != 1 || events[0].Body != failureMessage(errorAgentUntrusted, "agent-remote", 0) {
+		t.Fatalf("remote refusal events = %#v, want one trust notice", events)
 	}
 	audits := auditRecords(t, output.String())
 	if len(audits) != 1 {
@@ -1796,7 +1807,7 @@ func TestDispatchEnforcesStagingRoomBoundary(t *testing.T) {
 
 	notices := 0
 	for _, evt := range recorder.snapshot() {
-		if evt.Body == stageDeniedText {
+		if evt.Body == failureMessage(errorStagePolicy, "agent-dev", 0) {
 			notices++
 		}
 	}
@@ -2050,8 +2061,9 @@ func TestDispatchClassifiesTrustRevocationAtTransportBoundary(t *testing.T) {
 		agents.IdentifySender(evt.Sender), dedupVerdictAccepted,
 	)
 
-	if events := recorder.snapshot(); len(events) != 0 {
-		t.Fatalf("Matrix events after transport trust refusal = %#v, want none", events)
+	if events := recorder.snapshot(); len(events) != 1 ||
+		events[0].Body != failureMessage(errorAgentUntrusted, "agent-remote", 0) {
+		t.Fatalf("Matrix events after transport trust refusal = %#v, want trust notice", events)
 	}
 	audits := auditRecords(t, output.String())
 	if len(audits) != 1 {
@@ -2094,7 +2106,7 @@ func TestAwaitTaskStopsImmediatelyWhenRemoteTrustIsRevoked(t *testing.T) {
 	if len(events) != 2 {
 		t.Fatalf("Matrix events = %d, want placeholder and trust-refusal edit", len(events))
 	}
-	assertEdit(t, events[1], `⚠️ lost trust in agent "agent-remote" while waiting for its task — see the bridge logs.`)
+	assertEdit(t, events[1], failureMessage(errorAgentUntrusted, "agent-remote", 0))
 	if audit.outcome != outcomeDenied || audit.terminalStage != "agent_card" ||
 		audit.terminalReason != "agent_card_untrusted" || !audit.a2aAttempted ||
 		audit.rateLimitVerdict != rateLimitVerdictAllowed {
@@ -2168,7 +2180,7 @@ func TestRemoteTimeoutBoundsDelegationWithoutCancellingMatrixNotice(t *testing.T
 		t.Fatalf("A2A deadline remaining = %s, want remote 10ms ceiling", client.remaining)
 	}
 	events := recorder.snapshot()
-	if len(events) != 1 || !strings.Contains(events[0].Body, "could not reach agent") {
+	if len(events) != 1 || events[0].Body != failureMessage(errorRequestTimeout, "agent-remote", b.cfg.RequestTimeout) {
 		t.Fatalf("Matrix events after remote timeout = %#v, want one failure notice", events)
 	}
 }

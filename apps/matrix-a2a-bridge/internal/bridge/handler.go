@@ -33,12 +33,7 @@ const (
 	// pollErrorBudget tolerates transient GetTask failures before giving up on a task.
 	pollErrorBudget = 3
 
-	workingText          = "⏳ working on it…"
-	emptyReplyText       = "(the agent returned no content)"
-	rateLimitedText      = "⚠️ rate limit reached — please retry in a moment."
-	policyDeniedText     = "⚠️ you are not allowed to invoke this agent — ask an operator to review its sender allowlist."
-	stageDeniedText      = "⚠️ this agent is a staging (dev) build and can only be invoked in its designated staging room."
-	mediaInputDeniedText = "⚠️ the attached file was refused by the media policy (type, size, encryption, or a partner opt-out) — nothing was sent to the agent."
+	workingText = "⏳ working on it…"
 
 	provenanceStart = "--- BEGIN FGENTIC BRIDGE PROVENANCE ---"
 	provenanceEnd   = "--- END FGENTIC BRIDGE PROVENANCE ---"
@@ -131,28 +126,32 @@ type Bridge struct {
 	log      *slog.Logger
 	auditLog *slog.Logger
 
-	mentionRe          *regexp.Regexp
-	dispatcher         *dispatcher
-	senderLimits       *limiters
-	roomLimits         *limiters
-	noticeSenderLimits *limiters
-	noticeRoomLimits   *limiters
-	pollInitial        time.Duration
-	pollMax            time.Duration
-	pollWait           pollWaitFunc
-	profiles           *profileStore
-	profileWriter      ghostProfileWriter
-	inflight           *inflightRegistry
-	openTasks          *openTaskRegistry   // input-required delegations awaiting a reply (#116)
-	media              mediaPolicy         // MIME/size gate for files in both directions (#115)
-	stagingRooms       map[string]struct{} // rooms where stage:dev agents may be invoked (#128)
-	tracer             trace.Tracer
-	watchWG            sync.WaitGroup
-	watchCancel        context.CancelFunc
-	agentConfigMu      sync.RWMutex
-	durableIntake      bool // immutable after startup; pre-ACK jobs replace legacy message dispatch
-	durableQueue       *durableQueue
-	durableIntakeGate  durableIntakeGate
+	mentionRe           *regexp.Regexp
+	dispatcher          *dispatcher
+	senderLimits        *limiters
+	roomLimits          *limiters
+	noticeSenderLimits  *limiters
+	noticeRoomLimits    *limiters
+	pollInitial         time.Duration
+	pollMax             time.Duration
+	pollWait            pollWaitFunc
+	profiles            *profileStore
+	profileWriter       ghostProfileWriter
+	inflight            *inflightRegistry
+	openTasks           *openTaskRegistry   // input-required delegations awaiting a reply (#116)
+	media               mediaPolicy         // MIME/size gate for files in both directions (#115)
+	stagingRooms        map[string]struct{} // rooms where stage:dev agents may be invoked (#128)
+	tracer              trace.Tracer
+	watchWG             sync.WaitGroup
+	watchCancel         context.CancelFunc
+	agentConfigMu       sync.RWMutex
+	capacityNoticeMu    sync.Mutex
+	pendingCapacity     []capacityNotice
+	capacityNotices     chan capacityNotice
+	capacityNoticeLimit int
+	durableIntake       bool // immutable after startup; pre-ACK jobs replace legacy message dispatch
+	durableQueue        *durableQueue
+	durableIntakeGate   durableIntakeGate
 
 	runCtx context.Context // process lifetime; delegations run under it, not the handler ctx
 }
@@ -165,27 +164,29 @@ func New(cfg config.Config, as *appservice.AppService, agents *AgentMap, client 
 		`@(` + regexp.QuoteMeta(cfg.GhostPrefix) + `[a-zA-Z0-9._=\-]+)(:[a-zA-Z0-9.\-]+(?::\d+)?)?`,
 	)
 	bridge := &Bridge{
-		cfg:                cfg,
-		as:                 as,
-		agents:             agents,
-		client:             client,
-		store:              store,
-		log:                log,
-		auditLog:           log.With("log_stream", delegationAuditStream),
-		mentionRe:          mentionRe,
-		dispatcher:         newDispatcher(cfg.Concurrency, cfg.RoomQueueCapacity, cfg.GlobalQueueCapacity),
-		senderLimits:       newLimiters(cfg.SenderRatePerMinute, cfg.SenderRateBurst, cfg.RateLimitBucketCapacity),
-		roomLimits:         newLimiters(cfg.RoomRatePerMinute, cfg.RoomRateBurst, cfg.RateLimitBucketCapacity),
-		noticeSenderLimits: newLimiters(cfg.SenderRatePerMinute, cfg.SenderRateBurst, cfg.RateLimitBucketCapacity),
-		noticeRoomLimits:   newLimiters(cfg.RoomRatePerMinute, cfg.RoomRateBurst, cfg.RateLimitBucketCapacity),
-		pollInitial:        pollInitial,
-		pollMax:            pollMax,
-		pollWait:           waitForPoll,
-		inflight:           newInflightRegistry(),
-		openTasks:          newOpenTaskRegistry(),
-		media:              newMediaPolicy(cfg),
-		stagingRooms:       stagingRoomSet(cfg.StagingRooms),
-		tracer:             otel.Tracer(tracerName),
+		cfg:                 cfg,
+		as:                  as,
+		agents:              agents,
+		client:              client,
+		store:               store,
+		log:                 log,
+		auditLog:            log.With("log_stream", delegationAuditStream),
+		mentionRe:           mentionRe,
+		dispatcher:          newDispatcher(cfg.Concurrency, cfg.RoomQueueCapacity, cfg.GlobalQueueCapacity),
+		senderLimits:        newLimiters(cfg.SenderRatePerMinute, cfg.SenderRateBurst, cfg.RateLimitBucketCapacity),
+		roomLimits:          newLimiters(cfg.RoomRatePerMinute, cfg.RoomRateBurst, cfg.RateLimitBucketCapacity),
+		noticeSenderLimits:  newLimiters(cfg.SenderRatePerMinute, cfg.SenderRateBurst, cfg.RateLimitBucketCapacity),
+		noticeRoomLimits:    newLimiters(cfg.RoomRatePerMinute, cfg.RoomRateBurst, cfg.RateLimitBucketCapacity),
+		pollInitial:         pollInitial,
+		pollMax:             pollMax,
+		pollWait:            waitForPoll,
+		inflight:            newInflightRegistry(),
+		openTasks:           newOpenTaskRegistry(),
+		media:               newMediaPolicy(cfg),
+		stagingRooms:        stagingRoomSet(cfg.StagingRooms),
+		tracer:              otel.Tracer(tracerName),
+		capacityNotices:     make(chan capacityNotice, cfg.GlobalQueueCapacity),
+		capacityNoticeLimit: cfg.GlobalQueueCapacity,
 	}
 	bridge.profiles = newProfileStore(agents.Entries())
 	bridge.profileWriter = &matrixProfileWriter{as: as, log: log}
@@ -245,6 +246,8 @@ func (b *Bridge) Start(ctx context.Context) error {
 	b.watchWG.Add(1)
 	go b.watchAgents(watchCtx)
 	if b.durableIntake {
+		b.watchWG.Add(1)
+		go b.runCapacityNotices(watchCtx)
 		owner, err := newLeaseOwner()
 		if err != nil {
 			watchCancel()
@@ -370,14 +373,15 @@ func (b *Bridge) HandleMessage(ctx context.Context, evt *event.Event) {
 	}
 	prompt := b.stripMentions(msg.Body)
 	for _, localpart := range targets.allowed {
-		b.enqueueResolvedTarget(evt, localpart, prompt, targets.refs[localpart], targets.sender, dedupVerdict)
+		b.enqueueResolvedTarget(ctx, evt, localpart, prompt, targets.refs[localpart], targets.sender, dedupVerdict)
 	}
 	for _, localpart := range targets.deniedBridged {
-		b.enqueueResolvedTarget(evt, localpart, prompt, targets.refs[localpart], targets.sender, dedupVerdict)
+		b.enqueueResolvedTarget(ctx, evt, localpart, prompt, targets.refs[localpart], targets.sender, dedupVerdict)
 	}
 }
 
 func (b *Bridge) enqueueResolvedTarget(
+	ctx context.Context,
 	evt *event.Event,
 	localpart, prompt string,
 	ref *AgentRef,
@@ -418,6 +422,7 @@ func (b *Bridge) enqueueResolvedTarget(
 		dedupVerdict:     dedupVerdict,
 		rateLimitVerdict: rateLimitVerdictNotChecked,
 	})
+	b.postFailureForTarget(ctx, evt, sender, localpart, result.terminalReason())
 }
 
 // recordShutdownTarget is the terminal record for a resolved target that never started. Jobs
@@ -638,9 +643,7 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 		// Re-register (fresh budget) so a rate-limited answer is retried, not lost.
 		b.openTasks.register(open, b.cfg.InputWaitTimeout, func() { b.expireOpenTask(open) })
 		intent := b.as.Intent(id.NewUserID(open.localpart, b.cfg.ServerName))
-		if b.allowNotice(currentSender, reply.RoomID, open.localpart) {
-			b.postReply(ctx, intent, reply, rateLimitedText)
-		}
+		b.postFailureReply(ctx, intent, reply, currentSender, open.localpart, errorRateLimit, 0)
 		delegationsTotal.WithLabelValues(open.localpart, outcomeRateLimited).Inc()
 		b.logDelegationAudit(reply, ref, open.localpart, currentSender, delegationAuditResult{
 			outcome: outcomeRateLimited, terminalStage: "admission", terminalReason: "rate_limit_rejected",
@@ -677,14 +680,25 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 			audit.terminalStage = "agent_card"
 			audit.terminalReason = "agent_card_untrusted"
 			audit.a2aAttempted = false
-			b.editReply(ctx, intent, reply.RoomID, open.placeholder, fmt.Sprintf("⚠️ lost trust in agent %q — the task was stopped.", open.localpart))
+			b.editFailureReply(
+				ctx, intent, reply.RoomID, open.placeholder, currentSender,
+				open.localpart, errorAgentUntrusted, 0,
+			)
 			return
 		}
-		delegationsTotal.WithLabelValues(open.localpart, outcomeError).Inc()
+		audit.outcome = outcomeError
 		audit.terminalReason = "a2a_call_failed"
+		if errors.Is(err, context.DeadlineExceeded) {
+			audit.outcome = outcomeTimeout
+			audit.terminalReason = errorRequestTimeout
+		}
+		delegationsTotal.WithLabelValues(open.localpart, audit.outcome).Inc()
 		b.log.Error("a2a continuation failed", "agent", ref.Path(), "room", reply.RoomID,
 			"reason", "continuation_failed", "error_type", fmt.Sprintf("%T", err))
-		b.editReply(ctx, intent, reply.RoomID, open.placeholder, fmt.Sprintf("⚠️ could not reach agent %q — see the bridge logs.", open.localpart))
+		b.editFailureReply(
+			ctx, intent, reply.RoomID, open.placeholder, currentSender,
+			open.localpart, audit.terminalReason, b.cfg.RequestTimeout,
+		)
 		return
 	}
 	audit.terminalStage = "message_result"
@@ -706,7 +720,20 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 		delegationsTotal.WithLabelValues(open.localpart, outcomeFailed).Inc()
 		audit.outcome = outcomeFailed
 		audit.terminalReason = "agent_failed"
-		b.editReply(ctx, intent, reply.RoomID, open.placeholder, fmt.Sprintf("⚠️ agent %q could not complete the task — see the bridge logs.", open.localpart))
+		b.editFailureReply(
+			ctx, intent, reply.RoomID, open.placeholder, currentSender,
+			open.localpart, "agent_failed", 0,
+		)
+		return
+	}
+	if emptyAgentReply(res) {
+		delegationsTotal.WithLabelValues(open.localpart, outcomeFailed).Inc()
+		audit.outcome = outcomeFailed
+		audit.terminalReason = errorEmptyReply
+		b.editFailureReply(
+			ctx, intent, reply.RoomID, open.placeholder, currentSender,
+			open.localpart, errorEmptyReply, 0,
+		)
 		return
 	}
 	delegationsTotal.WithLabelValues(open.localpart, outcomeOK).Inc()
@@ -721,9 +748,12 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 // finishContinuation edits the placeholder and audits a fail-closed resume refusal. Every refusal
 // is a denial that never reached A2A, so the outcome and a2a_attempted are fixed; stage and reason
 // name which admission gate rejected the resume.
-func (b *Bridge) finishContinuation(ctx context.Context, reply *event.Event, open *openTask, sender senderIdentity, started time.Time, stage, reason, roomMsg string) {
+func (b *Bridge) finishContinuation(ctx context.Context, reply *event.Event, open *openTask, sender senderIdentity, started time.Time, stage, reason, _ string) {
 	intent := b.as.Intent(id.NewUserID(open.localpart, b.cfg.ServerName))
-	b.editReply(ctx, intent, open.origin.RoomID, open.placeholder, fmt.Sprintf("⚠️ could not resume the task — %s.", roomMsg))
+	b.editFailureReply(
+		ctx, intent, open.origin.RoomID, open.placeholder, sender,
+		open.localpart, reason, 0,
+	)
 	delegationsTotal.WithLabelValues(open.localpart, outcomeDenied).Inc()
 	b.logDelegationAudit(reply, open.ref, open.localpart, sender, delegationAuditResult{
 		outcome: outcomeDenied, terminalStage: stage, terminalReason: reason, a2aAttempted: false,
@@ -761,7 +791,7 @@ func (b *Bridge) dispatchResolvedTarget(
 		return
 	}
 	if ref.Target().IsRemote() && (b.client == nil || !b.client.IsReady(ref.Target())) {
-		b.refuseUntrustedTarget(evt, ref, localpart, sender, dedupVerdict)
+		b.refuseUntrustedTarget(ctx, evt, ref, localpart, sender, dedupVerdict)
 		return
 	}
 	// Cost admission (#142): a configured per-remote maxCost refuses a delegation whose verified
@@ -769,7 +799,7 @@ func (b *Bridge) dispatchResolvedTarget(
 	if ref.Target().IsRemote() && ref.MaxCost() > 0 && b.client != nil {
 		switch b.client.QuoteAdmission(ref.Target(), ref.MaxCost()) {
 		case a2aclient.QuoteOverBudget, a2aclient.QuoteMissing:
-			b.refuseOverBudget(evt, ref, localpart, sender, dedupVerdict)
+			b.refuseOverBudget(ctx, evt, ref, localpart, sender, dedupVerdict)
 			return
 		}
 	}
@@ -780,6 +810,7 @@ func (b *Bridge) dispatchResolvedTarget(
 // configured maxCost (or is missing). It is an economic refusal, distinct from a trust failure: the
 // card is trusted, but the price is not, so it never spends a limiter token or reaches A2A (#142).
 func (b *Bridge) refuseOverBudget(
+	ctx context.Context,
 	evt *event.Event,
 	ref *AgentRef,
 	localpart string,
@@ -801,6 +832,7 @@ func (b *Bridge) refuseOverBudget(
 		rateLimitVerdict: rateLimitVerdictNotChecked,
 		a2aAttempted:     false,
 	})
+	b.postFailureForTarget(ctx, evt, sender, localpart, errorQuoteOverBudget)
 }
 
 // revalidateSender applies the current origin map at dispatch time. Once a queued event is
@@ -838,6 +870,7 @@ func (b *Bridge) refuseQueuedTarget(
 }
 
 func (b *Bridge) refuseUntrustedTarget(
+	ctx context.Context,
 	evt *event.Event,
 	ref *AgentRef,
 	localpart string,
@@ -858,6 +891,7 @@ func (b *Bridge) refuseUntrustedTarget(
 		rateLimitVerdict: rateLimitVerdictNotChecked,
 		a2aAttempted:     false,
 	})
+	b.postFailureForTarget(ctx, evt, sender, localpart, errorAgentUntrusted)
 }
 
 func (b *Bridge) dispatchWithDedupVerdict(
@@ -934,9 +968,9 @@ func (b *Bridge) dispatchWithDedupVerdict(
 		audit.terminalStage = "admission"
 		audit.terminalReason = "rate_limit_rejected"
 		audit.rateLimitVerdict = rateLimitVerdictRejected
-		if b.allowNotice(sender, evt.RoomID, localpart) {
-			audit.replyEventID = b.postReply(ctx, intent, evt, rateLimitedText)
-		}
+		audit.replyEventID = b.postFailureReply(
+			ctx, intent, evt, sender, localpart, errorRateLimit, 0,
+		)
 		return
 	}
 	audit.rateLimitVerdict = rateLimitVerdictAllowed
@@ -966,9 +1000,9 @@ func (b *Bridge) dispatchWithDedupVerdict(
 		audit.terminalReason = "media_input_rejected"
 		audit.mediaRejected = inRejected
 		b.log.Warn("refusing delegation: attached file failed media policy", "ghost", localpart, "room", evt.RoomID)
-		if b.allowNotice(sender, evt.RoomID, localpart) {
-			audit.replyEventID = b.postReply(ctx, intent, evt, mediaInputDeniedText)
-		}
+		audit.replyEventID = b.postFailureReply(
+			ctx, intent, evt, sender, localpart, errorMediaDenied, 0,
+		)
 		return
 	}
 	audit.mediaIn = len(inboundFiles)
@@ -1001,14 +1035,24 @@ func (b *Bridge) dispatchWithDedupVerdict(
 			audit.terminalStage = "agent_card"
 			audit.terminalReason = "agent_card_untrusted"
 			audit.a2aAttempted = false
+			audit.replyEventID = b.postFailureReply(
+				ctx, intent, evt, sender, localpart, errorAgentUntrusted, 0,
+			)
 			return
 		}
-		delegationsTotal.WithLabelValues(localpart, outcomeError).Inc()
 		b.log.Error("a2a call failed", "agent", ref.Path(), "room", evt.RoomID,
 			"reason", "message_send_failed", "error_type", fmt.Sprintf("%T", err))
-		// Deliberately generic: internal endpoints/errors must not leak into rooms (SPEC §6).
+		// Deliberately classify without forwarding err: provider response bodies and endpoints are
+		// untrusted and must never reach the room.
 		audit.terminalReason = "a2a_call_failed"
-		audit.replyEventID = b.postReply(ctx, intent, evt, fmt.Sprintf("⚠️ could not reach agent %q — see the bridge logs.", localpart))
+		if errors.Is(err, context.DeadlineExceeded) {
+			audit.outcome = outcomeTimeout
+			audit.terminalReason = errorRequestTimeout
+		}
+		delegationsTotal.WithLabelValues(localpart, audit.outcome).Inc()
+		audit.replyEventID = b.postFailureReply(
+			ctx, intent, evt, sender, localpart, audit.terminalReason, b.cfg.RequestTimeout,
+		)
 		return
 	}
 	span.AddEvent("a2a.message.result")
@@ -1038,7 +1082,18 @@ func (b *Bridge) dispatchWithDedupVerdict(
 			"reason", "agent_reported_failure")
 		audit.outcome = outcomeFailed
 		audit.terminalReason = "agent_failed"
-		audit.replyEventID = b.postReply(ctx, intent, evt, fmt.Sprintf("⚠️ agent %q could not complete the task — see the bridge logs.", localpart))
+		audit.replyEventID = b.postFailureReply(
+			ctx, intent, evt, sender, localpart, "agent_failed", 0,
+		)
+		return
+	}
+	if emptyAgentReply(res) {
+		delegationsTotal.WithLabelValues(localpart, outcomeFailed).Inc()
+		audit.outcome = outcomeFailed
+		audit.terminalReason = errorEmptyReply
+		audit.replyEventID = b.postFailureReply(
+			ctx, intent, evt, sender, localpart, errorEmptyReply, 0,
+		)
 		return
 	}
 	delegationsTotal.WithLabelValues(localpart, outcomeOK).Inc()
@@ -1097,7 +1152,7 @@ func (b *Bridge) rejectBridgedSender(
 		return
 	}
 	delegationsTotal.WithLabelValues(localpart, outcomeDenied).Inc()
-	audit.replyEventID = b.postReply(ctx, intent, evt, policyDeniedText)
+	audit.replyEventID = b.postReply(ctx, intent, evt, failureMessage(errorSenderPolicy, localpart, 0))
 	b.log.Warn(
 		"bridged sender not allowed to invoke agent",
 		"sender", evt.Sender,
@@ -1158,7 +1213,7 @@ func (b *Bridge) refuseStagedTarget(
 		return
 	}
 	delegationsTotal.WithLabelValues(localpart, outcomeDenied).Inc()
-	audit.replyEventID = b.postReply(ctx, intent, evt, stageDeniedText)
+	audit.replyEventID = b.postReply(ctx, intent, evt, failureMessage(errorStagePolicy, localpart, 0))
 	b.log.Warn(
 		"staging agent invoked outside a staging room",
 		"sender", evt.Sender,
@@ -1257,9 +1312,11 @@ func (b *Bridge) awaitTask(
 			trace.SpanFromContext(ctx).AddEvent(traceEventA2ATaskTimeout)
 			delegationsTotal.WithLabelValues(localpart, outcomeTimeout).Inc()
 			audit.outcome = outcomeTimeout
-			audit.terminalReason = "task_timeout"
-			b.editReply(ctx, intent, evt.RoomID, placeholder,
-				fmt.Sprintf("⚠️ agent %q did not finish within %s.", localpart, agentRequestTimeout(ref, b.cfg.TaskTimeout)))
+			audit.terminalReason = errorTaskTimeout
+			b.editFailureReply(
+				ctx, intent, evt.RoomID, placeholder, b.agents.IdentifySender(evt.Sender),
+				localpart, errorTaskTimeout, agentRequestTimeout(ref, b.cfg.TaskTimeout),
+			)
 			return audit
 		}
 		if delay *= 2; delay > b.pollMax {
@@ -1277,10 +1334,12 @@ func (b *Bridge) awaitTask(
 				delegationsTotal.WithLabelValues(localpart, outcomeDenied).Inc()
 				audit.outcome = outcomeDenied
 				audit.terminalStage = "agent_card"
-				audit.terminalReason = "agent_card_untrusted"
+				audit.terminalReason = errorAgentUntrusted
 				b.log.Warn("stopping task polling after remote agent trust changed", "task", res.TaskID, "agent", ref.Path())
-				b.editReply(ctx, intent, evt.RoomID, placeholder,
-					fmt.Sprintf("⚠️ lost trust in agent %q while waiting for its task — see the bridge logs.", localpart))
+				b.editFailureReply(
+					ctx, intent, evt.RoomID, placeholder, b.agents.IdentifySender(evt.Sender),
+					localpart, errorAgentUntrusted, 0,
+				)
 				return audit
 			}
 			if pollErrors++; pollErrors < pollErrorBudget {
@@ -1293,8 +1352,10 @@ func (b *Bridge) awaitTask(
 			audit.terminalReason = "task_poll_failed"
 			b.log.Error("GetTask failed", "task", res.TaskID, "agent", ref.Path(),
 				"reason", "task_poll_failed", "error_type", fmt.Sprintf("%T", err))
-			b.editReply(ctx, intent, evt.RoomID, placeholder,
-				fmt.Sprintf("⚠️ lost track of agent %q's task — see the bridge logs.", localpart))
+			b.editFailureReply(
+				ctx, intent, evt.RoomID, placeholder, b.agents.IdentifySender(evt.Sender),
+				localpart, "task_poll_failed", 0,
+			)
 			return audit
 		}
 		pollErrors = 0
@@ -1314,8 +1375,20 @@ func (b *Bridge) awaitTask(
 				audit.terminalReason = "agent_failed"
 				b.log.Error("agent task failed", "ghost", localpart, "agent", ref.Path(), "room", evt.RoomID,
 					"reason", "agent_reported_failure")
-				b.editReply(ctx, intent, evt.RoomID, placeholder,
-					fmt.Sprintf("⚠️ agent %q could not complete the task — see the bridge logs.", localpart))
+				b.editFailureReply(
+					ctx, intent, evt.RoomID, placeholder, b.agents.IdentifySender(evt.Sender),
+					localpart, "agent_failed", 0,
+				)
+				return audit
+			}
+			if emptyAgentReply(polled) {
+				delegationsTotal.WithLabelValues(localpart, outcomeFailed).Inc()
+				audit.outcome = outcomeFailed
+				audit.terminalReason = errorEmptyReply
+				b.editFailureReply(
+					ctx, intent, evt.RoomID, placeholder, b.agents.IdentifySender(evt.Sender),
+					localpart, errorEmptyReply, 0,
+				)
 				return audit
 			}
 			delegationsTotal.WithLabelValues(localpart, outcomeOK).Inc()
@@ -1389,9 +1462,11 @@ func (b *Bridge) finishAuthRequired(
 	delegationsTotal.WithLabelValues(localpart, outcomeFailed).Inc()
 	audit.outcome = outcomeFailed
 	audit.terminalStage = "task_auth"
-	audit.terminalReason = "auth_required_not_forwarded"
-	b.editReply(ctx, intent, evt.RoomID, placeholder,
-		fmt.Sprintf("⚠️ agent %q needs authorization the platform does not forward — the task was stopped.", localpart))
+	audit.terminalReason = errorAuthRequired
+	b.editFailureReply(
+		ctx, intent, evt.RoomID, placeholder, b.agents.IdentifySender(evt.Sender),
+		localpart, errorAuthRequired, 0,
+	)
 	b.log.Warn("stopping task: agent requires unforwarded authorization",
 		"ghost", localpart, "room", evt.RoomID)
 	return audit
