@@ -10,6 +10,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"flag"
 	"fmt"
@@ -37,7 +38,10 @@ import (
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/telemetry"
 )
 
-const appserviceShutdownTimeout = 5 * time.Second
+const (
+	appserviceShutdownTimeout = 5 * time.Second
+	appserviceReadTimeout     = 30 * time.Second
+)
 
 func main() {
 	genReg := flag.Bool("generate-registration", false,
@@ -109,6 +113,7 @@ func run(cfg config.Config, log *slog.Logger) error {
 
 	client := a2aclient.New(cfg.A2ABaseURL, cfg.A2AAPIKey, log)
 	br := bridge.New(cfg, as, agents, client, store, log)
+	br.EnableDurableIntake()
 	if err := br.Start(runtimeCtx); err != nil {
 		return fmt.Errorf("start bridge: %w", err)
 	}
@@ -130,10 +135,47 @@ func run(cfg config.Config, log *slog.Logger) error {
 		}
 	}()
 
+	intake, err := matrixapp.NewTransactionIntake(
+		as,
+		matrixapp.TransactionAcceptorFunc(func(
+			ctx context.Context,
+			transactionID string,
+			_ [sha256.Size]byte,
+			body []byte,
+		) (matrixapp.TransactionDisposition, error) {
+			result, err := br.AdmitAppserviceTransaction(ctx, transactionID, body)
+			if errors.Is(err, state.ErrTransactionHashConflict) {
+				return matrixapp.TransactionConflict, nil
+			}
+			if err != nil {
+				return 0, err
+			}
+			switch result.Disposition {
+			case state.TransactionAccepted:
+				return matrixapp.TransactionAccepted, nil
+			case state.TransactionReplay:
+				return matrixapp.TransactionReplay, nil
+			default:
+				return 0, fmt.Errorf("unsupported state transaction disposition %d", result.Disposition)
+			}
+		}),
+		as.Router,
+		cfg.AppserviceTransactionMaxBytes,
+		matrixapp.WithTransactionConsumptionBarrier(
+			br.HoldDurableExecutionUntilTransactionConsumed,
+			br.NotifyDurableQueue,
+		),
+	)
+	if err != nil {
+		return fmt.Errorf("configure durable appservice intake: %w", err)
+	}
 	appserviceSrv := &http.Server{
 		Addr:              net.JoinHostPort(cfg.ListenHost, fmt.Sprintf("%d", cfg.ListenPort)),
-		Handler:           as.Router,
+		Handler:           intake,
 		ReadHeaderTimeout: 5 * time.Second,
+		// Intake is intentionally serialized before allocating the bounded body. Bound the complete
+		// authenticated read so one slow sender cannot hold that global ordering slot indefinitely.
+		ReadTimeout: appserviceReadTimeout,
 	}
 	appserviceErr := serveHTTPServer(appserviceSrv)
 

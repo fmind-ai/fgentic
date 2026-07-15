@@ -76,6 +76,18 @@ spec:
               value: {{ .Values.config.roomQueueCapacity | quote }}
             - name: GLOBAL_QUEUE_CAPACITY
               value: {{ .Values.config.globalQueueCapacity | quote }}
+            - name: APPSERVICE_TRANSACTION_MAX_BYTES
+              value: {{ .Values.config.appserviceTransactionMaxBytes | quote }}
+            - name: DELEGATION_CLAIM_INTERVAL
+              value: {{ .Values.config.delegationClaimInterval | quote }}
+            - name: DELEGATION_LEASE_DURATION
+              value: {{ .Values.config.delegationLeaseDuration | quote }}
+            - name: DELEGATION_RETRY_INITIAL
+              value: {{ .Values.config.delegationRetryInitial | quote }}
+            - name: DELEGATION_RETRY_MAX
+              value: {{ .Values.config.delegationRetryMax | quote }}
+            - name: DELEGATION_MAX_ATTEMPTS
+              value: {{ .Values.config.delegationMaxAttempts | quote }}
             - name: SENDER_RATE_PER_MINUTE
               value: {{ .Values.config.senderRatePerMinute | quote }}
             - name: SENDER_RATE_BURST

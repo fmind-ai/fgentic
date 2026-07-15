@@ -34,6 +34,16 @@ var (
 		Name: "fgentic_dedup_skips_total",
 		Help: "Events skipped because the homeserver redelivered an already-processed transaction.",
 	})
+
+	durableStateTransitions = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "fgentic_delegation_ledger_transitions_total",
+		Help: "Content-free durable delegation state transitions.",
+	}, []string{"from_state", "to_state"})
+
+	durableRecoveryOutcomes = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "fgentic_delegation_recovery_outcomes_total",
+		Help: "Hard-crash recovery outcomes requiring operator attention.",
+	}, []string{"outcome"})
 )
 
 // Outcome labels for fgentic_delegations_total.
@@ -49,4 +59,6 @@ const (
 	outcomeLost          = "lost"           // tasks/get error budget exhausted
 	outcomeCanceled      = "canceled"       // long task canceled from the room (#98)
 	outcomeInputRequired = "input_required" // task paused awaiting a threaded reply (#116)
+	outcomeAmbiguous     = "ambiguous"      // A2A may have accepted a request whose ACK was lost
+	outcomeDead          = "dead"           // bounded recovery exhausted; operator action required
 )

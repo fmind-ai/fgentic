@@ -5,8 +5,14 @@ metadata:
   namespace: bridge-integration
 data:
   a2aStubDelay: 2s
+  a2aStubLongHold: "false"
+  a2aBaseURL: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080
   agentCardRefreshInterval: 30s
   concurrency: "16"
+  databaseURL: postgres://postgres@postgres:5432/bridge?sslmode=disable
+  delegationClaimInterval: 1s
+  delegationLeaseDuration: 30s
+  homeserverURL: http://synapse:8008
   # The fixture has no LLM or paid boundary. Raise both token buckets so the test reaches the
   # dispatcher instead of testing D7's admission policy.
   senderRatePerMinute: "6000"
@@ -22,3 +28,4 @@ metadata:
 data:
   a2aStubDelay: 2s
   a2aStubHold: "false"
+  a2aStubLongHold: "false"

@@ -8,11 +8,13 @@ package a2aclient
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	sdk "github.com/a2aproject/a2a-go/v2/a2aclient"
@@ -26,7 +28,49 @@ import (
 // kagent's default auth mode reads the caller identity from this header.
 const userHeader = "X-User-Id"
 
+// ErrMessageIDRequired marks a caller error caught before message/send can reach the transport.
+// A durable caller must persist a non-empty deterministic ID before it attempts the remote call.
+var ErrMessageIDRequired = errors.New("a2a message ID is required")
+
+// ErrSendAcknowledgementAmbiguous marks a message/send whose request crossed the client's final
+// preflight boundary but did not produce a usable A2A result. The remote may have accepted the
+// message, so an at-most-once caller must not resend it without a separately verified idempotency
+// contract. The sentinel says nothing about whether the remote actually performed work.
+var ErrSendAcknowledgementAmbiguous = errors.New("a2a message/send acknowledgement is ambiguous")
+
+// AmbiguousSendError carries the deterministic message ID for an acknowledgement-ambiguous send.
+// Error intentionally excludes the transport/protocol cause because a remote error can contain
+// provider-controlled content. Unwrap retains both the stable sentinel and original cause for
+// errors.Is/errors.As classification without making that content part of normal diagnostics.
+type AmbiguousSendError struct {
+	messageID string
+	target    string
+	cause     error
+}
+
+func (e *AmbiguousSendError) Error() string {
+	return fmt.Sprintf("a2a message/send to %s: %v", e.target, ErrSendAcknowledgementAmbiguous)
+}
+
+func (e *AmbiguousSendError) Unwrap() []error {
+	if e.cause == nil {
+		return []error{ErrSendAcknowledgementAmbiguous}
+	}
+	return []error{ErrSendAcknowledgementAmbiguous, e.cause}
+}
+
+// MessageID returns the caller-supplied or generated ID placed on the ambiguous request.
+func (e *AmbiguousSendError) MessageID() string {
+	return e.messageID
+}
+
 type userKey struct{}
+
+type sendAttemptKey struct{}
+
+type sendAttempt struct {
+	started atomic.Bool
+}
 
 // WithUser returns a context that stamps userID onto every outgoing A2A HTTP request.
 func WithUser(ctx context.Context, userID string) context.Context {
@@ -75,6 +119,11 @@ func (t *userTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// The bridge owns the client span, while this boundary injects its W3C context into both
 	// JSON-RPC and REST requests produced by the A2A SDK.
 	otel.GetTextMapPropagator().Inject(req.Context(), propagation.HeaderCarrier(req.Header))
+	if attempt, _ := req.Context().Value(sendAttemptKey{}).(*sendAttempt); attempt != nil {
+		// This is deliberately conservative: crossing this boundary does not prove delivery, but it
+		// is the last point at which the bridge knows the request cannot have reached the remote.
+		attempt.started.Store(true)
+	}
 	resp, err := t.base.RoundTrip(req)
 	// Record which extensions the server echoed as activated (A2A-Extensions response header) so a
 	// remote delegation can audit what negotiation settled on. Best-effort and observation-only.
@@ -87,7 +136,9 @@ func (t *userTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // Result is the bridge-shaped outcome of an A2A call: the extracted reply text, the contextId
-// to reuse for the next turn, and — for long-running tasks — the task ID to poll until Terminal.
+// to reuse for the next turn, and — for acknowledged long-running tasks — the task ID to persist
+// and resume with ResumeTask until Terminal. A send that returns no usable result may instead report
+// ErrSendAcknowledgementAmbiguous; its typed error carries the attempted message ID but no task ID.
 // Failed marks a task that ended without completing (failed/canceled/rejected): its Text is
 // agent-side error detail for the logs, never for the room (SPEC §6).
 type Result struct {
@@ -186,20 +237,51 @@ func New(baseURL, apiKey string, log *slog.Logger) *Client {
 // long-running agents from holding the bridge request open: a non-terminal Task is returned as
 // soon as it exists and the bridge follows it with tasks/get polling.
 func (c *Client) Call(ctx context.Context, target Target, text, contextID string, files []InboundFile) (Result, error) {
-	return c.send(ctx, target, text, contextID, "", files)
+	return c.send(ctx, target, a2a.NewMessageID(), text, contextID, "", files)
+}
+
+// CallWithMessageID delegates a new message using caller-supplied messageID. Durable callers use a
+// deterministic ID persisted before this call; the A2A SDK and current targets do not treat that ID
+// as an idempotency guarantee. Call remains the compatibility path that generates a random ID.
+func (c *Client) CallWithMessageID(
+	ctx context.Context,
+	target Target,
+	messageID, text, contextID string,
+	files []InboundFile,
+) (Result, error) {
+	return c.send(ctx, target, messageID, text, contextID, "", files)
 }
 
 // Continue resumes a task paused in TASK_STATE_INPUT_REQUIRED by re-sending message/send with the
 // same taskID and contextID (A2A continuation semantics — #116). text is the room member's answer.
 func (c *Client) Continue(ctx context.Context, target Target, text, contextID, taskID string) (Result, error) {
-	return c.send(ctx, target, text, contextID, taskID, nil)
+	return c.send(ctx, target, a2a.NewMessageID(), text, contextID, taskID, nil)
+}
+
+// ContinueWithMessageID resumes an input-required task with a caller-supplied deterministic
+// message ID. Like CallWithMessageID, this enables durable at-most-once bookkeeping but does not
+// claim the target deduplicates repeated IDs. Continue remains the random-ID compatibility path.
+func (c *Client) ContinueWithMessageID(
+	ctx context.Context,
+	target Target,
+	messageID, text, contextID, taskID string,
+) (Result, error) {
+	return c.send(ctx, target, messageID, text, contextID, taskID, nil)
 }
 
 // send is the shared message/send path for a new delegation (Call, taskID empty) and a resumed one
 // (Continue, taskID set). A non-empty taskID is stamped onto the message so the agent continues its
 // existing task rather than starting a fresh one. files, when present, ride as A2A Raw parts (#115);
 // the bridge gates them by its media policy before they reach here.
-func (c *Client) send(ctx context.Context, target Target, text, contextID, taskID string, files []InboundFile) (Result, error) {
+func (c *Client) send(
+	ctx context.Context,
+	target Target,
+	messageID, text, contextID, taskID string,
+	files []InboundFile,
+) (Result, error) {
+	if messageID == "" {
+		return Result{}, fmt.Errorf("prepare a2a message/send for %s: %w", target.String(), ErrMessageIDRequired)
+	}
 	client, err := c.clientFor(ctx, target)
 	if err != nil {
 		return Result{}, err
@@ -213,7 +295,7 @@ func (c *Client) send(ctx context.Context, target Target, text, contextID, taskI
 		part.MediaType = f.MIMEType
 		parts = append(parts, part)
 	}
-	msg := a2a.NewMessage(a2a.MessageRoleUser, parts...)
+	msg := &a2a.Message{ID: messageID, Role: a2a.MessageRoleUser, Parts: parts}
 	if target.IsRemote() {
 		// Request the negotiated extension set (token-budget base + configured extras); the SDK
 		// activator drops any the card does not advertise. Token-budget is the only one carrying
@@ -231,11 +313,16 @@ func (c *Client) send(ctx context.Context, target Target, text, contextID, taskI
 	if taskID != "" {
 		msg.TaskID = a2a.TaskID(taskID) // continue the existing input-required task (#116)
 	}
+	attempt := &sendAttempt{}
+	ctx = context.WithValue(ctx, sendAttemptKey{}, attempt)
 	res, err := client.SendMessage(ctx, &a2a.SendMessageRequest{
 		Message: msg,
 		Config:  &a2a.SendMessageConfig{ReturnImmediately: true},
 	})
 	if err != nil {
+		if attempt.started.Load() {
+			return Result{}, &AmbiguousSendError{messageID: messageID, target: target.String(), cause: err}
+		}
 		return Result{}, fmt.Errorf("a2a message/send to %s: %w", target.String(), err)
 	}
 	result := toResult(res)
@@ -246,7 +333,19 @@ func (c *Client) send(ctx context.Context, target Target, text, contextID, taskI
 }
 
 // PollTask fetches the current state of a task previously returned by Call (tasks/get).
+// It remains the compatibility name for active in-process polling.
 func (c *Client) PollTask(ctx context.Context, target Target, taskID string) (Result, error) {
+	return c.getTask(ctx, target, taskID)
+}
+
+// ResumeTask fetches a known task by ID without sending the original message again. A durable
+// worker uses it after recovering a persisted non-terminal task; it shares PollTask's exact client,
+// remote trust-generation, attribution, and error behavior.
+func (c *Client) ResumeTask(ctx context.Context, target Target, taskID string) (Result, error) {
+	return c.getTask(ctx, target, taskID)
+}
+
+func (c *Client) getTask(ctx context.Context, target Target, taskID string) (Result, error) {
 	client, err := c.clientFor(ctx, target)
 	if err != nil {
 		return Result{}, err

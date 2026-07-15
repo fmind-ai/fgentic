@@ -5,8 +5,14 @@ metadata:
   namespace: bridge-integration
 data:
   a2aStubDelay: 0s
+  a2aStubLongHold: "false"
+  a2aBaseURL: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080
   agentCardRefreshInterval: 30s
   concurrency: "2"
+  databaseURL: postgres://postgres@postgres:5432/bridge?sslmode=disable
+  delegationClaimInterval: 1s
+  delegationLeaseDuration: 30s
+  homeserverURL: http://synapse:8008
   # Keep admission policy out of the resilience assertion: the disposable stub has no LLM or
   # paid boundary, and this scenario isolates graceful drain plus persistent deduplication.
   senderRatePerMinute: "6000"
@@ -24,3 +30,4 @@ data:
   # Hold the marked A2A call until run.sh observes the bridge handling SIGTERM. This removes
   # host-scheduling races from the mid-delegation disruption point.
   a2aStubHold: "true"
+  a2aStubLongHold: "false"

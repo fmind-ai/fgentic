@@ -94,13 +94,12 @@ func (f fixture) runAvailability(ctx context.Context) error {
 	}
 	// The process-start change proves this replay reaches a replacement process. Its only shared
 	// dedup state with the drained pod is Postgres.
-	if err := f.pushAppserviceEvent(
+	if err := f.replayEvent(
 		ctx,
+		sess.AccessToken,
 		"availability-redelivery",
 		roomID,
-		sess.UserID,
 		eventID,
-		content,
 	); err != nil {
 		return fmt.Errorf("replay accepted event through replacement bridge: %w", err)
 	}

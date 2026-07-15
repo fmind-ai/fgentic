@@ -61,6 +61,18 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].env[?(@.name == "RATE_LIMIT_BUCKET_CAPACITY")].value
           value: "4096"
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "APPSERVICE_TRANSACTION_MAX_BYTES")].value
+          value: "16777216"
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "DELEGATION_CLAIM_INTERVAL")].value
+          value: 1s
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "DELEGATION_LEASE_DURATION")].value
+          value: 30s
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "DELEGATION_MAX_ATTEMPTS")].value
+          value: "5"
   - it: renders default media byte caps as exact decimal strings
     asserts:
       - equal:

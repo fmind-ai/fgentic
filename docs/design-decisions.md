@@ -1,10 +1,10 @@
 ---
 type: Decision Register
-title: Design Decisions D1–D16
+title: Design Decisions D1–D17
 description: The durable register of settled design decisions with the evidence behind each; revisit via a new ADR, never a drive-by PR (§4).
 ---
 
-# Design Decisions D1–D16 (formerly SPEC §4)
+# Design Decisions D1–D17 (formerly SPEC §4)
 
 > The durable record of _why_ the system looks the way it does. Revisit via a new ADR, never a drive-by PR. Section references `§N` map per the table in [.agents/AGENTS.md](../.agents/AGENTS.md).
 
@@ -22,9 +22,13 @@ Terraform reserved a static address the Traefik Service never used; DNS would br
 
 The appservice API delivers events on a single linearised transaction queue (Synapse #17621 documents the stall mode). mautrix's `EventProcessor` defaults to `AsyncHandlers` (verified in source: one goroutine per event), so a synchronous A2A call in the handler doesn't block the queue — but it means **unbounded concurrent LLM calls with no per-room ordering**. **Now:** `HandleMessage` only classifies and enqueues; a dispatcher drains per-room FIFO queues under a global concurrency cap (`CONCURRENCY`, default 16) and accepted running-plus-queued caps (32 per room, 256 globally). Helm rejects more than one replica and uses a zero-surge rollout (`maxSurge: 0`, `maxUnavailable: 1`), because even a rollout overlap would split a room across independent dispatchers. Shutdown first closes appservice intake and drains its synchronous processor, then gives accepted delegations 25 seconds before cancellation under a 45-second pod grace. Any target rejected or dropped at that boundary emits a terminal `shutdown` audit rather than disappearing after dedup. The registration sets `rate_limited: false` so ghost replies bypass Synapse's `rc_message` (0.2 msg/s default) — the bridge enforces its own budgets (D7).
 
+**Revised by D17 ([ADR 0016](adr/0016-durable-delegation-ledger.md)):** the ordering and active-concurrency goals remain, but initial mentions now enter the Postgres ledger before HTTP 200. Database claims enforce cross-restart room FIFO. The same 32-per-room/256-global defaults now bound every non-terminal durable job, including delayed and leased work, through serialized admission rather than process-local queue length.
+
 ### D4 — Postgres-backed bridge state (was: all in-memory)
 
 Pod restarts lost conversation threading, ghost registration state, and the transaction dedup cache — a redelivered transaction **re-invoked agents** (duplicate LLM spend + duplicate replies). **Now:** the `bridge` CNPG database backs the mautrix SQL StateStore and the bridge's own tables (§5); `DATABASE_URL` empty falls back to in-memory for local dev only.
+
+**Extended by D17 ([ADR 0016](adr/0016-durable-delegation-ledger.md)):** Postgres now also binds each appservice transaction ID to its exact body hash and stores one checked, fenced job per `(Matrix event, target ghost)` before acknowledgement. The legacy processed-event table remains only as a minimum 24-hour upgrade tombstone.
 
 ### D5 — Context threads keyed by `(room, agent)` (was: per room)
 
@@ -38,13 +42,15 @@ The draft matched mentions by localpart only — in a federated room, `@agent-k8
 
 Every mention is an LLM invocation; a chatty or malicious room drains the model budget (the closest prior-art project died of exactly this). **Now:** token buckets per `(sender, agent)` (default 6/min, burst 3) and per room (default 30/min, burst 10), rejecting with a polite ghost notice; bridged keys prefix the bounded network while retaining the complete MXID and agent, so two remote identities never share a budget. A separate response plane bounds all bridge-generated directory, denial, and rate-limit notices with the same sender/room defaults; it never consumes invocation capacity, and exhaustion emits no further Matrix event. Each of the four keyed maps has a hard 4096-bucket default. A new key fails closed at capacity; the bridge never evicts an active bucket and resets its burst, while idle cleanup scans at most once per minute. The dispatcher independently bounds accepted running plus queued work at 32 jobs per room and 256 globally. Overflow is silent and occurs before rate admission or A2A, with a content-free `queue_full` audit. Agentgateway token-unit rate limits on the LLM route are the second layer (§9). The cross-org listener adds a fail-closed global quota keyed by the verified JWT `azp`, using each required `SendMessage` `maxTokens` value as admission cost (§8.3). That value is a reservation, not actual usage; provider/model token metrics arise on the separate downstream hop and remain aggregate rather than per consumer.
 
+**Revised by D17 ([ADR 0016](adr/0016-durable-delegation-ledger.md)):** the invocation/notice token buckets, bounded key maps, 32/256 capacity defaults, and stable `queue_full` outcome remain. Initial targets are now capacity-checked atomically against non-terminal ledger rows, room before global. A refusal commits as a content-scrubbed terminal `denied` row before HTTP 200 instead of disappearing from process memory; `CONCURRENCY` separately bounds active leases.
+
 ### D8 — Loop-safe reply semantics (was: loopable)
 
 A federated agent or third-party bot could `@mention` a local agent whose reply mentions back — unbounded ping-pong. **Now:** ghost replies are **`m.notice`** (the Matrix convention for bot output) and the bridge never treats `m.notice` as a delegating message; the room-level rate bucket (D7) is the backstop.
 
 ### D9 — Long tasks via `tasks/get` + Matrix edits (was: hard 60s ceiling)
 
-Real agent work exceeds 60s; kagent deliberately sets no timeout on its agent client and proxies `tasks/get`. **Now:** §6's model — non-terminal `Task` → placeholder reply → poll with backoff up to `TASK_TIMEOUT` (10m) → `m.replace`-edit the placeholder into the final answer. Matrix edits are the deliberate open-standard substitute for streaming; `message/send` stays non-streaming.
+Real agent work exceeds 60s; kagent deliberately sets no timeout on its agent client and proxies `tasks/get`. **Now:** §6's model — non-terminal `Task` → placeholder reply → poll with backoff up to `TASK_TIMEOUT` (10m) → `m.replace`-edit the placeholder into the final answer. The whole-task clock begins at the first persisted A2A attempt boundary rather than ledger admission, so durable room backlog is excluded. Matrix edits are the deliberate open-standard substitute for streaming; `message/send` stays non-streaming.
 
 ### D10 — A2A wire-version pinned to kagent's (was: v2.0.0 vs v2.3.1 drift)
 
@@ -75,6 +81,12 @@ ESS bumped `25.6.1` → `26.6.2` (values revalidated — §2); the LLM model id 
 ### D16 — Sovereign model profiles (decided 2026-07-11; implementation: milestone M1)
 
 The reference config hard-wired one hyperscaler model — dissonant with sovereignty-first positioning: the first question every enterprise asks is _"where do our prompts go?"_. **Decision:** the LLM backend is a per-cluster choice through agentgateway (the abstraction already exists — this is configuration surface, not new architecture), with sovereignty-ranked reference profiles: **self-hosted vLLM** (nothing leaves the cluster) > **EU API** (Mistral) > **hyperscalers** (Vertex, Anthropic, OpenAI/Azure — region-pinned where offered). Rules: provider selection lives in `clusters/<env>/platform-settings` + one SOPS secret; token metering and the spend alert must stay provider-agnostic (D7 does not regress); each profile documents its data flow in `docs/models.md`. Vertex remains the verified default until M1 lands.
+
+### D17 — Durable delegation ledger with at-most-once A2A recovery
+
+D3's process-local queue and D4's event marker could still lose work because mautrix acknowledged a transaction before the handler created its job, while the marker suppressed later replay before A2A or Matrix completion. A stable A2A message ID cannot provide distributed exactly-once execution because supported targets do not prove persistent ID deduplication.
+
+**Decision:** atomically store the exact appservice transaction hash and every eligible per-target row before HTTP 200; serialize 32-per-room/256-global non-terminal capacity checks with room rejection first and persist refused targets as content-free terminal evidence; recover accepted work through owner/generation-fenced Postgres leases under database-enforced per-room FIFO; persist a deterministic A2A message ID and attempt boundary before client invocation; treat an outcome-unknown send as terminal `ambiguous` without resend; resume a known task only through `tasks/get`; and project persisted results through deterministic Matrix transaction IDs. Terminal transitions scrub content, ordinary non-content tombstones remain at least 24 hours, and ambiguous/dead evidence remains for operator review. The durable path preserves the stable `queue_full` audit outcome without an unrecorded drop; one ready intake replica remains. See accepted [ADR 0016](adr/0016-durable-delegation-ledger.md) for the exact boundaries, non-durable UX features, and acceptance limits.
 
 ### Workload-identity follow-up
 

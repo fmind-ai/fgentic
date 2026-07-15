@@ -39,12 +39,13 @@ func New(cfg config.Config, stateStore appservice.StateStore) (*appservice.AppSe
 	return as, nil
 }
 
-// configureMautrixLogger keeps the library's JSON logs alongside the bridge's slog output
-// without making the library's concrete logging implementation a direct dependency.
+// configureMautrixLogger keeps the library's JSON logs alongside the bridge's slog output while
+// permanently suppressing its content-bearing transaction debug record. Bridge LOG_LEVEL may make
+// our own content-free diagnostics more verbose, but must never put Matrix event bodies in stdout.
 func configureMautrixLogger(as *appservice.AppService, output io.Writer) {
-	// Mautrix's exposed logger uses level 0 for debug. The untyped value avoids importing its
+	// Mautrix's exposed logger uses level 1 for info. The untyped value avoids importing its
 	// implementation package solely to name that constant.
-	as.Log = as.Log.Output(output).Level(0).With().Timestamp().Logger()
+	as.Log = as.Log.Output(output).Level(1).With().Timestamp().Logger()
 }
 
 // GenerateRegistration writes a fresh appservice registration.yaml (id, generated tokens, and the

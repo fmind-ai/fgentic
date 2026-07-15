@@ -23,6 +23,12 @@ config:
   concurrency: 16 # max in-flight delegations across all rooms (per-room FIFO regardless)
   roomQueueCapacity: 32 # accepted running + queued jobs per room
   globalQueueCapacity: 256 # accepted running + queued jobs across all rooms
+  appserviceTransactionMaxBytes: "16777216" # 16 MiB exact pre-ACK JSON body cap
+  delegationClaimInterval: 1s # one idle coordinator query; intake wakes it immediately
+  delegationLeaseDuration: 30s # fenced lease, heartbeated while a worker owns a job
+  delegationRetryInitial: 1s
+  delegationRetryMax: 30s
+  delegationMaxAttempts: 5
   # Token-bucket rate limits guarding LLM spend (SPEC §4 F7).
   senderRatePerMinute: 6
   senderRateBurst: 3
@@ -50,10 +56,10 @@ config:
   mediaMaxTotalBytes: "26214400" # 25 MiB per delegation per direction
   mediaMimeAllowlist: [] # e.g. ["text/csv","application/pdf","image/png"]; empty = built-in default
 
-# Postgres backing the bridge state (mautrix StateStore + contexts + event dedup — SPEC §5).
+# Postgres backing the bridge state (mautrix StateStore + durable delegation ledger — SPEC §5).
 # The Secret holds a full connection URL under `key` (e.g. postgres://bridge:...@platform-pg-rw
 # .postgres.svc.cluster.local:5432/bridge?sslmode=require). Disable only for local dev:
-# in-memory state loses conversation threading and dedup on restart.
+# in-memory state loses accepted work, conversation threading, and dedup on restart.
 database:
   enabled: true
   secretName: matrix-a2a-bridge-db

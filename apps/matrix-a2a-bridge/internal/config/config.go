@@ -57,9 +57,13 @@ type Config struct {
 	GhostPrefix string `env:"GHOST_PREFIX" envDefault:"agent-"`
 
 	// DatabaseURL is the Postgres URL backing the bridge state (mautrix StateStore, per-room/agent
-	// A2A contexts, processed-event dedup). Empty falls back to in-memory state — dev only:
-	// restarts then lose conversation threading and may re-process redelivered transactions.
+	// A2A contexts, durable appservice intake, and delegation leases). Empty falls back to in-memory
+	// state — dev only: restarts then lose the ledger and conversation threading.
 	DatabaseURL string `env:"DATABASE_URL"`
+	// AppserviceTransactionMaxBytes bounds the exact request body held while its hash and eligible
+	// jobs are committed before acknowledgement. It is independent of media byte limits: Matrix
+	// transactions carry event JSON and MXC references, not attachment bodies.
+	AppserviceTransactionMaxBytes int64 `env:"APPSERVICE_TRANSACTION_MAX_BYTES" envDefault:"16777216"`
 
 	// RequestTimeout bounds the synchronous A2A message/send transport round trip. TaskTimeout
 	// bounds the whole delegation when the agent returns a long-running Task that the bridge
@@ -83,6 +87,14 @@ type Config struct {
 	// without limit.
 	RoomQueueCapacity   int `env:"ROOM_QUEUE_CAPACITY" envDefault:"32"`
 	GlobalQueueCapacity int `env:"GLOBAL_QUEUE_CAPACITY" envDefault:"256"`
+	// Durable worker timing. One coordinator polls while idle, so ClaimInterval bounds recovery
+	// latency without multiplying idle database traffic by Concurrency. Active jobs heartbeat their
+	// fenced leases; failed preflight/Matrix operations retry with capped exponential backoff.
+	DelegationClaimInterval time.Duration `env:"DELEGATION_CLAIM_INTERVAL" envDefault:"1s"`
+	DelegationLeaseDuration time.Duration `env:"DELEGATION_LEASE_DURATION" envDefault:"30s"`
+	DelegationRetryInitial  time.Duration `env:"DELEGATION_RETRY_INITIAL" envDefault:"1s"`
+	DelegationRetryMax      time.Duration `env:"DELEGATION_RETRY_MAX" envDefault:"30s"`
+	DelegationMaxAttempts   int           `env:"DELEGATION_MAX_ATTEMPTS" envDefault:"5"`
 
 	// Rate limits (token bucket) guarding LLM spend: per (sender, agent) pair and per room.
 	SenderRatePerMinute float64 `env:"SENDER_RATE_PER_MINUTE" envDefault:"6"`
@@ -161,6 +173,9 @@ func (c Config) validate() error {
 	if c.GhostPrefix == "" {
 		return fmt.Errorf("GHOST_PREFIX must not be empty")
 	}
+	if c.AppserviceTransactionMaxBytes <= 0 {
+		return fmt.Errorf("APPSERVICE_TRANSACTION_MAX_BYTES must be positive")
+	}
 	if c.AgentsReloadInterval <= 0 {
 		return fmt.Errorf("AGENTS_RELOAD_INTERVAL must be positive")
 	}
@@ -187,6 +202,18 @@ func (c Config) validate() error {
 	}
 	if c.GlobalQueueCapacity < c.Concurrency {
 		return fmt.Errorf("GLOBAL_QUEUE_CAPACITY must be >= CONCURRENCY")
+	}
+	if c.DelegationClaimInterval <= 0 {
+		return fmt.Errorf("DELEGATION_CLAIM_INTERVAL must be positive")
+	}
+	if c.DelegationLeaseDuration <= 0 || c.DelegationLeaseDuration/3 <= 0 {
+		return fmt.Errorf("DELEGATION_LEASE_DURATION must allow a positive heartbeat interval")
+	}
+	if c.DelegationRetryInitial <= 0 || c.DelegationRetryMax < c.DelegationRetryInitial {
+		return fmt.Errorf("delegation retry durations must be positive and RETRY_MAX >= RETRY_INITIAL")
+	}
+	if c.DelegationMaxAttempts < 1 {
+		return fmt.Errorf("DELEGATION_MAX_ATTEMPTS must be >= 1")
 	}
 	if c.SenderRatePerMinute <= 0 || c.RoomRatePerMinute <= 0 {
 		return fmt.Errorf("rate limits must be positive")

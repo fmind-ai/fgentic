@@ -161,7 +161,31 @@ func (b *Bridge) deliverReply(
 	ref *AgentRef,
 	res a2aclient.Result,
 ) (replyID id.EventID, out, rejected int) {
-	text := res.Text
+	text, uploads, rejected := b.prepareReply(ctx, intent, localpart, ref, res)
+
+	if placeholder == "" {
+		replyID = b.postReply(ctx, intent, evt, text)
+	} else {
+		b.editReply(ctx, intent, evt.RoomID, placeholder, text)
+		replyID = placeholder
+	}
+	for _, u := range uploads {
+		b.postMediaFile(ctx, intent, evt, u)
+	}
+	return replyID, len(uploads), rejected
+}
+
+// prepareReply applies the outbound media policy and builds the bounded text projection shared by
+// the legacy in-process path and the durable Matrix outbox. It performs uploads but never sends an
+// event, allowing the durable path to choose caller-supplied transaction IDs before projection.
+func (b *Bridge) prepareReply(
+	ctx context.Context,
+	intent *appservice.IntentAPI,
+	localpart string,
+	ref *AgentRef,
+	res a2aclient.Result,
+) (text string, uploads []uploadedFile, rejected int) {
+	text = res.Text
 	text += renderDataBlocks(res.Data)
 	text += renderLinks(res.Links)
 
@@ -179,19 +203,10 @@ func (b *Bridge) deliverReply(
 		}
 	}
 
-	if placeholder == "" {
-		replyID = b.postReply(ctx, intent, evt, text)
-	} else {
-		b.editReply(ctx, intent, evt.RoomID, placeholder, text)
-		replyID = placeholder
-	}
-	for _, u := range uploads {
-		b.postMediaFile(ctx, intent, evt, u)
-	}
 	for _, n := range rejects {
 		rejected += n
 	}
-	return replyID, len(uploads), rejected
+	return text, uploads, rejected
 }
 
 // uploadedFile is one artifact file that passed policy and was stored in the content repository,

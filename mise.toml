@@ -373,6 +373,11 @@ description = "Run the bridge's graceful-drain and persistent-deduplication scen
 dir = "apps/matrix-a2a-bridge"
 run = "mise run test:availability"
 
+[tasks."test:crash-recovery"]
+description = "Run the bridge's durable hard-crash recovery scenario"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run test:crash-recovery"
+
 [tasks."test:tracing"]
 description = "Render the tracing stack and prove an OTLP span reaches Jaeger locally"
 run = "bash scripts/test-tracing.sh"

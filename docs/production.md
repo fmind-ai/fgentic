@@ -105,17 +105,17 @@ The GCP reference explicitly composes [`infra/production-ha/cluster`](../infra/p
 
 The default Terraform reference has two nodes in one zone. It therefore demonstrates host-level separation, not zone or region availability. Setting `regional = true` changes the GKE control-plane and node-pool topology, but operators must still verify workload placement, storage topology, capacity, and failure behavior across the intended zones; a regional control plane alone is not that proof.
 
-| Component                                | Production profile                                                              | Honest boundary                                                                                             |
-| ---------------------------------------- | ------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| CNPG `platform-pg`                       | 3 instances; CNPG-owned failover and disruption budget                          | Database process/node resilience; backup and restore remain separate gates                                  |
-| Traefik                                  | 2 replicas, hostname spread, one-pod PDB                                        | One voluntary disruption or host loss; not zone HA                                                          |
-| Element Web, HAProxy, MAS                | 2 replicas each, hostname spread, one-pod PDBs                                  | Stateless web, routing, and authentication edge redundancy                                                  |
-| Synapse main                             | 1 replica, no PDB                                                               | Fast restart only; [#62](https://github.com/fmind-ai/fgentic/issues/62) tracks the state/media-store design |
-| Keycloak                                 | 2 replicas, JDBC discovery, required host anti-affinity, one-pod PDB            | Active/active application processes against shared Postgres                                                 |
-| agentgateway controller and proxy        | 2 replicas each, required host anti-affinity, zero-surge rollouts, one-pod PDBs | Controller and data-plane pod redundancy                                                                    |
-| kagent controller, KMCP, tools, and UI   | 2 replicas each, hostname spread, one-pod PDBs                                  | Platform workloads only; generated Agent workloads remain one replica                                       |
-| Matrix-to-A2A bridge                     | 1 ready intake replica, no PDB, zero-surge rollout                              | Graceful drain and fast restart; no hard-crash durability or cross-restart room-ordering guarantee          |
-| Other operators and observability stores | Existing chart defaults                                                         | Fast restart; Jaeger's in-memory trace store is explicitly ephemeral                                        |
+| Component                                | Production profile                                                              | Honest boundary                                                                                                        |
+| ---------------------------------------- | ------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| CNPG `platform-pg`                       | 3 instances; CNPG-owned failover and disruption budget                          | Database process/node resilience; backup and restore remain separate gates                                             |
+| Traefik                                  | 2 replicas, hostname spread, one-pod PDB                                        | One voluntary disruption or host loss; not zone HA                                                                     |
+| Element Web, HAProxy, MAS                | 2 replicas each, hostname spread, one-pod PDBs                                  | Stateless web, routing, and authentication edge redundancy                                                             |
+| Synapse main                             | 1 replica, no PDB                                                               | Fast restart only; [#62](https://github.com/fmind-ai/fgentic/issues/62) tracks the state/media-store design            |
+| Keycloak                                 | 2 replicas, JDBC discovery, required host anti-affinity, one-pod PDB            | Active/active application processes against shared Postgres                                                            |
+| agentgateway controller and proxy        | 2 replicas each, required host anti-affinity, zero-surge rollouts, one-pod PDBs | Controller and data-plane pod redundancy                                                                               |
+| kagent controller, KMCP, tools, and UI   | 2 replicas each, hostname spread, one-pod PDBs                                  | Platform workloads only; generated Agent workloads remain one replica                                                  |
+| Matrix-to-A2A bridge                     | 1 ready intake replica, no PDB, zero-surge rollout                              | Postgres-backed work recovery and cross-restart room ordering; intake is unavailable while the single replica restarts |
+| Other operators and observability stores | Existing chart defaults                                                         | Fast restart; Jaeger's in-memory trace store is explicitly ephemeral                                                   |
 
 The static contract recursively renders the effective GCP and local Flux trees, renders the pinned third-party charts, verifies replica/PDB/resource and placement-selector invariants, and proves the production component did not leak into evaluation profiles:
 
@@ -123,15 +123,23 @@ The static contract recursively renders the effective GCP and local Flux trees, 
 mise run check:production-ha
 ```
 
-The bridge availability fixture then holds one real A2A call, normally deletes the bridge pod, requires the old process to observe SIGTERM and deliver one reply, observes a distinct replacement process, and directly replays the same event to prove one Postgres-backed dedup skip without a second A2A call or reply:
+The bridge availability fixture then holds one real A2A call, normally deletes the bridge pod, requires the old process to observe SIGTERM and deliver one reply, observes a distinct replacement process, and directly replays the same transaction body to require no second A2A call or reply:
 
 ```bash
 mise run test:availability
 ```
 
-This is a graceful-drain test, not an automatic Synapse-retry or SIGKILL test. The event marker is written before asynchronous completion, so a hard crash after that marker can still lose accepted work and suppress a later replay; [#311](https://github.com/fmind-ai/fgentic/issues/311) tracks the durable recovery design. The measured fixture timings below are one local observation, not a production RTO or SLO. Re-run the drill on the candidate revision and measure a controlled drain on the target cluster before setting either.
+This remains a graceful-drain test, not an automatic Synapse-retry or SIGKILL test. The separate crash fixture runs real Postgres, Synapse, A2A, and bridge processes and SIGKILLs the bridge at six persisted boundaries:
 
-On 2026-07-14, an owned one-node Kind v1.34.0 fixture on the cgroup-v1 local development host observed `delivery_gap_ms=1149`, `replacement_observed_ms=11563`, and `pod_ready_rto_seconds=2`. The normally deleted pod was `bridge-6c64649f68-9667x`; the distinct ready replacement was `bridge-6c64649f68-cmcvd`. The content-free counters remained exactly one A2A start, one completion, one Matrix reply, and one replacement-process dedup skip across the quiet window. These values characterize that fixture run only.
+```bash
+mise run test:crash-recovery
+```
+
+The boundaries are ledger commit before acknowledgement, acknowledged work before claim, A2A acceptance before its record, persisted result before Matrix, Matrix acceptance before event-ID record, and a known task blocked in `tasks/get`. Run the task on the candidate revision before claiming those workflows; its total scenario duration is diagnostic only and is not a recovery-time assertion. The bridge commits the exact appservice transaction hash and all eligible per-target jobs before HTTP 200, fences recovery with expiring generation leases, and preserves database-enforced per-room FIFO across a replacement process. Recovered work follows protocol state: unstarted jobs run, known task IDs resume through `tasks/get`, and pending Matrix replies/placeholders/edits reuse deterministic transaction IDs. A `message/send` whose HTTP transport may have started but returned no acknowledgement is instead terminal `ambiguous` and is never resent, because the deterministic A2A message ID does not prove target idempotency. Neither local fixture simulates node loss or establishes a production RTO/SLO. Re-run the graceful drill on the target cluster before setting either.
+
+Typing, input-required continuation, room-reaction cancellation, intermediate progress posts, and pin state are outside the durable state machine. A durable input-required task ends with a generic start-a-new-request notice, and ❌ on its placeholder does not call `tasks/cancel`; do not include those legacy in-memory behaviors in a recovery claim.
+
+On 2026-07-14, an owned one-node Kind v1.34.0 fixture on the cgroup-v1 local development host observed `delivery_gap_ms=1149`, `replacement_observed_ms=11563`, and `pod_ready_rto_seconds=2`. The normally deleted pod was `bridge-6c64649f68-9667x`; the distinct ready replacement was `bridge-6c64649f68-cmcvd`. The content-free counters remained exactly one A2A start, one completion, one Matrix reply, and one replay suppression across the quiet window. These values characterize that graceful fixture run only; they are not crash-recovery timings.
 
 ## Bound namespace compute
 
@@ -215,7 +223,7 @@ Slack and Telegram are optional external identity/data boundaries, not productio
 1. Prove NetworkPolicy on GKE Dataplane V2 or another known-enforcing engine; repo-owned k3d servers deliberately disable the failed kube-router controller and are intent-only.
 1. Confirm at least two schedulable nodes have replica and rollout headroom, then verify every required hostname-spread or anti-affinity rule places replicas on distinct nodes.
 1. Inspect every PDB and perform a controlled target-cluster drain; a rendered PDB is not evidence that eviction, rescheduling, storage attachment, and application recovery succeed together.
-1. Run `mise run test:availability`, retain its exact revision and timing evidence, and keep the documented hard-crash loss window outside any claimed RTO until the durable-work follow-up lands.
+1. Run `mise run test:availability` and `mise run test:crash-recovery` on the candidate revision; retain the graceful-drain timings and six-boundary SIGKILL result separately. Keep node loss and every process-recovery timing outside a claimed RTO until the corresponding target-environment drill passes.
 1. Confirm selected-provider retention, residency, billing cap, and low-token runtime acceptance. Static rendering is not runtime evidence.
 1. Configure DNS and valid TLS for the apex plus `chat.`, `matrix.`, `auth.`, `id.`, and `grafana.` hosts. The GKE Terraform output provides the reserved ingress address.
 1. Review CNPG backups and complete a restore drill. The local overlay intentionally strips GCS backup configuration.

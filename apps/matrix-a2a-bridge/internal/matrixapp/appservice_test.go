@@ -20,15 +20,19 @@ func TestConfigureMautrixLogger(t *testing.T) {
 	configureMautrixLogger(as, &output)
 
 	as.Log.Debug().Str("component", "matrix").Msg("transaction received")
+	if output.Len() != 0 {
+		t.Fatalf("content-bearing debug log was enabled: %s", output.String())
+	}
+	as.Log.Info().Str("component", "matrix").Msg("appservice ready")
 
 	var entry map[string]any
 	if err := json.NewDecoder(&output).Decode(&entry); err != nil {
 		t.Fatalf("decode mautrix log: %v", err)
 	}
 	for field, want := range map[string]string{
-		"level":     "debug",
+		"level":     "info",
 		"component": "matrix",
-		"message":   "transaction received",
+		"message":   "appservice ready",
 	} {
 		if got := entry[field]; got != want {
 			t.Errorf("log field %q = %v, want %q", field, got, want)

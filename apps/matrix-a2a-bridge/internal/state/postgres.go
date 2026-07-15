@@ -9,35 +9,26 @@ import (
 	"go.mau.fi/util/dbutil"
 )
 
-// schema is idempotent and tiny (two tables); a migration framework would be overhead here.
-const schema = `
-CREATE TABLE IF NOT EXISTS bridge_contexts (
-	room_id    TEXT NOT NULL,
-	ghost      TEXT NOT NULL,
-	context_id TEXT NOT NULL,
-	updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-	PRIMARY KEY (room_id, ghost)
-);
-CREATE TABLE IF NOT EXISTS bridge_processed_events (
-	event_id     TEXT PRIMARY KEY,
-	processed_at TIMESTAMPTZ NOT NULL DEFAULT now()
-);
-CREATE INDEX IF NOT EXISTS bridge_processed_events_at ON bridge_processed_events (processed_at);
-`
-
 // Postgres implements Store on the shared dbutil database (the same connection pool that backs
 // the mautrix SQL StateStore — one pool per pod, per SPEC §5).
 type Postgres struct {
 	db *dbutil.Database
 }
 
-// NewPostgres creates the bridge tables (idempotent) and returns a Postgres store. The caller
-// owns the database handle's lifecycle; Close here is a no-op so the shared pool survives.
+// NewPostgres upgrades the versioned bridge schema and returns a Postgres store. The caller owns
+// the root database handle's lifecycle; Close here is a no-op so the shared pool survives.
 func NewPostgres(ctx context.Context, db *dbutil.Database) (*Postgres, error) {
-	if _, err := db.Exec(ctx, schema); err != nil {
-		return nil, fmt.Errorf("create bridge state schema: %w", err)
+	if db.Dialect != dbutil.Postgres {
+		return nil, fmt.Errorf("bridge durable state requires Postgres, got %s", db.Dialect)
 	}
-	return &Postgres{db: db}, nil
+	stateDB := db.Child(versionTableName, UpgradeTable, dbutil.NoopLogger)
+	// database_owner is shared across child schemas, so retain the root database's owner rather
+	// than inventing a child-specific owner that would conflict with other bridge tables.
+	stateDB.Owner = db.Owner
+	if err := stateDB.Upgrade(ctx); err != nil {
+		return nil, fmt.Errorf("upgrade bridge state schema: %w", err)
+	}
+	return &Postgres{db: stateDB}, nil
 }
 
 // Context implements Store.

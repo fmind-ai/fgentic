@@ -60,8 +60,14 @@ metadata:
   namespace: bridge-integration
 data:
   a2aStubDelay: 0s
+  a2aStubLongHold: "false"
+  a2aBaseURL: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080
   agentCardRefreshInterval: 1s
   concurrency: "2"
+  databaseURL: postgres://postgres@postgres:5432/bridge?sslmode=disable
+  delegationClaimInterval: 1s
+  delegationLeaseDuration: 30s
+  homeserverURL: http://synapse:8008
   senderRatePerMinute: "0.01"
   senderRateBurst: "1"
   roomRatePerMinute: "60"
@@ -75,6 +81,7 @@ metadata:
 data:
   a2aStubDelay: 0s
   a2aStubHold: "false"
+  a2aStubLongHold: "false"
 ---
 apiVersion: v1
 kind: Secret

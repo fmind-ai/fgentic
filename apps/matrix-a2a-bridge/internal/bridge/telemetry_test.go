@@ -184,6 +184,8 @@ func TestDispatchRedactsFailureContentFromDelegationSpan(t *testing.T) {
 			sentinel := errors.New(sentinelText)
 			client := test.client(sentinel)
 			b, _, evt, ref, _ := pollingHarness(t, client)
+			var logs strings.Builder
+			setBridgeLogOutput(b, &logs)
 			if test.configure != nil {
 				test.configure(b, sentinel)
 			}
@@ -245,6 +247,9 @@ func TestDispatchRedactsFailureContentFromDelegationSpan(t *testing.T) {
 				t.Errorf("event %q count = %d, want %d", test.wantEvent, eventCount, test.wantEventCount)
 			}
 			assertSpanOmitsSentinel(t, span, sentinelText)
+			if strings.Contains(logs.String(), sentinelText) || strings.Contains(logs.String(), "sensitive prompt body") {
+				t.Fatalf("diagnostic logs contain provider or prompt content: %s", logs.String())
+			}
 		})
 	}
 }

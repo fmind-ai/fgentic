@@ -2,6 +2,8 @@ package bridge
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -100,22 +102,23 @@ type pollWaitFunc func(context.Context, time.Duration) error
 // delegationAuditResult is the terminal, content-free audit outcome for one resolved target.
 // Keeping it separate from ordinary diagnostic logs gives operators a stable evidence schema.
 type delegationAuditResult struct {
-	outcome          string
-	terminalStage    string
-	terminalReason   string
-	duration         time.Duration
-	dedupVerdict     auditDedupVerdict
-	rateLimitVerdict auditRateLimitVerdict
-	a2aAttempted     bool
-	a2aUserID        string
-	contextID        string
-	taskID           string
-	replyEventID     id.EventID
-	canceledBy       string   // room member who canceled a long task (#98); empty otherwise
-	activated        []string // A2A extensions the remote echoed as activated (#114); empty for local
-	mediaIn          int      // files forwarded from the room to the agent (#115)
-	mediaOut         int      // agent artifact files posted into the room (#115)
-	mediaRejected    int      // files withheld in either direction by the media policy (#115)
+	outcome           string
+	terminalStage     string
+	terminalReason    string
+	duration          time.Duration
+	dedupVerdict      auditDedupVerdict
+	rateLimitVerdict  auditRateLimitVerdict
+	a2aAttempted      bool
+	a2aUserID         string
+	contextID         string
+	taskID            string
+	replyEventID      id.EventID
+	canceledBy        string   // room member who canceled a long task (#98); empty otherwise
+	activated         []string // A2A extensions the remote echoed as activated (#114); empty for local
+	mediaIn           int      // files forwarded from the room to the agent (#115)
+	mediaOut          int      // agent artifact files posted into the room (#115)
+	mediaRejected     int      // files withheld in either direction by the media policy (#115)
+	targetFingerprint string   // immutable durable mapping evidence; empty on legacy in-memory work
 }
 
 // Bridge orchestrates the @mention -> A2A -> reply flow for one appservice.
@@ -147,6 +150,9 @@ type Bridge struct {
 	watchWG            sync.WaitGroup
 	watchCancel        context.CancelFunc
 	agentConfigMu      sync.RWMutex
+	durableIntake      bool // immutable after startup; pre-ACK jobs replace legacy message dispatch
+	durableQueue       *durableQueue
+	durableIntakeGate  durableIntakeGate
 
 	runCtx context.Context // process lifetime; delegations run under it, not the handler ctx
 }
@@ -184,6 +190,13 @@ func New(cfg config.Config, as *appservice.AppService, agents *AgentMap, client 
 	bridge.profiles = newProfileStore(agents.Entries())
 	bridge.profileWriter = &matrixProfileWriter{as: as, log: log}
 	return bridge
+}
+
+// EnableDurableIntake switches initial mentions from the legacy in-memory dispatcher to jobs that
+// were committed by AdmitAppserviceTransaction before HTTP acknowledgement. Call once during main
+// wiring, before Start or any HTTP/event goroutine begins.
+func (b *Bridge) EnableDurableIntake() {
+	b.durableIntake = true
 }
 
 // stagingRoomSet indexes the configured staging room IDs for O(1) membership checks (#128).
@@ -231,6 +244,30 @@ func (b *Bridge) Start(ctx context.Context) error {
 	b.watchCancel = watchCancel
 	b.watchWG.Add(1)
 	go b.watchAgents(watchCtx)
+	if b.durableIntake {
+		owner, err := newLeaseOwner()
+		if err != nil {
+			watchCancel()
+			b.watchWG.Wait()
+			return fmt.Errorf("create delegation lease owner: %w", err)
+		}
+		queue, err := newDurableQueue(ctx, b.store, b.log, durableQueueConfig{
+			Owner:             owner,
+			Concurrency:       b.cfg.Concurrency,
+			LeaseDuration:     b.cfg.DelegationLeaseDuration,
+			HeartbeatInterval: b.cfg.DelegationLeaseDuration / 3,
+			IdleClaimInterval: b.cfg.DelegationClaimInterval,
+		}, b.executeDurableJobAfterTransactionConsumption)
+		if err != nil {
+			watchCancel()
+			b.watchWG.Wait()
+			return fmt.Errorf("start durable delegation queue: %w", err)
+		}
+		b.durableQueue = queue
+		b.durableQueue.Notify() // reclaim work left by a previous process without waiting one interval
+		b.watchWG.Add(1)
+		go b.cleanupDurableState(watchCtx)
+	}
 	return nil
 }
 
@@ -239,8 +276,39 @@ func (b *Bridge) Stop() {
 	if b.watchCancel != nil {
 		b.watchCancel()
 	}
+	if b.durableQueue != nil {
+		b.durableQueue.Stop()
+	}
 	b.dispatcher.Wait()
 	b.watchWG.Wait()
+}
+
+func newLeaseOwner() (string, error) {
+	var random [16]byte
+	if _, err := rand.Read(random[:]); err != nil {
+		return "", fmt.Errorf("read random lease identity: %w", err)
+	}
+	return "bridge-" + hex.EncodeToString(random[:]), nil
+}
+
+func (b *Bridge) cleanupDurableState(ctx context.Context) {
+	cleanup := func() {
+		if _, err := b.store.CleanupTerminal(ctx, time.Now().UTC()); err != nil && ctx.Err() == nil {
+			b.log.Warn("durable delegation cleanup failed", "reason", "storage_error")
+		}
+	}
+	cleanup()
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	defer b.watchWG.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cleanup()
+		}
+	}
 }
 
 // HandleMessage is the appservice event handler for m.room.message events. It only classifies
@@ -275,6 +343,12 @@ func (b *Bridge) HandleMessage(ctx context.Context, evt *event.Event) {
 	}
 	targets := b.resolveTargets(evt, msg)
 	if len(targets.allowed) == 0 && len(targets.deniedBridged) == 0 {
+		return
+	}
+	if b.durableIntake {
+		// The pre-ACK classifier has already committed one job per target. Replaying the event through
+		// mautrix remains necessary for state/non-delegation behavior, but dispatching it here would
+		// race the lease worker and duplicate A2A side effects.
 		return
 	}
 	dedupStarted := time.Now()
@@ -608,7 +682,8 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 		}
 		delegationsTotal.WithLabelValues(open.localpart, outcomeError).Inc()
 		audit.terminalReason = "a2a_call_failed"
-		b.log.Error("a2a continuation failed", "agent", ref.Path(), "room", reply.RoomID, "err", err)
+		b.log.Error("a2a continuation failed", "agent", ref.Path(), "room", reply.RoomID,
+			"reason", "continuation_failed", "error_type", fmt.Sprintf("%T", err))
 		b.editReply(ctx, intent, reply.RoomID, open.placeholder, fmt.Sprintf("⚠️ could not reach agent %q — see the bridge logs.", open.localpart))
 		return
 	}
@@ -929,7 +1004,8 @@ func (b *Bridge) dispatchWithDedupVerdict(
 			return
 		}
 		delegationsTotal.WithLabelValues(localpart, outcomeError).Inc()
-		b.log.Error("a2a call failed", "agent", ref.Path(), "room", evt.RoomID, "err", err)
+		b.log.Error("a2a call failed", "agent", ref.Path(), "room", evt.RoomID,
+			"reason", "message_send_failed", "error_type", fmt.Sprintf("%T", err))
 		// Deliberately generic: internal endpoints/errors must not leak into rooms (SPEC §6).
 		audit.terminalReason = "a2a_call_failed"
 		audit.replyEventID = b.postReply(ctx, intent, evt, fmt.Sprintf("⚠️ could not reach agent %q — see the bridge logs.", localpart))
@@ -958,8 +1034,8 @@ func (b *Bridge) dispatchWithDedupVerdict(
 	}
 	if res.Failed {
 		delegationsTotal.WithLabelValues(localpart, outcomeFailed).Inc()
-		// Agent-side failure detail stays in the logs — rooms get a generic notice (SPEC §6).
-		b.log.Error("agent task failed", "ghost", localpart, "agent", ref.Path(), "room", evt.RoomID, "detail", res.Text)
+		b.log.Error("agent task failed", "ghost", localpart, "agent", ref.Path(), "room", evt.RoomID,
+			"reason", "agent_reported_failure")
 		audit.outcome = outcomeFailed
 		audit.terminalReason = "agent_failed"
 		audit.replyEventID = b.postReply(ctx, intent, evt, fmt.Sprintf("⚠️ agent %q could not complete the task — see the bridge logs.", localpart))
@@ -1208,13 +1284,15 @@ func (b *Bridge) awaitTask(
 				return audit
 			}
 			if pollErrors++; pollErrors < pollErrorBudget {
-				b.log.Warn("tasks/get failed, retrying", "task", res.TaskID, "err", err)
+				b.log.Warn("tasks/get failed, retrying", "task", res.TaskID,
+					"reason", "task_poll_failed", "error_type", fmt.Sprintf("%T", err))
 				continue
 			}
 			delegationsTotal.WithLabelValues(localpart, outcomeLost).Inc()
 			audit.outcome = outcomeLost
 			audit.terminalReason = "task_poll_failed"
-			b.log.Error("tasks/get failed", "task", res.TaskID, "agent", ref.Path(), "err", err)
+			b.log.Error("tasks/get failed", "task", res.TaskID, "agent", ref.Path(),
+				"reason", "task_poll_failed", "error_type", fmt.Sprintf("%T", err))
 			b.editReply(ctx, intent, evt.RoomID, placeholder,
 				fmt.Sprintf("⚠️ lost track of agent %q's task — see the bridge logs.", localpart))
 			return audit
@@ -1234,7 +1312,8 @@ func (b *Bridge) awaitTask(
 				delegationsTotal.WithLabelValues(localpart, outcomeFailed).Inc()
 				audit.outcome = outcomeFailed
 				audit.terminalReason = "agent_failed"
-				b.log.Error("agent task failed", "ghost", localpart, "agent", ref.Path(), "room", evt.RoomID, "detail", polled.Text)
+				b.log.Error("agent task failed", "ghost", localpart, "agent", ref.Path(), "room", evt.RoomID,
+					"reason", "agent_reported_failure")
 				b.editReply(ctx, intent, evt.RoomID, placeholder,
 					fmt.Sprintf("⚠️ agent %q could not complete the task — see the bridge logs.", localpart))
 				return audit
@@ -1378,7 +1457,8 @@ func (b *Bridge) finishCanceled(
 	if err := b.client.CancelTask(cancelCtx, ref.Target(), taskID); err != nil {
 		// Best-effort: the room cancel is honored regardless, but a failed agent-side stop means
 		// the agent may keep working, so it is worth a warning.
-		b.log.Warn("agent-side task cancel failed", "task", taskID, "agent", ref.Path(), "err", err)
+		b.log.Warn("agent-side task cancel failed", "task", taskID, "agent", ref.Path(),
+			"reason", "task_cancel_failed", "error_type", fmt.Sprintf("%T", err))
 	}
 	cancel()
 
@@ -1417,6 +1497,7 @@ func (b *Bridge) logDelegationAudit(
 		"ghost", localpart,
 		"ghost_mxid", id.NewUserID(localpart, b.cfg.ServerName).String(),
 		"agent_path", ref.Path(),
+		"target_fingerprint", result.targetFingerprint,
 		"a2a_attempted", result.a2aAttempted,
 		"a2a_user_id", result.a2aUserID,
 		"a2a_context_id", result.contextID,
@@ -1454,7 +1535,7 @@ func (b *Bridge) postReply(ctx context.Context, intent *appservice.IntentAPI, ev
 func (b *Bridge) editReply(ctx context.Context, intent *appservice.IntentAPI, roomID id.RoomID, target id.EventID, text string) {
 	trace.SpanFromContext(ctx).AddEvent("matrix.reply.edit")
 	if target == "" {
-		b.log.Error("no placeholder to edit", "room", roomID, "text", text)
+		b.log.Error("no placeholder to edit", "room", roomID, "reason", "missing_placeholder")
 		return
 	}
 	content := &event.MessageEventContent{MsgType: event.MsgNotice, Body: text}
