@@ -6,9 +6,9 @@ description: Authorize enterprise agent access via managed room membership rathe
 
 # 0009 — Enterprise Agent Authorization Through Managed Room Membership
 
-Status: Proposed
+Status: Accepted
 
-Approval gate: a human must approve this ADR in [issue #19](https://github.com/fmind-ai/fgentic/issues/19) before implementation issues are created. Nothing below is a settled design decision yet.
+Accepted on 2026-07-14 by the maintainer in [issue #19](https://github.com/fmind-ai/fgentic/issues/19#issuecomment-4965773860). [D20](../design-decisions.md) is the durable register entry; this ADR records the full boundary and implementation gates.
 
 Scope note: accepted [ADR 0017](0017-permission-aware-identity-binding.md) independently governs content-row ACLs and the audience of grounded Matrix output. It neither accepts nor depends on this proposal's IdP group reconciler; Matrix retrieval v1 uses typed exact full-principal ACLs and no group mapping.
 
@@ -32,7 +32,7 @@ The relevant failure modes are:
 
 ## Decision
 
-If accepted, use **managed Matrix room membership as the authorization boundary**. IdP groups declare desired membership; a small reconciler materializes that intent into Matrix room state. The bridge authorizes only within that already-materialized state.
+Use **managed Matrix room membership as the authorization boundary**. IdP groups declare desired membership; a small reconciler materializes that intent into Matrix room state. The bridge authorizes only within that already-materialized state.
 
 1. Define declarative bindings from one exact IdP group path to one managed Matrix room and an explicit set of agent ghosts. A room represents one access bundle. Different privileges require different rooms instead of hidden per-user rules inside one collaboration room.
 
@@ -81,13 +81,13 @@ If accepted, use **managed Matrix room membership as the authorization boundary*
 
 ## Migration and implementation gates
 
-1. Human approval of this ADR is the first gate. Until then, D6 and the current room behavior remain authoritative and this file must not be added to `docs/design-decisions.md` as settled.
-1. After approval, create separate implementation issues for the binding/reconciler, bridge room-binding hardening, managed-room bootstrap, metrics/alerts, and local/federated conformance tests.
+1. Maintainer approval is recorded in issue #19. This acceptance settles the design only; D6 and the current room behavior remain authoritative until the implementation gates below land.
+1. Re-groom the existing follow-ups against this accepted contract before implementation. Issue #154 must reconcile exact group-to-room bindings through a scoped Matrix client identity, not Spaces or a Synapse-admin credential. Issue #155's Space selector premise was rejected; bridge work instead needs exact `allowedRooms`, managed-invite, and ambient-join hardening. Keep managed-room bootstrap, metrics/alerts, and local/federated conformance tests explicit in those implementation slices.
 1. Ship bridge hardening before any group grants. Ambient `EnsureJoined` and unrestricted mapped-ghost invite acceptance remain explicit blockers; the existing Helm preservation tests for `allowedServers`/`allowedSenders` stay as regression guards.
 1. Roll out in audit-only mode first: validate `matrix_localpart`, compute membership diffs, and compare them with existing rooms without mutation. Any duplicate subject/localpart, missing or invalid localpart, nonexistent Matrix account, unmanaged room, unexpected creator, or power-level drift fails closed for grants.
 1. Adopt each existing agent room only after the access-manager owns its invite/kick/ban controls, its exact agent set is recorded, and current membership has human review. Then enable additions, removals, and the revocation-SLO alert together.
 1. Acceptance requires tests proving: invite and accepted grant; pending-invite and joined-member revocation within the approved SLO; no changes after a partial directory read; renamed/deleted group behavior; duplicate subject/localpart denial; nonexistent Matrix-account handling; ghost invite denial; an unbound-agent mention denial; `allowedServers` federation denial; and continued authorization during an IdP outage for last-known members.
 
-## Approval required
+## Accepted decision
 
-The human decision is whether to accept room membership as the deliberately simple boundary, including user-accepted invitations, the one-room-per-access-bundle constraint, and the proposed 60-second reconciliation/two-minute alert-and-revocation SLO. Approval must also name the initial exact group-to-room-to-agent bindings. Only then can this ADR become `Accepted`, enter the design-decision register, and produce the follow-up implementation issues required by issue #19.
+The maintainer accepted room membership as the deliberately simple boundary, including user-accepted invitations, the one-room-per-access-bundle constraint, and the 60-second reconciliation/two-minute alert-and-revocation SLO. The initial deployment must still name its exact group-to-room-to-agent bindings during implementation; acceptance does not invent environment-specific policy or claim the capability is live.

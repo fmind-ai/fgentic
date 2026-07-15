@@ -25,7 +25,7 @@ Identity mapping is deliberately fail-closed:
 1. `matrix_localpart` is a single-valued, required, administrator-managed IdP attribute. Keycloak's user-profile policy hides it from end users and only administrators can edit it.
 1. MAS imports `{{ user.matrix_localpart }}` with `action: require` and `on_conflict: fail`. It never derives an MXID from a mutable username or email address, and it never attaches an upstream identity to an existing Matrix account implicitly.
 1. `name` becomes the Matrix display name and `email` becomes the account email with `action: force`; absence does not change the stable MXID.
-1. The optional `fgentic-groups` scope emits full-path string values such as `/platform/admins`. This is interoperability and diagnostic data only. It is not a runtime authorization credential; [ADR 0009](adr/0009-agent-authorization-model.md) remains **Proposed**.
+1. The optional `fgentic-groups` scope emits full-path string values such as `/platform/admins`. This is interoperability and diagnostic data only. It is not a runtime authorization credential; accepted [ADR 0009](adr/0009-agent-authorization-model.md) and [D20](design-decisions.md) authorize from reconciled Matrix room membership instead.
 
 Group names themselves must not contain `/`; the slash is the Keycloak path separator. Every externally managed user must receive `matrix_localpart` before login or MAS rejects registration.
 
@@ -80,7 +80,7 @@ upstream_oauth2:
           template: "{{ user.email }}"
 ```
 
-Entra's native `groups` claim contains object IDs, not Keycloak-style full paths. MAS does not consume groups for authorization, so either omit it or normalize it in a separate, approved authorization design; do not treat object IDs as the proposed ADR 0009 contract.
+Entra's native `groups` claim contains object IDs, not Keycloak-style full paths. MAS does not consume groups for authorization, so either omit it or normalize it into the exact-path directory contract in accepted ADR 0009; do not treat token object IDs as runtime authorization.
 
 ## Generic OIDC variant
 
