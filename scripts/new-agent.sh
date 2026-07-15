@@ -33,11 +33,19 @@ done
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-agent-new.XXXXXX")"
 committed=false
+kagent_replaced=false
+bridge_replaced=false
 cleanup() {
-  rm -rf "${tmp_dir}"
   if [[ "${committed}" != true ]]; then
+    if [[ "${kagent_replaced}" == true ]]; then
+      cp "${tmp_dir}/original-kagent-kustomization.yaml" "${kagent_kustomization}"
+    fi
+    if [[ "${bridge_replaced}" == true ]]; then
+      cp "${tmp_dir}/original-bridge-kustomization.yaml" "${bridge_kustomization}"
+    fi
     rm -rf "${agent_dir}" "${mapping_dir}" "${eval_dir}"
   fi
+  rm -rf "${tmp_dir}"
 }
 trap cleanup EXIT
 
@@ -163,14 +171,16 @@ EOF
 
 # Prepare both list updates before replacing either tracked composition file. The generated
 # resource and component are real GitOps inputs, not orphan examples that escape rendered checks.
-cp "${kagent_kustomization}" "${tmp_dir}/kagent-kustomization.yaml"
-cp "${bridge_kustomization}" "${tmp_dir}/bridge-kustomization.yaml"
+cp "${kagent_kustomization}" "${tmp_dir}/original-kagent-kustomization.yaml"
+cp "${bridge_kustomization}" "${tmp_dir}/original-bridge-kustomization.yaml"
+cp "${kagent_kustomization}" "${tmp_dir}/new-kagent-kustomization.yaml"
+cp "${bridge_kustomization}" "${tmp_dir}/new-bridge-kustomization.yaml"
 AGENT_RESOURCE="agents/${name}" yq -i \
   '.resources = ((.resources // []) + [strenv(AGENT_RESOURCE)] | unique)' \
-  "${tmp_dir}/kagent-kustomization.yaml"
+  "${tmp_dir}/new-kagent-kustomization.yaml"
 AGENT_COMPONENT="agents/${name}" yq -i \
   '.components = ((.components // []) + [strenv(AGENT_COMPONENT)] | unique)' \
-  "${tmp_dir}/bridge-kustomization.yaml"
+  "${tmp_dir}/new-bridge-kustomization.yaml"
 
 yq eval-all -e 'select(.kind == "Agent") | .metadata.name == "'"${name}"'" and .metadata.namespace == "kagent"' \
   "${agent_dir}/agent.yaml" >/dev/null
@@ -196,8 +206,10 @@ mise --cd "${source_root}/apps/matrix-a2a-bridge" exec -- \
   --schema agents.schema.json \
   --config "${tmp_dir}/agents.yaml"
 
-mv "${tmp_dir}/kagent-kustomization.yaml" "${kagent_kustomization}"
-mv "${tmp_dir}/bridge-kustomization.yaml" "${bridge_kustomization}"
+kagent_replaced=true
+cp "${tmp_dir}/new-kagent-kustomization.yaml" "${kagent_kustomization}"
+bridge_replaced=true
+cp "${tmp_dir}/new-bridge-kustomization.yaml" "${bridge_kustomization}"
 committed=true
 
 printf '%s\n' \
