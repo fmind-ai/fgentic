@@ -20,6 +20,8 @@ Fgentic ships opt-in, digest-pinned GitOps units for **Slack** and **Telegram** 
 
 > **New here?** The specification lives under [docs/](docs/), split by topic: [architecture & vision](docs/architecture.md), [open-stack governance](docs/open-stack.md), [design decisions D1–D18](docs/design-decisions.md), [identity and SSO](docs/identity.md), [model provider profiles](docs/models.md), [bridge behavior](docs/bridge.md), [external-network interop](docs/interop.md), [security model](docs/security.md), [federation design](docs/federation.md), [partner federation onboarding](docs/federation-onboarding.md), [observability](docs/observability.md), [licensing strategy](docs/licensing.md), [exit strategy](docs/exit-strategy.md), [incumbent-chat coexistence](docs/chat-coexistence.md), [roadmap history](docs/roadmap.md) — plus the [ADRs](docs/adr/). The executable roadmap is the set of [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones).
 
+> **Evaluating adoption?** Start with the vendor-neutral [adopter decision brief and parameterized TCO worksheet](docs/adopter-decision-brief.md); it separates the controls Fgentic owns from the open-source systems it composes and requires your own measured usage, labor, and contracted rates.
+
 ---
 
 ## Core principles
