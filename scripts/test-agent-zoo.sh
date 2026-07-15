@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Render the pinned kagent chart and the bridge chart, then assert the sample zoo's security
-# contract. These checks intentionally inspect rendered RBAC rather than trusting values names:
-# an upstream chart change must not silently restore cluster-admin or write-capable tools.
+# Render every composed in-repo Agent and bridge mapping, then assert their shared authoring and
+# sample-zoo security contracts. Rendered RBAC is inspected rather than trusting values names: an
+# upstream chart change must not silently restore cluster-admin or write-capable tools.
 set -euo pipefail
 
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
 fail() {
-  echo "agent-zoo check failed: $*" >&2
+  echo "Agent authoring check failed: $*" >&2
   exit 1
 }
 
@@ -161,7 +161,7 @@ write_verbs="$(yq eval-all -N -r 'select(.kind == "Role" and .metadata.name == "
 
 echo "==> Rendering the bridge agent map and startup profiles"
 export server_name=ci.fgentic.example
-kustomize build apps/matrix-a2a-bridge/deploy >"${tmp_dir}/bridge-release.yaml"
+kubectl kustomize apps/matrix-a2a-bridge/deploy >"${tmp_dir}/bridge-release.yaml"
 yq eval-all -o=yaml \
   'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") | .spec.values' \
   "${tmp_dir}/bridge-release.yaml" \
@@ -176,19 +176,27 @@ mise --cd apps/matrix-a2a-bridge exec -- \
   --schema agents.schema.json \
   --config "${tmp_dir}/agents.yaml"
 expected_mappings="agent-${actual_agents//$'\n'/$'\n'agent-}"
-actual_mappings="$(yq -N -r '.agents | to_entries[] | select(.value.namespace == "kagent") | .key' "${tmp_dir}/agents.yaml" | sort)"
-[[ "${actual_mappings}" == "${expected_mappings}" ]] \
-  || fail "effective local bridge mappings must match the rendered Agent resources exactly"
+# Pinned remote mappings intentionally have no local kagent CRD. Keep the local mapping set a
+# bijection with rendered Agents, then apply the common sender/stage policy to every mapping below.
+actual_local_mappings="$(yq -N -r '.agents | to_entries[] | select(.value.namespace == "kagent") | .key' "${tmp_dir}/agents.yaml" | sort)"
+[[ "${actual_local_mappings}" == "${expected_mappings}" ]] \
+  || fail "every local bridge mapping must match exactly one rendered in-repo Agent"
+while IFS= read -r mapping; do
+  assert_yq \
+    "select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"agents.yaml\" | from_yaml | .agents.\"${mapping}\".allowedSenders as \$senders | ((\$senders | length) == 1 and \$senders[0] == \"@alice:ci.fgentic.example\")" \
+    "${tmp_dir}/bridge.yaml" \
+    "${mapping} must carry exactly one explicit full-MXID sender (wildcards and widened allowlists are forbidden)"
+  assert_yq \
+    "select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"agents.yaml\" | from_yaml | .agents.\"${mapping}\".stage as \$stage | (\$stage == \"dev\" or \$stage == \"prod\")" \
+    "${tmp_dir}/bridge.yaml" \
+    "${mapping} must carry an explicit dev or prod stage"
+done < <(yq -N -r '.agents | keys | .[]' "${tmp_dir}/agents.yaml" | sort)
 while IFS= read -r agent; do
   mapping="agent-${agent}"
   assert_yq \
     "select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"agents.yaml\" | from_yaml | .agents.\"${mapping}\" as \$mapping | (\$mapping.namespace == \"kagent\" and \$mapping.name == \"${agent}\")" \
     "${tmp_dir}/bridge.yaml" \
     "${mapping} must resolve to the matching kagent Agent"
-  assert_yq \
-    "select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"agents.yaml\" | from_yaml | .agents.\"${mapping}\".allowedSenders as \$senders | ((\$senders | length) == 1 and \$senders[0] == \"@alice:ci.fgentic.example\")" \
-    "${tmp_dir}/bridge.yaml" \
-    "${mapping} must be restricted to Alice"
   assert_yq \
     "select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"agents.yaml\" | from_yaml | .agents.\"${mapping}\".description | length > 0" \
     "${tmp_dir}/bridge.yaml" \
@@ -199,4 +207,4 @@ assert_yq \
   "${tmp_dir}/bridge.yaml" \
   "static welcome copy must not bypass sender-filtered runtime discovery"
 
-echo "==> agent zoo contract OK"
+echo "==> all in-repo Agent authoring and sample-zoo contracts OK"

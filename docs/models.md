@@ -228,7 +228,9 @@ Static rendering and schema validation prove only that a profile is structurally
 
 ## Deterministic reference-agent golden gate
 
-`mise run eval:golden` is the zero-egress, zero-token CI gate for the three shipped reference Agents. It extracts and starts the checked-in `demo` model on an ephemeral loopback port, then binds one fixed task per Agent to the exact checked-in Agent spec, only the ConfigMap prompt fragments that Agent imports, and the response returned by that stub. The comparator is byte-for-byte deterministic; a changed expected response, Agent tool/config contract, or referenced prompt fragment fails until the golden fixture receives explicit review.
+`mise run test:agents-golden` is the zero-egress, zero-token CI gate for every composed in-repo Agent. It extracts and starts the checked-in `demo` model on an ephemeral loopback port, then discovers each `evals/<name>/golden.json` fixture and binds its tasks to the exact rendered Agent spec, only the ConfigMap prompt fragments that Agent imports, and the response returned by that stub. The comparator is deterministic; a changed expected response, Agent tool/config contract, referenced prompt fragment, orphan mapping, or missing fixture fails until the effective contract receives explicit review. `mise run eval:golden` remains a compatibility alias for the same gate.
+
+The runner sends `X-User-Id` on every golden request as asserted Matrix-sender attribution. It also proves an otherwise identical anonymous request receives the same deterministic response, so neither the backend nor the assertions mistake that header for an authenticated principal (D11). All traffic is limited to the ephemeral `127.0.0.1` listener; no provider, cluster, or external network is contacted.
 
 This gate detects source-contract and deterministic-response regression. It does not claim that the constant demo model understood the prompt, exercised an Agent tool, or produced a useful live-model answer. Real semantic quality remains the approved profile run below and the separate sovereign judge lane in issue #355.
 

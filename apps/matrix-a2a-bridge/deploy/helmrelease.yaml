@@ -49,12 +49,15 @@ spec:
     bridgedOrigins: {}
     agents:
       agent-platform-helper:
+        stage: prod
         allowedSenders:
           - "@alice:${server_name}"
       agent-docs-qa:
+        stage: prod
         allowedSenders:
           - "@alice:${server_name}"
       agent-scribe:
+        stage: prod
         allowedSenders:
           - "@alice:${server_name}"
     metrics:

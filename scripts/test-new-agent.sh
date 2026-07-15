@@ -66,13 +66,14 @@ mapping_sender="$(yq -er '.patches[0].patch | from_yaml | .[0].value.allowedSend
 jq -e '
   .schema_version == "fgentic.agent.eval.v1" and
   .agent == "demo-helper" and
+  (.agent_contract_sha256 | test("^[0-9a-f]{64}$")) and
   .scenarios[0].agent == "demo-helper" and
   .scenarios[0].rubric.kind == "exact" and
   (.scenarios[0].rubric.expected | length) == 1
 ' "${golden_fixture}" >/dev/null || fail "generated golden fixture is invalid"
 
-kustomize build "${tmp_dir}/infra/kagent" >"${tmp_dir}/kagent.yaml"
-kustomize build "${tmp_dir}/apps/matrix-a2a-bridge/deploy" >"${tmp_dir}/bridge-release.yaml"
+kubectl kustomize "${tmp_dir}/infra/kagent" >"${tmp_dir}/kagent.yaml"
+kubectl kustomize "${tmp_dir}/apps/matrix-a2a-bridge/deploy" >"${tmp_dir}/bridge-release.yaml"
 
 yq eval-all -e '
   select(.kind == "Agent" and .metadata.name == "demo-helper") |
@@ -103,8 +104,86 @@ if ! (
   bash "${repo_root}/scripts/test-agent-zoo.sh"
 ) >"${tmp_dir}/agent-zoo.log" 2>&1; then
   cat "${tmp_dir}/agent-zoo.log" >&2
-  fail "generated scaffold does not pass the exact check:agent-zoo contract"
+  fail "generated scaffold does not pass the exact check:agents contract"
 fi
+
+# Remote targets are governed mappings but deliberately have no local kagent Agent. Prove the
+# generalized gate preserves that supported trust boundary while applying sender/stage policy.
+bridge_release="${tmp_dir}/apps/matrix-a2a-bridge/deploy/helmrelease.yaml"
+cp "${bridge_release}" "${tmp_dir}/bridge-helmrelease.yaml"
+yq -i '.spec.values.agents."agent-remote-test" = {
+  "url": "https://agents.partner.example/a2a/reviewer",
+  "timeout": "30s",
+  "tokenBudget": 4096,
+  "cardIdentity": {
+    "name": "Partner reviewer",
+    "organization": "Partner Example",
+    "keyID": "partner-reviewer-2026-07",
+    "publicKey": {
+      "kty": "EC",
+      "crv": "P-256",
+      "x": "axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY",
+      "y": "T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU"
+    }
+  },
+  "description": "Reviews documents through a governed partner endpoint.",
+  "stage": "prod",
+  "allowedSenders": ["@alice:${server_name}"]
+}' "${bridge_release}"
+if ! (
+  cd "${tmp_dir}"
+  bash "${repo_root}/scripts/test-agent-zoo.sh"
+) >"${tmp_dir}/remote-mapping.log" 2>&1; then
+  cat "${tmp_dir}/remote-mapping.log" >&2
+  fail "valid pinned remote mapping did not pass the generalized check:agents contract"
+fi
+cp "${tmp_dir}/bridge-helmrelease.yaml" "${bridge_release}"
+
+expect_authoring_failure() {
+  local case_name="$1"
+  local expected="$2"
+  if (
+    cd "${tmp_dir}"
+    bash "${repo_root}/scripts/test-agent-zoo.sh"
+  ) >"${tmp_dir}/${case_name}.log" 2>&1; then
+    fail "${case_name} authoring drift unexpectedly passed"
+  fi
+  rg -q "${expected}" "${tmp_dir}/${case_name}.log" \
+    || {
+      cat "${tmp_dir}/${case_name}.log" >&2
+      fail "${case_name} drift did not produce the actionable validation error"
+    }
+}
+
+cp "${mapping_component}" "${tmp_dir}/mapping-component.yaml"
+yq -i '.patches[0].patch = ((.patches[0].patch | from_yaml) | .[0].value.name = "missing-agent" | to_yaml)' \
+  "${mapping_component}"
+expect_authoring_failure orphan-mapping 'must resolve to the matching kagent Agent'
+cp "${tmp_dir}/mapping-component.yaml" "${mapping_component}"
+
+yq -i '.patches[0].patch = ((.patches[0].patch | from_yaml) | .[0].value.allowedSenders = ["@*:${server_name}"] | to_yaml)' \
+  "${mapping_component}"
+expect_authoring_failure wildcard-sender 'wildcards and widened allowlists are forbidden'
+cp "${tmp_dir}/mapping-component.yaml" "${mapping_component}"
+
+yq -i '.patches[0].patch = ((.patches[0].patch | from_yaml) | .[0].value.allowedSenders += ["@bob:${server_name}"] | to_yaml)' \
+  "${mapping_component}"
+expect_authoring_failure widened-allowlist 'wildcards and widened allowlists are forbidden'
+cp "${tmp_dir}/mapping-component.yaml" "${mapping_component}"
+
+yq -i '.patches[0].patch = ((.patches[0].patch | from_yaml) | .[0].value.stage = "canary" | to_yaml)' \
+  "${mapping_component}"
+expect_authoring_failure invalid-stage 'agent mapping validation failed'
+cp "${tmp_dir}/mapping-component.yaml" "${mapping_component}"
+
+cp "${agent_manifest}" "${tmp_dir}/agent.yaml"
+yq -i '.spec.declarative.a2aConfig.skills = []' "${agent_manifest}"
+expect_authoring_failure missing-skill 'must advertise at least one A2A skill'
+cp "${tmp_dir}/agent.yaml" "${agent_manifest}"
+
+yq -i 'del(.spec.declarative.deployment.serviceAccountName)' "${agent_manifest}"
+expect_authoring_failure missing-service-account 'must use the unprivileged shared runtime ServiceAccount'
+cp "${tmp_dir}/agent.yaml" "${agent_manifest}"
 
 if FGENTIC_REPO_ROOT="${tmp_dir}" bash "${repo_root}/scripts/new-agent.sh" demo-helper \
   >"${tmp_dir}/duplicate.out" 2>"${tmp_dir}/duplicate.err"; then

@@ -1,0 +1,19 @@
+{
+  "schema_version": "fgentic.agent.eval.v1",
+  "agent": "docs-qa",
+  "agent_contract_sha256": "81fe04d0099b150e2ec15d431940228ab63daf1076715d9cc119ad91fff4fa87",
+  "scenarios": [
+    {
+      "id": "docs-qa-03-room-encryption",
+      "agent": "docs-qa",
+      "prompt": "Answer exactly one word based on the documentation: are current agent collaboration rooms encrypted?",
+      "rubric": {
+        "kind": "exact",
+        "description": "Pins the deterministic demo response for docs-qa.",
+        "expected": [
+          "Fgentic's deterministic evaluation model is working through agentgateway and kagent."
+        ]
+      }
+    }
+  ]
+}

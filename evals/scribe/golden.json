@@ -1,0 +1,19 @@
+{
+  "schema_version": "fgentic.agent.eval.v1",
+  "agent": "scribe",
+  "agent_contract_sha256": "d6a4e2405cb96d9735cb3b03199ef3f89e662ad052281968bae248a69520f924",
+  "scenarios": [
+    {
+      "id": "scribe-04-missing-thread",
+      "agent": "scribe",
+      "prompt": "Summarize yesterday's Matrix room discussion for me.",
+      "rubric": {
+        "kind": "exact",
+        "description": "Pins the deterministic demo response for scribe.",
+        "expected": [
+          "Fgentic's deterministic evaluation model is working through agentgateway and kagent."
+        ]
+      }
+    }
+  ]
+}

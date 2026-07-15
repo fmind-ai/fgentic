@@ -15,6 +15,7 @@ data:
 
     SOURCE_DIR = Path(os.environ.get("SOURCE_DIR", "/app"))
     RESPONSE_TEXT = (SOURCE_DIR / "response.txt").read_text(encoding="utf-8").strip()
+    ATTRIBUTION_LOG = os.environ.get("ATTRIBUTION_LOG")
 
 
     class Handler(BaseHTTPRequestHandler):
@@ -65,6 +66,12 @@ data:
                 self.write_json(400, {"error": {"message": "request must be an object"}})
                 return
             request = cast(dict[str, Any], untrusted_request)
+
+            # X-User-Id is forwarded attribution, never an authorization decision. The optional
+            # local test log proves the golden runner sent it without changing request handling.
+            if ATTRIBUTION_LOG:
+                with Path(ATTRIBUTION_LOG).open("a", encoding="utf-8") as log:
+                    log.write(json.dumps({"user_id": self.headers.get("X-User-Id")}) + "\n")
 
             model = request.get("model", "fgentic-demo")
             if not isinstance(model, str) or not model:
