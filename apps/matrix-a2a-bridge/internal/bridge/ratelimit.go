@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"math"
 	"sync"
 	"time"
 
@@ -31,6 +32,12 @@ type limiters struct {
 type bucket struct {
 	lim      *rate.Limiter
 	lastUsed time.Time
+}
+
+type limiterSnapshot struct {
+	perMinute float64
+	burst     int
+	available int
 }
 
 // limiterReservation is one immediately available token that can be returned while a refusal is
@@ -101,6 +108,23 @@ func reserveNow(limiter *rate.Limiter, now time.Time) (limiterReservation, bool)
 		return limiterReservation{}, false
 	}
 	return limiterReservation{reservation: reservation, at: now}, true
+}
+
+// snapshot reports the current whole-request availability without creating, refreshing, or
+// consuming a bucket. An unseen key therefore has the full configured burst available.
+func (l *limiters) snapshot(key string) limiterSnapshot {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	available := float64(l.burst)
+	if b, ok := l.buckets[key]; ok {
+		available = b.lim.TokensAt(l.now())
+	}
+	available = max(0, min(float64(l.burst), available))
+	return limiterSnapshot{
+		perMinute: l.perMinute,
+		burst:     l.burst,
+		available: int(math.Floor(available)),
+	}
 }
 
 // sweep drops idle buckets. The caller holds mu, and capacity strictly bounds the scan.

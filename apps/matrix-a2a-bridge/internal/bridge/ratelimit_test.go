@@ -57,6 +57,37 @@ func TestLimiterReservationCanRollBackBeforeDurableWrite(t *testing.T) {
 	}
 }
 
+func TestLimiterSnapshotDoesNotCreateRefreshOrConsumeBucket(t *testing.T) {
+	clock := &limiterTestClock{now: time.Unix(1_700_000_000, 0)}
+	limits := newLimitersWithClock(60, 3, 2, clock.Now)
+
+	if got := limits.snapshot("unseen"); got.available != 3 || got.burst != 3 || got.perMinute != 60 {
+		t.Fatalf("unseen snapshot = %+v", got)
+	}
+	if len(limits.buckets) != 0 || !limits.nextSweep.IsZero() {
+		t.Fatal("unseen snapshot mutated limiter state")
+	}
+	if !limits.Allow("sender") {
+		t.Fatal("initial sender token was rejected")
+	}
+	bucket := limits.buckets["sender"]
+	lastUsed := bucket.lastUsed
+	if got := limits.snapshot("sender").available; got != 2 {
+		t.Fatalf("sender snapshot availability = %d, want 2", got)
+	}
+	if bucket.lastUsed != lastUsed {
+		t.Fatal("snapshot refreshed bucket activity")
+	}
+	for range 2 {
+		if !limits.Allow("sender") {
+			t.Fatal("snapshot consumed a remaining burst token")
+		}
+	}
+	if limits.Allow("sender") {
+		t.Fatal("snapshot increased the remaining burst")
+	}
+}
+
 func TestBridgeLimiterMapsUseConfiguredCapacity(t *testing.T) {
 	b := testBridge(t)
 	for name, limits := range map[string]*limiters{

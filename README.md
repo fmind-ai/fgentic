@@ -4,7 +4,7 @@
 
 > **Status: early / experimental (pre-1.0).** Live end-to-end on the local reference cluster, but APIs, manifests, and docs still move between milestones — see [project status & roadmap](#project-status--roadmap) before depending on it.
 
-**Humans and AI agents in the same chat rooms. `@mention` an agent to delegate a task. It replies. Self-hosted, out of the box, on open standards — you choose where your prompts go, and organizations can ultimately federate so agents collaborate across company boundaries.**
+**Humans and AI agents in the same chat rooms. `@mention` an agent or use `/ask` to delegate a task. It replies. Self-hosted, out of the box, on open standards — you choose where your prompts go, and organizations can ultimately federate so agents collaborate across company boundaries.**
 
 The agentic AI landscape is consolidating around closed, tenant-anchored platforms — Slack, Teams, and Google Chat all ship @mentionable agents, every one anchored to a vendor's tenant. **Fgentic** is the open counter-proposal: a **sovereign** platform an enterprise can self-host end-to-end — built exclusively from open protocols and genuinely open-source components, with every layer swappable, a per-cluster choice of model backend (self-hosted included), no proprietary SaaS in the critical path, and **federation** as the destination. It stitches together five open pieces, with their independent stewardship mapped in [Open Agentic Stack](docs/open-stack.md):
 
@@ -49,6 +49,8 @@ Human in Element:  "@agent-k8s: The container is OOMKilled — memory limit 128M
 ```
 
 Data-flow details and async/long-task behavior: [docs/bridge.md](docs/bridge.md); the layer map: [docs/architecture.md](docs/architecture.md).
+
+The plaintext command fallback works in Matrix clients without ghost-MXID autocomplete: `/agents` lists the agents you may invoke, `/ask <agent> <prompt>` uses the same policy and cost-admission path as an `@mention`, and `/budget` shows the current request limits plus remote per-request token reservation ceilings. The budget view is read-only and never presents a reservation as observed consumption. Native Matrix command-picker work remains tracked separately in [#223](https://github.com/fmind-ai/fgentic/issues/223).
 
 ## Architecture at a glance
 

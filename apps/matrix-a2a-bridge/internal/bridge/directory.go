@@ -30,37 +30,15 @@ func agentDirectoryQuery(body string) string {
 	return fields[1]
 }
 
-func (b *Bridge) handleAgentDirectory(ctx context.Context, evt *event.Event) {
-	sender := b.agents.IdentifySender(evt.Sender)
-	if !b.allowNotice(sender, evt.RoomID, agentDirectoryCommand) {
-		b.log.Info(
-			"suppressing agent directory response after notice rate limit",
-			"sender_origin_network", sender.origin.network,
-			"room", evt.RoomID,
-		)
-		return
-	}
-	intent := b.as.BotIntent()
-	if intent == nil {
-		b.log.Error("create bot intent for agent directory")
-		return
-	}
-	if err := intent.EnsureRegistered(ctx); err != nil {
-		b.log.Error("ensure directory bot registered", "user", intent.UserID, "err", err)
-		return
-	}
-	if err := intent.EnsureJoined(ctx, evt.RoomID); err != nil {
-		b.log.Error("join directory bot to room", "user", intent.UserID, "room", evt.RoomID, "err", err)
-		return
-	}
-	body := b.agentDirectoryText(evt.Sender)
-	if msg := evt.Content.AsMessage(); msg != nil {
-		if query := agentDirectoryQuery(msg.Body); query != "" {
-			body = b.agentDirectoryDetailText(evt.Sender, query)
+func (b *Bridge) handleAgentDirectory(ctx context.Context, evt *event.Event, query string) {
+	if b.handleCommandNotice(ctx, evt, agentDirectoryCommand, func() string {
+		if query != "" {
+			return b.agentDirectoryDetailText(evt.Sender, query)
 		}
+		return b.agentDirectoryText(evt.Sender)
+	}) {
+		b.log.Info("served local agent directory", "sender", evt.Sender, "room", evt.RoomID)
 	}
-	b.postReply(ctx, intent, evt, body)
-	b.log.Info("served local agent directory", "sender", evt.Sender, "room", evt.RoomID)
 }
 
 func (b *Bridge) agentDirectoryText(sender id.UserID) string {
@@ -110,13 +88,18 @@ func (b *Bridge) agentDirectoryText(sender id.UserID) string {
 		)
 	}
 	if hiddenByLimit > 0 {
-		lines = append(lines, fmt.Sprintf("- … %d more authorized agent(s); use %s <name> for a specific mapping.", hiddenByLimit, agentDirectoryCommand))
+		lines = append(lines, fmt.Sprintf(
+			"- … %d more authorized agent(s); use %s <name> or %s <name> for a specific mapping.",
+			hiddenByLimit, agentDirectoryCommand, agentsCommand,
+		))
 	}
 	return fmt.Sprintf(
-		"Agents available to %s:\n%s\n\nUse %s <name> for details. Mention an agent by its full MXID.",
+		"Agents available to %s:\n%s\n\nUse %s <name> or %s <name> for details. Delegate with %s <name> <prompt> or mention an agent by its full MXID.",
 		sender,
 		strings.Join(lines, "\n"),
 		agentDirectoryCommand,
+		agentsCommand,
+		askCommand,
 	)
 }
 
@@ -127,8 +110,8 @@ func (b *Bridge) agentDirectoryDetailText(sender id.UserID, query string) string
 	identity := b.agents.IdentifySender(sender)
 	if !ok || !ref.AllowsSender(identity, b.cfg.ServerName) {
 		return fmt.Sprintf(
-			"No invocable agent named %q is available to %s. Run %s to list available agents.",
-			normalizeProfileText(query, maxProfileNameRunes), sender, agentDirectoryCommand,
+			"No invocable agent named %q is available to %s. Run %s or %s to list available agents.",
+			normalizeProfileText(query, maxProfileNameRunes), sender, agentDirectoryCommand, agentsCommand,
 		)
 	}
 	entry := AgentEntry{Ghost: localpart, Ref: ref}
