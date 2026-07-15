@@ -42,14 +42,16 @@ models:
 
 func TestModelAdmissionExpression(t *testing.T) {
 	models := []modelcatalog.Model{
-		{Name: "public-model", AllowedClassification: modelcatalog.ClassificationPublic},
-		{Name: "restricted-model", AllowedClassification: modelcatalog.ClassificationRestricted},
+		{Profile: "api", Name: "public-model", AllowedClassification: modelcatalog.ClassificationPublic},
+		{Profile: "local", Name: "restricted-model", AllowedClassification: modelcatalog.ClassificationRestricted},
 	}
 	expression := modelAdmissionExpression(models)
 	for _, want := range []string{
 		`request.method == "GET"`,
+		`"${llm_provider}" == "api"`,
 		`"${llm_model}" == "public-model"`,
 		`["public"]`,
+		`"${llm_provider}" == "local"`,
 		`"${llm_model}" == "restricted-model"`,
 		`["public", "approved_non_public", "restricted"]`,
 	} {

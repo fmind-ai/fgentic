@@ -13,11 +13,14 @@ fail() {
 render_profile() {
 	local profile="$1"
 	local model="$2"
+	export llm_provider="${profile}"
 	export llm_model="${model}"
 	export gcp_project=fixture-project
 	export vertex_region=europe-west1
-	kubectl kustomize "${repo_root}/infra/agentgateway/providers/profiles/${profile}" \
-		| flux envsubst --strict >"${tmp_dir}/${profile}.yaml"
+	{
+		kubectl kustomize "${repo_root}/infra/agentgateway"
+		kubectl kustomize "${repo_root}/infra/agentgateway/providers/profiles/${profile}"
+	} | flux envsubst --strict >"${tmp_dir}/${profile}.yaml"
 }
 
 (
@@ -25,39 +28,47 @@ render_profile() {
 	go run ./cmd/check-model-catalog --repo-root ../..
 )
 
-# Every selectable provider owns exactly one combined workload-authentication and model-admission
-# policy. Ungoverned optional profiles admit AgentCard discovery only and deny SendMessage.
+# The combined policy is owned beside the always-live A2A route. Provider failure or pruning must
+# therefore leave strict workload authentication and fail-closed model admission installed.
+common_render="${tmp_dir}/common.yaml"
+kubectl kustomize "${repo_root}/infra/agentgateway" >"${common_render}"
+policy_count="$(yq eval-all -N '[.] | map(select(.kind == "AgentgatewayPolicy" and .metadata.name == "a2a-bridge-authorization")) | length' "${common_render}")"
+[[ "${policy_count}" == 1 ]] || fail "common A2A route must own exactly one model-admission policy"
+route_count="$(yq eval-all -N '[.] | map(select(.kind == "HTTPRoute" and .metadata.name == "kagent-a2a")) | length' "${common_render}")"
+[[ "${route_count}" == 1 ]] || fail "common model-admission policy must be owned beside exactly one A2A route"
+[[ "$(yq -er 'select(.kind == "AgentgatewayPolicy" and .metadata.name == "a2a-bridge-authorization") | .spec.traffic.apiKeyAuthentication.mode' "${common_render}")" == "Strict" ]] \
+	|| fail "common A2A policy must retain strict workload authentication"
 for profile_dir in "${repo_root}"/infra/agentgateway/providers/profiles/*; do
-	profile="$(basename "${profile_dir}")"
-	policy_count="$(kubectl kustomize "${profile_dir}" | yq eval-all -N '[.] | map(select(.kind == "AgentgatewayPolicy" and .metadata.name == "a2a-bridge-authorization")) | length')"
-	[[ "${policy_count}" == 1 ]] || fail "${profile} must render exactly one A2A model-admission policy"
+	profile_policy_count="$(kubectl kustomize "${profile_dir}" | yq eval-all -N '[.] | map(select(.kind == "AgentgatewayPolicy" and .metadata.name == "a2a-bridge-authorization")) | length')"
+	[[ "${profile_policy_count}" == 0 ]] \
+		|| fail "provider inventory must not compete with the common A2A policy"
 done
 
 render_profile demo fgentic-demo
 render_profile vertex google/gemini-2.5-flash
 render_profile vllm Qwen/Qwen2.5-0.5B-Instruct
+render_profile anthropic ungoverned-model
 
 vertex_expression="$(
 	yq -er 'select(.kind == "AgentgatewayPolicy" and .metadata.name == "a2a-bridge-authorization") |
     .spec.traffic.authorization.policy.matchExpressions[1]' "${tmp_dir}/vertex.yaml"
 )"
-[[ "${vertex_expression}" == *'"google/gemini-2.5-flash"'* ]] \
-	|| fail "Vertex admission is not bound to its governed exact model"
-[[ "${vertex_expression}" == *'in ["public"]'* ]] \
-	|| fail "Vertex must admit public data only"
-[[ "${vertex_expression}" != *'regulated'* ]] \
-	|| fail "Vertex unexpectedly admits regulated data"
+[[ "${vertex_expression}" == *'("vertex" == "vertex" && "google/gemini-2.5-flash" == "google/gemini-2.5-flash" && request.headers["x-fgentic-data-classification"] in ["public"])'* ]] \
+	|| fail "Vertex active branch is not bound to its governed public-only exact model"
+
+anthropic_expression="$(
+	yq -er 'select(.kind == "AgentgatewayPolicy" and .metadata.name == "a2a-bridge-authorization") |
+    .spec.traffic.authorization.policy.matchExpressions[1]' "${tmp_dir}/anthropic.yaml"
+)"
+[[ "${anthropic_expression}" != *'"anthropic" == "anthropic"'* ]] \
+	|| fail "uncataloged Anthropic profile unexpectedly admits SendMessage"
 
 vllm_expression="$(
 	yq -er 'select(.kind == "AgentgatewayPolicy" and .metadata.name == "a2a-bridge-authorization") |
     .spec.traffic.authorization.policy.matchExpressions[1]' "${tmp_dir}/vllm.yaml"
 )"
-for classification in public approved_non_public restricted regulated; do
-	[[ "${vllm_expression}" == *"\"${classification}\""* ]] \
-		|| fail "vLLM does not admit governed ${classification} data"
-done
-[[ "${vllm_expression}" == *'"Qwen/Qwen2.5-0.5B-Instruct"'* ]] \
-	|| fail "vLLM admission is not bound to its governed exact model"
+[[ "${vllm_expression}" == *'("vllm" == "vllm" && "Qwen/Qwen2.5-0.5B-Instruct" == "Qwen/Qwen2.5-0.5B-Instruct" && request.headers["x-fgentic-data-classification"] in ["public", "approved_non_public", "restricted", "regulated"])'* ]] \
+	|| fail "vLLM active branch is not bound to its governed all-class exact model"
 
 # The admitted regulated path resolves only to the self-hosted backend, and the selected proxy's
 # egress policy has no IP/CIDR escape hatch or external namespace destination.

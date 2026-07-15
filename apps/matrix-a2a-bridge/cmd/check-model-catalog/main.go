@@ -60,7 +60,7 @@ func run(args []string) error {
 	if err := validateProfileDirectories(*repoRoot, catalog); err != nil {
 		return err
 	}
-	if err := validateProfileAdmission(*repoRoot, catalog); err != nil {
+	if err := validateModelAdmission(*repoRoot, catalog); err != nil {
 		return err
 	}
 	settings, err := filepath.Glob(filepath.Join(*repoRoot, "clusters", "*", "platform-settings.yaml"))
@@ -79,46 +79,37 @@ func run(args []string) error {
 	return nil
 }
 
-const modelAdmissionAnnotation = "fgentic.dev/model-admission"
-
-func validateProfileAdmission(repoRoot string, catalog *modelcatalog.Catalog) error {
-	modelsByProfile := make(map[string][]modelcatalog.Model)
-	for _, model := range catalog.Models {
-		modelsByProfile[model.Profile] = append(modelsByProfile[model.Profile], model)
-	}
-	backends, err := filepath.Glob(filepath.Join(
-		repoRoot, "infra", "agentgateway", "providers", "profiles", "*", "llm-backend.yaml",
-	))
+func validateModelAdmission(repoRoot string, catalog *modelcatalog.Catalog) error {
+	path := filepath.Join(repoRoot, "infra", "agentgateway", "a2a-authorization.yaml")
+	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("glob provider backends: %w", err)
+		return fmt.Errorf("read model admission policy %s: %w", path, err)
 	}
-	if len(backends) == 0 {
-		return fmt.Errorf("no provider backends found")
+	var policy struct {
+		Spec struct {
+			Traffic struct {
+				Authorization struct {
+					Policy struct {
+						MatchExpressions []string `yaml:"matchExpressions"`
+					} `yaml:"policy"`
+				} `yaml:"authorization"`
+			} `yaml:"traffic"`
+		} `yaml:"spec"`
 	}
-	for _, path := range backends {
-		data, err := os.ReadFile(path)
-		if err != nil {
-			return fmt.Errorf("read provider backend %s: %w", path, err)
-		}
-		var backend struct {
-			Metadata struct {
-				Annotations map[string]string `yaml:"annotations"`
-			} `yaml:"metadata"`
-		}
-		if err := yaml.Unmarshal(data, &backend); err != nil {
-			return fmt.Errorf("decode provider backend %s: %w", path, err)
-		}
-		profile := filepath.Base(filepath.Dir(path))
-		got := backend.Metadata.Annotations[modelAdmissionAnnotation]
-		want := modelAdmissionExpression(modelsByProfile[profile])
-		if got != want {
-			return fmt.Errorf(
-				"provider profile %s model admission drifted from the governed catalog: got %q, want %q",
-				profile,
-				got,
-				want,
-			)
-		}
+	if err := yaml.Unmarshal(data, &policy); err != nil {
+		return fmt.Errorf("decode model admission policy %s: %w", path, err)
+	}
+	expressions := policy.Spec.Traffic.Authorization.Policy.MatchExpressions
+	if len(expressions) != 2 {
+		return fmt.Errorf("model admission policy has %d expressions, want 2", len(expressions))
+	}
+	want := modelAdmissionExpression(catalog.Models)
+	if expressions[1] != want {
+		return fmt.Errorf(
+			"model admission policy drifted from the governed catalog: got %q, want %q",
+			expressions[1],
+			want,
+		)
 	}
 	return nil
 }
@@ -141,7 +132,8 @@ func modelAdmissionExpression(models []modelcatalog.Model) string {
 			}
 		}
 		clauses = append(clauses, fmt.Sprintf(
-			`"${llm_model}" == %s && request.headers["x-fgentic-data-classification"] in [%s]`,
+			`("${llm_provider}" == %s && "${llm_model}" == %s && request.headers["x-fgentic-data-classification"] in [%s])`,
+			strconv.Quote(model.Profile),
 			strconv.Quote(model.Name),
 			strings.Join(allowed, ", "),
 		))
