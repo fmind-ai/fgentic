@@ -132,6 +132,7 @@ depends = [
   "check:a2a-tck",
   "check:admission-policies",
   "check:resource-quotas",
+  "check:model-catalog",
   "check:mcp-governance",
   "check:audit-attribution",
   "check:kubernetes-audit",
@@ -162,6 +163,11 @@ run = "dprint check"
 [tasks."check:agent-readiness"]
 description = "Validate shared Codex/Claude discovery and non-mutating worktree setup"
 run = "bash scripts/test-agent-readiness.sh"
+
+[tasks."check:model-catalog"]
+description = "Validate governed model metadata and every tracked provider/model selection"
+dir = "apps/matrix-a2a-bridge"
+run = "go run ./cmd/check-model-catalog --repo-root ../.."
 
 [tasks."check:terraform"]
 alias = "ct"

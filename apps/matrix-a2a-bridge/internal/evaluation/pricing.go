@@ -7,10 +7,12 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/modelcatalog"
 )
 
 // PricingSchemaVersion identifies the operator-owned pricing input contract.
-const PricingSchemaVersion = "fgentic.eval.pricing.v1"
+const PricingSchemaVersion = modelcatalog.PricingSchemaVersion
 
 var currencyPattern = regexp.MustCompile(`^[A-Z]{3}$`)
 

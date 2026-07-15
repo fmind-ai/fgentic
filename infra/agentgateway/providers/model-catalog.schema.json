@@ -1,0 +1,45 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fgentic.fmind.ai/schemas/model-catalog/v1",
+  "title": "Fgentic governed model catalog",
+  "description": "Version 1 of the exact model identity, residency, classification ceiling, capability, and optional price-overlay inventory.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schemaVersion", "models"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "const": 1 },
+    "models": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/model" }
+    }
+  },
+  "$defs": {
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["profile", "genAiSystem", "model", "residency", "allowedClassification", "capabilities"],
+      "properties": {
+        "profile": { "type": "string", "pattern": "^[a-z][a-z0-9-]*$" },
+        "genAiSystem": { "type": "string", "minLength": 1 },
+        "model": { "type": "string", "minLength": 1 },
+        "residency": { "enum": ["self-hosted", "eu", "global"] },
+        "allowedClassification": {
+          "description": "Highest room-data class approved for this exact model; credentials and authentication material are never model input.",
+          "enum": ["public", "approved_non_public", "restricted", "regulated"]
+        },
+        "capabilities": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "enum": ["chat", "embeddings", "rerank"] }
+        },
+        "costRef": {
+          "description": "Optional exact schema identity for an operator-reviewed currency overlay; never a mutable price URL.",
+          "type": "string",
+          "const": "fgentic.eval.pricing.v1"
+        }
+      }
+    }
+  }
+}
