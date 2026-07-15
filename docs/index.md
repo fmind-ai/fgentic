@@ -9,7 +9,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 - [Architecture & Vision](architecture.md) - what Fgentic is, why it matters, and the end-to-end architecture (§1–§3, §11)
 - [Adopter Decision Brief](adopter-decision-brief.md) - vendor-neutral procurement decision and parameterized TCO worksheet
 - [Open Agentic Stack](open-stack.md) - governance, protocol boundaries, and current reuse across the independently stewarded layers
-- [Design Decisions D1–D19](design-decisions.md) - the durable register of settled decisions with evidence (§4)
+- [Design Decisions D1–D20](design-decisions.md) - the durable register of settled decisions with evidence (§4)
 - [Bridge Specification](bridge.md) - behavioral contract of the Matrix-to-A2A bridge appservice (§5, §6, §12)
 - [Security Boundaries & Threat Model](security.md) - trust zones and the controls that hold them (§7)
 - [Federation Spec](federation.md) - Matrix collaboration plane + A2A delegation plane across organizations (§8)
