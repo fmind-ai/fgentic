@@ -10,6 +10,7 @@ export LC_ALL=C
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 pin_path="${REPO_ROOT}/infra/agentgateway/mcp-surface.pin.json"
+catalog_entry_path="${REPO_ROOT}/infra/mcp-catalog/kagent-tools/server.json"
 runtime=false
 
 case "${1:-}" in
@@ -109,7 +110,7 @@ assert_initialize_decode_rejected() {
 	fi
 }
 
-for command in flux go helm jq kubeconform rg yq; do
+for command in flux go helm jq kubeconform kubectl rg yq; do
 	command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
 done
 
@@ -247,7 +248,9 @@ assert_equal "$({
 assert_contains "${traffic_expression}" 'apiKey.agent == "platform-helper"' "per-agent authentication"
 assert_contains "${traffic_expression}" 'request.path == "/mcp"' "MCP path authorization"
 assert_contains "${traffic_expression}" 'request.method in ["POST", "GET", "DELETE"]' "MCP method authorization"
-expected_tools=$'k8s_describe_resource\nk8s_get_events\nk8s_get_pod_logs\nk8s_get_resource_yaml\nk8s_get_resources'
+expected_tools="$(jq -r '
+  .["_meta"]["io.modelcontextprotocol.registry/publisher-provided"].fgentic.allowedTools[]
+' "${catalog_entry_path}")"
 for tool in ${expected_tools}; do
 	assert_contains "${mcp_expression}" "\"${tool}\"" "MCP tool allowlist"
 	jq -e --arg tool "${tool}" '
@@ -375,7 +378,74 @@ yq -o=yaml '.spec.values' "${REPO_ROOT}/infra/kagent/helmrelease.yaml" \
 	| helm template kagent "${kagent_repository}/kagent" \
 		--version "${kagent_version}" \
 		--namespace kagent \
-		--values - >"${tmp_dir}/kagent-chart.yaml"
+		--values - >"${tmp_dir}/kagent-chart-raw.yaml"
+
+# Apply the exact Flux Helm post-renderer so catalog coverage is checked against the resources
+# that helm-controller will submit, including annotations on chart-owned RemoteMCPServers.
+kagent_post_render="${tmp_dir}/kagent-post-render"
+mkdir "${kagent_post_render}"
+# OCI chart pulls can prefix stdout with a non-resource metadata document; empty YAML documents
+# are also normal Helm output. Flux post-rendering receives only Kubernetes resources.
+yq eval-all -o=yaml '
+  select(.apiVersion != null and .kind != null and .metadata.name != null)
+' "${tmp_dir}/kagent-chart-raw.yaml" >"${kagent_post_render}/rendered.yaml"
+HELM_RELEASE_PATH="${REPO_ROOT}/infra/kagent/helmrelease.yaml" yq --null-input '
+  .apiVersion = "kustomize.config.k8s.io/v1beta1" |
+  .kind = "Kustomization" |
+  .resources = ["rendered.yaml"] |
+  .patches = load(strenv(HELM_RELEASE_PATH)).spec.postRenderers[0].kustomize.patches
+' >"${kagent_post_render}/kustomization.yaml"
+kubectl kustomize "${kagent_post_render}" >"${tmp_dir}/kagent-chart.yaml"
+
+"${REPO_ROOT}/scripts/check-mcp-catalog.sh" \
+	"${tmp_dir}/agentgateway.yaml" "${tmp_dir}/kagent-chart.yaml"
+
+# Prove both catalog-covered resource types fail closed when a new resource omits the annotation.
+uncataloged_gateway="${tmp_dir}/agentgateway-uncataloged.yaml"
+cp "${tmp_dir}/agentgateway.yaml" "${uncataloged_gateway}"
+cat >>"${uncataloged_gateway}" <<'EOF'
+---
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: uncataloged
+  namespace: agentgateway-system
+spec:
+  mcp:
+    failureMode: FailClosed
+    targets: []
+EOF
+if MCP_CATALOG_ROOT="${REPO_ROOT}/infra/mcp-catalog" \
+	"${REPO_ROOT}/scripts/check-mcp-catalog.sh" \
+	"${uncataloged_gateway}" "${tmp_dir}/kagent-chart.yaml" \
+	>"${tmp_dir}/uncataloged-gateway.out" 2>&1; then
+	fail "uncataloged AgentgatewayBackend passed catalog coverage"
+fi
+assert_contains "$(<"${tmp_dir}/uncataloged-gateway.out")" \
+	"AgentgatewayBackend/uncataloged has no fgentic.dev/mcp-catalog-entry annotation" \
+	"uncataloged AgentgatewayBackend failure"
+
+uncataloged_remote="${tmp_dir}/kagent-uncataloged.yaml"
+cp "${tmp_dir}/kagent-chart.yaml" "${uncataloged_remote}"
+cat >>"${uncataloged_remote}" <<'EOF'
+---
+apiVersion: kagent.dev/v1alpha2
+kind: RemoteMCPServer
+metadata:
+  name: uncataloged
+  namespace: kagent
+spec:
+  url: http://uncataloged.kagent:8084/mcp
+EOF
+if MCP_CATALOG_ROOT="${REPO_ROOT}/infra/mcp-catalog" \
+	"${REPO_ROOT}/scripts/check-mcp-catalog.sh" \
+	"${tmp_dir}/agentgateway.yaml" "${uncataloged_remote}" \
+	>"${tmp_dir}/uncataloged-remote.out" 2>&1; then
+	fail "uncataloged RemoteMCPServer passed catalog coverage"
+fi
+assert_contains "$(<"${tmp_dir}/uncataloged-remote.out")" \
+	"RemoteMCPServer/uncataloged has no fgentic.dev/mcp-catalog-entry annotation" \
+	"uncataloged RemoteMCPServer failure"
 flux build kustomization cluster-overlay-validation \
 	--path "${REPO_ROOT}/clusters/federation" \
 	--kustomization-file "${REPO_ROOT}/scripts/testdata/flux-build-kustomization.yaml" \
@@ -702,7 +772,6 @@ unsupported_protocol_status="$(curl --silent --show-error --output /dev/null --w
 	"http://127.0.0.1:${host_port}/mcp")"
 assert_equal "${unsupported_protocol_status}" "400" "unsupported MCP protocol version"
 list_response="$(mcp_request '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | sed -n 's/^data: //p')"
-expected_tools=$'k8s_describe_resource\nk8s_get_events\nk8s_get_pod_logs\nk8s_get_resource_yaml\nk8s_get_resources'
 actual_tools="$(jq -r '.result.tools[].name' <<<"${list_response}" | sort)"
 assert_equal "${actual_tools}" "${expected_tools}" "gateway-filtered MCP tools"
 

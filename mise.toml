@@ -252,7 +252,7 @@ description = "Validate namespace quota profiles, defaults, and Flux substitutio
 run = "bash scripts/test-resource-quotas.sh"
 
 [tasks."check:mcp-governance"]
-description = "Validate the fail-closed per-agent MCP route, tool allowlist, and audit contract"
+description = "Validate the vetted MCP catalog, fail-closed route, tool allowlist, and audit contract"
 run = "bash scripts/test-mcp-governance.sh"
 
 [tasks."check:audit-attribution"]
