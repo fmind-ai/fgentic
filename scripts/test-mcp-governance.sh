@@ -42,6 +42,73 @@ assert_contains() {
 	[[ "$1" == *"$2"* ]] || fail "$3: missing '$2'"
 }
 
+decode_initialize_response() {
+	local media_type="${1%%;*}"
+	local body_path="$2"
+	local response_json
+	media_type="${media_type,,}"
+	case "${media_type}" in
+	application/json)
+		response_json="$(<"${body_path}")"
+		;;
+	text/event-stream)
+		if ! response_json="$(awk '
+          function dispatch() {
+            if (!has_data) {
+              return
+            }
+            events++
+            if (events > 1) {
+              invalid = 1
+              return
+            }
+            print data
+            data = ""
+            has_data = 0
+          }
+          { sub(/\r$/, "") }
+          $0 == "" { dispatch(); next }
+          /^data(:|$)/ {
+            value = $0
+            sub(/^data:?[ ]?/, "", value)
+            data = has_data ? data "\n" value : value
+            has_data = 1
+          }
+          END {
+            if (!invalid) dispatch()
+            if (invalid || events != 1) exit 1
+          }
+        ' "${body_path}")"; then
+			return 1
+		fi
+		;;
+	*) return 1 ;;
+	esac
+
+	jq -ers '
+    if length != 1 then
+      error("expected exactly one JSON-RPC response")
+    elif (
+      .[0] | type == "object" and
+      .jsonrpc == "2.0" and
+      .id == 1 and
+      (has("error") | not) and
+      (.result | type == "object") and
+      (.result.protocolVersion | type == "string" and length > 0)
+    ) then
+      .[0].result.protocolVersion
+    else
+      error("invalid initialize response")
+    end
+  ' <<<"${response_json}" 2>/dev/null
+}
+
+assert_initialize_decode_rejected() {
+	if decode_initialize_response "$1" "$2" >/dev/null 2>&1; then
+		fail "$3: malformed initialize response was accepted"
+	fi
+}
+
 for command in flux go helm jq kubeconform rg yq; do
 	command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
 done
@@ -51,6 +118,42 @@ cleanup_static() {
 	rm -rf "${tmp_dir}"
 }
 trap cleanup_static EXIT
+
+initialize_json_fixture="${tmp_dir}/initialize.json"
+initialize_sse_fixture="${tmp_dir}/initialize.sse"
+initialize_split_sse_fixture="${tmp_dir}/initialize-split.sse"
+initialize_multiple_sse_fixture="${tmp_dir}/initialize-multiple.sse"
+cat >"${initialize_json_fixture}" <<'EOF'
+{"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"fixture-version"}}
+EOF
+cat >"${initialize_sse_fixture}" <<'EOF'
+data: {"jsonrpc":"2.0","id":1,
+data: "result":{"protocolVersion":"fixture-version"}}
+
+EOF
+cat >"${initialize_split_sse_fixture}" <<'EOF'
+data: {"jsonrpc":"2.0","id":1,
+
+data: "result":{"protocolVersion":"fixture-version"}}
+
+EOF
+cat >"${initialize_multiple_sse_fixture}" <<'EOF'
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"fixture-version"}}
+
+data: {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"fixture-version"}}
+
+EOF
+decoded_json_fixture="$(decode_initialize_response \
+	'application/json; charset=utf-8' "${initialize_json_fixture}")"
+assert_equal "${decoded_json_fixture}" "fixture-version" "JSON initialize decoding"
+decoded_sse_fixture="$(decode_initialize_response 'text/event-stream' "${initialize_sse_fixture}")"
+assert_equal "${decoded_sse_fixture}" "fixture-version" "SSE initialize decoding"
+assert_initialize_decode_rejected 'text/event-stream' "${initialize_split_sse_fixture}" \
+	"split SSE initialize event"
+assert_initialize_decode_rejected 'text/event-stream' "${initialize_multiple_sse_fixture}" \
+	"multiple SSE initialize events"
+assert_initialize_decode_rejected 'text/plain' "${initialize_json_fixture}" \
+	"unexpected initialize media type"
 
 echo "==> Validating governed MCP manifests"
 "${REPO_ROOT}/scripts/pin-mcp.sh" check --pin "${pin_path}"
@@ -507,7 +610,23 @@ for _ in {1..50}; do
 done
 [ -n "${host_port}" ] || fail "agentgateway did not publish its MCP test port"
 
-initialize_payload='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"fgentic-test","version":"1"}}}'
+offered_protocol_version="2025-11-25"
+pinned_protocol_version="$(jq -er '
+  .servers[0].initialize.object.protocolVersion
+  | select(type == "string" and length > 0)
+' "${pin_path}")" || fail "MCP pin has no initialize protocol version"
+initialize_payload="$(jq -cn --arg version "${offered_protocol_version}" '
+  {
+    jsonrpc: "2.0",
+    id: 1,
+    method: "initialize",
+    params: {
+      protocolVersion: $version,
+      capabilities: {},
+      clientInfo: {name: "fgentic-test", version: "1"}
+    }
+  }
+')"
 fixture_bearer="Bearer fixture-platform-helper-key"
 request_status() {
 	local authorization="${1:-}"
@@ -526,27 +645,62 @@ assert_equal "$(request_status 'Bearer invalid')" "401" "invalid MCP credential"
 assert_equal "$(request_status 'Bearer fixture-docs-key')" "403" "wrong agent credential"
 
 headers="${runtime_dir}/headers"
-curl --silent --show-error --dump-header "${headers}" --output /dev/null \
+initialize_body="${runtime_dir}/initialize-body"
+initialize_metadata_path="${runtime_dir}/initialize-metadata"
+curl --silent --show-error --dump-header "${headers}" \
+	--output "${initialize_body}" \
 	--header "Authorization: ${fixture_bearer}" \
 	--header 'content-type: application/json' \
 	--header 'accept: application/json, text/event-stream' \
 	--data "${initialize_payload}" \
-	"http://127.0.0.1:${host_port}/mcp"
+	--write-out $'%{http_code}\n%{content_type}\n' \
+	"http://127.0.0.1:${host_port}/mcp" >"${initialize_metadata_path}"
+mapfile -t initialize_metadata <"${initialize_metadata_path}"
+[ "${#initialize_metadata[@]}" -eq 2 ] || fail "authorized MCP initialization returned invalid HTTP metadata"
+initialize_status="${initialize_metadata[0]}"
+initialize_content_type="${initialize_metadata[1]}"
+assert_equal "${initialize_status}" "200" "authorized MCP initialization"
 session_id="$(sed -n 's/^[Mm][Cc][Pp]-[Ss]ession-[Ii]d:[[:space:]]*\([^[:space:]]*\).*/\1/p' "${headers}" | tr -d '\r')"
 [ -n "${session_id}" ] || fail "authorized MCP initialization returned no session ID"
 
+if ! negotiated_protocol_version="$(decode_initialize_response \
+	"${initialize_content_type}" "${initialize_body}")"; then
+	fail "authorized MCP initialization returned an invalid JSON-RPC response"
+fi
+assert_equal "${negotiated_protocol_version}" "${pinned_protocol_version}" \
+	"negotiated MCP protocol version"
+echo "MCP protocol negotiation: offered ${offered_protocol_version}; negotiated ${negotiated_protocol_version}"
+
 mcp_request() {
 	local payload="$1"
+	shift
 	curl --silent --show-error \
 		--header "Authorization: ${fixture_bearer}" \
 		--header 'content-type: application/json' \
 		--header 'accept: application/json, text/event-stream' \
 		--header "Mcp-Session-Id: ${session_id}" \
+		--header "MCP-Protocol-Version: ${negotiated_protocol_version}" \
+		"$@" \
 		--data "${payload}" \
 		"http://127.0.0.1:${host_port}/mcp"
 }
 
-mcp_request '{"jsonrpc":"2.0","method":"notifications/initialized"}' >/dev/null
+initialized_status="$(mcp_request '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
+	--output /dev/null --write-out '%{http_code}')"
+case "${initialized_status}" in
+200 | 202 | 204) ;;
+*) fail "MCP initialized notification returned ${initialized_status}" ;;
+esac
+unsupported_protocol_version="1900-01-01"
+unsupported_protocol_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
+	--header "Authorization: ${fixture_bearer}" \
+	--header 'content-type: application/json' \
+	--header 'accept: application/json, text/event-stream' \
+	--header "Mcp-Session-Id: ${session_id}" \
+	--header "MCP-Protocol-Version: ${unsupported_protocol_version}" \
+	--data '{"jsonrpc":"2.0","id":99,"method":"tools/list","params":{}}' \
+	"http://127.0.0.1:${host_port}/mcp")"
+assert_equal "${unsupported_protocol_status}" "400" "unsupported MCP protocol version"
 list_response="$(mcp_request '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | sed -n 's/^data: //p')"
 expected_tools=$'k8s_describe_resource\nk8s_get_events\nk8s_get_pod_logs\nk8s_get_resource_yaml\nk8s_get_resources'
 actual_tools="$(jq -r '.result.tools[].name' <<<"${list_response}" | sort)"
@@ -586,10 +740,12 @@ terminate_status="$(curl --silent --show-error --output /dev/null --write-out '%
 	--request DELETE \
 	--header "Authorization: ${fixture_bearer}" \
 	--header "Mcp-Session-Id: ${session_id}" \
+	--header "MCP-Protocol-Version: ${negotiated_protocol_version}" \
 	"http://127.0.0.1:${host_port}/mcp")"
 case "${terminate_status}" in
 200 | 202 | 204 | 405) ;;
 *) fail "authenticated MCP session termination returned ${terminate_status}" ;;
 esac
 
+echo "MCP session protocol: subsequent requests used ${negotiated_protocol_version}; ${unsupported_protocol_version} was rejected with 400"
 echo "MCP governance runtime contract passed (${gateway_image}; ${tools_image})"
