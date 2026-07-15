@@ -165,6 +165,16 @@ func TestLoadAgentsRejectsInvalidConfig(t *testing.T) {
 			want:    "timeout must be positive",
 		},
 		{
+			name: "remote target with local classification policy",
+			content: strings.Replace(
+				validRemoteAgentsYAML,
+				"    timeout: 12s\n",
+				"    timeout: 12s\n    dataClassification: public\n",
+				1,
+			),
+			want: "dataClassification is only valid for a local target",
+		},
+		{
 			name:    "remote target with zero timeout",
 			content: strings.Replace(validRemoteAgentsYAML, "timeout: 12s", "timeout: 0s", 1),
 			want:    "timeout must be positive",

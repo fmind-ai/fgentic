@@ -86,7 +86,8 @@ func TestAgentsSchemaExtensions(t *testing.T) {
 		t.Fatalf("valid remote+extensions+maxCost+allowMedia+mtls rejected: %v", err)
 	}
 	rejects := map[string][]byte{
-		"non-https extension": remote("    extensions: [http://partner.example/ext]\n"),
+		"non-https extension":             remote("    extensions: [http://partner.example/ext]\n"),
+		"classification on remote target": remote("    dataClassification: public\n"),
 		"extensions on local target": []byte("schemaVersion: 1\nagents:\n  agent-k8s:\n    namespace: kagent\n" +
 			"    name: k8s\n    extensions: [https://fgentic.fmind.ai/a2a/extensions/skill-quote/v1]\n"),
 		"zero maxCost": remote("    maxCost: 0\n"),

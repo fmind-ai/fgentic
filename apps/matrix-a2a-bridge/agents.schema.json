@@ -118,7 +118,13 @@
         },
         {
           "required": ["url", "timeout", "tokenBudget", "cardIdentity"],
-          "not": { "anyOf": [{ "required": ["namespace"] }, { "required": ["name"] }] }
+          "not": {
+            "anyOf": [
+              { "required": ["namespace"] },
+              { "required": ["name"] },
+              { "required": ["dataClassification"] }
+            ]
+          }
         }
       ]
     },

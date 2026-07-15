@@ -253,6 +253,9 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 	if hasLocal == hasRemote {
 		return nil, fmt.Errorf("agent %q: exactly one target form is required: namespace+name or url", ghost)
 	}
+	if hasRemote && cfg.DataClassification != nil {
+		return nil, fmt.Errorf("agent %q: dataClassification is only valid for a local target", ghost)
+	}
 
 	namespace := configuredString(cfg.Namespace)
 	name := configuredString(cfg.Name)
