@@ -405,6 +405,46 @@ func TestDurableKnownTaskResumesWithGetAndReusesPlaceholder(t *testing.T) {
 	}
 }
 
+func TestDurableTaskFailureEditsPlaceholderWhenNoticeBudgetIsExhausted(t *testing.T) {
+	client := &scriptedA2AClient{
+		callResult: a2aclient.Result{TaskID: "task-failed", ContextID: "context-failed"},
+		polls: []scriptedPoll{{result: a2aclient.Result{
+			TaskID: "task-failed", ContextID: "context-failed", Terminal: true, Failed: true,
+		}}},
+	}
+	b, _, _, _, recorder := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	job := admitAndClaimDurableJob(t, b, "$durable-task-failed-notice-exhausted")
+	b.executeDurableJob(t.Context(), job)
+	waiting := loadDurableJob(t, b, job.JobID)
+	if waiting.State != state.StateAwaitingTask || waiting.MatrixPlaceholderEventID == "" {
+		t.Fatalf("waiting task = %+v", waiting)
+	}
+	sender := matrixSender(id.NewUserID("alice", ownServer))
+	b.noticeSenderLimits = newLimiters(1, 1, testRateLimitBucketCapacity)
+	if !b.noticeSenderLimits.Allow(sender.rateLimitKey("agent-k8s")) {
+		t.Fatal("failed to exhaust notice limiter fixture")
+	}
+	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "replacement", Now: waiting.NextAttemptAt.Add(time.Millisecond), LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim failed task = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateDelivered || stored.ErrorCode != errorTaskFailed {
+		t.Fatalf("failed task = (%s, %s), want delivered/%s", stored.State, stored.ErrorCode, errorTaskFailed)
+	}
+	events := recorder.snapshot()
+	if len(events) != 2 || events[1].NewContent == nil ||
+		events[1].NewContent.Body != failureMessage(errorTaskFailed, "agent-k8s", 0) ||
+		events[1].RelatesTo.GetReplaceID() != id.EventID(waiting.MatrixPlaceholderEventID) {
+		t.Fatalf("failed task placeholder projection = %+v", events)
+	}
+}
+
 func TestDurableTaskPollingUsesPersistedExponentialCursor(t *testing.T) {
 	client := &scriptedA2AClient{
 		callResult: a2aclient.Result{TaskID: "task-cursor", ContextID: "context-cursor"},
@@ -462,6 +502,11 @@ func TestDurableAwaitingTaskDenialEditsExistingPlaceholder(t *testing.T) {
 	waiting := loadDurableJob(t, b, job.JobID)
 	if waiting.State != state.StateAwaitingTask || waiting.MatrixPlaceholderEventID == "" {
 		t.Fatalf("waiting task = %+v", waiting)
+	}
+	sender := matrixSender(id.NewUserID("alice", ownServer))
+	b.noticeSenderLimits = newLimiters(1, 1, testRateLimitBucketCapacity)
+	if !b.noticeSenderLimits.Allow(sender.rateLimitKey("agent-k8s")) {
+		t.Fatal("failed to exhaust notice limiter fixture")
 	}
 	replacement, err := LoadAgents(writeTemp(t, `schemaVersion: 1
 agents:

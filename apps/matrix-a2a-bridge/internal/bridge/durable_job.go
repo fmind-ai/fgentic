@@ -510,7 +510,8 @@ func (b *Bridge) prepareDurableNotice(
 }
 
 // prepareDurableFailureNotice projects catalog copy only after reserving notice-plane capacity.
-// The terminal ledger transition and audit remain durable when the user-facing notice is suppressed.
+// Replacing an existing placeholder does not create another timeline event, so it must always
+// reach a terminal edit. The ledger transition and audit remain durable when a new notice is suppressed.
 func (b *Bridge) prepareDurableFailureNotice(
 	ctx context.Context,
 	job *state.Job,
@@ -527,7 +528,7 @@ func (b *Bridge) prepareDurableFailureNotice(
 		A2AAttempted: payload.Audit.A2AAttempted, A2AStartedAt: payload.Audit.A2AStartedAt,
 		RateLimit: payload.Audit.RateLimit,
 	}
-	if !b.allowNotice(sender, evt.RoomID, job.GhostLocalpart) {
+	if job.MatrixPlaceholderEventID == "" && !b.allowNotice(sender, evt.RoomID, job.GhostLocalpart) {
 		return b.finishDurableWithoutReplyWithEvidence(
 			ctx, job, terminalState, terminalReason, nil, payload, evt, ref, sender,
 		)
@@ -550,7 +551,7 @@ func (b *Bridge) prepareDurableDeniedNotice(
 	sender senderIdentity,
 	notice, terminalStage, terminalReason string,
 ) error {
-	if !b.allowNotice(sender, evt.RoomID, job.GhostLocalpart) {
+	if job.MatrixPlaceholderEventID == "" && !b.allowNotice(sender, evt.RoomID, job.GhostLocalpart) {
 		payload.Audit = durableTerminalAuditState{
 			Outcome: outcomeDenied, TerminalStage: terminalStage, TerminalReason: terminalReason,
 			A2AAttempted: payload.Audit.A2AAttempted, A2AStartedAt: payload.Audit.A2AStartedAt,
@@ -712,7 +713,7 @@ func (b *Bridge) denyDurableJob(
 		outcome = outcomeRateLimited
 	}
 	payload.Audit.RateLimit = durableRateLimitVerdict(*job)
-	if !b.allowNotice(sender, evt.RoomID, job.GhostLocalpart) {
+	if job.MatrixPlaceholderEventID == "" && !b.allowNotice(sender, evt.RoomID, job.GhostLocalpart) {
 		payload.Audit = durableTerminalAuditState{
 			Outcome: outcome, TerminalStage: durableDenialStage(reason), TerminalReason: reason,
 			A2AAttempted: payload.Audit.A2AAttempted, A2AStartedAt: payload.Audit.A2AStartedAt,
