@@ -31,6 +31,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 # Runbooks & evidence
 
 - [Production Installation](production.md) - Flux-reconciled production path with SOPS secrets and acceptance gates
+- [Day-2 Operations Handbook](operations-handbook.md) - evidence-bound monitoring, scaling, recovery, incident, and upgrade procedures
 - [Partner Federation Onboarding](federation-onboarding.md) - bilateral checklist to federate with a partner org
 - [Partner Federation Offboarding](federation-offboarding.md) - bilateral checklist to revoke a partner across every plane
 - [Delegation Attribution Audit](audit.md) - proving who invoked which agent, when, over which model path
