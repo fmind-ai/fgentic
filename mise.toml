@@ -76,6 +76,10 @@ run = "bash scripts/agent-setup.sh"
 description = "Serialize the final check and test gates across local worktrees"
 run = "bash scripts/agent-gate.sh"
 
+[tasks."agent:new"]
+description = "Scaffold one deny-by-default local Agent into the GitOps and evaluation seams"
+run = "bash scripts/new-agent.sh"
+
 [tasks.format]
 alias = "f"
 description = "Format everything (config/markup, Terraform, and applications)"
@@ -142,6 +146,7 @@ depends = [
   "check:secret-rotation",
   "check:supply-chain",
   "check:agent-zoo",
+  "check:agent-new",
   "check:demo",
   "check:federation",
   "check:federation-onboarding",
@@ -163,6 +168,10 @@ run = "dprint check"
 [tasks."check:agent-readiness"]
 description = "Validate shared Codex/Claude discovery and non-mutating worktree setup"
 run = "bash scripts/test-agent-readiness.sh"
+
+[tasks."check:agent-new"]
+description = "Validate deterministic Agent scaffolding and its effective offline renders"
+run = "bash scripts/test-new-agent.sh"
 
 [tasks."check:model-catalog"]
 description = "Validate governed model metadata and every tracked provider/model selection"
