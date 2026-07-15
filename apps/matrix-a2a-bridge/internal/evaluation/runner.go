@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/a2aclient"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/modelcatalog"
 )
 
 // A2AClient is the existing bridge client surface needed by the harness.
@@ -18,7 +19,7 @@ type A2AClient interface {
 // RunConfig defines one approved profile run and its local safety bounds.
 type RunConfig struct {
 	Profile         string
-	RequestedModel  string
+	Model           modelcatalog.Model
 	UserID          string
 	ScenarioTimeout time.Duration
 	PollInterval    time.Duration
@@ -40,8 +41,14 @@ func NewRunner(a2a A2AClient, metrics MetricsReader, pricing *PricingCatalog, lo
 
 // Run executes a complete fixed suite and fails before producing a partial report.
 func (r *Runner) Run(ctx context.Context, config RunConfig, scenarios []Scenario) (ProfileRun, error) {
-	if config.Profile == "" || config.RequestedModel == "" || config.UserID == "" {
-		return ProfileRun{}, fmt.Errorf("profile, requested model, and user ID are required")
+	if config.Profile == "" || config.Model.Name == "" || config.UserID == "" {
+		return ProfileRun{}, fmt.Errorf("profile, governed model, and user ID are required")
+	}
+	if config.Model.Profile != config.Profile {
+		return ProfileRun{}, fmt.Errorf("catalog model profile %q does not match requested profile %q", config.Model.Profile, config.Profile)
+	}
+	if !config.Model.Supports(modelcatalog.CapabilityChat) {
+		return ProfileRun{}, fmt.Errorf("catalog model %s/%s does not declare chat capability", config.Profile, config.Model.Name)
 	}
 	if config.ScenarioTimeout <= 0 || config.PollInterval <= 0 || config.QuietWindow <= 0 {
 		return ProfileRun{}, fmt.Errorf("scenario timeout, poll interval, and quiet window must be positive")
@@ -51,7 +58,7 @@ func (r *Runner) Run(ctx context.Context, config RunConfig, scenarios []Scenario
 	}
 
 	run := ProfileRun{
-		Profile: config.Profile, RequestedModel: config.RequestedModel,
+		Profile: config.Profile, RequestedModel: config.Model.Name,
 		StartedAt: time.Now().UTC(), Results: make([]ScenarioResult, 0, len(scenarios)),
 	}
 	for index, scenario := range scenarios {
@@ -78,8 +85,8 @@ func (r *Runner) Run(ctx context.Context, config RunConfig, scenarios []Scenario
 		if err != nil {
 			return ProfileRun{}, fmt.Errorf("scenario %s metrics: %w", scenario.ID, err)
 		}
-		if usage.Identity.RequestModel != config.RequestedModel && usage.Identity.ResponseModel != config.RequestedModel {
-			return ProfileRun{}, fmt.Errorf("scenario %s observed model %q/%q, expected %q", scenario.ID, usage.Identity.RequestModel, usage.Identity.ResponseModel, config.RequestedModel)
+		if err := validateObservedModel(config.Model, usage.Identity); err != nil {
+			return ProfileRun{}, fmt.Errorf("scenario %s: %w", scenario.ID, err)
 		}
 		score, err := ScoreAnswer(answer, scenario.Rubric)
 		if err != nil {
@@ -102,6 +109,16 @@ func (r *Runner) Run(ctx context.Context, config RunConfig, scenarios []Scenario
 	}
 	run.Summary = summary
 	return run, nil
+}
+
+func validateObservedModel(expected modelcatalog.Model, observed ProviderIdentity) error {
+	if observed.System != expected.GenAISystem {
+		return fmt.Errorf("observed gen_ai_system %q, catalog requires %q", observed.System, expected.GenAISystem)
+	}
+	if observed.RequestModel != expected.Name && observed.ResponseModel != expected.Name {
+		return fmt.Errorf("observed model %q/%q, catalog requires %q", observed.RequestModel, observed.ResponseModel, expected.Name)
+	}
+	return nil
 }
 
 func (r *Runner) stableSnapshot(ctx context.Context, quietWindow time.Duration) (MetricsSnapshot, error) {

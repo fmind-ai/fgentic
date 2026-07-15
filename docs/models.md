@@ -26,6 +26,20 @@ Every API-key Secret is namespace-local to `agentgateway-system` and stores the 
 
 `demo` is a deterministic OpenAI-compatible response stub used only by `clusters/demo` and `mise run demo:up`. It proves protocol wiring without a model account, prompt egress, or token charge; it cannot reason and is not a D16 production model profile. The `local` and `gcp` overlays cannot select it accidentally through their tracked defaults.
 
+## Governed model catalog
+
+[`infra/agentgateway/providers/model-catalog.yaml`](../infra/agentgateway/providers/model-catalog.yaml) is the single declarative inventory for each approved exact `(gen_ai_system, model)` identity. Its [JSON Schema](../infra/agentgateway/providers/model-catalog.schema.json) and typed `check:model-catalog` validator require:
+
+1. One existing agentgateway `profile` and exact model identity, with no duplicate metric or profile/model key.
+1. `residency` as `self-hosted`, `eu`, or `global`.
+1. `allowedClassification` as the highest approved room-data class: `public`, `approved_non_public`, `restricted`, or `regulated`. This ceiling is not an authorization grant. Secret and authentication material are never model input.
+1. One or more `chat`, `embeddings`, or `rerank` capabilities.
+1. At most one `costRef`, fixed to the operator-reviewed `fgentic.eval.pricing.v1` overlay identity. The catalog contains no mutable price or price URL.
+
+The root check resolves every tracked `clusters/*/platform-settings.yaml` provider/model pair through the catalog and fails closed on an unknown selection, missing classification, unsupported enum, duplicate identity, or missing provider directory. The current inventory covers the tracked `demo` and `vertex` choices plus the canonical self-hosted `vllm` model. Before selecting a different API model or adding an embeddings/rerank backend, add its exact reviewed entry in the same change; do not copy residency or classification fields into an overlay or route.
+
+The catalog is policy input, not a router or enforcement claim. agentgateway still owns routing/serving, and the classification-aware denial path is implemented separately by #339. Until that gate lands, selecting a cluster profile remains the effective model boundary; catalog validation alone does not prevent egress.
+
 ## Data-flow map by profile
 
 Every agent uses the same in-cluster route. The selected profile changes only the final model hop; credentials terminate at agentgateway and never enter kagent or the bridge.
@@ -66,7 +80,7 @@ The diagram shows one mutually exclusive deployment choice, not simultaneous fan
 | `openai`       | Usage-metered API; regional eligibility, storage controls, and model tier affect the commercial posture. | Global or eligible EU endpoint round trip; service tier and model dominate tail latency.                    |
 | `azure-openai` | Azure consumption under the chosen deployment/SKU; Global, Data Zone, and Regional capacity differ.      | Selected Azure deployment and capacity determine geography, queueing, and tail latency.                     |
 
-Fgentic records provider/model token dimensions but intentionally ships no mutable web-price catalog. Compare currency cost through the provider invoice or a versioned organization-owned catalog; never infer an audited cost by multiplying tokens by an unversioned price.
+Fgentic records provider/model token dimensions but intentionally ships no mutable web-price catalog. The governed model catalog's optional `costRef` names only the accepted pricing-overlay schema; it contains no rate. Compare currency cost through the provider invoice or a versioned organization-owned catalog; never infer an audited cost by multiplying tokens by an unversioned price.
 
 ## Default profile decision (2026-07-14)
 
@@ -220,6 +234,8 @@ From the repository root, one approved live run is:
 A2A_API_KEY="$(your-secret-source)" \
   mise run eval:models -- --profile vertex --model google/gemini-2.5-flash
 ```
+
+Before making a request, the harness resolves `--profile` and `--model` through the governed model catalog and requires its `chat` capability. It then rejects any observed `gen_ai_system` or request/response model that does not match that entry. `--model-catalog` may select an environment-owned reviewed catalog with the same schema; the repository catalog is the default.
 
 The task runs 10 fixed A2A scenarios for each of `platform-helper`, `docs-qa`, and `scribe`. Exact, case-insensitive contains, and regular-expression rubrics are scored locally. Three qualitative scenarios are labeled `optional_llm_judge` and remain visibly unscored; the harness never calls a judge model. It writes `.agents/tmp/model-eval/report.json` with prompts, answers, A2A latency, score, provider/model/route identity, LLM-call count, and token deltas, plus `.agents/tmp/model-eval/comparison.md` with one row per evaluated profile. Re-running the same profile/model replaces that row; a different profile merges only when the scenario digest and any pricing-catalog identity remain comparable.
 

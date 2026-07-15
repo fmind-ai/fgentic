@@ -12,6 +12,7 @@ import (
 
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/a2aclient"
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/evaluation"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/modelcatalog"
 )
 
 func main() {
@@ -27,9 +28,11 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	defaultOutput := filepath.Join(repoRoot, ".agents", "tmp", "model-eval")
+	defaultCatalog := filepath.Join(repoRoot, "infra", "agentgateway", "providers", "model-catalog.yaml")
 	flags := flag.NewFlagSet("eval", flag.ContinueOnError)
 	profile := flags.String("profile", "", "operator label for the deployed model profile (required)")
 	model := flags.String("model", "", "expected agentgateway request or response model (required)")
+	modelCatalogPath := flags.String("model-catalog", defaultCatalog, "governed model catalog path")
 	a2aURL := flags.String("a2a-url", "http://127.0.0.1:18080", "agentgateway A2A base URL")
 	metricsURL := flags.String("metrics-url", "http://127.0.0.1:15020/metrics", "agentgateway Prometheus exposition URL")
 	userID := flags.String("user", "@model-eval:fgentic.localhost", "A2A evaluation identity")
@@ -45,9 +48,20 @@ func run(ctx context.Context, args []string) error {
 	if *profile == "" || *model == "" {
 		return fmt.Errorf("--profile and --model are required")
 	}
+	catalog, err := openModelCatalog(*modelCatalogPath)
+	if err != nil {
+		return err
+	}
+	governedModel, err := resolveGovernedModel(catalog, *profile, *model)
+	if err != nil {
+		return err
+	}
 
 	var pricing *evaluation.PricingCatalog
 	if *pricingPath != "" {
+		if governedModel.CostRef != evaluation.PricingSchemaVersion {
+			return fmt.Errorf("catalog model %s/%s does not reference pricing schema %s", *profile, *model, evaluation.PricingSchemaVersion)
+		}
 		file, err := os.Open(*pricingPath)
 		if err != nil {
 			return fmt.Errorf("open pricing catalog: %w", err)
@@ -75,7 +89,7 @@ func run(ctx context.Context, args []string) error {
 		return err
 	}
 	runResult, err := runner.Run(ctx, evaluation.RunConfig{
-		Profile: *profile, RequestedModel: *model, UserID: *userID,
+		Profile: *profile, Model: governedModel, UserID: *userID,
 		ScenarioTimeout: *scenarioTimeout, PollInterval: *pollInterval, QuietWindow: *quietWindow,
 	}, scenarios)
 	if err != nil {
@@ -100,6 +114,33 @@ func run(ctx context.Context, args []string) error {
 	}
 	logger.Info("model evaluation report written", "json", *jsonPath, "markdown", *markdownPath)
 	return nil
+}
+
+func openModelCatalog(path string) (*modelcatalog.Catalog, error) {
+	file, err := os.Open(path)
+	if err != nil {
+		return nil, fmt.Errorf("open model catalog: %w", err)
+	}
+	catalog, err := modelcatalog.Decode(file)
+	closeErr := file.Close()
+	if err != nil {
+		return nil, err
+	}
+	if closeErr != nil {
+		return nil, fmt.Errorf("close model catalog: %w", closeErr)
+	}
+	return catalog, nil
+}
+
+func resolveGovernedModel(catalog *modelcatalog.Catalog, profile, model string) (modelcatalog.Model, error) {
+	governedModel, err := catalog.ResolveProfile(profile, model)
+	if err != nil {
+		return modelcatalog.Model{}, err
+	}
+	if !governedModel.Supports(modelcatalog.CapabilityChat) {
+		return modelcatalog.Model{}, fmt.Errorf("catalog model %s/%s does not declare chat capability", profile, model)
+	}
+	return governedModel, nil
 }
 
 func findRepoRoot() (string, error) {

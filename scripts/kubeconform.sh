@@ -202,11 +202,13 @@ yq -e '
 "${KUBECONFORM[@]}" < "${keycloak_render}"
 
 echo "==> Substituting + validating raw infra manifests"
-# Skip Helm charts, kustomization files, SOPS ciphertext and templates, and Terraform. Other inline
-# HelmRelease values are rendered by Flux/Helm at apply time, not standalone-schema-valid.
+# Skip Helm charts, kustomization files, SOPS ciphertext and templates, Terraform, and governed
+# data files with their own validators. Other inline HelmRelease values are rendered by Flux/Helm
+# at apply time, not standalone-schema-valid.
 manifest_list="$(find infra clusters -type f \( -name '*.yaml' -o -name '*.yml' \) \
   ! -name 'kustomization.yaml' \
   ! -name '*.sops.yaml' \
+  ! -path 'infra/agentgateway/providers/model-catalog.yaml' \
   ! -path '*/bridges/chart/*' \
   ! -path '*/terraform/*' \
   ! -path '*/flux-system/*')"
