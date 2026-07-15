@@ -68,17 +68,19 @@ The diagram shows one mutually exclusive deployment choice, not simultaneous fan
 
 Fgentic records provider/model token dimensions but intentionally ships no mutable web-price catalog. Compare currency cost through the provider invoice or a versioned organization-owned catalog; never infer an audited cost by multiplying tokens by an unversioned price.
 
-## Choosing the local demo default (issue #15)
+## Default profile decision (2026-07-14)
 
-The tracked production-shaped local and GCP defaults remain the end-to-end-verified Vertex profile. The disposable `clusters/demo` evaluation overlay defaults separately to its deterministic fixture so a first run needs no account. [Issue #15](https://github.com/fmind-ai/fgentic/issues/15) asks whether the production-shaped local default should change; this comparison is a recommendation, not a D16 amendment or a default change:
+The tracked overlays deliberately have two defaults because protocol evaluation and a production-shaped model boundary have different prerequisites:
 
-| Profile | What it optimizes                                                                                             | Honest local trade-off                                                                                                                                                                                   |
-| ------- | ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Vertex  | Already verified, strong model quality, and the GKE reference's natural identity path                         | Prompts leave the cluster; local k3d needs a real GCP project plus the ADC helper, which is disproportionate setup friction for a demo                                                                   |
-| Mistral | Recommended 80/20 demo default _after_ live-key acceptance: one key, good model quality, and an EU-hosted API | Prompts still leave the cluster; account terms and actual end-to-end behavior must be verified with a real low-token request before changing defaults                                                    |
-| vLLM    | Strongest sovereignty: serving-time prompts and responses stay in the cluster                                 | The pinned CPU image plus model bootstrap is about 2.7 GB, the tiny model needs roughly 4–6 GiB RAM, and its quality/CPU latency are not representative; constrained default hosts may not run it safely |
+| Overlay          | Purpose                             | Tracked provider and model           | Credential boundary                                                                                              |
+| ---------------- | ----------------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
+| `clusters/demo`  | Out-of-the-box protocol evaluation  | `demo` / `fgentic-demo`              | None; deterministic in-cluster fixture                                                                           |
+| `clusters/local` | Production-shaped local development | `vertex` / `google/gemini-2.5-flash` | Cluster-only `gcp-adc` Secret consumed only by agentgateway                                                      |
+| `clusters/gcp`   | Production-shaped GKE reference     | `vertex` / `google/gemini-2.5-flash` | Workload Identity design; required Vertex role tracked in [#400](https://github.com/fmind-ai/fgentic/issues/400) |
 
-Do not switch the tracked default from Vertex until a maintainer makes the issue #15 choice and Mistral passes its live credential, mention-to-reply, and metrics checks.
+Vertex is the pragmatic default for the production-shaped references because it is the verified quality path and can use the maintainer's existing GCP credits. It is **not sovereign-by-default**: complete requests and responses cross the cluster boundary to Google, usage is billed to the selected project, and the project region, account contract, retention settings, and provider-side processing remain operator controls. The credential stays at agentgateway; no Agent, bridge, or Matrix service receives it.
+
+Keep `demo` for credential-free integration evaluation. Select `vllm` when serving-time prompts and responses must stay in the cluster, accepting its download, RAM, latency, and model-quality trade-offs. Mistral and the other API profiles remain explicit operator choices rather than hidden quickstart defaults.
 
 ## Data flow and residency
 
