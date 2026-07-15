@@ -1,10 +1,10 @@
 ---
 type: Decision Register
-title: Design Decisions D1–D18
+title: Design Decisions D1–D19
 description: The durable register of settled design decisions with the evidence behind each; revisit via a new ADR, never a drive-by PR (§4).
 ---
 
-# Design Decisions D1–D18 (formerly SPEC §4)
+# Design Decisions D1–D19 (formerly SPEC §4)
 
 > The durable record of _why_ the system looks the way it does. Revisit via a new ADR, never a drive-by PR. Section references `§N` map per the table in [.agents/AGENTS.md](../.agents/AGENTS.md).
 
@@ -99,6 +99,12 @@ D3's process-local queue and D4's event marker could still lose work because mau
 An ACL prefilter cannot trust kagent's spoofable `X-User-Id`, and caller-only authorization can still disclose grounded output to other members of a plaintext Matrix room.
 
 **Decision:** keep the knowledge-retrieval service's parameterized database `WHERE` prefilter as the single chunk-row ACL enforcement point. agentgateway ext-auth derives one canonical `X-Fgentic-Identity` projection from either the authenticated Matrix bridge plus the required hot-read room state or the exact validated partner `(issuer, audience, azp)` policy; kagent may propagate only that header to the exact retrieval MCP route. Matrix v1 uses typed full principals with no group mapping; OAuth clients receive only namespaced partner groups. Operator-owned room/client registries project the allowed public or approved-non-public class. Matrix retrieval intersects every current reader's ACL and the bridge rechecks the state digest immediately before content delivery. Every delegation uses a fresh kagent session without caller context, task, or task-reference IDs, while public OAuth retrieval is synchronous and exposes no task read/cancel route. The first implementation relies on exact workload credentials, admission constraints, and enforced NetworkPolicies; it does not claim kagent authenticated the end user or that the plain projection resists a compromised retrieval Agent pod. See accepted [ADR 0017](adr/0017-permission-aware-identity-binding.md) for the protocol contract, room-disclosure boundary, and re-evaluation triggers. Implementation remains tracked by [#333](https://github.com/fmind-ai/fgentic/issues/333); this register entry does not claim the capability is live.
+
+### D19 — Matrix identity audit uses content-bounded source records, never generic logs
+
+Synapse and MAS diagnostic logs do not provide stable identity or accepted-event evidence: their fields may include request metadata, omit the authenticated user, and change without an Fgentic-owned schema. A callback alone is also not durable evidence because Synapse invokes it on every worker and swallows failures.
+
+**Decision:** keep Matrix authentication and homeserver event audit disabled in every default and evaluation profile. The opt-in regulated component emits only the closed `fgentic.mas_authentication.v1` and `fgentic.matrix_event.v1` schemas from exact-version, read-only, column-scoped queries over pinned MAS and Synapse source records. A Synapse callback may wake reconciliation, but a durable private-database cursor remains authoritative. Source-version or schema drift, ambiguous authentication methods, malformed identities, cursor regression, and query errors fail closed without a partial record. The records deliberately exclude payloads, secrets, request metadata, and named failed-login attribution; their retained identifiers remain personal or linkable operational data under a 90-day default retention and operator/auditor-only query policy. See accepted [ADR 0018](adr/0018-content-bounded-identity-audit.md) for the exact fields, negative gates, causality limits, and supported-upstream replacement trigger. Implementation remains split across [#300](https://github.com/fmind-ai/fgentic/issues/300), [#157](https://github.com/fmind-ai/fgentic/issues/157), and [#418](https://github.com/fmind-ai/fgentic/issues/418); this register entry does not claim the component is deployed.
 
 ### Workload-identity follow-up
 
