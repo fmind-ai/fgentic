@@ -175,6 +175,13 @@ func (b *Bridge) deliverReply(
 	return replyID, len(uploads), rejected
 }
 
+// emptyAgentReply identifies a terminal response with no user-visible content before any Matrix
+// projection. Files count as content even when policy later withholds them, because that path emits
+// a separate, actionable media-policy notice rather than misclassifying the agent as silent.
+func emptyAgentReply(res a2aclient.Result) bool {
+	return strings.TrimSpace(res.Text) == "" && len(res.Data) == 0 && len(res.Links) == 0 && len(res.Files) == 0
+}
+
 // prepareReply applies the outbound media policy and builds the bounded text projection shared by
 // the legacy in-process path and the durable Matrix outbox. It performs uploads but never sends an
 // event, allowing the durable path to choose caller-supplied transaction IDs before projection.
@@ -199,7 +206,7 @@ func (b *Bridge) prepareReply(
 		if len(uploads) > 0 {
 			text = "📎 attached."
 		} else {
-			text = emptyReplyText
+			text = failureMessage(errorEmptyReply, localpart, 0)
 		}
 	}
 

@@ -127,6 +127,40 @@ func TestDurableRateLimitAuditRecordsPersistedRejection(t *testing.T) {
 	}
 }
 
+func TestDurableFailureNoticeSuppressionPreservesTerminalReason(t *testing.T) {
+	client := &scriptedA2AClient{callResult: a2aclient.Result{Text: "must not run", Terminal: true}}
+	b, _, _, _, recorder := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	sender := matrixSender(id.NewUserID("alice", ownServer))
+	b.senderLimits = newLimiters(1, 1, testRateLimitBucketCapacity)
+	b.noticeSenderLimits = newLimiters(1, 1, testRateLimitBucketCapacity)
+	if !b.senderLimits.Allow(sender.rateLimitKey("agent-k8s")) ||
+		!b.noticeSenderLimits.Allow(sender.rateLimitKey("agent-k8s")) {
+		t.Fatal("failed to exhaust invocation and notice limiter fixtures")
+	}
+	var output strings.Builder
+	setBridgeLogOutput(b, &output)
+	job := admitAndClaimDurableJob(t, b, "$durable-rate-limit-notice-suppressed")
+
+	b.executeDurableJob(t.Context(), job)
+	if client.callCount != 0 {
+		t.Fatalf("suppressed rate-limit failure reached A2A %d times", client.callCount)
+	}
+	if events := recorder.snapshot(); len(events) != 0 {
+		t.Fatalf("exhausted failure-notice bucket emitted Matrix events: %#v", events)
+	}
+	audits := auditRecords(t, output.String())
+	if len(audits) != 1 || audits[0]["outcome"] != outcomeRateLimited ||
+		audits[0]["terminal_reason"] != errorRateLimit ||
+		audits[0]["rate_limit_verdict"] != string(rateLimitVerdictRejected) {
+		t.Fatalf("suppressed failure audit = %#v", audits)
+	}
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateDenied || stored.ErrorCode != errorRateLimit || stored.ResultText != "" {
+		t.Fatalf("suppressed failure evidence = %+v", stored)
+	}
+}
+
 func TestDurableAdmissionLostAcknowledgementDoesNotRefundInvocationBudget(t *testing.T) {
 	client := &scriptedA2AClient{callResult: a2aclient.Result{Text: "must not run", Terminal: true}}
 	b, _, _, _, _ := pollingHarness(t, client)
@@ -371,6 +405,46 @@ func TestDurableKnownTaskResumesWithGetAndReusesPlaceholder(t *testing.T) {
 	}
 }
 
+func TestDurableTaskFailureEditsPlaceholderWhenNoticeBudgetIsExhausted(t *testing.T) {
+	client := &scriptedA2AClient{
+		callResult: a2aclient.Result{TaskID: "task-failed", ContextID: "context-failed"},
+		polls: []scriptedPoll{{result: a2aclient.Result{
+			TaskID: "task-failed", ContextID: "context-failed", Terminal: true, Failed: true,
+		}}},
+	}
+	b, _, _, _, recorder := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	job := admitAndClaimDurableJob(t, b, "$durable-task-failed-notice-exhausted")
+	b.executeDurableJob(t.Context(), job)
+	waiting := loadDurableJob(t, b, job.JobID)
+	if waiting.State != state.StateAwaitingTask || waiting.MatrixPlaceholderEventID == "" {
+		t.Fatalf("waiting task = %+v", waiting)
+	}
+	sender := matrixSender(id.NewUserID("alice", ownServer))
+	b.noticeSenderLimits = newLimiters(1, 1, testRateLimitBucketCapacity)
+	if !b.noticeSenderLimits.Allow(sender.rateLimitKey("agent-k8s")) {
+		t.Fatal("failed to exhaust notice limiter fixture")
+	}
+	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "replacement", Now: waiting.NextAttemptAt.Add(time.Millisecond), LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim failed task = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateDelivered || stored.ErrorCode != errorTaskFailed {
+		t.Fatalf("failed task = (%s, %s), want delivered/%s", stored.State, stored.ErrorCode, errorTaskFailed)
+	}
+	events := recorder.snapshot()
+	if len(events) != 2 || events[1].NewContent == nil ||
+		events[1].NewContent.Body != failureMessage(errorTaskFailed, "agent-k8s", 0) ||
+		events[1].RelatesTo.GetReplaceID() != id.EventID(waiting.MatrixPlaceholderEventID) {
+		t.Fatalf("failed task placeholder projection = %+v", events)
+	}
+}
+
 func TestDurableTaskPollingUsesPersistedExponentialCursor(t *testing.T) {
 	client := &scriptedA2AClient{
 		callResult: a2aclient.Result{TaskID: "task-cursor", ContextID: "context-cursor"},
@@ -429,6 +503,11 @@ func TestDurableAwaitingTaskDenialEditsExistingPlaceholder(t *testing.T) {
 	if waiting.State != state.StateAwaitingTask || waiting.MatrixPlaceholderEventID == "" {
 		t.Fatalf("waiting task = %+v", waiting)
 	}
+	sender := matrixSender(id.NewUserID("alice", ownServer))
+	b.noticeSenderLimits = newLimiters(1, 1, testRateLimitBucketCapacity)
+	if !b.noticeSenderLimits.Allow(sender.rateLimitKey("agent-k8s")) {
+		t.Fatal("failed to exhaust notice limiter fixture")
+	}
 	replacement, err := LoadAgents(writeTemp(t, `schemaVersion: 1
 agents:
   agent-k8s: {namespace: kagent, name: replacement-agent}
@@ -451,7 +530,8 @@ agents:
 	}
 	events := recorder.snapshot()
 	if len(events) != 2 || events[0].Body != workingText ||
-		!containsAll(events[1].Body, "could not safely continue", "agent-k8s") ||
+		events[1].NewContent == nil ||
+		events[1].NewContent.Body != failureMessage(errorAgentMappingChanged, "agent-k8s", 0) ||
 		events[1].RelatesTo.GetReplaceID() != id.EventID(waiting.MatrixPlaceholderEventID) {
 		t.Fatalf("policy-changed placeholder projection = %+v", events)
 	}
@@ -573,7 +653,7 @@ func TestDurableJobTerminatesUnsupportedPausedTaskHonestly(t *testing.T) {
 				TaskID: "task-auth", ContextID: "context-auth", AuthRequired: true,
 			},
 			errorCode: errorAuthRequired,
-			message:   "authorization the platform does not forward",
+			message:   "needs authorization",
 		},
 	}
 	for _, tt := range tests {

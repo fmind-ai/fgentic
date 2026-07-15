@@ -24,7 +24,6 @@ const (
 	errorAgentMappingChanged = "agent_mapping_changed"
 	errorAgentUntrusted      = "agent_card_untrusted"
 	errorAuthRequired        = "auth_required_not_forwarded"
-	errorDenialNoticeLimited = "denial_notice_rate_limit_rejected"
 	errorInputRequired       = "input_required"
 	errorInvalidPayload      = "invalid_recovery_payload"
 	errorMatrixDelivery      = "matrix_delivery_failed"
@@ -158,7 +157,7 @@ func (b *Bridge) executePendingJob(ctx context.Context, job *state.Job) error {
 	payload.MediaRejected = mediaRejected
 	if !mediaOK {
 		return b.prepareDurableDeniedNotice(ctx, job, payload, evt, ref, sender,
-			mediaInputDeniedText, "media_admission", errorMediaDenied)
+			failureMessage(errorMediaDenied, job.GhostLocalpart, 0), "media_admission", errorMediaDenied)
 	}
 	contextID, err := b.store.Context(ctx, job.RoomID, job.GhostLocalpart)
 	if err != nil {
@@ -194,9 +193,10 @@ func (b *Bridge) recoverPreparedJob(ctx context.Context, job *state.Job) error {
 		if senderErr != nil {
 			sender = matrixSender(evt.Sender)
 		}
-		return b.prepareDurableNotice(ctx, job, payload, evt, nil, sender, state.StateAmbiguous,
-			fmt.Sprintf("⚠️ agent %q may have received this request, but its acknowledgement was lost; the bridge did not resend it.", job.GhostLocalpart),
-			outcomeAmbiguous, "message_send", errorA2AAckAmbiguous)
+		return b.prepareDurableFailureNotice(
+			ctx, job, payload, evt, nil, sender, state.StateAmbiguous,
+			outcomeAmbiguous, "message_send", errorA2AAckAmbiguous, 0,
+		)
 	}
 	sender, ref, denial := b.revalidateDurableJob(*job, evt)
 	if denial != "" {
@@ -217,7 +217,7 @@ func (b *Bridge) recoverPreparedJob(ctx context.Context, job *state.Job) error {
 	payload.MediaRejected = mediaRejected
 	if !mediaOK {
 		return b.prepareDurableDeniedNotice(ctx, job, payload, evt, ref, sender,
-			mediaInputDeniedText, "media_admission", errorMediaDenied)
+			failureMessage(errorMediaDenied, job.GhostLocalpart, 0), "media_admission", errorMediaDenied)
 	}
 	contextID := job.A2AContextID
 	return b.callPreparedJob(ctx, job, payload, evt, ref, sender, contextID, inboundFiles)
@@ -256,12 +256,19 @@ func (b *Bridge) callPreparedJob(
 	a2aLatency.WithLabelValues(job.GhostLocalpart).Observe(time.Since(started).Seconds())
 	if err != nil {
 		if errors.Is(err, a2aclient.ErrSendAcknowledgementAmbiguous) {
-			return b.prepareDurableNotice(ctx, job, payload, evt, ref, sender, state.StateAmbiguous,
-				fmt.Sprintf("⚠️ agent %q may have received this request, but its acknowledgement was lost; the bridge did not resend it.", job.GhostLocalpart),
-				outcomeAmbiguous, "message_send", errorA2AAckAmbiguous)
+			return b.prepareDurableFailureNotice(
+				ctx, job, payload, evt, ref, sender, state.StateAmbiguous,
+				outcomeAmbiguous, "message_send", errorA2AAckAmbiguous, 0,
+			)
 		}
 		if errors.Is(err, a2aclient.ErrRemoteTargetUntrusted) {
 			return b.denyDurableJob(ctx, job, payload, evt, ref, sender, errorAgentUntrusted)
+		}
+		if errors.Is(err, context.DeadlineExceeded) {
+			return b.prepareDurableFailureNotice(
+				ctx, job, payload, evt, ref, sender, state.StateDelivered,
+				outcomeTimeout, "message_send", errorRequestTimeout, b.cfg.RequestTimeout,
+			)
 		}
 		return b.retryOrDead(ctx, job, errorA2APreflightRetry,
 			errors.New("A2A preflight failed before message dispatch"))
@@ -281,21 +288,24 @@ func (b *Bridge) acceptDurableA2AResult(
 	contextID := orDefault(result.ContextID, job.A2AContextID)
 	if !result.Terminal {
 		if result.TaskID == "" {
-			return b.prepareDurableNotice(ctx, job, payload, evt, ref, sender, state.StateDead,
-				fmt.Sprintf("⚠️ agent %q returned an invalid task; see the bridge logs.", job.GhostLocalpart),
-				outcomeDead, "task_poll", errorTaskInvalid)
+			return b.prepareDurableFailureNotice(
+				ctx, job, payload, evt, ref, sender, state.StateDead,
+				outcomeDead, "task_poll", errorTaskInvalid, 0,
+			)
 		}
 		if result.AuthRequired {
 			captureDurableA2AEvidence(job, result)
-			return b.prepareDurableNotice(ctx, job, payload, evt, ref, sender, state.StateDelivered,
-				fmt.Sprintf("⚠️ agent %q needs authorization the platform does not forward — the task was stopped.", job.GhostLocalpart),
-				outcomeFailed, "task_auth", errorAuthRequired)
+			return b.prepareDurableFailureNotice(
+				ctx, job, payload, evt, ref, sender, state.StateDelivered,
+				outcomeFailed, "task_auth", errorAuthRequired, 0,
+			)
 		}
 		if result.InputRequired {
 			captureDurableA2AEvidence(job, result)
-			return b.prepareDurableNotice(ctx, job, payload, evt, ref, sender, state.StateDelivered,
-				fmt.Sprintf("⚠️ agent %q needs more input; start a new request to continue safely.", job.GhostLocalpart),
-				outcomeFailed, "task_input", errorInputRequired)
+			return b.prepareDurableFailureNotice(
+				ctx, job, payload, evt, ref, sender, state.StateDelivered,
+				outcomeFailed, "task_input", errorInputRequired, 0,
+			)
 		}
 		if err := b.transitionDurable(ctx, job, state.StateAwaitingTask, state.TransitionPatch{
 			A2ATaskID: stringPointer(result.TaskID), A2AContextID: stringPointer(contextID),
@@ -310,9 +320,17 @@ func (b *Bridge) acceptDurableA2AResult(
 	}
 	if result.Failed {
 		captureDurableA2AEvidence(job, result)
-		return b.prepareDurableNotice(ctx, job, payload, evt, ref, sender, state.StateDelivered,
-			fmt.Sprintf("⚠️ agent %q could not complete the task — see the bridge logs.", job.GhostLocalpart),
-			outcomeFailed, "message_result", errorAgentFailed)
+		return b.prepareDurableFailureNotice(
+			ctx, job, payload, evt, ref, sender, state.StateDelivered,
+			outcomeFailed, "message_result", errorAgentFailed, 0,
+		)
+	}
+	if emptyAgentReply(result) {
+		captureDurableA2AEvidence(job, result)
+		return b.prepareDurableFailureNotice(
+			ctx, job, payload, evt, ref, sender, state.StateDelivered,
+			outcomeFailed, "message_result", errorEmptyReply, 0,
+		)
 	}
 	return b.prepareDurableResult(ctx, job, payload, result, state.StateDelivered,
 		outcomeOK, "message_result", "completed")
@@ -328,15 +346,17 @@ func (b *Bridge) resumeKnownTask(ctx context.Context, job *state.Job) error {
 		return b.denyDurableJob(ctx, job, payload, evt, ref, sender, denial)
 	}
 	if job.A2ATaskID == "" {
-		return b.prepareDurableNotice(ctx, job, payload, evt, ref, sender, state.StateDead,
-			fmt.Sprintf("⚠️ agent %q returned an invalid task; see the bridge logs.", job.GhostLocalpart),
-			outcomeDead, "task_poll", errorTaskInvalid)
+		return b.prepareDurableFailureNotice(
+			ctx, job, payload, evt, ref, sender, state.StateDead,
+			outcomeDead, "task_poll", errorTaskInvalid, 0,
+		)
 	}
 	deadline, timeout := b.durableTaskDeadline(*job, ref, payload)
 	if !time.Now().Before(deadline) {
-		return b.prepareDurableNotice(ctx, job, payload, evt, ref, sender, state.StateDelivered,
-			fmt.Sprintf("⚠️ agent %q did not finish within %s.", job.GhostLocalpart, timeout),
-			outcomeTimeout, "task_poll", errorTaskTimeout)
+		return b.prepareDurableFailureNotice(
+			ctx, job, payload, evt, ref, sender, state.StateDelivered,
+			outcomeTimeout, "task_poll", errorTaskTimeout, timeout,
+		)
 	}
 	if err := b.ensureDurablePlaceholder(ctx, job, evt); err != nil {
 		return b.retryOrDead(ctx, job, errorMatrixDelivery, err)
@@ -358,30 +378,41 @@ func (b *Bridge) resumeKnownTask(ctx context.Context, job *state.Job) error {
 		return b.retryOrDead(ctx, job, errorTaskPoll, errors.New("A2A task poll failed"))
 	}
 	if result.TaskID != "" && result.TaskID != job.A2ATaskID {
-		return b.prepareDurableNotice(ctx, job, payload, evt, ref, sender, state.StateDead,
-			fmt.Sprintf("⚠️ agent %q returned mismatched task evidence; see the bridge logs.", job.GhostLocalpart),
-			outcomeDead, "task_poll", errorTaskInvalid)
+		return b.prepareDurableFailureNotice(
+			ctx, job, payload, evt, ref, sender, state.StateDead,
+			outcomeDead, "task_poll", errorTaskInvalid, 0,
+		)
 	}
 	if !result.Terminal {
 		if result.AuthRequired {
 			captureDurableA2AEvidence(job, result)
-			return b.prepareDurableNotice(ctx, job, payload, evt, ref, sender, state.StateDelivered,
-				fmt.Sprintf("⚠️ agent %q needs authorization the platform does not forward — the task was stopped.", job.GhostLocalpart),
-				outcomeFailed, "task_auth", errorAuthRequired)
+			return b.prepareDurableFailureNotice(
+				ctx, job, payload, evt, ref, sender, state.StateDelivered,
+				outcomeFailed, "task_auth", errorAuthRequired, 0,
+			)
 		}
 		if result.InputRequired {
 			captureDurableA2AEvidence(job, result)
-			return b.prepareDurableNotice(ctx, job, payload, evt, ref, sender, state.StateDelivered,
-				fmt.Sprintf("⚠️ agent %q needs more input; start a new request to continue safely.", job.GhostLocalpart),
-				outcomeFailed, "task_input", errorInputRequired)
+			return b.prepareDurableFailureNotice(
+				ctx, job, payload, evt, ref, sender, state.StateDelivered,
+				outcomeFailed, "task_input", errorInputRequired, 0,
+			)
 		}
 		return b.scheduleTaskPoll(ctx, *job)
 	}
 	if result.Failed {
 		captureDurableA2AEvidence(job, result)
-		return b.prepareDurableNotice(ctx, job, payload, evt, ref, sender, state.StateDelivered,
-			fmt.Sprintf("⚠️ agent %q could not complete the task — see the bridge logs.", job.GhostLocalpart),
-			outcomeFailed, "task_result", errorTaskFailed)
+		return b.prepareDurableFailureNotice(
+			ctx, job, payload, evt, ref, sender, state.StateDelivered,
+			outcomeFailed, "task_result", errorTaskFailed, 0,
+		)
+	}
+	if emptyAgentReply(result) {
+		captureDurableA2AEvidence(job, result)
+		return b.prepareDurableFailureNotice(
+			ctx, job, payload, evt, ref, sender, state.StateDelivered,
+			outcomeFailed, "task_result", errorEmptyReply, 0,
+		)
 	}
 	return b.prepareDurableResult(ctx, job, payload, result, state.StateDelivered,
 		outcomeOK, "task_result", "completed")
@@ -478,6 +509,37 @@ func (b *Bridge) prepareDurableNotice(
 	return b.deliverPendingReply(ctx, job)
 }
 
+// prepareDurableFailureNotice projects catalog copy only after reserving notice-plane capacity.
+// Replacing an existing placeholder does not create another timeline event, so it must always
+// reach a terminal edit. The ledger transition and audit remain durable when a new notice is suppressed.
+func (b *Bridge) prepareDurableFailureNotice(
+	ctx context.Context,
+	job *state.Job,
+	payload durablePayload,
+	evt *event.Event,
+	ref *AgentRef,
+	sender senderIdentity,
+	terminalState state.DelegationState,
+	outcome, terminalStage, terminalReason string,
+	timeout time.Duration,
+) error {
+	payload.Audit = durableTerminalAuditState{
+		Outcome: outcome, TerminalStage: terminalStage, TerminalReason: terminalReason,
+		A2AAttempted: payload.Audit.A2AAttempted, A2AStartedAt: payload.Audit.A2AStartedAt,
+		RateLimit: payload.Audit.RateLimit,
+	}
+	if job.MatrixPlaceholderEventID == "" && !b.allowNotice(sender, evt.RoomID, job.GhostLocalpart) {
+		return b.finishDurableWithoutReplyWithEvidence(
+			ctx, job, terminalState, terminalReason, nil, payload, evt, ref, sender,
+		)
+	}
+	return b.prepareDurableNotice(
+		ctx, job, payload, evt, ref, sender, terminalState,
+		failureMessage(terminalReason, job.GhostLocalpart, timeout),
+		outcome, terminalStage, terminalReason,
+	)
+}
+
 // prepareDurableDeniedNotice applies the independent notice budget before persisting a denial
 // outbox. Exhausting that budget never revives or dispatches the denied delegation.
 func (b *Bridge) prepareDurableDeniedNotice(
@@ -489,7 +551,7 @@ func (b *Bridge) prepareDurableDeniedNotice(
 	sender senderIdentity,
 	notice, terminalStage, terminalReason string,
 ) error {
-	if !b.allowNotice(sender, evt.RoomID, job.GhostLocalpart) {
+	if job.MatrixPlaceholderEventID == "" && !b.allowNotice(sender, evt.RoomID, job.GhostLocalpart) {
 		payload.Audit = durableTerminalAuditState{
 			Outcome: outcomeDenied, TerminalStage: terminalStage, TerminalReason: terminalReason,
 			A2AAttempted: payload.Audit.A2AAttempted, A2AStartedAt: payload.Audit.A2AStartedAt,
@@ -645,54 +707,24 @@ func (b *Bridge) denyDurableJob(
 		job.AdmissionAllowed = false
 		job.AdmissionReason = reason
 	}
-	var notice string
-	switch reason {
-	case errorRateLimit:
-		notice = rateLimitedText
-	case errorSenderPolicy:
-		if sender.isBridged() {
-			notice = policyDeniedText
-		}
-	case errorStagePolicy:
-		notice = stageDeniedText
+	notice := failureMessage(reason, job.GhostLocalpart, 0)
+	outcome := outcomeDenied
+	if reason == errorRateLimit {
+		outcome = outcomeRateLimited
 	}
-	if notice == "" && job.MatrixPlaceholderEventID != "" {
-		// A durable task that already projected a working placeholder must never leave that room
-		// artifact looking active after a silent policy/trust denial.
-		notice = fmt.Sprintf("⚠️ agent %q could not safely continue this task.", job.GhostLocalpart)
-		payload.Audit.RateLimit = durableRateLimitVerdict(*job)
-		return b.prepareDurableNotice(ctx, job, payload, evt, ref, sender, state.StateDenied,
-			notice, outcomeDenied, durableDenialStage(reason), reason)
-	}
-	if notice == "" {
+	payload.Audit.RateLimit = durableRateLimitVerdict(*job)
+	if job.MatrixPlaceholderEventID == "" && !b.allowNotice(sender, evt.RoomID, job.GhostLocalpart) {
 		payload.Audit = durableTerminalAuditState{
-			Outcome: outcomeDenied, TerminalStage: durableDenialStage(reason), TerminalReason: reason,
+			Outcome: outcome, TerminalStage: durableDenialStage(reason), TerminalReason: reason,
 			A2AAttempted: payload.Audit.A2AAttempted, A2AStartedAt: payload.Audit.A2AStartedAt,
-			RateLimit: durableRateLimitVerdict(*job),
+			RateLimit: payload.Audit.RateLimit,
 		}
 		return b.finishDurableWithoutReplyWithEvidence(
 			ctx, job, state.StateDenied, reason, nil, payload, evt, ref, sender,
 		)
 	}
-	if !b.allowNotice(sender, evt.RoomID, job.GhostLocalpart) {
-		payload.Audit = durableTerminalAuditState{
-			Outcome: outcomeRateLimited, TerminalStage: "admission", TerminalReason: errorDenialNoticeLimited,
-			A2AAttempted: payload.Audit.A2AAttempted, A2AStartedAt: payload.Audit.A2AStartedAt,
-			RateLimit: rateLimitVerdictRejected,
-		}
-		return b.finishDurableWithoutReplyWithEvidence(
-			ctx, job, state.StateDenied, errorDenialNoticeLimited, nil, payload, evt, ref, sender,
-		)
-	}
-	outcome := outcomeDenied
-	if reason == errorRateLimit {
-		payload.Audit.RateLimit = rateLimitVerdictRejected
-		outcome = outcomeRateLimited
-	} else {
-		payload.Audit.RateLimit = rateLimitVerdictAllowed
-	}
 	return b.prepareDurableNotice(ctx, job, payload, evt, ref, sender, state.StateDenied,
-		notice, outcome, "admission", reason)
+		notice, outcome, durableDenialStage(reason), reason)
 }
 
 func durableDenialStage(reason string) string {
@@ -846,7 +878,7 @@ func (b *Bridge) deadLetterDurableJob(
 		return b.finishDurableWithoutReply(ctx, job, state.StateDead, errorInvalidPayload, err)
 	}
 	sender, ref, _ := b.revalidateDurableJob(*job, evt)
-	return b.prepareDurableNotice(
+	return b.prepareDurableFailureNotice(
 		ctx,
 		job,
 		payload,
@@ -854,10 +886,10 @@ func (b *Bridge) deadLetterDurableJob(
 		ref,
 		sender,
 		state.StateDead,
-		fmt.Sprintf("⚠️ agent %q's request could not be recovered after repeated failures; see the bridge logs.", job.GhostLocalpart),
 		outcomeDead,
 		"recovery",
 		code,
+		0,
 	)
 }
 
