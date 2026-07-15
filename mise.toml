@@ -72,6 +72,10 @@ run = [
 description = "Prepare pinned tools and locked dependencies for a fresh agent clone or worktree"
 run = "bash scripts/agent-setup.sh"
 
+[tasks."agent:gate"]
+description = "Serialize the final check and test gates across local worktrees"
+run = "bash scripts/agent-gate.sh"
+
 [tasks.format]
 alias = "f"
 description = "Format everything (config/markup, Terraform, and applications)"

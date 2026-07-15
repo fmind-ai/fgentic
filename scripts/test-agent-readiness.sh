@@ -39,6 +39,21 @@ yq --input-format toml --output-format json '.setup.script' \
 	jq -e '. == "mise run agent:setup"' >/dev/null ||
 	fail "Codex local environment must use the shared agent setup task"
 
+yq --input-format toml --output-format json '.tasks."agent:gate".run' \
+	"${root_dir}/mise.toml" |
+	jq -e '. == "bash scripts/agent-gate.sh"' >/dev/null ||
+	fail "mise must expose the portable final-gate mutex"
+
+for guidance in \
+	"${root_dir}/.agents/AGENTS.md" \
+	"${root_dir}/.agents/skills/github-flow/SKILL.md" \
+	"${root_dir}/CONTRIBUTING.md"; do
+	rg --quiet 'status/in-progress' "${guidance}" ||
+		fail "${guidance#"${root_dir}/"} lost the issue-claim protocol"
+	rg --quiet 'mise run agent:gate' "${guidance}" ||
+		fail "${guidance#"${root_dir}/"} lost the serialized validation contract"
+done
+
 git -C "${root_dir}" check-ignore --quiet .claude/worktrees/probe ||
 	fail ".claude/worktrees must be ignored"
 
@@ -49,4 +64,8 @@ if rg --line-number \
 fi
 
 bash -n "${root_dir}/scripts/agent-setup.sh"
+bash -n "${root_dir}/scripts/agent-gate.sh"
+if rg --quiet '\bflock\b' "${root_dir}/scripts/agent-gate.sh"; then
+	fail "agent gate must remain portable to macOS without flock"
+fi
 echo "Agent discovery and worktree setup contracts passed"
