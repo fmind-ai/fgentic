@@ -92,7 +92,8 @@ func TestRoomWelcomeUsesNoticePlaneAndMarksSuppression(t *testing.T) {
 	b, _, original, _, recorder := pollingHarness(t, &scriptedA2AClient{})
 	b.cfg.WelcomeEnabled = true
 	prepareDirectoryBot(t, b, original.RoomID)
-	b.noticeSenderLimits = newLimiters(1, 1, testRateLimitBucketCapacity)
+	// Keep sender capacity available so the welcome is suppressed specifically by the room bucket.
+	b.noticeSenderLimits = newLimiters(60, 10, testRateLimitBucketCapacity)
 	b.noticeRoomLimits = newLimiters(1, 1, testRateLimitBucketCapacity)
 	sender := b.agents.IdentifySender(id.NewUserID("alice", ownServer))
 	if !b.allowNotice(sender, original.RoomID, roomWelcomeNoticeScope) {
