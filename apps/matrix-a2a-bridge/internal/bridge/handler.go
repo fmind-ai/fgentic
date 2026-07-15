@@ -507,13 +507,14 @@ func (b *Bridge) markEventProcessed(ctx context.Context, evt *event.Event) audit
 }
 
 // HandleMembership auto-accepts invites addressed to the bridge's own users (the bot and MAPPED
-// agent ghosts). This is what activates a room: Synapse only pushes room traffic to the
+// agent ghosts). A first bot invitation also owns the room's sender-filtered onboarding notice.
+// This is what activates a room: Synapse only pushes room traffic to the
 // appservice once one of its namespaced users is a member, so "invite @agent-x, then @mention
 // it" hinges on the invite being accepted. Invites for unmapped agent-like users are ignored
 // (the allowlist is the agents map — SPEC §4 D6).
 func (b *Bridge) HandleMembership(ctx context.Context, evt *event.Event) {
 	content := evt.Content.AsMember()
-	if content == nil || content.Membership != event.MembershipInvite || evt.StateKey == nil {
+	if content == nil || evt.StateKey == nil {
 		return
 	}
 	target := id.UserID(*evt.StateKey)
@@ -521,6 +522,19 @@ func (b *Bridge) HandleMembership(ctx context.Context, evt *event.Event) {
 		return
 	}
 	localpart := target.Localpart()
+	if content.Membership == event.MembershipJoin {
+		if localpart != b.as.Registration.SenderLocalpart || evt.Unsigned.PrevSender == "" ||
+			b.isOwnUser(evt.Unsigned.PrevSender) {
+			return
+		}
+		join := *evt
+		join.Sender = evt.Unsigned.PrevSender
+		b.maybeWelcomeRoom(ctx, &join, b.as.BotIntent())
+		return
+	}
+	if content.Membership != event.MembershipInvite {
+		return
+	}
 	if localpart != b.as.Registration.SenderLocalpart {
 		if !strings.HasPrefix(localpart, b.cfg.GhostPrefix) {
 			return
@@ -540,6 +554,9 @@ func (b *Bridge) HandleMembership(ctx context.Context, evt *event.Event) {
 		return
 	}
 	b.log.Info("accepted room invite", "user", target, "room", evt.RoomID)
+	if localpart == b.as.Registration.SenderLocalpart {
+		b.maybeWelcomeRoom(ctx, evt, intent)
+	}
 }
 
 // handleThreadContinuation routes a threaded reply answering a paused agent question (#116) back

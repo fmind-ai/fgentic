@@ -157,7 +157,7 @@ secret_access="$(yq eval-all -N -r 'select(.kind == "Role" and .metadata.name ==
 write_verbs="$(yq eval-all -N -r 'select(.kind == "Role" and .metadata.name == "kagent-tools-read-role") | .rules[].verbs[] | select(. != "get" and . != "list" and . != "watch")' "${tmp_dir}/kagent.yaml")"
 [[ -z "${write_verbs}" ]] || fail "kagent tool RBAC contains write verbs: ${write_verbs}"
 
-echo "==> Rendering the bridge agent map and welcome message"
+echo "==> Rendering the bridge agent map and startup profiles"
 export server_name=ci.fgentic.example
 yq eval-all -o=yaml \
   'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") | .spec.values' \
@@ -174,17 +174,13 @@ for mapping in agent-platform-helper agent-docs-qa agent-scribe; do
     "${tmp_dir}/bridge.yaml" \
     "${mapping} must be restricted to Alice"
   assert_yq \
-    "select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"welcome.txt\" | contains(\"@${mapping}:ci.fgentic.example\")" \
-    "${tmp_dir}/bridge.yaml" \
-    "welcome message is missing ${mapping}"
-  assert_yq \
     "select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"agents.yaml\" | from_yaml | .agents.\"${mapping}\".description | length > 0" \
     "${tmp_dir}/bridge.yaml" \
     "${mapping} must carry a startup profile fallback"
 done
 assert_yq \
-  'select(.kind == "ConfigMap" and .metadata.name == "matrix-a2a-bridge-agents") | .data."welcome.txt" | contains("!agents")' \
+  'select(.kind == "ConfigMap" and .metadata.name == "matrix-a2a-bridge-agents") | (.data | has("welcome.txt") | not)' \
   "${tmp_dir}/bridge.yaml" \
-  "welcome message must advertise the live agent directory"
+  "static welcome copy must not bypass sender-filtered runtime discovery"
 
 echo "==> agent zoo contract OK"

@@ -20,8 +20,8 @@ var (
 )
 
 func TestDurableLedgerMigrationContract(t *testing.T) {
-	if len(UpgradeTable) != 1 {
-		t.Fatalf("upgrade table length = %d, want 1", len(UpgradeTable))
+	if len(UpgradeTable) != 2 {
+		t.Fatalf("upgrade table length = %d, want 2", len(UpgradeTable))
 	}
 	recorder := &databaseRecorder{}
 	db := recorder.database(t)
@@ -57,6 +57,48 @@ func TestDurableLedgerMigrationContract(t *testing.T) {
 	}
 	if strings.Contains(migration, "-- only: postgres") || strings.Contains(migration, "-- end only postgres") {
 		t.Fatal("dbutil dialect markers leaked into executed migration")
+	}
+}
+
+func TestRoomWelcomeMigrationContract(t *testing.T) {
+	recorder := &databaseRecorder{}
+	db := recorder.database(t)
+	t.Cleanup(func() { _ = db.Close() })
+	to, compat, err := UpgradeTable[1].DangerouslyRun(t.Context(), db)
+	if err != nil {
+		t.Fatalf("execute room-welcome migration through dbutil: %v", err)
+	}
+	if to != 2 || compat != 2 {
+		t.Fatalf("migration version = (%d, %d), want (2, 2)", to, compat)
+	}
+	queries := recorder.executedQueries()
+	if len(queries) != 1 || !strings.Contains(queries[0], "CREATE TABLE bridge_room_welcomes") ||
+		!strings.Contains(queries[0], "room_id     TEXT PRIMARY KEY") {
+		t.Fatalf("room-welcome migration = %#v", queries)
+	}
+}
+
+func TestPostgresMarkRoomWelcomedUsesAtomicInsert(t *testing.T) {
+	recorder := &databaseRecorder{}
+	db := recorder.database(t)
+	t.Cleanup(func() { _ = db.Close() })
+	store := &Postgres{db: db}
+
+	first, err := store.MarkRoomWelcomed(t.Context(), "!room:example.org")
+	if err != nil || !first {
+		t.Fatalf("MarkRoomWelcomed = (%v, %v), want (true, nil)", first, err)
+	}
+	events := recorder.recordedEvents()
+	if len(events) != 1 || events[0].kind != "exec" ||
+		!strings.Contains(events[0].query, "INSERT INTO bridge_room_welcomes") ||
+		!strings.Contains(events[0].query, "ON CONFLICT DO NOTHING") {
+		t.Fatalf("room-welcome insert events = %+v", events)
+	}
+	assertNamedValue(t, events[0], 1, "!room:example.org")
+	recorder.mode = recordWelcomeDuplicate
+	again, err := store.MarkRoomWelcomed(t.Context(), "!room:example.org")
+	if err != nil || again {
+		t.Fatalf("duplicate MarkRoomWelcomed = (%v, %v), want (false, nil)", again, err)
 	}
 }
 
@@ -454,6 +496,7 @@ const (
 	recordTransactionHashConflict
 	recordDelegationConflict
 	recordLegacyTombstone
+	recordWelcomeDuplicate
 )
 
 func (r *databaseRecorder) database(t *testing.T) *dbutil.Database {
@@ -537,6 +580,9 @@ func (c *recordingConn) ExecContext(
 	}
 	if c.recorder.mode == recordTransactionHashConflict &&
 		strings.Contains(query, "INSERT INTO bridge_appservice_transactions") {
+		return driver.RowsAffected(0), nil
+	}
+	if c.recorder.mode == recordWelcomeDuplicate && strings.Contains(query, "INSERT INTO bridge_room_welcomes") {
 		return driver.RowsAffected(0), nil
 	}
 	return driver.RowsAffected(1), nil

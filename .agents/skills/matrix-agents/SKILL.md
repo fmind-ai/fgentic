@@ -230,6 +230,13 @@ Start the timer at the first failed bridge readiness/mention probe and stop it a
 1. **Use it** — invite `@agent-<name>` into a room, run `!agents` to confirm its sender-filtered gallery entry, use `!agents <name>` to inspect the cached description and declared skills, then `@mention` it. A remote mapping shown as unavailable is quarantined; do not treat cached card claims as current until trust is restored.
 1. **(Optional) In-flight task pins** — to turn on `PIN_IN_FLIGHT_TASKS`, grant agent ghosts the room's `m.room.pinned_events` state-event power level (raise the ghost's user level or lower the pinned-events event default in the room's power levels); without it the bridge skips pinning silently. Threaded working-state progress (`MAX_TASK_PROGRESS_POSTS`) needs no extra power.
 
+## Runbook: seed an onboarding room
+
+1. Create a new private, invite-only, unencrypted room for one declared purpose. Use room version 12 or newer and the reviewed server ACL/classification posture for any federated room; do not derive a room ID, alias, or participant from a localpart.
+1. Invite the exact bot MXID `@a2a-bridge:<server_name>`. With `WELCOME_ENABLED=true` (the default), the bot accepts and posts one automated `m.notice` containing only the agents that the inviter's full MXID may invoke, plus `@mention`, client-safe `!ask`/`!agents`/`!budget`, and raw-client `/ask`/`/agents`/`/budget` guidance.
+1. Verify the welcome appears once, is plaintext and visibly automated, and excludes a sender-denied mapping. A leave/re-invite must not post another welcome; the bridge keeps a permanent content-free room marker. Notice-plane exhaustion suppresses the single attempt without a rate-limit reply.
+1. Give the room a human-managed alias only if the deployment needs one. Keep room creation in the operator workflow rather than hardcoding IDs in bridge configuration; the bridge reacts to the invitation and does not own room lifecycle.
+
 ## Runbook: add an external-network bridge (interop)
 
 1. Read the [external-network interop contract](../../../docs/interop.md) and the provider-specific gate. Slack also has a [live workspace walkthrough](../../../docs/interop-slack.md). Do not infer provider compatibility from a successful render.

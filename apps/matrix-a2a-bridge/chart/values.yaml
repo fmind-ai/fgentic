@@ -41,6 +41,7 @@ config:
   metricsPort: 9090 # Prometheus /metrics side port (SPEC §9.3)
   agentsReloadInterval: 5s # poll the projected ConfigMap for routing/profile changes
   agentCardRefreshInterval: 5m # independently revalidate every signed remote AgentCard
+  welcomeEnabled: true # post one sender-filtered welcome when the bot first joins a room
   # Standard OTLP/HTTP endpoint. Empty keeps tracing disabled for standalone installs.
   otelEndpoint: ""
   # Room IDs where stage:dev agents may be invoked (#128). Empty = every dev agent is

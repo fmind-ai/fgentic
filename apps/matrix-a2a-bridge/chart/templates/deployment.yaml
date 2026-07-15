@@ -127,6 +127,8 @@ spec:
               value: {{ .Values.config.agentsReloadInterval | quote }}
             - name: AGENT_CARD_REFRESH_INTERVAL
               value: {{ .Values.config.agentCardRefreshInterval | quote }}
+            - name: WELCOME_ENABLED
+              value: {{ .Values.config.welcomeEnabled | quote }}
             {{- if .Values.config.otelEndpoint }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.config.otelEndpoint | quote }}

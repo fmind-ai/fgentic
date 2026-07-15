@@ -46,9 +46,6 @@ tests:
       - matchRegex:
           path: data["agents.yaml"]
           pattern: "avatarURL: mxc://fgentic.fmind.ai/locked-avatar"
-      - matchRegex:
-          path: data["welcome.txt"]
-          pattern: "@agent-locked:fgentic.fmind.ai — Restricted test agent\\."
   - it: preserves the fail-closed remote target trust and budget contract
     set:
       agents:
@@ -92,15 +89,7 @@ tests:
       - matchRegex:
           path: data["agents.yaml"]
           pattern: "agent-scribe:\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+description: .*\\n\\s+name: scribe"
-      - matchRegex:
+  - it: keeps onboarding sender-filtered at runtime instead of rendering a static agent list
+    asserts:
+      - notExists:
           path: data["welcome.txt"]
-          pattern: "@agent-platform-helper:fgentic.fmind.ai"
-      - matchRegex:
-          path: data["welcome.txt"]
-          pattern: "@agent-docs-qa:fgentic.fmind.ai"
-      - matchRegex:
-          path: data["welcome.txt"]
-          pattern: "@agent-scribe:fgentic.fmind.ai"
-      - matchRegex:
-          path: data["welcome.txt"]
-          pattern: "Send !agents in this room"

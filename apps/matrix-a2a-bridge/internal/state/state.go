@@ -37,6 +37,9 @@ type Store interface {
 	SetContext(ctx context.Context, roomID, ghost, contextID string) error
 	// MarkEventProcessed records an event ID and reports whether this was its first sighting.
 	MarkEventProcessed(ctx context.Context, eventID string) (first bool, err error)
+	// MarkRoomWelcomed records the bridge's one welcome attempt for a room and reports whether
+	// this caller owns that attempt. Unlike processed events, room markers are never pruned.
+	MarkRoomWelcomed(ctx context.Context, roomID string) (first bool, err error)
 	// Close releases the underlying resources.
 	Close() error
 }
@@ -46,6 +49,7 @@ type Memory struct {
 	mu           sync.Mutex
 	contexts     map[[2]string]string
 	processed    map[string]time.Time
+	welcomeRooms map[string]struct{}
 	transactions map[string]memoryTransaction
 	jobs         map[string]Job
 	jobOrder     []string
@@ -58,6 +62,7 @@ func NewMemory() *Memory {
 	return &Memory{
 		contexts:     make(map[[2]string]string),
 		processed:    make(map[string]time.Time),
+		welcomeRooms: make(map[string]struct{}),
 		transactions: make(map[string]memoryTransaction),
 		jobs:         make(map[string]Job),
 		jobByTarget:  make(map[[2]string]string),
@@ -93,6 +98,17 @@ func (m *Memory) MarkEventProcessed(_ context.Context, eventID string) (bool, er
 		return false, nil
 	}
 	m.processed[eventID] = now
+	return true, nil
+}
+
+// MarkRoomWelcomed implements Store.
+func (m *Memory) MarkRoomWelcomed(_ context.Context, roomID string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, seen := m.welcomeRooms[roomID]; seen {
+		return false, nil
+	}
+	m.welcomeRooms[roomID] = struct{}{}
 	return true, nil
 }
 
