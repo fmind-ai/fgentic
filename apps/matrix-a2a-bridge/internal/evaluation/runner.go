@@ -115,8 +115,21 @@ func validateObservedModel(expected modelcatalog.Model, observed ProviderIdentit
 	if observed.System != expected.GenAISystem {
 		return fmt.Errorf("observed gen_ai_system %q, catalog requires %q", observed.System, expected.GenAISystem)
 	}
-	if observed.RequestModel != expected.Name && observed.ResponseModel != expected.Name {
-		return fmt.Errorf("observed model %q/%q, catalog requires %q", observed.RequestModel, observed.ResponseModel, expected.Name)
+	observedModel := false
+	for label, model := range map[string]string{
+		"gen_ai_request_model":  observed.RequestModel,
+		"gen_ai_response_model": observed.ResponseModel,
+	} {
+		if model == "" || model == "unknown" {
+			continue
+		}
+		observedModel = true
+		if model != expected.Name {
+			return fmt.Errorf("observed %s %q, catalog requires %q", label, model, expected.Name)
+		}
+	}
+	if !observedModel {
+		return fmt.Errorf("observed no model identity, catalog requires %q", expected.Name)
 	}
 	return nil
 }
