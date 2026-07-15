@@ -22,6 +22,8 @@ Fgentic ships opt-in, digest-pinned GitOps units for **Slack** and **Telegram** 
 
 > **Evaluating adoption?** Start with the vendor-neutral [adopter decision brief and parameterized TCO worksheet](docs/adopter-decision-brief.md); it separates the controls Fgentic owns from the open-source systems it composes and requires your own measured usage, labor, and contracted rates.
 
+> **Joining an evaluation?** Choose the [security lead, DPO, platform engineer, developer, or end-user onboarding path](docs/onboarding/index.md) for a short route to the controls and evidence your role owns.
+
 ---
 
 ## Core principles
