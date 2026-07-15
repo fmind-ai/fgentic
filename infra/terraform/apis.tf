@@ -6,7 +6,8 @@ locals {
     "container.googleapis.com",
     "dns.googleapis.com", # only exercised when var.manage_dns is set
     "iam.googleapis.com",
-    "storage.googleapis.com", # tfstate + CNPG backup buckets
+    "iamcredentials.googleapis.com", # GKE WIF prerequisite; also used by CNPG's GSA impersonation
+    "storage.googleapis.com",        # tfstate + CNPG backup buckets
   ]
 }
 

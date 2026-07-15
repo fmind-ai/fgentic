@@ -72,11 +72,11 @@ Fgentic records provider/model token dimensions but intentionally ships no mutab
 
 The tracked overlays deliberately have two defaults because protocol evaluation and a production-shaped model boundary have different prerequisites:
 
-| Overlay          | Purpose                             | Tracked provider and model           | Credential boundary                                                                                              |
-| ---------------- | ----------------------------------- | ------------------------------------ | ---------------------------------------------------------------------------------------------------------------- |
-| `clusters/demo`  | Out-of-the-box protocol evaluation  | `demo` / `fgentic-demo`              | None; deterministic in-cluster fixture                                                                           |
-| `clusters/local` | Production-shaped local development | `vertex` / `google/gemini-2.5-flash` | Cluster-only `gcp-adc` Secret consumed only by agentgateway                                                      |
-| `clusters/gcp`   | Production-shaped GKE reference     | `vertex` / `google/gemini-2.5-flash` | Workload Identity design; required Vertex role tracked in [#400](https://github.com/fmind-ai/fgentic/issues/400) |
+| Overlay          | Purpose                             | Tracked provider and model           | Credential boundary                                                                                                     |
+| ---------------- | ----------------------------------- | ------------------------------------ | ----------------------------------------------------------------------------------------------------------------------- |
+| `clusters/demo`  | Out-of-the-box protocol evaluation  | `demo` / `fgentic-demo`              | None; deterministic in-cluster fixture                                                                                  |
+| `clusters/local` | Production-shaped local development | `vertex` / `google/gemini-2.5-flash` | Cluster-only `gcp-adc` Secret consumed only by agentgateway                                                             |
+| `clusters/gcp`   | Production-shaped GKE reference     | `vertex` / `google/gemini-2.5-flash` | Direct agentgateway Workload Identity grant; live proof remains in [#59](https://github.com/fmind-ai/fgentic/issues/59) |
 
 Vertex is the pragmatic default for the production-shaped references because it is the verified quality path and can use the maintainer's existing GCP credits. It is **not sovereign-by-default**: complete requests and responses cross the cluster boundary to Google, usage is billed to the selected project, and the project region, account contract, retention settings, and provider-side processing remain operator controls. The credential stays at agentgateway; no Agent, bridge, or Matrix service receives it.
 
