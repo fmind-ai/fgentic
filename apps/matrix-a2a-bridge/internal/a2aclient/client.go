@@ -23,11 +23,17 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2aext"
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
+
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/modelcatalog"
 )
 
 // userHeader carries the Matrix sender to kagent for session/audit attribution (SPEC §4 F11):
 // kagent's default auth mode reads the caller identity from this header.
 const userHeader = "X-User-Id"
+
+// DataClassificationHeader carries the bridge-reviewed agent/room data class only to the local
+// agentgateway A2A admission policy. Remote transports deliberately never receive it.
+const DataClassificationHeader = "X-Fgentic-Data-Classification"
 
 // ErrMessageIDRequired marks a caller error caught before SendMessage can reach the transport.
 // A durable caller must persist a non-empty deterministic ID before it attempts the remote call.
@@ -67,6 +73,8 @@ func (e *AmbiguousSendError) MessageID() string {
 
 type userKey struct{}
 
+type dataClassificationKey struct{}
+
 type sendAttemptKey struct{}
 
 type sendAttempt struct {
@@ -78,11 +86,17 @@ func WithUser(ctx context.Context, userID string) context.Context {
 	return context.WithValue(ctx, userKey{}, userID)
 }
 
+// WithDataClassification binds the reviewed local data class to one A2A request chain.
+func WithDataClassification(ctx context.Context, classification modelcatalog.Classification) context.Context {
+	return context.WithValue(ctx, dataClassificationKey{}, classification)
+}
+
 // userTransport injects the user header from the request context (requests inherit the
 // context passed to the SDK call, so per-call attribution works with one cached client).
 type userTransport struct {
-	base   http.RoundTripper
-	apiKey string
+	base            http.RoundTripper
+	apiKey          string
+	localPolicyData bool
 }
 
 // generationTransport fences remote calls against trust changes without holding the global cache
@@ -125,6 +139,13 @@ func (t *userTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 	}
 	if user != "" {
 		req.Header.Set(userHeader, user)
+	}
+	if t.localPolicyData {
+		classification, _ := req.Context().Value(dataClassificationKey{}).(modelcatalog.Classification)
+		if _, err := modelcatalog.ParseClassification(string(classification)); err != nil {
+			classification = modelcatalog.ClassificationRegulated
+		}
+		req.Header.Set(DataClassificationHeader, string(classification))
 	}
 	if t.apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+t.apiKey)
@@ -231,7 +252,9 @@ type Client struct {
 // apiKey is the bridge workload credential enforced by the A2A route; it may be empty only when
 // directly dialing an unsecured development fixture or kagent endpoint.
 func New(baseURL, apiKey string, log *slog.Logger) *Client {
-	localHTTPClient := &http.Client{Transport: &userTransport{base: http.DefaultTransport, apiKey: apiKey}}
+	localHTTPClient := &http.Client{Transport: &userTransport{
+		base: http.DefaultTransport, apiKey: apiKey, localPolicyData: true,
+	}}
 	remoteHTTPClient := &http.Client{
 		Transport: &userTransport{base: http.DefaultTransport},
 		CheckRedirect: func(_ *http.Request, _ []*http.Request) error {

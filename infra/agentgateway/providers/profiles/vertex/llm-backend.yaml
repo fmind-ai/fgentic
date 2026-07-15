@@ -6,6 +6,9 @@ kind: AgentgatewayBackend
 metadata:
   name: llm-vertex
   namespace: agentgateway-system
+  annotations:
+    fgentic.dev/model-admission: >-
+      request.method == "GET" || (request.method == "POST" && "x-fgentic-data-classification" in request.headers && ("${llm_model}" == "google/gemini-2.5-flash" && request.headers["x-fgentic-data-classification"] in ["public"]))
 spec:
   ai:
     provider:

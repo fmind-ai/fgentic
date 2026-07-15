@@ -25,6 +25,7 @@ import (
 	"maunium.net/go/mautrix/id"
 
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/a2aclient"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/modelcatalog"
 )
 
 const agentsSchemaVersion = 1
@@ -45,6 +46,9 @@ type AgentRef struct {
 	// AllowedSenders restricts invocation to matching user IDs (glob with '*', e.g.
 	// "@ops-*:partner.example"). Empty means: any user on an allowed server.
 	AllowedSenders []string `yaml:"allowedSenders,omitempty"`
+	// DataClassification is the highest-sensitivity room content this mapping may receive. Omission
+	// fails closed to regulated; current public sample agents declare public explicitly.
+	DataClassification modelcatalog.Classification `yaml:"dataClassification"`
 
 	senderRes  []*regexp.Regexp // compiled AllowedSenders
 	avatar     id.ContentURI
@@ -68,6 +72,9 @@ type agentConfig struct {
 	// Stage gates blast radius (#128): `dev` agents are invocable only in the bridge's configured
 	// staging rooms; `prod` (the default) is unrestricted. Valid for both local and remote targets.
 	Stage *string `yaml:"stage,omitempty"`
+	// DataClassification is forwarded only to the authenticated local agentgateway A2A admission
+	// boundary. It is never sent to a configured remote agent.
+	DataClassification *string `yaml:"dataClassification,omitempty"`
 
 	Timeout      *time.Duration      `yaml:"timeout,omitempty"`
 	TokenBudget  *uint64             `yaml:"tokenBudget,omitempty"`
@@ -147,6 +154,11 @@ func (a *AgentRef) MaxCost() uint64 {
 // configured staging rooms (#128). The default (unset) stage is `prod`, which is unrestricted.
 func (a *AgentRef) IsDev() bool {
 	return a.dev
+}
+
+// Classification returns the reviewed data class bound into local agentgateway admission.
+func (a *AgentRef) Classification() modelcatalog.Classification {
+	return a.DataClassification
 }
 
 // AllowsMedia reports whether this remote mapping opted into moving file bytes across the org
@@ -244,16 +256,20 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 
 	namespace := configuredString(cfg.Namespace)
 	name := configuredString(cfg.Name)
+	classification, err := compileDataClassification(ghost, cfg.DataClassification)
+	if err != nil {
+		return nil, err
+	}
 	ref := &AgentRef{
-		Namespace:      namespace,
-		Name:           name,
-		Description:    cfg.Description,
-		AvatarURL:      cfg.AvatarURL,
-		AllowedServers: append([]string(nil), cfg.AllowedServers...),
-		AllowedSenders: append([]string(nil), cfg.AllowedSenders...),
+		Namespace:          namespace,
+		Name:               name,
+		Description:        cfg.Description,
+		AvatarURL:          cfg.AvatarURL,
+		AllowedServers:     append([]string(nil), cfg.AllowedServers...),
+		AllowedSenders:     append([]string(nil), cfg.AllowedSenders...),
+		DataClassification: classification,
 	}
 
-	var err error
 	if hasLocal {
 		if namespace == "" || name == "" {
 			return nil, fmt.Errorf("agent %q: both namespace and name are required for a local target", ghost)
@@ -285,8 +301,21 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 	if err := ref.compileSenders(ghost); err != nil {
 		return nil, err
 	}
-	ref.mappingID = mappingID(ref.target, ref.timeout, ref.maxCost, ref.dev, ref.allowMedia)
+	ref.mappingID = mappingID(
+		ref.target, ref.timeout, ref.maxCost, ref.dev, ref.allowMedia, ref.DataClassification,
+	)
 	return ref, nil
+}
+
+func compileDataClassification(ghost string, configured *string) (modelcatalog.Classification, error) {
+	if configured == nil {
+		return modelcatalog.ClassificationRegulated, nil
+	}
+	classification, err := modelcatalog.ParseClassification(*configured)
+	if err != nil {
+		return "", fmt.Errorf("agent %q: %w", ghost, err)
+	}
+	return classification, nil
 }
 
 // compileStage validates the optional per-agent stage flag. The default (unset) is `prod`.
@@ -409,10 +438,17 @@ func compileCardIdentity(cfg *cardIdentityConfig) (a2aclient.CardIdentity, error
 	}, nil
 }
 
-func mappingID(target a2aclient.Target, timeout time.Duration, maxCost uint64, dev, allowMedia bool) string {
+func mappingID(
+	target a2aclient.Target,
+	timeout time.Duration,
+	maxCost uint64,
+	dev, allowMedia bool,
+	classification modelcatalog.Classification,
+) string {
 	identity := target.IdentityFingerprint()
 	sum := sha256.Sum256([]byte(fmt.Sprintf(
-		"%s\x00%x\x00%d\x00%d\x00%d\x00%t\x00%t", target.ID(), identity, target.TokenBudget(), timeout, maxCost, dev, allowMedia,
+		"%s\x00%x\x00%d\x00%d\x00%d\x00%t\x00%t\x00%s",
+		target.ID(), identity, target.TokenBudget(), timeout, maxCost, dev, allowMedia, classification,
 	)))
 	return hex.EncodeToString(sum[:])
 }

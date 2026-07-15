@@ -27,10 +27,14 @@ bridgedOrigins:
 #   stage: `dev` confines the agent to the bridge's STAGING_ROOMS (blast-radius boundary before a
 #          new agent meets production rooms); `prod` (the default) is unrestricted. Flipping
 #          `stage: dev` -> `prod` is a one-line reload that promotes the agent with no pod restart.
+#   dataClassification: reviewed room/agent data class sent only to authenticated local
+#          agentgateway admission. Omission fails closed to `regulated`; it is never sent to a
+#          configured remote endpoint.
 agents:
   agent-platform-helper:
     namespace: kagent
     name: platform-helper
+    dataClassification: public
     description: Read-only diagnostics for the evaluation profile's Kubernetes namespaces.
     # avatarURL: mxc://fgentic.fmind.ai/media-id
     # To admit one immutable Slack puppet deliberately, add
@@ -39,11 +43,13 @@ agents:
   agent-docs-qa:
     namespace: kagent
     name: docs-qa
+    dataClassification: public
     description: Answers architecture and operations questions from local Fgentic documentation.
     allowedSenders: ["@alice:fgentic.fmind.ai"]
   agent-scribe:
     namespace: kagent
     name: scribe
+    dataClassification: public
     description: Summarizes pasted or quoted room discussion without tools.
     allowedSenders: ["@alice:fgentic.fmind.ai"]
 

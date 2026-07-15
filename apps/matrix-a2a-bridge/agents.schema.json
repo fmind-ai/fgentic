@@ -49,6 +49,10 @@
           "description": "Rollout stage. `dev` agents are invocable only in the bridge's configured staging rooms; `prod` (the default) is unrestricted. Valid for both local and remote targets.",
           "enum": ["dev", "prod"]
         },
+        "dataClassification": {
+          "description": "Highest-sensitivity room data delegated to this mapping. Omission fails closed to regulated. The bridge sends this only to its authenticated local agentgateway admission boundary, never to a remote target.",
+          "enum": ["public", "approved_non_public", "restricted", "regulated"]
+        },
         "timeout": {
           "type": "string",
           "pattern": "^(?:[0-9]+(?:\\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))+$"

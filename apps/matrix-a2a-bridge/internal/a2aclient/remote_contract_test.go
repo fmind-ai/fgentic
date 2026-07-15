@@ -28,6 +28,7 @@ import (
 	"github.com/gowebpki/jcs"
 
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/agentcardjws"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/modelcatalog"
 )
 
 const remoteFixturePath = "/remote-agent"
@@ -353,7 +354,10 @@ func TestRemoteClientSignedRoundTripAndCredentialBoundary(t *testing.T) {
 	}
 	card.Name = "caller mutation must not affect cached client"
 
-	ctx := WithUser(t.Context(), "@alice:local.example")
+	ctx := WithDataClassification(
+		WithUser(t.Context(), "@alice:local.example"),
+		modelcatalog.ClassificationRestricted,
+	)
 	result, err := client.Call(ctx, target, "remote prompt", "", nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
@@ -387,6 +391,9 @@ func TestRemoteClientSignedRoundTripAndCredentialBoundary(t *testing.T) {
 	}
 	if got := fixture.callHeaders[0].Get(userHeader); got != "@alice:local.example" {
 		t.Fatalf("remote call %s = %q", userHeader, got)
+	}
+	if got := fixture.callHeaders[0].Get(DataClassificationHeader); got != "" {
+		t.Fatalf("remote call %s = %q, want empty", DataClassificationHeader, got)
 	}
 	if got := fixture.callHeaders[0].Get(a2a.SvcParamExtensions); !strings.Contains(got, TokenBudgetExtensionURI) {
 		t.Fatalf("%s = %q", a2a.SvcParamExtensions, got)

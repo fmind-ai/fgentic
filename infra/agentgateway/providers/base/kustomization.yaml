@@ -4,6 +4,7 @@ apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 resources:
   - llm-route.yaml
+  - a2a-authorization.yaml
 replacements:
   - source:
       group: agentgateway.dev
@@ -19,3 +20,17 @@ replacements:
           namespace: agentgateway-system
         fieldPaths:
           - spec.rules.0.backendRefs.0.name
+  - source:
+      group: agentgateway.dev
+      version: v1alpha1
+      kind: AgentgatewayBackend
+      fieldPath: metadata.annotations.[fgentic.dev/model-admission]
+    targets:
+      - select:
+          group: agentgateway.dev
+          version: v1alpha1
+          kind: AgentgatewayPolicy
+          name: a2a-bridge-authorization
+          namespace: agentgateway-system
+        fieldPaths:
+          - spec.traffic.authorization.policy.matchExpressions.1

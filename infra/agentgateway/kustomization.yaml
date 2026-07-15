@@ -9,7 +9,6 @@ resources:
   - gateway.yaml
   - a2a-backend.yaml
   - a2a-route.yaml
-  - a2a-authorization.yaml
   - mcp-backend.yaml
   - mcp-route.yaml
   - mcp-authorization.yaml

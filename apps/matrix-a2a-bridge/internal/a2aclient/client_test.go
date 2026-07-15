@@ -10,6 +10,8 @@ import (
 	"go.opentelemetry.io/otel"
 	"go.opentelemetry.io/otel/propagation"
 	"go.opentelemetry.io/otel/trace"
+
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/modelcatalog"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -36,13 +38,18 @@ func TestUserTransportInjectsAttributionAndTraceContext(t *testing.T) {
 
 	var got http.Header
 	transport := &userTransport{
-		apiKey: "workload-key",
+		apiKey:          "workload-key",
+		localPolicyData: true,
 		base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
 			got = req.Header.Clone()
 			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
 		}),
 	}
-	ctx := trace.ContextWithSpanContext(WithUser(context.Background(), "@alice:matrix.example"), spanContext)
+	ctx := WithDataClassification(
+		WithUser(context.Background(), "@alice:matrix.example"),
+		modelcatalog.ClassificationRestricted,
+	)
+	ctx = trace.ContextWithSpanContext(ctx, spanContext)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://agent.example/a2a", nil)
 	if err != nil {
 		t.Fatalf("NewRequestWithContext: %v", err)
@@ -57,8 +64,32 @@ func TestUserTransportInjectsAttributionAndTraceContext(t *testing.T) {
 	if value := got.Get("Authorization"); value != "Bearer workload-key" {
 		t.Errorf("Authorization = %q", value)
 	}
+	if value := got.Get(DataClassificationHeader); value != "restricted" {
+		t.Errorf("%s = %q", DataClassificationHeader, value)
+	}
 	if value := got.Get("traceparent"); value != "00-0102030405060708090a0b0c0d0e0f10-0102030405060708-01" {
 		t.Errorf("traceparent = %q", value)
+	}
+}
+
+func TestUserTransportDefaultsMissingClassificationToRegulated(t *testing.T) {
+	var got http.Header
+	transport := &userTransport{
+		localPolicyData: true,
+		base: roundTripFunc(func(req *http.Request) (*http.Response, error) {
+			got = req.Header.Clone()
+			return &http.Response{StatusCode: http.StatusOK, Body: http.NoBody}, nil
+		}),
+	}
+	req, err := http.NewRequestWithContext(t.Context(), http.MethodPost, "http://agent.example/a2a", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext: %v", err)
+	}
+	if _, err := transport.RoundTrip(req); err != nil {
+		t.Fatalf("RoundTrip: %v", err)
+	}
+	if value := got.Get(DataClassificationHeader); value != "regulated" {
+		t.Errorf("%s = %q, want fail-closed regulated", DataClassificationHeader, value)
 	}
 }
 

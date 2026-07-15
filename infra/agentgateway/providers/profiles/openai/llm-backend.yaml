@@ -5,6 +5,8 @@ kind: AgentgatewayBackend
 metadata:
   name: llm-openai
   namespace: agentgateway-system
+  annotations:
+    fgentic.dev/model-admission: request.method == "GET"
 spec:
   ai:
     provider:

@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"strconv"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -58,6 +60,9 @@ func run(args []string) error {
 	if err := validateProfileDirectories(*repoRoot, catalog); err != nil {
 		return err
 	}
+	if err := validateProfileAdmission(*repoRoot, catalog); err != nil {
+		return err
+	}
 	settings, err := filepath.Glob(filepath.Join(*repoRoot, "clusters", "*", "platform-settings.yaml"))
 	if err != nil {
 		return fmt.Errorf("glob platform settings: %w", err)
@@ -72,6 +77,78 @@ func run(args []string) error {
 	}
 	fmt.Printf("model catalog valid: %d models, %d active overlays\n", len(catalog.Models), len(settings))
 	return nil
+}
+
+const modelAdmissionAnnotation = "fgentic.dev/model-admission"
+
+func validateProfileAdmission(repoRoot string, catalog *modelcatalog.Catalog) error {
+	modelsByProfile := make(map[string][]modelcatalog.Model)
+	for _, model := range catalog.Models {
+		modelsByProfile[model.Profile] = append(modelsByProfile[model.Profile], model)
+	}
+	backends, err := filepath.Glob(filepath.Join(
+		repoRoot, "infra", "agentgateway", "providers", "profiles", "*", "llm-backend.yaml",
+	))
+	if err != nil {
+		return fmt.Errorf("glob provider backends: %w", err)
+	}
+	if len(backends) == 0 {
+		return fmt.Errorf("no provider backends found")
+	}
+	for _, path := range backends {
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return fmt.Errorf("read provider backend %s: %w", path, err)
+		}
+		var backend struct {
+			Metadata struct {
+				Annotations map[string]string `yaml:"annotations"`
+			} `yaml:"metadata"`
+		}
+		if err := yaml.Unmarshal(data, &backend); err != nil {
+			return fmt.Errorf("decode provider backend %s: %w", path, err)
+		}
+		profile := filepath.Base(filepath.Dir(path))
+		got := backend.Metadata.Annotations[modelAdmissionAnnotation]
+		want := modelAdmissionExpression(modelsByProfile[profile])
+		if got != want {
+			return fmt.Errorf(
+				"provider profile %s model admission drifted from the governed catalog: got %q, want %q",
+				profile,
+				got,
+				want,
+			)
+		}
+	}
+	return nil
+}
+
+func modelAdmissionExpression(models []modelcatalog.Model) string {
+	if len(models) == 0 {
+		return `request.method == "GET"`
+	}
+	clauses := make([]string, 0, len(models))
+	for _, model := range models {
+		allowed := make([]string, 0, 4)
+		for _, classification := range []modelcatalog.Classification{
+			modelcatalog.ClassificationPublic,
+			modelcatalog.ClassificationApprovedNonPublic,
+			modelcatalog.ClassificationRestricted,
+			modelcatalog.ClassificationRegulated,
+		} {
+			if model.Admits(classification) {
+				allowed = append(allowed, strconv.Quote(string(classification)))
+			}
+		}
+		clauses = append(clauses, fmt.Sprintf(
+			`"${llm_model}" == %s && request.headers["x-fgentic-data-classification"] in [%s]`,
+			strconv.Quote(model.Name),
+			strings.Join(allowed, ", "),
+		))
+	}
+	return `request.method == "GET" || (request.method == "POST" && ` +
+		`"x-fgentic-data-classification" in request.headers && (` +
+		strings.Join(clauses, " || ") + `))`
 }
 
 func loadCatalog(path string) (*modelcatalog.Catalog, error) {

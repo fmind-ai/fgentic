@@ -3,6 +3,9 @@ kind: AgentgatewayBackend
 metadata:
   name: llm-demo
   namespace: agentgateway-system
+  annotations:
+    fgentic.dev/model-admission: >-
+      request.method == "GET" || (request.method == "POST" && "x-fgentic-data-classification" in request.headers && ("${llm_model}" == "fgentic-demo" && request.headers["x-fgentic-data-classification"] in ["public"]))
 spec:
   ai:
     provider:

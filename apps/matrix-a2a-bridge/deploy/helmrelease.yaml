@@ -50,14 +50,17 @@ spec:
     agents:
       agent-platform-helper:
         stage: prod
+        dataClassification: public
         allowedSenders:
           - "@alice:${server_name}"
       agent-docs-qa:
         stage: prod
+        dataClassification: public
         allowedSenders:
           - "@alice:${server_name}"
       agent-scribe:
         stage: prod
+        dataClassification: public
         allowedSenders:
           - "@alice:${server_name}"
     metrics:

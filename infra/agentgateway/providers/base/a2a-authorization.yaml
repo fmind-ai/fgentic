@@ -2,6 +2,10 @@
 # kagent. The API key is resolved from SOPS and removed by agentgateway before proxying; Matrix
 # X-User-Id remains attribution only. Restrict the credential to kagent A2A GET/POST traffic so it
 # cannot authorize another namespace or an unrelated route if the HTTPRoute is widened by mistake.
+# The selected governed model profile owns this policy through providers/base. Its second
+# expression is replaced from a generated backend annotation whose exact value is checked against
+# model-catalog.yaml. Keeping workload authentication and model admission in one policy is
+# required by agentgateway v1.3.1: only one AgentgatewayPolicy wins for a route target.
 # Require is fail-closed when CEL evaluation fails.
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayPolicy
@@ -28,3 +32,4 @@ spec:
             (request.method == "POST" ||
             (request.method == "GET" &&
             request.path.endsWith("/.well-known/agent-card.json")))
+          - __FGENTIC_MODEL_CLASSIFICATION_POLICY__

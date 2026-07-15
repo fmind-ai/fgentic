@@ -12,6 +12,7 @@ import (
 	"maunium.net/go/mautrix/id"
 
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/a2aclient"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/modelcatalog"
 )
 
 const validRemoteAgentsYAML = `agents:
@@ -67,6 +68,9 @@ func TestLoadAgents(t *testing.T) {
 	}
 	if ref.MappingID() == "" {
 		t.Error("MappingID() is empty")
+	}
+	if got := ref.Classification(); got != modelcatalog.ClassificationRegulated {
+		t.Errorf("Classification() = %q, want fail-closed regulated default", got)
 	}
 	if ref.Description != "Diagnoses cluster health during startup outages." {
 		t.Errorf("Description = %q", ref.Description)
@@ -414,6 +418,31 @@ func TestLoadAgentsRejectsInvalidStage(t *testing.T) {
 	_, err := LoadAgents(writeTemp(t, "agents:\n  agent-x: {namespace: kagent, name: x, stage: staging}\n"))
 	if err == nil || !strings.Contains(err.Error(), `stage must be "dev" or "prod"`) {
 		t.Fatalf("LoadAgents invalid stage err = %v", err)
+	}
+}
+
+func TestLoadAgentsDataClassification(t *testing.T) {
+	publicAgents, err := LoadAgents(writeTemp(t, "agents:\n  agent-x: {namespace: kagent, name: x, dataClassification: public}\n"))
+	if err != nil {
+		t.Fatalf("LoadAgents public: %v", err)
+	}
+	publicRef, _ := publicAgents.Lookup("agent-x")
+	if got := publicRef.Classification(); got != modelcatalog.ClassificationPublic {
+		t.Fatalf("Classification() = %q, want public", got)
+	}
+
+	regulatedAgents, err := LoadAgents(writeTemp(t, "agents:\n  agent-x: {namespace: kagent, name: x}\n"))
+	if err != nil {
+		t.Fatalf("LoadAgents default: %v", err)
+	}
+	regulatedRef, _ := regulatedAgents.Lookup("agent-x")
+	if publicRef.SameTarget(regulatedRef) || publicRef.MappingID() == regulatedRef.MappingID() {
+		t.Fatal("classification change did not re-key the immutable mapping")
+	}
+
+	_, err = LoadAgents(writeTemp(t, "agents:\n  agent-x: {namespace: kagent, name: x, dataClassification: confidential}\n"))
+	if err == nil || !strings.Contains(err.Error(), `classification "confidential" is not supported`) {
+		t.Fatalf("LoadAgents invalid classification err = %v", err)
 	}
 }
 

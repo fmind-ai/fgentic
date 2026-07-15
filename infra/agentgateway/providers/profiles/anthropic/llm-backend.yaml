@@ -5,6 +5,10 @@ kind: AgentgatewayBackend
 metadata:
   name: llm-anthropic
   namespace: agentgateway-system
+  annotations:
+    # No governed model-catalog entry exists for this optional profile yet. Discovery is safe;
+    # every SendMessage remains denied until the exact model policy is reviewed and cataloged.
+    fgentic.dev/model-admission: request.method == "GET"
 spec:
   ai:
     provider:

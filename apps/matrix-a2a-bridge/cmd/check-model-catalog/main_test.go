@@ -39,3 +39,25 @@ models:
 		t.Fatal("validatePlatformSettings unexpectedly accepted unknown model")
 	}
 }
+
+func TestModelAdmissionExpression(t *testing.T) {
+	models := []modelcatalog.Model{
+		{Name: "public-model", AllowedClassification: modelcatalog.ClassificationPublic},
+		{Name: "restricted-model", AllowedClassification: modelcatalog.ClassificationRestricted},
+	}
+	expression := modelAdmissionExpression(models)
+	for _, want := range []string{
+		`request.method == "GET"`,
+		`"${llm_model}" == "public-model"`,
+		`["public"]`,
+		`"${llm_model}" == "restricted-model"`,
+		`["public", "approved_non_public", "restricted"]`,
+	} {
+		if !strings.Contains(expression, want) {
+			t.Errorf("modelAdmissionExpression() = %q, missing %q", expression, want)
+		}
+	}
+	if got := modelAdmissionExpression(nil); got != `request.method == "GET"` {
+		t.Errorf("uncataloged expression = %q", got)
+	}
+}

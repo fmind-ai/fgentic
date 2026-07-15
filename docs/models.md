@@ -36,9 +36,11 @@ Every API-key Secret is namespace-local to `agentgateway-system` and stores the 
 1. One or more `chat`, `embeddings`, or `rerank` capabilities.
 1. At most one `costRef`, fixed to the operator-reviewed `fgentic.eval.pricing.v1` overlay identity. The catalog contains no mutable price or price URL.
 
-The root check resolves every tracked `clusters/*/platform-settings.yaml` provider/model pair through the catalog and fails closed on an unknown selection, missing classification, unsupported enum, duplicate identity, or missing provider directory. The current inventory covers the tracked `demo` and `vertex` choices plus the canonical self-hosted `vllm` model. Before selecting a different API model or adding an embeddings/rerank backend, add its exact reviewed entry in the same change; do not copy residency or classification fields into an overlay or route.
+The root check resolves every tracked `clusters/*/platform-settings.yaml` provider/model pair through the catalog and fails closed on an unknown selection, missing classification, unsupported enum, duplicate identity, or missing provider directory. It also derives the exact agentgateway admission expression for every provider profile and rejects a committed backend annotation that differs. The annotation is a checked render artifact; the catalog remains the policy source. The current inventory covers the tracked `demo` and `vertex` choices plus the canonical self-hosted `vllm` model. Before selecting a different API model or adding an embeddings/rerank backend, add its exact reviewed entry in the same change. An optional profile with no catalog entry permits AgentCard discovery but denies every `SendMessage`.
 
-The catalog is policy input, not a router or enforcement claim. agentgateway still owns routing/serving, and the classification-aware denial path is implemented separately by #339. Until that gate lands, selecting a cluster profile remains the effective model boundary; catalog validation alone does not prevent egress.
+Each local `agents.yaml` mapping declares `dataClassification`; omission defaults to the most restrictive `regulated` class. The bridge injects `X-Fgentic-Data-Classification` only on its local A2A transport, beside its independently authenticated workload key, and never sends that policy metadata to a configured remote target. The selected provider owns one combined agentgateway policy because pinned agentgateway v1.3.1 selects only one policy for an HTTPRoute target. That policy admits a `SendMessage` only when the exact substituted model exists in the catalog and its `allowedClassification` ceiling covers the mapping's class. Missing and unknown headers fail closed.
+
+This is deliberately pre-model admission, not unproved header propagation. Pinned kagent creates a separate model HTTP request and does not carry arbitrary A2A headers into it, so trusting a model-hop header from the Agent pod would violate D11. Agentgateway instead rejects a disallowed authenticated bridge delegation before it reaches kagent. With `vertex`, only `public` mappings run; with `vllm`, all four governed classes may run and the profile NetworkPolicy leaves the proxy no external model-egress path. Profiles remain mutually exclusive per cluster: this gate denies a classified request on an API profile rather than dynamically deploying or switching to vLLM. `mise run test:model-residency` proves those rendered allow/deny and egress contracts offline.
 
 ## Data-flow map by profile
 
@@ -68,7 +70,7 @@ flowchart LR
   end
 ```
 
-The diagram shows one mutually exclusive deployment choice, not simultaneous fan-out. API-provider account settings still control retention, contractual residency, and deployment geography.
+The diagram shows one mutually exclusive deployment choice, not simultaneous fan-out. Classification admission never silently changes profiles: a request outside the selected exact model's catalog ceiling is denied before kagent. API-provider account settings still control retention, contractual residency, and deployment geography.
 
 | Profile        | Cost characteristic                                                                                      | Latency expectation                                                                                         |
 | -------------- | -------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |

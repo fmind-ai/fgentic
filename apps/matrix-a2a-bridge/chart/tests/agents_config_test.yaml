@@ -27,6 +27,7 @@ tests:
         agent-locked:
           namespace: kagent
           name: locked
+          dataClassification: restricted
           description: Restricted test agent.
           avatarURL: mxc://fgentic.fmind.ai/locked-avatar
           allowedServers:
@@ -43,6 +44,9 @@ tests:
       - matchRegex:
           path: data["agents.yaml"]
           pattern: "description: Restricted test agent\\."
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "dataClassification: restricted"
       - matchRegex:
           path: data["agents.yaml"]
           pattern: "avatarURL: mxc://fgentic.fmind.ai/locked-avatar"
@@ -82,13 +86,13 @@ tests:
     asserts:
       - matchRegex:
           path: data["agents.yaml"]
-          pattern: "agent-platform-helper:\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+description: .*\\n\\s+name: platform-helper"
+          pattern: "agent-platform-helper:\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+dataClassification: public\\n\\s+description: .*\\n\\s+name: platform-helper"
       - matchRegex:
           path: data["agents.yaml"]
-          pattern: "agent-docs-qa:\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+description: .*\\n\\s+name: docs-qa"
+          pattern: "agent-docs-qa:\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+dataClassification: public\\n\\s+description: .*\\n\\s+name: docs-qa"
       - matchRegex:
           path: data["agents.yaml"]
-          pattern: "agent-scribe:\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+description: .*\\n\\s+name: scribe"
+          pattern: "agent-scribe:\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+dataClassification: public\\n\\s+description: .*\\n\\s+name: scribe"
   - it: keeps onboarding sender-filtered at runtime instead of rendering a static agent list
     asserts:
       - notExists:

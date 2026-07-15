@@ -17,6 +17,8 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
+
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/modelcatalog"
 )
 
 const (
@@ -288,7 +290,10 @@ func TestClientContract_MessageContextAttributionAndWireVersion(t *testing.T) {
 		}
 	})
 	client := contractServer(t, executor, taskstore.NewInMemory(nil), recorder)
-	ctx := WithUser(t.Context(), "@alice:fgentic.example")
+	ctx := WithDataClassification(
+		WithUser(t.Context(), "@alice:fgentic.example"),
+		modelcatalog.ClassificationApprovedNonPublic,
+	)
 
 	first, err := client.Call(ctx, contractTarget(t), "first prompt", "", nil)
 	if err != nil {
@@ -319,6 +324,9 @@ func TestClientContract_MessageContextAttributionAndWireVersion(t *testing.T) {
 		}
 		if got := header.Get("Authorization"); got != "Bearer contract-api-key" {
 			t.Errorf("request %d Authorization = %q, want bridge workload credential", i+1, got)
+		}
+		if got := header.Get(DataClassificationHeader); got != "approved_non_public" {
+			t.Errorf("request %d %s = %q", i+1, DataClassificationHeader, got)
 		}
 		if got := header.Get(a2a.SvcParamVersion); got != pinnedKagentWireVersion {
 			t.Fatalf(

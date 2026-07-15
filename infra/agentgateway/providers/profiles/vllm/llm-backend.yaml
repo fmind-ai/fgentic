@@ -5,6 +5,9 @@ kind: AgentgatewayBackend
 metadata:
   name: llm-vllm
   namespace: agentgateway-system
+  annotations:
+    fgentic.dev/model-admission: >-
+      request.method == "GET" || (request.method == "POST" && "x-fgentic-data-classification" in request.headers && ("${llm_model}" == "Qwen/Qwen2.5-0.5B-Instruct" && request.headers["x-fgentic-data-classification"] in ["public", "approved_non_public", "restricted", "regulated"]))
 spec:
   ai:
     provider:
