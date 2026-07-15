@@ -40,3 +40,21 @@ func TestMemoryMarkEventProcessed(t *testing.T) {
 		t.Fatalf("second sighting = (%v, %v), want (false, nil)", again, err)
 	}
 }
+
+func TestMemoryMarkRoomWelcomed(t *testing.T) {
+	s := NewMemory()
+	ctx := t.Context()
+
+	first, err := s.MarkRoomWelcomed(ctx, "!room:example.org")
+	if err != nil || !first {
+		t.Fatalf("first welcome = (%v, %v), want (true, nil)", first, err)
+	}
+	again, err := s.MarkRoomWelcomed(ctx, "!room:example.org")
+	if err != nil || again {
+		t.Fatalf("second welcome = (%v, %v), want (false, nil)", again, err)
+	}
+	other, err := s.MarkRoomWelcomed(ctx, "!other:example.org")
+	if err != nil || !other {
+		t.Fatalf("other-room welcome = (%v, %v), want (true, nil)", other, err)
+	}
+}

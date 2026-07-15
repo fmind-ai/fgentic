@@ -37,6 +37,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.AgentsPath != "/etc/matrix-a2a-bridge/agents/agents.yaml" {
 		t.Errorf("AgentsPath = %q", cfg.AgentsPath)
 	}
+	if !cfg.WelcomeEnabled {
+		t.Error("WelcomeEnabled = false, want default true")
+	}
 	if cfg.RoomQueueCapacity != 32 || cfg.GlobalQueueCapacity != 256 {
 		t.Errorf("queue capacities = (%d, %d), want (32, 256)", cfg.RoomQueueCapacity, cfg.GlobalQueueCapacity)
 	}
@@ -66,6 +69,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("GHOST_PREFIX", "bot-")
 	t.Setenv("AGENTS_RELOAD_INTERVAL", "2s")
 	t.Setenv("AGENT_CARD_REFRESH_INTERVAL", "30s")
+	t.Setenv("WELCOME_ENABLED", "false")
 	t.Setenv("ROOM_QUEUE_CAPACITY", "12")
 	t.Setenv("GLOBAL_QUEUE_CAPACITY", "64")
 	t.Setenv("RATE_LIMIT_BUCKET_CAPACITY", "128")
@@ -103,6 +107,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.AgentCardRefreshInterval != 30*time.Second {
 		t.Errorf("AgentCardRefreshInterval = %s, want 30s", cfg.AgentCardRefreshInterval)
+	}
+	if cfg.WelcomeEnabled {
+		t.Error("WelcomeEnabled = true, want false override")
 	}
 	if cfg.RoomQueueCapacity != 12 || cfg.GlobalQueueCapacity != 64 {
 		t.Errorf("queue capacities = (%d, %d), want (12, 64)", cfg.RoomQueueCapacity, cfg.GlobalQueueCapacity)

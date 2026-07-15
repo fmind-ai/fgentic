@@ -84,5 +84,20 @@ func (p *Postgres) MarkEventProcessed(ctx context.Context, eventID string) (bool
 	return inserted == 1, nil
 }
 
+// MarkRoomWelcomed implements Store.
+func (p *Postgres) MarkRoomWelcomed(ctx context.Context, roomID string) (bool, error) {
+	res, err := p.db.Exec(ctx,
+		"INSERT INTO bridge_room_welcomes (room_id) VALUES ($1) ON CONFLICT DO NOTHING",
+		roomID)
+	if err != nil {
+		return false, fmt.Errorf("mark room %s welcomed: %w", roomID, err)
+	}
+	inserted, err := res.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("mark room %s welcomed: %w", roomID, err)
+	}
+	return inserted == 1, nil
+}
+
 // Close is a no-op: the shared dbutil pool is owned and closed by the caller (main).
 func (p *Postgres) Close() error { return nil }

@@ -39,6 +39,9 @@ type Config struct {
 	RegistrationPath     string        `env:"REGISTRATION_PATH" envDefault:"/etc/matrix-a2a-bridge/registration.yaml"`
 	AgentsPath           string        `env:"AGENTS_PATH" envDefault:"/etc/matrix-a2a-bridge/agents/agents.yaml"`
 	AgentsReloadInterval time.Duration `env:"AGENTS_RELOAD_INTERVAL" envDefault:"5s"`
+	// WelcomeEnabled posts one sender-filtered onboarding notice when the bot accepts its first
+	// invitation to a room. A durable room marker prevents a rejoin from posting it again.
+	WelcomeEnabled bool `env:"WELCOME_ENABLED" envDefault:"true"`
 	// AgentCardRefreshInterval controls independent revalidation of remote, signed AgentCards.
 	// It is deliberately slower than projected-config polling: remote trust refreshes perform
 	// network I/O and use HTTP validators, while agents.yaml reloads are local file reads.

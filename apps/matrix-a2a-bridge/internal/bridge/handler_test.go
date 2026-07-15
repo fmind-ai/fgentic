@@ -1289,9 +1289,11 @@ func (c *scriptedA2AClient) QuoteAdmission(_ a2aclient.Target, _ uint64) a2aclie
 }
 
 type matrixRecorder struct {
-	mu     sync.Mutex
-	events []event.MessageEventContent
-	raw    [][]byte // verbatim request bodies, so tests can inspect mixins the struct drops
+	mu                  sync.Mutex
+	events              []event.MessageEventContent
+	raw                 [][]byte // verbatim request bodies, so tests can inspect mixins the struct drops
+	allowMembershipWire bool
+	membershipRequests  []string
 }
 
 func (r *matrixRecorder) append(content event.MessageEventContent, raw []byte) id.EventID {
@@ -1306,6 +1308,28 @@ func (r *matrixRecorder) snapshot() []event.MessageEventContent {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return slices.Clone(r.events)
+}
+
+func (r *matrixRecorder) enableMembershipWire() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.allowMembershipWire = true
+}
+
+func (r *matrixRecorder) recordMembershipRequest(path string) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.allowMembershipWire {
+		return false
+	}
+	r.membershipRequests = append(r.membershipRequests, path)
+	return true
+}
+
+func (r *matrixRecorder) membershipSnapshot() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.membershipRequests)
 }
 
 // rawSnapshot returns each sent event body parsed as a generic map, exposing raw content blocks
@@ -1333,6 +1357,22 @@ func pollingHarness(
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
+		case req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/register"):
+			if !recorder.recordMembershipRequest(req.URL.Path) {
+				t.Errorf("unexpected Matrix registration request: %s", req.URL.Path)
+				http.NotFound(w, req)
+				return
+			}
+			_, _ = w.Write([]byte("{}"))
+		case req.Method == http.MethodPost && strings.HasSuffix(req.URL.Path, "/join"):
+			if !recorder.recordMembershipRequest(req.URL.Path) {
+				t.Errorf("unexpected Matrix join request: %s", req.URL.Path)
+				http.NotFound(w, req)
+				return
+			}
+			if err := json.NewEncoder(w).Encode(map[string]id.RoomID{"room_id": "!room:" + ownServer}); err != nil {
+				t.Errorf("encode Matrix join response: %v", err)
+			}
 		case req.Method == http.MethodPut && strings.Contains(req.URL.Path, "/send/m.room.message/"):
 			body, err := io.ReadAll(req.Body)
 			if err != nil {
