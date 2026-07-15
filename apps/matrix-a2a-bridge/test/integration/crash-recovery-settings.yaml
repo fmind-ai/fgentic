@@ -30,5 +30,5 @@ data:
   # The local AgentCard must keep SDK calls on the fault-injection path. The separately signed
   # remote card retains its direct endpoint so startup trust verification remains unchanged.
   a2aStubLocalBaseURL: http://fault-proxy.bridge-integration.svc.cluster.local:8080
-  # The driver releases the task only after replacing a bridge that was blocked in tasks/get.
+  # The driver releases the task only after replacing a bridge that was blocked in GetTask.
   a2aStubLongHold: "true"

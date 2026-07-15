@@ -37,7 +37,7 @@ func run(ctx context.Context, args []string) error {
 	jsonPath := flags.String("json-output", filepath.Join(defaultOutput, "report.json"), "machine report path")
 	markdownPath := flags.String("markdown-output", filepath.Join(defaultOutput, "comparison.md"), "comparison report path")
 	scenarioTimeout := flags.Duration("scenario-timeout", 2*time.Minute, "deadline for each A2A scenario")
-	pollInterval := flags.Duration("poll-interval", time.Second, "tasks/get polling interval")
+	pollInterval := flags.Duration("poll-interval", time.Second, "GetTask polling interval")
 	quietWindow := flags.Duration("quiet-window", 2*time.Second, "metric stability window before and after each scenario")
 	if err := flags.Parse(args); err != nil {
 		return err

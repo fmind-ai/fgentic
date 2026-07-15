@@ -123,6 +123,7 @@ depends = [
   "check:prometheus",
   "check:dashboards",
   "check:reference-grants",
+  "check:a2a-operation-names",
   "check:a2a-authorization",
   "check:a2a-tck",
   "check:admission-policies",
@@ -222,6 +223,10 @@ run = "bash scripts/check-reference-grants.sh && bash scripts/test-reference-gra
 [tasks."check:a2a-authorization"]
 description = "Validate the fail-closed A2A API-key and CEL authorization contract"
 run = "bash scripts/test-a2a-authorization.sh"
+
+[tasks."check:a2a-operation-names"]
+description = "Reject legacy A2A operation names outside the historical ADR"
+run = "bash scripts/check-a2a-operation-names.sh"
 
 [tasks."check:a2a-tck"]
 description = "Validate the pinned authenticated federation A2A compatibility-kit contract"

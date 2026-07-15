@@ -100,8 +100,8 @@ type Config struct {
 	StatusWindow       time.Duration `env:"STATUS_WINDOW" envDefault:"1m"`
 	StatusMaxPerWindow int           `env:"STATUS_MAX_PER_WINDOW" envDefault:"6"`
 
-	// RequestTimeout bounds one synchronous A2A message/send transport round trip. TaskTimeout
-	// bounds the whole delegation when the agent returns a long-running Task polled via tasks/get.
+	// RequestTimeout bounds one synchronous A2A SendMessage transport round trip. TaskTimeout
+	// bounds the whole delegation when the agent returns a long-running Task polled via GetTask.
 	RequestTimeout time.Duration `env:"REQUEST_TIMEOUT" envDefault:"60s"`
 	TaskTimeout    time.Duration `env:"TASK_TIMEOUT" envDefault:"10m"`
 	// ShutdownTimeout is the graceful HTTP drain budget on SIGTERM before the context is cancelled.

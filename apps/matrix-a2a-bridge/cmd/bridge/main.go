@@ -1,6 +1,6 @@
 // Command bridge is the Matrix <-> A2A bridge: a Matrix Application Service that lets humans
 // (and other agents) @mention an AI agent in a Matrix room and delegates the task to that
-// agent's A2A endpoint (message/send, with tasks/get polling for long-running tasks), posting
+// agent's A2A endpoint (SendMessage, with GetTask polling for long-running tasks), posting
 // the reply back into the room.
 //
 // It owns the @agent-* ghost-user namespace on the homeserver, so every kagent agent appears

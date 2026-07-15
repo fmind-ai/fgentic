@@ -23,7 +23,7 @@ Build the bridge as a single Go binary on the **`mautrix/go` `appservice` packag
 
 1. Owns the **exclusive `@agent-.*` ghost namespace** plus the `@a2a-bridge:fgentic.fmind.ai` bot, declared in the appservice `registration.yaml`.
 1. Receives events via `PUT /_matrix/app/v1/transactions`; the `EventProcessor` dispatches `event.EventMessage`, reads `evt.Content.AsMessage().Mentions.UserIDs`, and matches the `@agent-.*` regex — with a **plaintext-body fallback** for clients that omit `m.mentions`.
-1. Maps `@agent-k8s → (namespace=kagent, name=k8s-agent)` via an **allowlist** (this is the who-may-invoke-which-agent authorization), optionally validating the target's AgentCard, then calls A2A `message/send` ([ADR 0004](0004-a2a-delegation.md)) — routed through agentgateway ([ADR 0006](0006-agentgateway-chokepoint.md)).
+1. Maps `@agent-k8s → (namespace=kagent, name=k8s-agent)` via an **allowlist** (this is the who-may-invoke-which-agent authorization), optionally validating the target's AgentCard, then calls A2A `SendMessage` ([ADR 0004](0004-a2a-delegation.md)) — routed through agentgateway ([ADR 0006](0006-agentgateway-chokepoint.md)).
 1. Posts the reply **as the ghost** via `as.Intent(@agent-k8s)` → `EnsureRegistered` → `EnsureJoined` → send with a typed `m.mentions` and an `m.relates_to` reply pointing at the original event (multi-ghost puppeting).
 1. Backs its **StateStore with the shared Postgres `bridge` database** ([ADR 0007](0007-shared-postgres-db-per-service.md)) so ghost registrations survive pod restarts.
 

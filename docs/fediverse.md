@@ -23,7 +23,7 @@ All ActivityPub surface lives in ONE new self-contained app, **`apps/activitypub
 1. Is **never** bundled into the mautrix bridge, keeping that bridge AGPL-free and homeserver-portable and inside its surface budget ([ADR 0012](adr/0012-bridge-decomposition-surface-budget.md), [licensing spec §10](licensing.md)).
 1. Exposes public AP endpoints only through the Gateway API with TLS, and reaches kagent on `ClusterIP` behind NetworkPolicy — the AP gateway is a caller of agentgateway, never a peer of kagent.
 
-Each exposed agent is presented as an ActivityPub **`Service` actor** (§3, row _bot typing_); a collaboration room may additionally be presented as a **`Group` actor** for cross-org collaboration (#217). The gateway is a translation and governance border between the AP object graph and A2A `message/send`, mirroring how the mautrix bridge translates Matrix events to A2A ([bridge spec §6](bridge.md)).
+Each exposed agent is presented as an ActivityPub **`Service` actor** (§3, row _bot typing_); a collaboration room may additionally be presented as a **`Group` actor** for cross-org collaboration (#217). The gateway is a translation and governance border between the AP object graph and A2A `SendMessage`, mirroring how the mautrix bridge translates Matrix events to A2A ([bridge spec §6](bridge.md)).
 
 The dormant `deploy/` unit already bounds its `activitypub` namespace with the shared `small` ResourceQuota and container defaults. Its future Flux Kustomization **must** source `platform-settings` (plus the optional overrides ConfigMap) through post-build substitution before activation; applying the unit directly with unresolved quota variables is unsupported.
 
@@ -73,7 +73,7 @@ Three items extend the governed core with capabilities Matrix federation does no
 
 1. A remote actor sends a signed `Follow`; the group records it (keyed on the **full actor URI**, never a localpart, so it never assumes a single homeserver) and delivers a **signed `Accept`** to the follower's resolved inbox.
 1. On an inbound `Create(Note)`, the group **auto-`Announce`s** it to all _other_ followers (never echoing the author) — the guppe rebroadcast.
-1. An `@agent-<name>` mention routes through the governed path (`ReserveBudget` → A2A `message/send`); the agent's reply is published as a FEP-8b32-signed `Note` and `Announce`d back to the group.
+1. An `@agent-<name>` mention routes through the governed path (`ReserveBudget` → A2A `SendMessage`); the agent's reply is published as a FEP-8b32-signed `Note` and `Announce`d back to the group.
 1. **The F3/F4/F5 border gates all inbound group traffic**: signature + allowlist on every activity, and a per-mention budget reservation before any A2A call. Off-allowlist or over-budget traffic is dropped before an agent is invoked.
 
 Outbound `Accept`/`Announce` deliveries are **HTTP-Signature signed** with the group's Ed25519 key (published as the actor's `publicKey`), the symmetric counterpart of the inbound signature border. The Group is the AP projection of the room; wiring the two transports' message bodies at runtime is deployment configuration and stays outside this AGPL-free app.

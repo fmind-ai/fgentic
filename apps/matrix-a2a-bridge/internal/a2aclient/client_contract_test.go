@@ -2,6 +2,7 @@ package a2aclient
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"iter"
 	"log/slog"
@@ -9,6 +10,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -20,8 +22,9 @@ import (
 const (
 	contractAgentPath = "/api/a2a/kagent/contract-agent"
 
-	// a2a-go v2.3.1, pinned to kagent, negotiates the v1.0 wire protocol. Keep this
-	// literal independent of a2a.Version so an SDK default flip breaks the contract test.
+	// A2A specification v1.0.1 retains AgentCard/service protocol version 1.0. a2a-go v2.3.1,
+	// pinned to kagent, negotiates that wire version. Keep this literal independent of a2a.Version
+	// so an SDK default flip breaks the contract test.
 	pinnedKagentWireVersion = "1.0"
 )
 
@@ -130,6 +133,149 @@ func TestResolveAgentCardUsesGatewayCredentialAndBypassesClientCache(t *testing.
 		if got := header.Get("Authorization"); got != "Bearer contract-api-key" {
 			t.Errorf("request %d Authorization = %q, want bridge workload credential", i+1, got)
 		}
+	}
+}
+
+func TestLocalClientBindsAdvertisedDirectRouteToConfiguredBase(t *testing.T) {
+	recorder := &contractRecorder{}
+	executor := executorFunc(func(_ context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+		recorder.recordExecution(execCtx)
+		return func(yield func(a2a.Event, error) bool) {
+			yield(a2a.NewMessageForTask(a2a.MessageRoleAgent, execCtx, a2a.NewTextPart("ack")), nil)
+		}
+	})
+	endpoint := a2asrv.NewJSONRPCHandler(a2asrv.NewHandler(executor, a2asrv.WithTaskStore(taskstore.NewInMemory(nil))))
+
+	directMux := http.NewServeMux()
+	directServer := httptest.NewServer(directMux)
+	t.Cleanup(directServer.Close)
+	gatewayMux := http.NewServeMux()
+	gatewayServer := httptest.NewServer(gatewayMux)
+	t.Cleanup(gatewayServer.Close)
+
+	card := &a2a.AgentCard{
+		Name:        "Direct-route card",
+		Description: "Advertises kagent directly even when discovery is proxied",
+		Version:     "test",
+		SupportedInterfaces: []*a2a.AgentInterface{
+			a2a.NewAgentInterface(directServer.URL+contractAgentPath, a2a.TransportProtocolJSONRPC),
+			a2a.NewAgentInterface(directServer.URL+contractAgentPath+"/rest", a2a.TransportProtocolHTTPJSON),
+			{
+				URL:             directServer.URL + contractAgentPath + "/v0.3",
+				ProtocolBinding: a2a.TransportProtocolJSONRPC,
+				ProtocolVersion: "0.3",
+			},
+		},
+		DefaultInputModes:  []string{"text/plain"},
+		DefaultOutputModes: []string{"text/plain"},
+	}
+	cardHandler := http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		// Include the pre-v1 top-level URL exactly as kagent's compatibility card does. The v2 SDK
+		// ignores it, while bindLocalJSONRPCInterface removes every supported-interface fallback.
+		if err := json.NewEncoder(w).Encode(struct {
+			*a2a.AgentCard
+			LegacyURL string `json:"url"`
+		}{AgentCard: card, LegacyURL: directServer.URL + contractAgentPath}); err != nil {
+			http.Error(w, "encode AgentCard", http.StatusInternalServerError)
+		}
+	})
+	var gatewayCardRequests, gatewaySendRequests atomic.Int32
+	var directCardRequests, directSendRequests atomic.Int32
+	const gatewayPrefix = "/operator-base"
+	gatewayMux.HandleFunc(gatewayPrefix+contractAgentPath+a2asrv.WellKnownAgentCardPath, func(w http.ResponseWriter, req *http.Request) {
+		gatewayCardRequests.Add(1)
+		cardHandler.ServeHTTP(w, req)
+	})
+	gatewayMux.HandleFunc(gatewayPrefix+contractAgentPath, func(w http.ResponseWriter, req *http.Request) {
+		gatewaySendRequests.Add(1)
+		endpoint.ServeHTTP(w, req)
+	})
+	directMux.HandleFunc(contractAgentPath+a2asrv.WellKnownAgentCardPath, func(w http.ResponseWriter, req *http.Request) {
+		directCardRequests.Add(1)
+		cardHandler.ServeHTTP(w, req)
+	})
+	directMux.HandleFunc(contractAgentPath, func(w http.ResponseWriter, req *http.Request) {
+		directSendRequests.Add(1)
+		endpoint.ServeHTTP(w, req)
+	})
+
+	target := contractTarget(t)
+	gatewayClient := New(gatewayServer.URL+gatewayPrefix+"///", "gateway-api-key", slog.Default())
+	result, err := gatewayClient.Call(t.Context(), target, "through policy", "", nil)
+	if err != nil {
+		t.Fatalf("gateway-configured Call: %v", err)
+	}
+	if !result.Terminal || result.Text != "ack" {
+		t.Fatalf("gateway-configured result = %+v, want terminal ack", result)
+	}
+	if got := gatewayCardRequests.Load(); got != 1 {
+		t.Fatalf("gateway AgentCard requests = %d, want one", got)
+	}
+	if got := gatewaySendRequests.Load(); got != 1 {
+		t.Fatalf("gateway SendMessage requests = %d, want one", got)
+	}
+	if got := directCardRequests.Load(); got != 0 {
+		t.Fatalf("direct AgentCard requests after gateway call = %d, want zero", got)
+	}
+	if got := directSendRequests.Load(); got != 0 {
+		t.Fatalf("direct SendMessage requests after gateway call = %d, want zero", got)
+	}
+
+	directClient := New(directServer.URL+"/", "", slog.Default())
+	result, err = directClient.Call(t.Context(), target, "operator-selected direct route", "", nil)
+	if err != nil {
+		t.Fatalf("direct-configured Call: %v", err)
+	}
+	if !result.Terminal || result.Text != "ack" {
+		t.Fatalf("direct-configured result = %+v, want terminal ack", result)
+	}
+	if got := directCardRequests.Load(); got != 1 {
+		t.Fatalf("direct AgentCard requests = %d, want one", got)
+	}
+	if got := directSendRequests.Load(); got != 1 {
+		t.Fatalf("direct SendMessage requests = %d, want one", got)
+	}
+}
+
+func TestBindLocalJSONRPCInterfaceClonesAndRemovesFallbacks(t *testing.T) {
+	directURL := "http://kagent-controller.kagent:8083/api/a2a/kagent/contract-agent"
+	card := &a2a.AgentCard{SupportedInterfaces: []*a2a.AgentInterface{
+		a2a.NewAgentInterface(directURL, a2a.TransportProtocolJSONRPC),
+		a2a.NewAgentInterface(directURL+"/rest", a2a.TransportProtocolHTTPJSON),
+		{URL: directURL + "/v0.3", ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: "0.3"},
+	}}
+	const gatewayURL = "http://agentgateway:8080/api/a2a/kagent/contract-agent"
+	bound, err := bindLocalJSONRPCInterface(card, gatewayURL)
+	if err != nil {
+		t.Fatalf("bindLocalJSONRPCInterface: %v", err)
+	}
+	if len(bound.SupportedInterfaces) != 1 {
+		t.Fatalf("bound interfaces = %d, want one", len(bound.SupportedInterfaces))
+	}
+	got := bound.SupportedInterfaces[0]
+	if got.URL != gatewayURL || got.ProtocolBinding != a2a.TransportProtocolJSONRPC || got.ProtocolVersion != a2a.Version {
+		t.Fatalf("bound interface = %+v, want A2A 1.0 over JSON-RPC 2.0 at %s", got, gatewayURL)
+	}
+	if len(card.SupportedInterfaces) != 3 || card.SupportedInterfaces[0].URL != directURL {
+		t.Fatalf("source AgentCard mutated: %+v", card.SupportedInterfaces)
+	}
+
+	for _, test := range []struct {
+		name     string
+		endpoint *a2a.AgentInterface
+	}{
+		{name: "A2A 1.0 over HTTP+JSON", endpoint: a2a.NewAgentInterface(directURL, a2a.TransportProtocolHTTPJSON)},
+		{name: "A2A 0.3 over JSON-RPC 2.0", endpoint: &a2a.AgentInterface{
+			URL: directURL, ProtocolBinding: a2a.TransportProtocolJSONRPC, ProtocolVersion: "0.3",
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			unsupported := &a2a.AgentCard{SupportedInterfaces: []*a2a.AgentInterface{test.endpoint}}
+			if _, err := bindLocalJSONRPCInterface(unsupported, gatewayURL); err == nil {
+				t.Fatal("bindLocalJSONRPCInterface accepted a non-A2A-1.0 JSON-RPC card")
+			}
+		})
 	}
 }
 
@@ -266,7 +412,7 @@ func TestClientContract_WorkingTaskCanBePolledToCompletion(t *testing.T) {
 	}
 }
 
-// cancelableExecutor cooperates with tasks/cancel by emitting a terminal canceled status update
+// cancelableExecutor cooperates with CancelTask by emitting a terminal canceled status update
 // (mirroring a2a-go's own cancel test). A no-op Execute keeps the test free of a live execution
 // goroutine, so the server's cancel path has nothing to block on.
 type cancelableExecutor struct{}
@@ -300,7 +446,7 @@ func TestClientContract_CancelTaskStopsRunningTask(t *testing.T) {
 		t.Fatalf("CancelTask: %v", err)
 	}
 
-	// tasks/cancel drives the task terminal over the real SDK wire: a subsequent poll must report it
+	// CancelTask drives the task terminal over the real SDK wire: a subsequent poll must report it
 	// is no longer running (its canceled state was stored by the agent's execution manager).
 	result, err := client.PollTask(t.Context(), contractTarget(t), string(task.ID))
 	if err != nil {
@@ -319,7 +465,7 @@ func TestClientContract_CancelTaskErrorIsContextualized(t *testing.T) {
 	if err == nil {
 		t.Fatal("CancelTask of an unknown task succeeded, want a protocol error")
 	}
-	if want := "a2a tasks/cancel missing-task on " + contractAgentPath; !strings.Contains(err.Error(), want) {
+	if want := "a2a CancelTask missing-task on " + contractAgentPath; !strings.Contains(err.Error(), want) {
 		t.Fatalf("CancelTask error = %q, want context %q", err, want)
 	}
 }
@@ -337,7 +483,7 @@ func TestClientContract_ExecutorErrorIsContextualized(t *testing.T) {
 	if err == nil {
 		t.Fatal("Call succeeded, want protocol error")
 	}
-	if want := "a2a message/send to " + contractAgentPath; !strings.Contains(err.Error(), want) {
+	if want := "a2a SendMessage to " + contractAgentPath; !strings.Contains(err.Error(), want) {
 		t.Fatalf("Call error = %q, want context %q", err, want)
 	}
 }
@@ -390,7 +536,7 @@ func TestClientContract_CallHonorsDeadline(t *testing.T) {
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Call error = %v, want context deadline exceeded", err)
 	}
-	if want := "a2a message/send to " + contractAgentPath; !strings.Contains(err.Error(), want) {
+	if want := "a2a SendMessage to " + contractAgentPath; !strings.Contains(err.Error(), want) {
 		t.Fatalf("Call error = %q, want context %q", err, want)
 	}
 }

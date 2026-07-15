@@ -14,7 +14,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
 )
 
-func TestCallWithMessageIDPlacesSuppliedIDOnWireAndCallRemainsCompatible(t *testing.T) {
+func TestCallWithMessageIDPlacesSuppliedIDOnWireAndCallGeneratesID(t *testing.T) {
 	recorder := &contractRecorder{}
 	executor := executorFunc(func(_ context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 		recorder.recordExecution(execCtx)
@@ -34,12 +34,12 @@ func TestCallWithMessageIDPlacesSuppliedIDOnWireAndCallRemainsCompatible(t *test
 		t.Fatalf("CallWithMessageID result = %+v, want terminal ack", result)
 	}
 
-	legacy, err := client.Call(t.Context(), target, "legacy prompt", result.ContextID, nil)
+	generated, err := client.Call(t.Context(), target, "generated-ID prompt", result.ContextID, nil)
 	if err != nil {
 		t.Fatalf("Call: %v", err)
 	}
-	if !legacy.Terminal || legacy.Text != "ack" || legacy.ContextID != result.ContextID {
-		t.Fatalf("Call result = %+v, want legacy terminal ack in context %q", legacy, result.ContextID)
+	if !generated.Terminal || generated.Text != "ack" || generated.ContextID != result.ContextID {
+		t.Fatalf("Call result = %+v, want generated-ID terminal ack in context %q", generated, result.ContextID)
 	}
 
 	recorder.mu.Lock()
@@ -51,7 +51,7 @@ func TestCallWithMessageIDPlacesSuppliedIDOnWireAndCallRemainsCompatible(t *test
 		t.Errorf("CallWithMessageID wire ID = %q, want %q", got, suppliedID)
 	}
 	if got := recorder.messages[1].ID; got == "" || got == suppliedID {
-		t.Errorf("legacy Call wire ID = %q, want a fresh generated ID", got)
+		t.Errorf("Call wire ID = %q, want a fresh generated ID", got)
 	}
 }
 
@@ -68,7 +68,7 @@ func TestResumeTaskFetchesKnownTaskWithoutResending(t *testing.T) {
 	}
 	executor := executorFunc(func(context.Context, *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
 		return func(func(a2a.Event, error) bool) {
-			t.Error("ResumeTask invoked message/send")
+			t.Error("ResumeTask invoked SendMessage")
 		}
 	})
 	client := contractServer(t, executor, store, recorder)
@@ -84,7 +84,7 @@ func TestResumeTaskFetchesKnownTaskWithoutResending(t *testing.T) {
 	recorder.mu.Lock()
 	defer recorder.mu.Unlock()
 	if len(recorder.messages) != 0 {
-		t.Fatalf("message/send executions = %d, want zero", len(recorder.messages))
+		t.Fatalf("SendMessage executions = %d, want zero", len(recorder.messages))
 	}
 }
 
@@ -186,7 +186,7 @@ func TestCallWithMessageIDClassifiesResponseLossAsAmbiguous(t *testing.T) {
 		t.Fatal("CallWithMessageID succeeded after response loss")
 	}
 	if requestCount != 1 {
-		t.Fatalf("message/send requests = %d, want one", requestCount)
+		t.Fatalf("SendMessage requests = %d, want one", requestCount)
 	}
 	if !errors.Is(err, ErrSendAcknowledgementAmbiguous) {
 		t.Fatalf("error = %v, want ErrSendAcknowledgementAmbiguous", err)

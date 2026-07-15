@@ -10,7 +10,7 @@ import (
 )
 
 // inflightTask is a long-running delegation that a room member can cancel by reacting to its
-// placeholder message (#98). It is registered when tasks/get polling starts and removed when the
+// placeholder message (#98). It is registered when GetTask polling starts and removed when the
 // task reaches any terminal state (completion, failure, timeout, cancel, or shutdown). The poll
 // runs on a worker goroutine while cancellation arrives on the event-processor goroutine, so every
 // mutable field is guarded by mu.

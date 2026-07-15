@@ -55,7 +55,7 @@ func TestMatrixResponseFaultWaitsUntilRequestDies(t *testing.T) {
 }
 
 func TestA2AMethodRestoresRequestBody(t *testing.T) {
-	want := []byte(`{"jsonrpc":"2.0","method":"message/send"}`)
+	want := []byte(`{"jsonrpc":"2.0","method":"SendMessage"}`)
 	request, err := http.NewRequest(http.MethodPost, "http://a2a/", bytes.NewReader(want))
 	if err != nil {
 		t.Fatal(err)
@@ -64,7 +64,7 @@ func TestA2AMethodRestoresRequestBody(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if method != "message/send" {
+	if method != "SendMessage" {
 		t.Fatalf("method = %q", method)
 	}
 	got, err := io.ReadAll(request.Body)

@@ -58,14 +58,14 @@ func (t faultTransport) a2aRoundTrip(req *http.Request) (*http.Response, error) 
 	if method != "" {
 		t.controller.observeA2A(method)
 	}
-	if isTaskGet(method) && t.controller.tryTrip(faultA2ATaskPoll, req.URL.Path) {
+	if isGetTask(method) && t.controller.tryTrip(faultA2ATaskPoll, req.URL.Path) {
 		return waitForRequestDeath(req.Context(), faultA2ATaskPoll)
 	}
 	response, err := t.base.RoundTrip(req)
 	if err != nil {
 		return nil, err
 	}
-	if !isMessageSend(method) || !t.controller.tryTrip(faultA2AResponse, req.URL.Path) {
+	if !isSendMessage(method) || !t.controller.tryTrip(faultA2AResponse, req.URL.Path) {
 		return response, nil
 	}
 	if err := drainAndClose(response.Body); err != nil {
@@ -109,12 +109,12 @@ func a2aMethod(req *http.Request) (string, error) {
 	return envelope.Method, nil
 }
 
-func isMessageSend(method string) bool {
-	return strings.EqualFold(method, "message/send") || strings.EqualFold(method, "SendMessage")
+func isSendMessage(method string) bool {
+	return method == "SendMessage"
 }
 
-func isTaskGet(method string) bool {
-	return strings.EqualFold(method, "tasks/get") || strings.EqualFold(method, "GetTask")
+func isGetTask(method string) bool {
+	return method == "GetTask"
 }
 
 func newHTTPProxy(targetRaw, kind string, controller *faultController) (http.Handler, error) {

@@ -18,7 +18,7 @@ type openTask struct {
 	placeholder id.EventID     // thread root; the answering reply must relate to it
 	localpart   string         // ghost that owns the paused task
 	ref         *AgentRef      // bound mapping (immutable): its target and path
-	taskID      string         // A2A task to resume via message/send + this taskID
+	taskID      string         // A2A task to resume by calling SendMessage with this task ID
 	contextID   string         // A2A context threaded across the pause
 	sender      senderIdentity // classified original sender; only sender.mxid may answer
 	expiry      *time.Timer    // fires the waiting-budget drop when no reply arrives

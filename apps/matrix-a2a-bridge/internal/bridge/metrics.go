@@ -15,7 +15,7 @@ var (
 
 	a2aLatency = promauto.NewHistogramVec(prometheus.HistogramOpts{
 		Name: "fgentic_a2a_request_seconds",
-		Help: "Latency of A2A message/send round trips (excludes long-task polling).",
+		Help: "Latency of A2A SendMessage round trips (excludes long-task polling).",
 		// LLM-backed calls run seconds to minutes.
 		Buckets: []float64{0.5, 1, 2, 5, 10, 30, 60, 120},
 	}, []string{"ghost"})
@@ -56,7 +56,7 @@ const (
 	outcomeQueueFull     = "queue_full"     // bounded dispatcher rejected before admission
 	outcomeShutdown      = "shutdown"       // target did not start before dispatcher shutdown
 	outcomeTimeout       = "timeout"        // long task exceeded TASK_TIMEOUT
-	outcomeLost          = "lost"           // tasks/get error budget exhausted
+	outcomeLost          = "lost"           // GetTask error budget exhausted
 	outcomeCanceled      = "canceled"       // long task canceled from the room (#98)
 	outcomeInputRequired = "input_required" // task paused awaiting a threaded reply (#116)
 	outcomeAmbiguous     = "ambiguous"      // A2A may have accepted a request whose ACK was lost

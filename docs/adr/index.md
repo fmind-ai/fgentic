@@ -5,7 +5,7 @@ Settled designs (including the D1–D18 register) are revisited by proposing a n
 - [0001 — Open-Standard Agent Collaboration Platform](0001-open-standard-agent-platform.md) - build exclusively on open protocols and OSS; every layer swappable
 - [0002 — Matrix as the Human↔Agent Collaboration Fabric](0002-matrix-collaboration-fabric.md) - federated Matrix rooms as the shared collaboration surface
 - [0003 — Synapse + MAS + Element via ESS Community](0003-synapse-mas-element-ess.md) - reference homeserver profile, with governed fallback triggers
-- [0004 — A2A Delegation, Non-Streaming, via a2a-go](0004-a2a-delegation.md) - message/send + tasks/get polling on the official SDK
+- [0004 — A2A Delegation, Non-Streaming, via a2a-go](0004-a2a-delegation.md) - original non-streaming delegation decision on the official SDK; task polling added later
 - [0005 — Bridge as a mautrix/go Appservice](0005-matrix-a2a-bridge-appservice.md) - plain appservice, not bridgev2
 - [0006 — agentgateway as the Egress Chokepoint](0006-agentgateway-chokepoint.md) - no agent holds a model credential
 - [0007 — Shared CloudNativePG, Database-per-Service](0007-shared-postgres-db-per-service.md) - one cluster, scoped database + role per service

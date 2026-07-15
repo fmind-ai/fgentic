@@ -360,7 +360,7 @@ func TestDurableKnownTaskResumesWithGetAndReusesPlaceholder(t *testing.T) {
 		t.Fatalf("resumed task state = %q, want delivered", stored.State)
 	}
 	if client.callCount != 1 || client.resumeCount != 1 {
-		t.Fatalf("message/send calls=%d tasks/get calls=%d, want 1/1", client.callCount, client.resumeCount)
+		t.Fatalf("SendMessage calls=%d GetTask calls=%d, want 1/1", client.callCount, client.resumeCount)
 	}
 	events := recorder.snapshot()
 	if len(events) != 2 || events[0].Body != workingText || events[1].Body != "* finished" {
