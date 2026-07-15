@@ -36,7 +36,7 @@ spec:
             - name: BRIDGE_METRICS_URL
               value: http://bridge:9090/metrics
             - name: A2A_STUB_URL
-              value: http://a2a-stub:8080
+              value: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080
             - name: MATRIX_SERVER_NAME
               value: integration.test
             - name: BRIDGE_HS_TOKEN

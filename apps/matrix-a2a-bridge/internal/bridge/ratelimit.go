@@ -33,6 +33,20 @@ type bucket struct {
 	lastUsed time.Time
 }
 
+// limiterReservation is one immediately available token that can be returned while a refusal is
+// still known to precede the durable write. Once a write begins, an unavailable database response
+// is outcome-unknown and the token must remain consumed so recovery cannot escape the spend bound.
+type limiterReservation struct {
+	reservation *rate.Reservation
+	at          time.Time
+}
+
+func (r limiterReservation) cancel() {
+	if r.reservation != nil {
+		r.reservation.CancelAt(r.at)
+	}
+}
+
 func newLimiters(perMinute float64, burst, capacity int) *limiters {
 	return newLimitersWithClock(perMinute, burst, capacity, time.Now)
 }
@@ -52,25 +66,41 @@ func newLimitersWithClock(perMinute float64, burst, capacity int, now func() tim
 // if the map remains full, admission fails closed without evicting an active bucket or resetting
 // its burst budget.
 func (l *limiters) Allow(key string) bool {
+	_, ok := l.reserve(key)
+	return ok
+}
+
+// reserve consumes one immediately available token and returns a reversible reservation. It never
+// reserves future capacity: chat admission remains fail-fast when the bucket has no token now.
+func (l *limiters) reserve(key string) (limiterReservation, bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	now := l.now()
 	b, ok := l.buckets[key]
 	if ok {
 		b.lastUsed = now
-		return b.lim.AllowN(now, 1)
+		return reserveNow(b.lim, now)
 	}
 	if l.nextSweep.IsZero() || !now.Before(l.nextSweep) {
 		l.sweep(now)
 		l.nextSweep = now.Add(limiterSweepInterval)
 	}
 	if len(l.buckets) >= l.capacity {
-		return false
+		return limiterReservation{}, false
 	}
 	b = &bucket{lim: rate.NewLimiter(rate.Limit(l.perMinute/60), l.burst)}
 	b.lastUsed = now
 	l.buckets[key] = b
-	return b.lim.AllowN(now, 1)
+	return reserveNow(b.lim, now)
+}
+
+func reserveNow(limiter *rate.Limiter, now time.Time) (limiterReservation, bool) {
+	reservation := limiter.ReserveN(now, 1)
+	if !reservation.OK() || reservation.DelayFrom(now) > 0 {
+		reservation.CancelAt(now)
+		return limiterReservation{}, false
+	}
+	return limiterReservation{reservation: reservation, at: now}, true
 }
 
 // sweep drops idle buckets. The caller holds mu, and capacity strictly bounds the scan.

@@ -40,6 +40,23 @@ func TestLimitersFailClosedAtCapacityWithoutResettingBuckets(t *testing.T) {
 	}
 }
 
+func TestLimiterReservationCanRollBackBeforeDurableWrite(t *testing.T) {
+	clock := &limiterTestClock{now: time.Unix(1_700_000_000, 0)}
+	limits := newLimitersWithClock(1, 1, 1, clock.Now)
+
+	reservation, ok := limits.reserve("sender")
+	if !ok {
+		t.Fatal("initial reservation was rejected")
+	}
+	if limits.Allow("sender") {
+		t.Fatal("reserved token remained available before rollback")
+	}
+	reservation.cancel()
+	if !limits.Allow("sender") {
+		t.Fatal("known pre-write refusal did not return its reserved token")
+	}
+}
+
 func TestBridgeLimiterMapsUseConfiguredCapacity(t *testing.T) {
 	b := testBridge(t)
 	for name, limits := range map[string]*limiters{

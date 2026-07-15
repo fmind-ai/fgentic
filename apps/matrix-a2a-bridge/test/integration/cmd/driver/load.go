@@ -61,6 +61,8 @@ type stubStats struct {
 	TotalRequests      int                 `json:"total_requests"`
 	TotalStarted       int                 `json:"total_started"`
 	TotalCompleted     int                 `json:"total_completed"`
+	LongStarted        int                 `json:"long_started"`
+	LongCompleted      int                 `json:"long_completed"`
 	Starts             []stubRequestRecord `json:"starts"`
 	Completions        []stubRequestRecord `json:"completions"`
 }
@@ -125,7 +127,7 @@ func (f fixture) runLoad(ctx context.Context) error {
 	if err := f.waitUntilLoadEnqueued(ctx, len(messages)); err != nil {
 		return err
 	}
-	transactionAck, err := f.replayLoadTransaction(ctx, sess.UserID, messages)
+	transactionAck, err := f.replayLoadTransaction(ctx, sess.AccessToken, messages)
 	if err != nil {
 		return err
 	}
@@ -289,31 +291,20 @@ func (f fixture) waitUntilLoadEnqueued(ctx context.Context, total int) error {
 	}
 }
 
-func (f fixture) replayLoadTransaction(ctx context.Context, sender string, messages []loadMessage) (time.Duration, error) {
+func (f fixture) replayLoadTransaction(ctx context.Context, token string, messages []loadMessage) (time.Duration, error) {
 	events := make([]matrixEvent, 0, len(messages))
 	for _, message := range messages {
-		content, err := json.Marshal(message.Content)
+		evt, err := f.roomEvent(ctx, token, message.RoomID, message.EventID)
 		if err != nil {
-			return 0, fmt.Errorf("encode replay event %s: %w", message.EventID, err)
+			return 0, fmt.Errorf("load canonical replay event %s: %w", message.EventID, err)
 		}
-		events = append(events, matrixEvent{
-			Content:        content,
-			EventID:        message.EventID,
-			OriginServerTS: time.Now().UnixMilli(),
-			RoomID:         message.RoomID,
-			Sender:         sender,
-			Type:           "m.room.message",
-		})
+		events = append(events, evt)
 	}
-	endpoint := f.bridgeURL + "/_matrix/app/v1/transactions/load-redelivery"
 	startedAt := time.Now()
-	status, body, err := f.request(ctx, http.MethodPut, endpoint, f.hsToken, map[string]any{"events": events})
+	err := f.pushAppserviceTransaction(ctx, "load-redelivery", events)
 	duration := time.Since(startedAt)
 	if err != nil {
 		return duration, fmt.Errorf("replay load appservice transaction: %w", err)
-	}
-	if status != http.StatusOK {
-		return duration, fmt.Errorf("replay load appservice transaction: status %d: %s", status, body)
 	}
 	return duration, nil
 }

@@ -1,6 +1,6 @@
 # Architecture Decision Records
 
-Settled designs (including the D1–D16 register) are revisited by proposing a new ADR, never a drive-by PR. Structure and authoring rules: `.agents/skills/docs-spec/SKILL.md`.
+Settled designs (including the D1–D17 register) are revisited by proposing a new ADR, never a drive-by PR. Structure and authoring rules: `.agents/skills/docs-spec/SKILL.md`.
 
 - [0001 — Open-Standard Agent Collaboration Platform](0001-open-standard-agent-platform.md) - build exclusively on open protocols and OSS; every layer swappable
 - [0002 — Matrix as the Human↔Agent Collaboration Fabric](0002-matrix-collaboration-fabric.md) - federated Matrix rooms as the shared collaboration surface
@@ -17,3 +17,4 @@ Settled designs (including the D1–D16 register) are revisited by proposing a n
 - [0013 — Federation Lab as the Permanent Acceptance Rig](0013-federation-lab-acceptance-rig.md) - provider-free lab gates cross-org changes
 - [0014 — ActivityPub as a Second Federation Transport](0014-activitypub-second-federation-transport.md) - additive AP transport in a self-contained app, Proposed (M18)
 - [0015 — Federated Agent Rooms Remain Unencrypted for v1](0015-federated-room-encryption.md) - purpose-scoped plaintext rooms with classification and bilateral controls
+- [0016 — Durable Delegation Ledger with At-Most-Once A2A Recovery](0016-durable-delegation-ledger.md) - pre-ACK jobs, fenced recovery, explicit A2A ambiguity, and deterministic Matrix projection

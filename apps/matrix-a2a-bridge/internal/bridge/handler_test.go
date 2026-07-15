@@ -1196,21 +1196,23 @@ type scriptedPoll struct {
 }
 
 type scriptedA2AClient struct {
-	callResult   a2aclient.Result
-	callErr      error
-	callText     string
-	callCount    int
-	card         *a2a.AgentCard
-	cardErr      error
-	cardPaths    []string
-	polls        []scriptedPoll
-	pollPaths    []string
-	pollTasks    []string
-	cancelPaths  []string
-	cancelTasks  []string
-	cancelErr    error
-	remoteReady  bool
-	quoteVerdict a2aclient.QuoteVerdict // zero value QuoteNotApplicable admits by default
+	callResult     a2aclient.Result
+	callErr        error
+	callText       string
+	callCount      int
+	callMessageIDs []string
+	resumeCount    int
+	card           *a2a.AgentCard
+	cardErr        error
+	cardPaths      []string
+	polls          []scriptedPoll
+	pollPaths      []string
+	pollTasks      []string
+	cancelPaths    []string
+	cancelTasks    []string
+	cancelErr      error
+	remoteReady    bool
+	quoteVerdict   a2aclient.QuoteVerdict // zero value QuoteNotApplicable admits by default
 
 	continueResult    a2aclient.Result // returned by Continue (#116)
 	continueErr       error
@@ -1235,6 +1237,21 @@ func (c *scriptedA2AClient) Call(_ context.Context, _ a2aclient.Target, text, _ 
 	c.callText = text
 	c.callFiles = files
 	return c.callResult, c.callErr
+}
+
+func (c *scriptedA2AClient) CallWithMessageID(
+	ctx context.Context,
+	target a2aclient.Target,
+	messageID, text, contextID string,
+	files []a2aclient.InboundFile,
+) (a2aclient.Result, error) {
+	c.callMessageIDs = append(c.callMessageIDs, messageID)
+	return c.Call(ctx, target, text, contextID, files)
+}
+
+func (c *scriptedA2AClient) ResumeTask(ctx context.Context, target a2aclient.Target, taskID string) (a2aclient.Result, error) {
+	c.resumeCount++
+	return c.PollTask(ctx, target, taskID)
 }
 
 func (c *scriptedA2AClient) Continue(_ context.Context, _ a2aclient.Target, text, contextID, taskID string) (a2aclient.Result, error) {

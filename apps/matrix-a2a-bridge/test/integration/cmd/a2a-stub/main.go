@@ -45,7 +45,10 @@ const (
 	maxLoadDelay            = 5 * time.Second
 )
 
-var loadMarkerPattern = regexp.MustCompile(`\bload room=(\d{2}) seq=(\d{2})\b`)
+var (
+	loadMarkerPattern = regexp.MustCompile(`\bload room=(\d{2}) seq=(\d{2})\b`)
+	longMarkerPattern = regexp.MustCompile(`\blong room=(\d{2}) seq=(\d{2})\b`)
+)
 
 type requestRecord struct {
 	Room     int `json:"room"`
@@ -65,6 +68,8 @@ type statsSnapshot struct {
 	TotalRequests      int             `json:"total_requests"`
 	TotalStarted       int             `json:"total_started"`
 	TotalCompleted     int             `json:"total_completed"`
+	LongStarted        int             `json:"long_started"`
+	LongCompleted      int             `json:"long_completed"`
 	Starts             []requestRecord `json:"starts"`
 	Completions        []requestRecord `json:"completions"`
 }
@@ -83,6 +88,8 @@ type statsRecorder struct {
 	remoteUserID       string
 	totalStarted       int
 	totalCompleted     int
+	longStarted        int
+	longCompleted      int
 	starts             []requestRecord
 	completions        []requestRecord
 }
@@ -158,17 +165,37 @@ func (r *statsRecorder) snapshot() statsSnapshot {
 		TotalRequests:      r.totalRequests,
 		TotalStarted:       r.totalStarted,
 		TotalCompleted:     r.totalCompleted,
+		LongStarted:        r.longStarted,
+		LongCompleted:      r.longCompleted,
 		Starts:             append([]requestRecord(nil), r.starts...),
 		Completions:        append([]requestRecord(nil), r.completions...),
 	}
 }
 
+func (r *statsRecorder) startLong(record requestRecord) {
+	r.start(record)
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.longStarted++
+}
+
+func (r *statsRecorder) finishLong(record requestRecord, completed bool) {
+	r.finish(record, completed)
+	if !completed {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.longCompleted++
+}
+
 type executor struct {
-	delay  time.Duration
-	gate   *releaseGate
-	remote bool
-	reply  string
-	stats  *statsRecorder
+	delay    time.Duration
+	gate     *releaseGate
+	longGate *releaseGate
+	remote   bool
+	reply    string
+	stats    *statsRecorder
 }
 
 type releaseGate struct {
@@ -208,6 +235,11 @@ func (e executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) 
 			e.stats.markTokenBudgetValid()
 		}
 		record, loadRequest := parseLoadMarker(messageText(execCtx.Message))
+		longRecord, longRequest := parseLongMarker(messageText(execCtx.Message))
+		if longRequest {
+			e.executeLong(ctx, execCtx, longRecord, yield)
+			return
+		}
 		if !loadRequest {
 			yield(a2a.NewMessageForTask(a2a.MessageRoleAgent, execCtx, a2a.NewTextPart(e.reply)), nil)
 			return
@@ -228,6 +260,37 @@ func (e executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) 
 		reply := fmt.Sprintf("load reply room=%02d seq=%02d", record.Room, record.Sequence)
 		yield(a2a.NewMessageForTask(a2a.MessageRoleAgent, execCtx, a2a.NewTextPart(reply)), nil)
 	}
+}
+
+func (e executor) executeLong(
+	ctx context.Context,
+	execCtx *a2asrv.ExecutorContext,
+	record requestRecord,
+	yield func(a2a.Event, error) bool,
+) {
+	e.stats.startLong(record)
+	if !yield(a2a.NewSubmittedTask(execCtx, execCtx.Message), nil) {
+		e.stats.finishLong(record, false)
+		return
+	}
+	progress := a2a.NewMessageForTask(
+		a2a.MessageRoleAgent,
+		execCtx,
+		a2a.NewTextPart("working"),
+	)
+	if !yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateWorking, progress), nil) {
+		e.stats.finishLong(record, false)
+		return
+	}
+	if err := e.longGate.wait(ctx); err != nil {
+		e.stats.finishLong(record, false)
+		yield(nil, err)
+		return
+	}
+	reply := fmt.Sprintf("long reply room=%02d seq=%02d", record.Room, record.Sequence)
+	completed := a2a.NewMessageForTask(a2a.MessageRoleAgent, execCtx, a2a.NewTextPart(reply))
+	e.stats.finishLong(record, true)
+	yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateCompleted, completed), nil)
 }
 
 func validTokenBudgetContract(execCtx *a2asrv.ExecutorContext) bool {
@@ -271,7 +334,7 @@ func main() {
 }
 
 func run() error {
-	baseURL := strings.TrimRight(envOrDefault("A2A_STUB_BASE_URL", "http://a2a-stub:8080"), "/")
+	baseURL, localBaseURL := agentBaseURLs()
 	addr := envOrDefault("A2A_STUB_LISTEN", ":8080")
 	delay, err := loadDelay()
 	if err != nil {
@@ -282,22 +345,18 @@ func run() error {
 		return err
 	}
 	gate := newReleaseGate(hold)
+	longHold, err := longTaskHold()
+	if err != nil {
+		return err
+	}
+	longGate := newReleaseGate(longHold)
 	stats := &statsRecorder{delay: delay, holdEnabled: hold}
 
 	localHandler := a2asrv.NewHandler(
-		executor{delay: delay, gate: gate, reply: localReplyText, stats: stats},
+		executor{delay: delay, gate: gate, longGate: longGate, reply: localReplyText, stats: stats},
 		a2asrv.WithTaskStore(taskstore.NewInMemory(nil)),
 	)
-	localCard := &a2a.AgentCard{
-		Name:                "Fgentic bridge integration stub",
-		Description:         "Deterministic A2A endpoint for the Matrix appservice wire test",
-		Version:             "integration",
-		SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(baseURL+localAgentPath, a2a.TransportProtocolJSONRPC)},
-		DefaultInputModes:   []string{"text/plain"},
-		DefaultOutputModes:  []string{"text/plain"},
-		Capabilities:        a2a.AgentCapabilities{},
-		Skills:              []a2a.AgentSkill{},
-	}
+	localCard := newLocalAgentCard(localBaseURL)
 	remoteCard, err := signedRemoteAgentCard(baseURL)
 	if err != nil {
 		return fmt.Errorf("create signed remote AgentCard: %w", err)
@@ -313,7 +372,7 @@ func run() error {
 		return fmt.Errorf("encode tampered remote AgentCard: %w", err)
 	}
 	remoteHandler := a2asrv.NewHandler(
-		executor{delay: delay, gate: gate, remote: true, reply: remoteReplyText, stats: stats},
+		executor{delay: delay, gate: gate, longGate: longGate, remote: true, reply: remoteReplyText, stats: stats},
 		a2asrv.WithTaskStore(taskstore.NewInMemory(nil)),
 		a2asrv.WithCapabilityChecks(&remoteCard.Capabilities),
 	)
@@ -338,6 +397,10 @@ func run() error {
 	})
 	mux.HandleFunc("POST /control/release", func(w http.ResponseWriter, _ *http.Request) {
 		gate.release()
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /control/release-long", func(w http.ResponseWriter, _ *http.Request) {
+		longGate.release()
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("/healthz", func(w http.ResponseWriter, _ *http.Request) {
@@ -370,6 +433,7 @@ func run() error {
 			"remote_agent_path", remoteAgentPath,
 			"load_delay", delay,
 			"load_hold", hold,
+			"long_hold", longHold,
 		)
 		errCh <- server.ListenAndServe()
 	}()
@@ -387,6 +451,25 @@ func run() error {
 			return fmt.Errorf("shut down A2A stub: %w", err)
 		}
 		return nil
+	}
+}
+
+func agentBaseURLs() (baseURL, localBaseURL string) {
+	baseURL = strings.TrimRight(envOrDefault("A2A_STUB_BASE_URL", "http://a2a-stub:8080"), "/")
+	localBaseURL = strings.TrimRight(envOrDefault("A2A_STUB_LOCAL_BASE_URL", baseURL), "/")
+	return baseURL, localBaseURL
+}
+
+func newLocalAgentCard(baseURL string) *a2a.AgentCard {
+	return &a2a.AgentCard{
+		Name:                "Fgentic bridge integration stub",
+		Description:         "Deterministic A2A endpoint for the Matrix appservice wire test",
+		Version:             "integration",
+		SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(baseURL+localAgentPath, a2a.TransportProtocolJSONRPC)},
+		DefaultInputModes:   []string{"text/plain"},
+		DefaultOutputModes:  []string{"text/plain"},
+		Capabilities:        a2a.AgentCapabilities{},
+		Skills:              []a2a.AgentSkill{},
 	}
 }
 
@@ -467,8 +550,25 @@ func loadHold() (bool, error) {
 	return hold, nil
 }
 
+func longTaskHold() (bool, error) {
+	raw := envOrDefault("A2A_STUB_LONG_HOLD", "false")
+	hold, err := strconv.ParseBool(raw)
+	if err != nil {
+		return false, fmt.Errorf("parse A2A_STUB_LONG_HOLD %q: %w", raw, err)
+	}
+	return hold, nil
+}
+
 func parseLoadMarker(text string) (requestRecord, bool) {
-	match := loadMarkerPattern.FindStringSubmatch(text)
+	return parseMarker(loadMarkerPattern, text)
+}
+
+func parseLongMarker(text string) (requestRecord, bool) {
+	return parseMarker(longMarkerPattern, text)
+}
+
+func parseMarker(pattern *regexp.Regexp, text string) (requestRecord, bool) {
+	match := pattern.FindStringSubmatch(text)
 	if len(match) != 3 {
 		return requestRecord{}, false
 	}

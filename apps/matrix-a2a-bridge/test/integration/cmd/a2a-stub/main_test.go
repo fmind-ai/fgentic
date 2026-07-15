@@ -136,6 +136,43 @@ func TestMessageTextAndCancelledDelay(t *testing.T) {
 	}
 }
 
+func TestLocalAgentCardUsesOptionalAdvertisedBaseURL(t *testing.T) {
+	directBaseURL := "http://plain-a2a-agent.plain-agent.svc.cluster.local:8080"
+	proxyBaseURL := "http://fault-proxy.bridge-integration.svc.cluster.local:8080"
+	t.Setenv("A2A_STUB_BASE_URL", directBaseURL+"/")
+	t.Setenv("A2A_STUB_LOCAL_BASE_URL", "")
+
+	baseURL, localBaseURL := agentBaseURLs()
+	if baseURL != directBaseURL || localBaseURL != directBaseURL {
+		t.Fatalf("default base URLs = %q, %q, want %q", baseURL, localBaseURL, directBaseURL)
+	}
+
+	t.Setenv("A2A_STUB_LOCAL_BASE_URL", proxyBaseURL+"/")
+	baseURL, localBaseURL = agentBaseURLs()
+	if baseURL != directBaseURL || localBaseURL != proxyBaseURL {
+		t.Fatalf("overridden base URLs = %q, %q, want %q, %q", baseURL, localBaseURL, directBaseURL, proxyBaseURL)
+	}
+
+	card := newLocalAgentCard(localBaseURL)
+	if len(card.SupportedInterfaces) != 1 {
+		t.Fatalf("local card interfaces = %d, want one", len(card.SupportedInterfaces))
+	}
+	if got, want := card.SupportedInterfaces[0].URL, proxyBaseURL+localAgentPath; got != want {
+		t.Errorf("local card interface URL = %q, want %q", got, want)
+	}
+
+	remoteCard, err := signedRemoteAgentCard(baseURL)
+	if err != nil {
+		t.Fatalf("signedRemoteAgentCard: %v", err)
+	}
+	if len(remoteCard.SupportedInterfaces) != 1 {
+		t.Fatalf("remote card interfaces = %d, want one", len(remoteCard.SupportedInterfaces))
+	}
+	if got, want := remoteCard.SupportedInterfaces[0].URL, directBaseURL+remoteAgentPath; got != want {
+		t.Errorf("remote card interface URL = %q, want %q", got, want)
+	}
+}
+
 func TestSignedRemoteAgentCardHasStableIdentityAndIsTamperEvident(t *testing.T) {
 	t.Parallel()
 
@@ -231,4 +268,57 @@ func validFixtureSignature(t *testing.T, card *a2a.AgentCard) bool {
 	}
 	privateKey := fixturePrivateKey()
 	return agentcardjws.Verify(document, &privateKey.PublicKey, remoteKeyID) == nil
+}
+
+func TestLongTaskProducesPersistedWorkingThenCompletedTask(t *testing.T) {
+	stats := &statsRecorder{}
+	executor := executor{
+		gate:     newReleaseGate(false),
+		longGate: newReleaseGate(false),
+		stats:    stats,
+	}
+	execCtx := &a2asrv.ExecutorContext{
+		Message: &a2a.Message{
+			ID:    "long-message",
+			Role:  a2a.MessageRoleUser,
+			Parts: a2a.ContentParts{a2a.NewTextPart("long room=98 seq=01")},
+		},
+		TaskID:    "long-task",
+		ContextID: "long-context",
+	}
+	var events []a2a.Event
+	for event, err := range executor.Execute(t.Context(), execCtx) {
+		if err != nil {
+			t.Fatalf("Execute error = %v", err)
+		}
+		events = append(events, event)
+	}
+	if len(events) != 3 {
+		t.Fatalf("events = %d, want submitted, working, completed", len(events))
+	}
+	working, ok := events[1].(*a2a.TaskStatusUpdateEvent)
+	if !ok || working.Status.State != a2a.TaskStateWorking {
+		t.Fatalf("working event = %#v", events[1])
+	}
+	completed, ok := events[2].(*a2a.TaskStatusUpdateEvent)
+	if !ok || completed.Status.State != a2a.TaskStateCompleted {
+		t.Fatalf("completed event = %#v", events[2])
+	}
+	if got := messageText(completed.Status.Message); got != "long reply room=98 seq=01" {
+		t.Fatalf("completed text = %q", got)
+	}
+	snapshot := stats.snapshot()
+	if snapshot.LongStarted != 1 || snapshot.LongCompleted != 1 || snapshot.Active != 0 {
+		t.Fatalf("stats = %+v", snapshot)
+	}
+}
+
+func TestParseLongMarkerRejectsOrdinaryLoad(t *testing.T) {
+	want := requestRecord{Room: 98, Sequence: 1}
+	if got, ok := parseLongMarker("prefix long room=98 seq=01 suffix"); !ok || got != want {
+		t.Fatalf("parseLongMarker = %+v, %t", got, ok)
+	}
+	if _, ok := parseLongMarker("load room=98 seq=01"); ok {
+		t.Fatal("parseLongMarker accepted a load marker")
+	}
 }

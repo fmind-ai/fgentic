@@ -43,6 +43,16 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.RateLimitBucketCapacity != 4096 {
 		t.Errorf("RateLimitBucketCapacity = %d, want 4096", cfg.RateLimitBucketCapacity)
 	}
+	if cfg.AppserviceTransactionMaxBytes != 16*1024*1024 {
+		t.Errorf("AppserviceTransactionMaxBytes = %d, want 16777216", cfg.AppserviceTransactionMaxBytes)
+	}
+	if cfg.DelegationClaimInterval != time.Second || cfg.DelegationLeaseDuration != 30*time.Second ||
+		cfg.DelegationRetryInitial != time.Second || cfg.DelegationRetryMax != 30*time.Second ||
+		cfg.DelegationMaxAttempts != 5 {
+		t.Errorf("durable worker defaults = (%s, %s, %s, %s, %d)",
+			cfg.DelegationClaimInterval, cfg.DelegationLeaseDuration,
+			cfg.DelegationRetryInitial, cfg.DelegationRetryMax, cfg.DelegationMaxAttempts)
+	}
 }
 
 func TestLoadOverrides(t *testing.T) {
@@ -59,6 +69,12 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("ROOM_QUEUE_CAPACITY", "12")
 	t.Setenv("GLOBAL_QUEUE_CAPACITY", "64")
 	t.Setenv("RATE_LIMIT_BUCKET_CAPACITY", "128")
+	t.Setenv("APPSERVICE_TRANSACTION_MAX_BYTES", "1048576")
+	t.Setenv("DELEGATION_CLAIM_INTERVAL", "250ms")
+	t.Setenv("DELEGATION_LEASE_DURATION", "12s")
+	t.Setenv("DELEGATION_RETRY_INITIAL", "2s")
+	t.Setenv("DELEGATION_RETRY_MAX", "20s")
+	t.Setenv("DELEGATION_MAX_ATTEMPTS", "7")
 
 	cfg, err := Load()
 	if err != nil {
@@ -93,6 +109,11 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.RateLimitBucketCapacity != 128 {
 		t.Errorf("RateLimitBucketCapacity = %d, want 128", cfg.RateLimitBucketCapacity)
+	}
+	if cfg.AppserviceTransactionMaxBytes != 1048576 || cfg.DelegationClaimInterval != 250*time.Millisecond ||
+		cfg.DelegationLeaseDuration != 12*time.Second || cfg.DelegationRetryInitial != 2*time.Second ||
+		cfg.DelegationRetryMax != 20*time.Second || cfg.DelegationMaxAttempts != 7 {
+		t.Errorf("durable overrides were not loaded: %+v", cfg)
 	}
 }
 
@@ -267,6 +288,34 @@ func TestValidateRejectsUnsafeQueueCapacities(t *testing.T) {
 			}
 			if _, err := Load(); err == nil {
 				t.Fatal("Load accepted unsafe queue capacities")
+			}
+		})
+	}
+}
+
+func TestValidateRejectsUnsafeDurableSettings(t *testing.T) {
+	tests := []struct {
+		name string
+		env  map[string]string
+	}{
+		{name: "empty transaction body", env: map[string]string{"APPSERVICE_TRANSACTION_MAX_BYTES": "0"}},
+		{name: "empty claim interval", env: map[string]string{"DELEGATION_CLAIM_INTERVAL": "0s"}},
+		{name: "empty lease", env: map[string]string{"DELEGATION_LEASE_DURATION": "0s"}},
+		{name: "sub-nanosecond heartbeat", env: map[string]string{"DELEGATION_LEASE_DURATION": "2ns"}},
+		{name: "empty retry", env: map[string]string{"DELEGATION_RETRY_INITIAL": "0s"}},
+		{
+			name: "reversed retry range",
+			env:  map[string]string{"DELEGATION_RETRY_INITIAL": "10s", "DELEGATION_RETRY_MAX": "5s"},
+		},
+		{name: "empty attempt limit", env: map[string]string{"DELEGATION_MAX_ATTEMPTS": "0"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			for key, value := range tt.env {
+				t.Setenv(key, value)
+			}
+			if _, err := Load(); err == nil {
+				t.Fatalf("Load accepted unsafe durable settings: %v", tt.env)
 			}
 		})
 	}

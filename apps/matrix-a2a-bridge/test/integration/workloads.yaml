@@ -40,6 +40,12 @@ spec:
           env:
             - name: A2A_STUB_BASE_URL
               value: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080
+            - name: A2A_STUB_LOCAL_BASE_URL
+              valueFrom:
+                configMapKeyRef:
+                  name: fixture-settings
+                  key: a2aStubLocalBaseURL
+                  optional: true
             - name: A2A_STUB_DELAY
               valueFrom:
                 configMapKeyRef:
@@ -50,6 +56,11 @@ spec:
                 configMapKeyRef:
                   name: fixture-settings
                   key: a2aStubHold
+            - name: A2A_STUB_LONG_HOLD
+              valueFrom:
+                configMapKeyRef:
+                  name: fixture-settings
+                  key: a2aStubLongHold # gitleaks:allow -- ConfigMap field name, not a credential.
           ports:
             - containerPort: 8080
               name: http
@@ -153,7 +164,10 @@ spec:
           command: [/usr/local/bin/bridge]
           env:
             - name: HOMESERVER_URL
-              value: http://synapse:8008
+              valueFrom:
+                configMapKeyRef:
+                  name: fixture-settings
+                  key: homeserverURL
             - name: SERVER_NAME
               value: integration.test
             - name: REGISTRATION_PATH
@@ -161,14 +175,20 @@ spec:
             - name: AGENTS_PATH
               value: /agents/agents.yaml
             - name: A2A_BASE_URL
-              value: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080
+              valueFrom:
+                configMapKeyRef:
+                  name: fixture-settings
+                  key: a2aBaseURL
             - name: AGENT_CARD_REFRESH_INTERVAL
               valueFrom:
                 configMapKeyRef:
                   name: fixture-settings
                   key: agentCardRefreshInterval
             - name: DATABASE_URL
-              value: postgres://postgres@postgres:5432/bridge?sslmode=disable
+              valueFrom:
+                configMapKeyRef:
+                  name: fixture-settings
+                  key: databaseURL
             - name: REQUEST_TIMEOUT
               value: 30s
             - name: TASK_TIMEOUT
@@ -180,6 +200,16 @@ spec:
                 configMapKeyRef:
                   name: fixture-settings
                   key: concurrency
+            - name: DELEGATION_CLAIM_INTERVAL
+              valueFrom:
+                configMapKeyRef:
+                  name: fixture-settings
+                  key: delegationClaimInterval
+            - name: DELEGATION_LEASE_DURATION
+              valueFrom:
+                configMapKeyRef:
+                  name: fixture-settings
+                  key: delegationLeaseDuration
             - name: SENDER_RATE_PER_MINUTE
               valueFrom:
                 configMapKeyRef:

@@ -9,13 +9,28 @@ import (
 	"time"
 )
 
-// retention bounds the processed-event dedup window. Synapse retries a transaction until it is
-// ACKed; redeliveries land within minutes, so a day is a comfortable margin.
-const retention = 24 * time.Hour
+// retention bounds the legacy processed-event dedup window. New durable jobs use
+// TerminalRetention and preserve ambiguous/dead evidence indefinitely.
+const retention = TerminalRetention
+
+// Ledger is the crash-safe delegation contract used by the appservice intake and lease workers.
+type Ledger interface {
+	AdmitTransaction(context.Context, TransactionAdmission) (AdmissionResult, error)
+	NonTerminalCount(context.Context) (int, error)
+	Claim(context.Context, ClaimRequest) (Job, bool, error)
+	Heartbeat(context.Context, LeaseToken, time.Time, time.Duration) error
+	RecordAdmission(context.Context, AdmissionRequest) error
+	RecordMatrixEvent(context.Context, MatrixEventRequest) error
+	Transition(context.Context, TransitionRequest) error
+	ScheduleRetry(context.Context, RetryRequest) error
+	Job(context.Context, string) (Job, bool, error)
+	CleanupTerminal(context.Context, time.Time) (CleanupResult, error)
+}
 
 // Store persists bridge state. Context loss is benign (a conversation restarts fresh);
 // MarkEventProcessed loss risks duplicate agent invocations after a redelivery.
 type Store interface {
+	Ledger
 	// Context returns the A2A contextId for a (room, ghost) thread, or "" for a fresh one.
 	Context(ctx context.Context, roomID, ghost string) (string, error)
 	// SetContext records the contextId returned by the agent for the next turn of the thread.
@@ -28,16 +43,24 @@ type Store interface {
 
 // Memory is the in-memory fallback used when no DATABASE_URL is configured (dev only).
 type Memory struct {
-	mu        sync.Mutex
-	contexts  map[[2]string]string
-	processed map[string]time.Time
+	mu           sync.Mutex
+	contexts     map[[2]string]string
+	processed    map[string]time.Time
+	transactions map[string]memoryTransaction
+	jobs         map[string]Job
+	jobOrder     []string
+	jobByTarget  map[[2]string]string
+	nextSequence int64
 }
 
 // NewMemory returns an empty in-memory Store.
 func NewMemory() *Memory {
 	return &Memory{
-		contexts:  make(map[[2]string]string),
-		processed: make(map[string]time.Time),
+		contexts:     make(map[[2]string]string),
+		processed:    make(map[string]time.Time),
+		transactions: make(map[string]memoryTransaction),
+		jobs:         make(map[string]Job),
+		jobByTarget:  make(map[[2]string]string),
 	}
 }
 

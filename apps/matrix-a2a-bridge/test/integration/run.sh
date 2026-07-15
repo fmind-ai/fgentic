@@ -15,8 +15,10 @@ readonly DRIVER_WAIT_TIMEOUT="${DRIVER_WAIT_TIMEOUT:-90s}"
 # Kubernetes 1.34 is the newest line that supports both cgroup v1 developer hosts and the
 # cgroup v2 GitHub runner. Kubernetes 1.35 intentionally refuses to start on cgroup v1.
 readonly KIND_NODE_IMAGE="kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a"
-readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
-readonly APP_DIR="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
+readonly SCRIPT_DIR
+APP_DIR="$(cd -- "${SCRIPT_DIR}/../.." && pwd)"
+readonly APP_DIR
 readonly STARTED_AT="${SECONDS}"
 POSTGRES_IMAGE="$(
   yq -er 'select(.kind == "Deployment" and .metadata.name == "postgres") |
@@ -41,16 +43,81 @@ availability_runtime_node=""
 availability_bridge_container=""
 availability_synapse_container=""
 availability_shutdown_watcher_pid=""
+crash_log_file=""
+crash_runtime_node=""
+crash_bridge_container=""
+
+print_driver_logs() {
+  echo "==> Driver logs"
+  kubectl --request-timeout=5s --namespace "${NAMESPACE}" logs \
+    "job/${DRIVER_JOB_NAME}" --all-containers --tail=200 || true
+}
+
+print_crash_fault_state() {
+  echo "==> Crash fault state"
+  kubectl --request-timeout=5s get --raw \
+    "/api/v1/namespaces/${NAMESPACE}/services/fault-proxy:control/proxy/state" || true
+}
+
+print_crash_delegation_state() {
+  echo "==> Content-free crash delegation state"
+  echo "matrix_event_id|state|lease_generation|lease_expires_at|attempt_count|poll_count|next_attempt_at|error_code|admission_checked|admission_allowed|admission_reason|reply_recorded|placeholder_recorded|edit_recorded|created_at|updated_at|terminal_at"
+  kubectl --request-timeout=5s --namespace "${NAMESPACE}" exec deployment/postgres -- \
+    psql -U postgres -d bridge -At -F '|' -c \
+    "SELECT matrix_event_id, state, lease_generation, COALESCE(lease_expires_at::text, ''), attempt_count, poll_count, next_attempt_at, error_code, admission_checked, admission_allowed, admission_reason, matrix_reply_event_id <> '', matrix_placeholder_event_id <> '', matrix_edit_event_id <> '', created_at, updated_at, COALESCE(terminal_at::text, '') FROM bridge_delegations WHERE appservice_transaction_id LIKE 'crash-%' ORDER BY intake_sequence;" || true
+}
+
+crash_driver_terminal_status() {
+  local job_json=""
+  if job_json="$(
+    kubectl --request-timeout=5s --namespace "${NAMESPACE}" get \
+      "job/${DRIVER_JOB_NAME}" --output=json 2>/dev/null
+  )" && jq -e '
+      ((.status.failed // 0) > 0)
+      or any(.status.conditions[]?; .type == "Failed" and .status == "True")
+    ' <<<"${job_json}" >/dev/null; then
+    jq -r '
+      [
+        .status.conditions[]?
+        | select(.type == "Failed" and .status == "True")
+        | .reason // "unknown"
+      ] as $reasons
+      | "job failed failed_count=\(.status.failed // 0) reason=\($reasons[0] // "unknown")"
+    ' <<<"${job_json}"
+    return 0
+  fi
+
+  local pods_json=""
+  if ! pods_json="$(
+    kubectl --request-timeout=5s --namespace "${NAMESPACE}" get pods \
+      --selector "job-name=${DRIVER_JOB_NAME}" --output=json 2>/dev/null
+  )"; then
+    return 1
+  fi
+  jq -r '
+    [
+      .items[]? as $pod
+      | $pod.status.containerStatuses[]?
+      | select(.state.terminated != null)
+      | "container terminated pod=\($pod.metadata.name) container=\(.name) exit_code=\(.state.terminated.exitCode) reason=\(.state.terminated.reason // "unknown")"
+    ][0] // empty
+  ' <<<"${pods_json}"
+}
 
 diagnose() {
   echo "==> Integration fixture diagnostics"
-  kubectl --request-timeout=5s --namespace "${NAMESPACE}" get all --output=wide || true
-  kubectl --request-timeout=5s --namespace "${PLAIN_AGENT_NAMESPACE}" get all --output=wide || true
+  print_driver_logs
+  kubectl --request-timeout=5s --namespace "${NAMESPACE}" logs deployment/bridge --all-containers --tail=200 || true
+  if [[ "${SCENARIO}" == "crash-recovery" ]]; then
+    print_crash_fault_state
+    print_crash_delegation_state
+    kubectl --request-timeout=5s --namespace "${NAMESPACE}" logs deployment/fault-proxy --all-containers --tail=200 || true
+  fi
+  kubectl --request-timeout=5s --namespace "${PLAIN_AGENT_NAMESPACE}" logs deployment/plain-a2a-agent --all-containers --tail=200 || true
   kubectl --request-timeout=5s --namespace "${NAMESPACE}" logs deployment/postgres --all-containers --tail=200 || true
   kubectl --request-timeout=5s --namespace "${NAMESPACE}" logs deployment/synapse --all-containers --tail=200 || true
-  kubectl --request-timeout=5s --namespace "${PLAIN_AGENT_NAMESPACE}" logs deployment/plain-a2a-agent --all-containers --tail=200 || true
-  kubectl --request-timeout=5s --namespace "${NAMESPACE}" logs deployment/bridge --all-containers --tail=200 || true
-  kubectl --request-timeout=5s --namespace "${NAMESPACE}" logs "job/${DRIVER_JOB_NAME}" --all-containers --tail=200 || true
+  kubectl --request-timeout=5s --namespace "${NAMESPACE}" get all --output=wide || true
+  kubectl --request-timeout=5s --namespace "${PLAIN_AGENT_NAMESPACE}" get all --output=wide || true
   kubectl --request-timeout=5s --namespace "${NAMESPACE}" describe pods || true
 }
 
@@ -61,7 +128,7 @@ wait_for_stable_control_plane() {
     if [[ "$(kubectl --request-timeout=5s get --raw=/readyz 2>/dev/null || true)" == "ok" ]] &&
       kubectl --request-timeout=5s api-resources >/dev/null 2>&1 &&
       kubectl --request-timeout=5s get nodes --output=json 2>/dev/null |
-        jq -e '
+      jq -e '
           (.items | length) > 0 and
           all(.items[]; any(.status.conditions[]?; .type == "Ready" and .status == "True"))
         ' >/dev/null; then
@@ -272,6 +339,140 @@ disrupt_active_availability_call() {
     --timeout=60s
 }
 
+wait_for_crash_phase() {
+  local phase="$1"
+  local deadline=$((SECONDS + 60))
+  local next_status_check="${SECONDS}"
+  local terminal_status=""
+  while ((SECONDS < deadline)); do
+    if ((SECONDS >= next_status_check)); then
+      terminal_status="$(crash_driver_terminal_status || true)"
+      if [[ -n "${terminal_status}" ]]; then
+        echo "Error: crash driver ${terminal_status} before reaching ${phase}" >&2
+        print_driver_logs
+        return 1
+      fi
+      next_status_check=$((SECONDS + 1))
+    fi
+    if kubectl --request-timeout=5s --namespace "${NAMESPACE}" logs "job/${DRIVER_JOB_NAME}" 2>/dev/null |
+      jq -R -e --arg phase "${phase}" '
+        fromjson?
+        | select(.crash_action == "sigkill_ready" and .crash_phase == $phase)
+      ' >/dev/null; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "Error: crash driver did not reach ${phase} within 60s" >&2
+  print_crash_fault_state
+  print_crash_delegation_state
+  print_driver_logs
+  return 1
+}
+
+bridge_runtime_container() {
+  docker exec "${crash_runtime_node}" crictl ps \
+    --quiet \
+    --label io.kubernetes.container.name=bridge \
+    --label "io.kubernetes.pod.namespace=${NAMESPACE}"
+}
+
+hard_kill_bridge_process() {
+  local phase="$1"
+  local old_container="${crash_bridge_container}"
+  local old_pod=""
+  local pid=""
+  old_pod="$(
+    kubectl --request-timeout=5s --namespace "${NAMESPACE}" get pods \
+      --selector app.kubernetes.io/name=bridge \
+      --output=json |
+      jq -er '
+        [.items[] | select(.metadata.deletionTimestamp == null)]
+        | if length == 1 then .[0].metadata.name else error("expected one bridge pod") end
+      '
+  )"
+  pid="$(
+    docker exec "${crash_runtime_node}" crictl inspect "${old_container}" |
+      jq -er '.info.pid | tonumber | select(. > 0)'
+  )"
+  docker exec "${crash_runtime_node}" crictl logs "${old_container}" >>"${crash_log_file}" 2>&1 || true
+  echo "==> SIGKILL bridge process ${pid} at ${phase}"
+  docker exec "${crash_runtime_node}" kill -KILL "${pid}"
+  # The process boundary is complete once SIGKILL returns. Replace its dead pod so six
+  # intentional crashes do not accumulate CrashLoopBackOff delays on constrained hosts.
+  kubectl --request-timeout=5s --namespace "${NAMESPACE}" delete pod "${old_pod}" --wait=false
+
+  local deadline=$((SECONDS + 60))
+  local replacement=""
+  while ((SECONDS < deadline)); do
+    replacement="$(bridge_runtime_container || true)"
+    if [[ -n "${replacement}" && "${replacement}" != "${old_container}" && "${replacement}" != *$'\n'* ]] &&
+      kubectl --request-timeout=5s --namespace "${NAMESPACE}" get pod \
+        --selector app.kubernetes.io/name=bridge \
+        --output=json 2>/dev/null |
+      jq -e 'any(.items[]?.status.conditions[]?; .type == "Ready" and .status == "True")' >/dev/null; then
+      crash_bridge_container="${replacement}"
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "Error: bridge container did not restart after SIGKILL at ${phase}" >&2
+  return 1
+}
+
+disrupt_crash_recovery() {
+  crash_runtime_node="${kind_nodes%%$'\n'*}"
+  crash_bridge_container="$(bridge_runtime_container)"
+  if [[ -z "${crash_bridge_container}" || "${crash_bridge_container}" == *$'\n'* ]]; then
+    echo "Error: expected exactly one running bridge container for crash recovery" >&2
+    return 1
+  fi
+  crash_log_file="$(mktemp -t fgentic-bridge-crash-logs.XXXXXX)"
+
+  local phases=(
+    ledger_committed_pre_ack
+    acknowledged_pre_claim
+    a2a_accepted_pre_record
+    result_persisted_pre_matrix
+    matrix_accepted_pre_record
+    long_task_polling
+  )
+  local phase
+  for phase in "${phases[@]}"; do
+    wait_for_crash_phase "${phase}"
+    hard_kill_bridge_process "${phase}"
+  done
+}
+
+verify_crash_recovery_evidence() {
+  docker exec "${crash_runtime_node}" crictl logs "${crash_bridge_container}" >>"${crash_log_file}" 2>&1 || true
+  if rg -n 'crash boundary|long room=98' "${crash_log_file}"; then
+    echo "Error: bridge logs retained crash-scenario prompt content" >&2
+    return 1
+  fi
+
+  local job_summary=""
+  job_summary="$(
+    kubectl --request-timeout=10s --namespace "${NAMESPACE}" exec deployment/postgres -- \
+      psql -U postgres -d bridge -At -F '|' -c \
+      "SELECT count(*), count(*) FILTER (WHERE state = 'delivered'), count(*) FILTER (WHERE state = 'ambiguous'), count(*) FILTER (WHERE prompt <> '' OR octet_length(payload) > 0 OR result_text <> '') FROM bridge_delegations WHERE matrix_event_id LIKE '\$crash-%';"
+  )"
+  if [[ "${job_summary}" != "6|5|1|0" ]]; then
+    echo "Error: crash delegation summary ${job_summary}, want 6|5|1|0" >&2
+    return 1
+  fi
+  local transaction_count=""
+  transaction_count="$(
+    kubectl --request-timeout=10s --namespace "${NAMESPACE}" exec deployment/postgres -- \
+      psql -U postgres -d bridge -Atc \
+      "SELECT count(*) FROM bridge_appservice_transactions WHERE transaction_id LIKE 'crash-%';"
+  )"
+  if [[ "${transaction_count}" != "6" ]]; then
+    echo "Error: crash appservice transactions = ${transaction_count}, want 6" >&2
+    return 1
+  fi
+}
+
 cleanup() {
   readonly result=$?
   trap - EXIT
@@ -279,6 +480,9 @@ cleanup() {
     kill -0 "${availability_shutdown_watcher_pid}" 2>/dev/null; then
     kill "${availability_shutdown_watcher_pid}" 2>/dev/null || true
     wait "${availability_shutdown_watcher_pid}" 2>/dev/null || true
+  fi
+  if [[ -n "${crash_log_file}" ]]; then
+    rm -f "${crash_log_file}"
   fi
   if ((result != 0)); then
     diagnose
@@ -302,8 +506,9 @@ echo "==> Building bridge integration image"
 docker build --provenance=false --file "${SCRIPT_DIR}/Dockerfile" --tag "${FIXTURE_IMAGE}" "${APP_DIR}"
 echo "==> Building standalone plain A2A agent image"
 docker build --provenance=false --file "${SCRIPT_DIR}/plain-agent.Dockerfile" --tag "${PLAIN_AGENT_IMAGE}" "${APP_DIR}"
-if [[ "$(docker image inspect --format '{{json .Config.Entrypoint}}|{{.Config.User}}' "${PLAIN_AGENT_IMAGE}")" != \
-  '["/usr/local/bin/plain-a2a-agent"]|65532:65532' ]]; then
+plain_agent_runtime="$(docker image inspect --format '{{json .Config.Entrypoint}}|{{.Config.User}}' "${PLAIN_AGENT_IMAGE}")"
+readonly plain_agent_runtime
+if [[ "${plain_agent_runtime}" != '["/usr/local/bin/plain-a2a-agent"]|65532:65532' ]]; then
   echo "Error: plain A2A image lost its single non-root runtime entrypoint" >&2
   exit 1
 fi
@@ -350,6 +555,10 @@ if kubectl get namespace kagent >/dev/null 2>&1; then
 fi
 
 echo "==> Starting real bridge and standalone SDK-backed A2A agent"
+if [[ "${SCENARIO}" == "crash-recovery" ]]; then
+  kubectl apply --filename "${SCRIPT_DIR}/crash-recovery-fault-proxy.yaml"
+  kubectl --namespace "${NAMESPACE}" rollout status deployment/fault-proxy --timeout=60s
+fi
 kubectl apply --filename "${SCRIPT_DIR}/workloads.yaml"
 if ! kubectl --namespace "${PLAIN_AGENT_NAMESPACE}" get networkpolicy plain-a2a-agent --output=json | jq -e \
   --arg allowed_namespace "${NAMESPACE}" '
@@ -373,6 +582,10 @@ kubectl apply --filename "${SCRIPT_DIR}/${DRIVER_MANIFEST}"
 if [[ "${SCENARIO}" == "availability" ]]; then
   echo "==> Interrupting the active delegation with a graceful bridge pod deletion"
   disrupt_active_availability_call
+fi
+if [[ "${SCENARIO}" == "crash-recovery" ]]; then
+  echo "==> Injecting six hard bridge process failures"
+  disrupt_crash_recovery
 fi
 kubectl --request-timeout=155s --namespace "${NAMESPACE}" wait \
   --for=condition=complete "job/${DRIVER_JOB_NAME}" --timeout="${DRIVER_WAIT_TIMEOUT}"
@@ -420,9 +633,13 @@ if [[ "${SCENARIO}" == "availability" ]]; then
     }'
 fi
 
+if [[ "${SCENARIO}" == "crash-recovery" ]]; then
+  verify_crash_recovery_evidence
+fi
+
 if [[ "${SCENARIO}" == "integration" ]]; then
   echo "==> Verifying fail-closed remote AgentCard audit"
-  readonly untrusted_audits="$(
+  untrusted_audits="$(
     kubectl --namespace "${NAMESPACE}" logs deployment/bridge --all-containers | jq -Rsc '
     [
       split("\n")[]
@@ -441,6 +658,7 @@ if [[ "${SCENARIO}" == "integration" ]]; then
     | length
     '
   )"
+  readonly untrusted_audits
   if [[ "${untrusted_audits}" != "1" ]]; then
     echo "Error: expected one content-free agent_card_untrusted audit, got ${untrusted_audits}" >&2
     exit 1

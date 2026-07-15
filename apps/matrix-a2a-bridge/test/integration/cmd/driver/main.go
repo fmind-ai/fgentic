@@ -22,6 +22,7 @@ const (
 	defaultBridgeURL    = "http://bridge:29331"
 	defaultMetricsURL   = "http://bridge:9090/metrics"
 	defaultStubURL      = "http://plain-a2a-agent.plain-agent.svc.cluster.local:8080"
+	defaultFaultURL     = "http://fault-proxy:8081"
 	defaultServer       = "integration.test"
 	defaultHSToken      = "integration-homeserver-token"
 	username            = "integration-user"
@@ -46,6 +47,7 @@ type fixture struct {
 	bridgeURL  string
 	metricsURL string
 	stubURL    string
+	faultURL   string
 	server     string
 	hsToken    string
 	http       *http.Client
@@ -101,6 +103,7 @@ func run() error {
 		bridgeURL:  strings.TrimRight(envOrDefault("BRIDGE_URL", defaultBridgeURL), "/"),
 		metricsURL: envOrDefault("BRIDGE_METRICS_URL", defaultMetricsURL),
 		stubURL:    strings.TrimRight(envOrDefault("A2A_STUB_URL", defaultStubURL), "/"),
+		faultURL:   strings.TrimRight(envOrDefault("FAULT_PROXY_URL", defaultFaultURL), "/"),
 		server:     envOrDefault("MATRIX_SERVER_NAME", defaultServer),
 		hsToken:    envOrDefault("BRIDGE_HS_TOKEN", defaultHSToken),
 		http:       &http.Client{Timeout: 10 * time.Second},
@@ -110,6 +113,8 @@ func run() error {
 		return f.runBasic(ctx)
 	case "availability":
 		return f.runAvailability(ctx)
+	case "crash-recovery":
+		return f.runCrashRecovery(ctx)
 	case "load":
 		return f.runLoad(ctx)
 	default:
@@ -171,7 +176,7 @@ func (f fixture) runBasic(ctx context.Context) error {
 		return err
 	}
 
-	if err := f.replayEvent(ctx, roomID, sess.UserID, eventID, content); err != nil {
+	if err := f.replayEvent(ctx, sess.AccessToken, "integration-redelivery", roomID, eventID); err != nil {
 		return err
 	}
 	quietDeadline := time.Now().Add(4 * time.Second)
@@ -504,10 +509,13 @@ func (f fixture) sendMessageTxn(
 
 func (f fixture) replayEvent(
 	ctx context.Context,
-	roomID, sender, eventID string,
-	content messageContent,
+	token, transactionID, roomID, eventID string,
 ) error {
-	return f.pushAppserviceEvent(ctx, "integration-redelivery", roomID, sender, eventID, content)
+	evt, err := f.roomEvent(ctx, token, roomID, eventID)
+	if err != nil {
+		return fmt.Errorf("load canonical Matrix event for replay: %w", err)
+	}
+	return f.pushAppserviceTransaction(ctx, transactionID, []matrixEvent{evt})
 }
 
 func (f fixture) pushAppserviceEvent(
@@ -527,8 +535,15 @@ func (f fixture) pushAppserviceEvent(
 		Sender:         sender,
 		Type:           "m.room.message",
 	}
-	endpoint := f.bridgeURL + "/_matrix/app/v1/transactions/" + url.PathEscape(transactionID)
-	status, body, err := f.request(ctx, http.MethodPut, endpoint, f.hsToken, map[string]any{"events": []matrixEvent{event}})
+	return f.pushAppserviceTransaction(ctx, transactionID, []matrixEvent{event})
+}
+
+func (f fixture) pushAppserviceTransaction(
+	ctx context.Context,
+	transactionID string,
+	events []matrixEvent,
+) error {
+	status, body, err := f.putAppserviceTransaction(ctx, transactionID, events)
 	if err != nil {
 		return fmt.Errorf("push appservice transaction: %w", err)
 	}
@@ -536,6 +551,15 @@ func (f fixture) pushAppserviceEvent(
 		return fmt.Errorf("push appservice transaction: status %d: %s", status, body)
 	}
 	return nil
+}
+
+func (f fixture) putAppserviceTransaction(
+	ctx context.Context,
+	transactionID string,
+	events []matrixEvent,
+) (int, []byte, error) {
+	endpoint := f.bridgeURL + "/_matrix/app/v1/transactions/" + url.PathEscape(transactionID)
+	return f.request(ctx, http.MethodPut, endpoint, f.hsToken, map[string]any{"events": events})
 }
 
 func (f fixture) waitForReply(
@@ -693,6 +717,45 @@ func (f fixture) roomMessages(ctx context.Context, token, roomID string) ([]matr
 		return nil, fmt.Errorf("decode Matrix room messages: %w", err)
 	}
 	return response.Chunk, nil
+}
+
+func (f fixture) roomEvent(
+	ctx context.Context,
+	token, roomID, eventID string,
+) (matrixEvent, error) {
+	endpoint := fmt.Sprintf(
+		"%s/_matrix/client/v3/rooms/%s/event/%s",
+		f.matrixURL,
+		pathSegment(roomID),
+		pathSegment(eventID),
+	)
+	status, body, err := f.request(ctx, http.MethodGet, endpoint, token, nil)
+	if err != nil {
+		return matrixEvent{}, fmt.Errorf("read Matrix room event: %w", err)
+	}
+	if status != http.StatusOK {
+		return matrixEvent{}, fmt.Errorf("read Matrix room event: status %d: %s", status, body)
+	}
+	var evt matrixEvent
+	if err := json.Unmarshal(body, &evt); err != nil {
+		return matrixEvent{}, fmt.Errorf("decode Matrix room event: %w", err)
+	}
+	if evt.EventID == "" {
+		return matrixEvent{}, fmt.Errorf("decode Matrix room event: event_id is empty")
+	}
+	if evt.EventID != eventID {
+		return matrixEvent{}, fmt.Errorf("decode Matrix room event: event_id %q does not match %q", evt.EventID, eventID)
+	}
+	if evt.RoomID != "" && evt.RoomID != roomID {
+		return matrixEvent{}, fmt.Errorf("decode Matrix room event: room_id %q does not match %q", evt.RoomID, roomID)
+	}
+	if evt.Sender == "" || evt.Type == "" || evt.OriginServerTS == 0 || len(evt.Content) == 0 {
+		return matrixEvent{}, fmt.Errorf("decode Matrix room event: immutable event fields are incomplete")
+	}
+	// Synapse may omit room_id from this room-scoped endpoint. The appservice transaction requires
+	// it, so restore the already authenticated path value after rejecting any conflicting response.
+	evt.RoomID = roomID
+	return evt, nil
 }
 
 func (f fixture) request(
