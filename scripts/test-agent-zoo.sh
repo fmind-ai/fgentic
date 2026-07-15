@@ -27,11 +27,13 @@ flux build kustomization cluster-overlay-validation \
   --in-memory-build \
   --strict-substitute >"${tmp_dir}/agent-zoo.yaml"
 
-expected_agents=$'docs-qa\nplatform-helper\nscribe'
 actual_agents="$(yq eval-all -N -r 'select(.kind == "Agent") | .metadata.name' "${tmp_dir}/agent-zoo.yaml" | sort)"
-[[ "${actual_agents}" == "${expected_agents}" ]] || fail "expected exactly docs-qa, platform-helper, and scribe"
+for required_agent in docs-qa platform-helper scribe; do
+  rg -q "^${required_agent}$" <<<"${actual_agents}" \
+    || fail "required reference Agent ${required_agent} is absent"
+done
 
-for agent in docs-qa platform-helper scribe; do
+while IFS= read -r agent; do
   assert_yq \
     "select(.kind == \"Agent\" and .metadata.name == \"${agent}\") | .spec.declarative.a2aConfig.skills | length > 0" \
     "${tmp_dir}/agent-zoo.yaml" \
@@ -52,7 +54,7 @@ for agent in docs-qa platform-helper scribe; do
     "select(.kind == \"Agent\" and .metadata.name == \"${agent}\") | .spec.declarative.promptTemplate.dataSources[0] as \$source | (\$source.kind == \"ConfigMap\" and \$source.name == \"agent-zoo-prompts\" and \$source.alias == \"zoo\")" \
     "${tmp_dir}/agent-zoo.yaml" \
     "${agent} must resolve its local prompt source"
-done
+done <<<"${actual_agents}"
 
 assert_yq \
   'select(.kind == "ServiceAccount" and .metadata.name == "agent-zoo-runtime") | .automountServiceAccountToken == false' \
@@ -159,16 +161,30 @@ write_verbs="$(yq eval-all -N -r 'select(.kind == "Role" and .metadata.name == "
 
 echo "==> Rendering the bridge agent map and welcome message"
 export server_name=ci.fgentic.example
+kustomize build apps/matrix-a2a-bridge/deploy >"${tmp_dir}/bridge-release.yaml"
 yq eval-all -o=yaml \
   'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") | .spec.values' \
-  apps/matrix-a2a-bridge/deploy/helmrelease.yaml \
+  "${tmp_dir}/bridge-release.yaml" \
   | flux envsubst --strict \
   | helm template matrix-a2a-bridge apps/matrix-a2a-bridge/chart \
     --values - >"${tmp_dir}/bridge.yaml"
-expected_mappings=$'agent-docs-qa\nagent-platform-helper\nagent-scribe'
-actual_mappings="$(yq eval-all -N -r 'select(.kind == "ConfigMap" and .metadata.name == "matrix-a2a-bridge-agents") | .data."agents.yaml" | from_yaml | .agents | keys | .[]' "${tmp_dir}/bridge.yaml" | sort)"
-[[ "${actual_mappings}" == "${expected_mappings}" ]] || fail "bridge must map exactly the three sample agents"
-for mapping in agent-platform-helper agent-docs-qa agent-scribe; do
+yq eval-all -er \
+  'select(.kind == "ConfigMap" and .metadata.name == "matrix-a2a-bridge-agents") | .data."agents.yaml"' \
+  "${tmp_dir}/bridge.yaml" >"${tmp_dir}/agents.yaml"
+mise --cd apps/matrix-a2a-bridge exec -- \
+  go run ./cmd/validate-agents \
+  --schema agents.schema.json \
+  --config "${tmp_dir}/agents.yaml"
+expected_mappings="agent-${actual_agents//$'\n'/$'\n'agent-}"
+actual_mappings="$(yq -N -r '.agents | to_entries[] | select(.value.namespace == "kagent") | .key' "${tmp_dir}/agents.yaml" | sort)"
+[[ "${actual_mappings}" == "${expected_mappings}" ]] \
+  || fail "effective local bridge mappings must match the rendered Agent resources exactly"
+while IFS= read -r agent; do
+  mapping="agent-${agent}"
+  assert_yq \
+    "select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"agents.yaml\" | from_yaml | .agents.\"${mapping}\" as \$mapping | (\$mapping.namespace == \"kagent\" and \$mapping.name == \"${agent}\")" \
+    "${tmp_dir}/bridge.yaml" \
+    "${mapping} must resolve to the matching kagent Agent"
   assert_yq \
     "select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"agents.yaml\" | from_yaml | .agents.\"${mapping}\".allowedSenders as \$senders | ((\$senders | length) == 1 and \$senders[0] == \"@alice:ci.fgentic.example\")" \
     "${tmp_dir}/bridge.yaml" \
@@ -181,7 +197,7 @@ for mapping in agent-platform-helper agent-docs-qa agent-scribe; do
     "select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"agents.yaml\" | from_yaml | .agents.\"${mapping}\".description | length > 0" \
     "${tmp_dir}/bridge.yaml" \
     "${mapping} must carry a startup profile fallback"
-done
+done <<<"${actual_agents}"
 assert_yq \
   'select(.kind == "ConfigMap" and .metadata.name == "matrix-a2a-bridge-agents") | .data."welcome.txt" | contains("!agents")' \
   "${tmp_dir}/bridge.yaml" \

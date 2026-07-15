@@ -1,0 +1,130 @@
+#!/usr/bin/env bash
+# Exercise agent:new in an isolated source tree; no cluster, model, or network is used.
+set -euo pipefail
+
+repo_root="$(git rev-parse --show-toplevel)"
+tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-agent-new-test.XXXXXX")"
+trap 'rm -rf "${tmp_dir}"' EXIT
+
+fail() {
+  echo "agent:new fixture failed: $*" >&2
+  exit 1
+}
+
+mkdir -p \
+  "${tmp_dir}/infra" \
+  "${tmp_dir}/apps/matrix-a2a-bridge" \
+  "${tmp_dir}/scripts" \
+  "${tmp_dir}/evals"
+cp -R "${repo_root}/infra/kagent" "${tmp_dir}/infra/kagent"
+cp -R "${repo_root}/infra/flux" "${tmp_dir}/infra/flux"
+cp -R "${repo_root}/apps/matrix-a2a-bridge/deploy" "${tmp_dir}/apps/matrix-a2a-bridge/deploy"
+cp -R "${repo_root}/apps/matrix-a2a-bridge/chart" "${tmp_dir}/apps/matrix-a2a-bridge/chart"
+mkdir -p \
+  "${tmp_dir}/apps/matrix-a2a-bridge/cmd" \
+  "${tmp_dir}/apps/matrix-a2a-bridge/internal"
+cp "${repo_root}/apps/matrix-a2a-bridge/go.mod" "${tmp_dir}/apps/matrix-a2a-bridge/go.mod"
+cp "${repo_root}/apps/matrix-a2a-bridge/go.sum" "${tmp_dir}/apps/matrix-a2a-bridge/go.sum"
+cp "${repo_root}/apps/matrix-a2a-bridge/agents.schema.json" "${tmp_dir}/apps/matrix-a2a-bridge/agents.schema.json"
+cp -R \
+  "${repo_root}/apps/matrix-a2a-bridge/cmd/validate-agents" \
+  "${tmp_dir}/apps/matrix-a2a-bridge/cmd/validate-agents"
+cp -R \
+  "${repo_root}/apps/matrix-a2a-bridge/internal/agentschema" \
+  "${tmp_dir}/apps/matrix-a2a-bridge/internal/agentschema"
+cp -R "${repo_root}/scripts/testdata" "${tmp_dir}/scripts/testdata"
+
+FGENTIC_REPO_ROOT="${tmp_dir}" mise run agent:new demo-helper >/dev/null
+
+agent_manifest="${tmp_dir}/infra/kagent/agents/demo-helper/agent.yaml"
+mapping_component="${tmp_dir}/apps/matrix-a2a-bridge/deploy/agents/demo-helper/kustomization.yaml"
+golden_fixture="${tmp_dir}/evals/demo-helper/golden.json"
+
+yq -e '
+  (.metadata.name == "demo-helper") and
+  (.metadata.namespace == "kagent") and
+  (.spec.declarative.modelConfig == "agentgateway-model") and
+  (.spec.declarative.deployment.serviceAccountName == "agent-zoo-runtime") and
+  ((.spec.declarative.a2aConfig.skills | length) == 1) and
+  (((.spec.declarative.tools // []) | length) == 0)
+' "${agent_manifest}" >/dev/null || fail "generated Agent contract is invalid"
+
+yq -e '
+  .patches[0].patch | from_yaml |
+  .[0].value as $mapping |
+  (
+    ($mapping.namespace == "kagent") and
+    ($mapping.name == "demo-helper") and
+    ($mapping.stage == "dev") and
+    (($mapping.allowedSenders | length) == 1)
+  )
+' "${mapping_component}" >/dev/null || fail "generated bridge mapping is invalid"
+mapping_sender="$(yq -er '.patches[0].patch | from_yaml | .[0].value.allowedSenders[0]' "${mapping_component}")"
+[[ "${mapping_sender}" == '@alice:${server_name}' ]] \
+  || fail "generated bridge mapping does not use the server-name substitution"
+
+jq -e '
+  .schema_version == "fgentic.agent.eval.v1" and
+  .agent == "demo-helper" and
+  .scenarios[0].agent == "demo-helper" and
+  .scenarios[0].rubric.kind == "exact" and
+  (.scenarios[0].rubric.expected | length) == 1
+' "${golden_fixture}" >/dev/null || fail "generated golden fixture is invalid"
+
+kustomize build "${tmp_dir}/infra/kagent" >"${tmp_dir}/kagent.yaml"
+kustomize build "${tmp_dir}/apps/matrix-a2a-bridge/deploy" >"${tmp_dir}/bridge-release.yaml"
+
+yq eval-all -e '
+  select(.kind == "Agent" and .metadata.name == "demo-helper") |
+  .spec.declarative.a2aConfig.skills | length == 1
+' "${tmp_dir}/kagent.yaml" >/dev/null || fail "generated Agent is absent from the effective kagent render"
+
+export server_name=ci.fgentic.example
+yq eval-all -o=yaml \
+  'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") | .spec.values' \
+  "${tmp_dir}/bridge-release.yaml" \
+  | flux envsubst --strict \
+  | helm template matrix-a2a-bridge "${tmp_dir}/apps/matrix-a2a-bridge/chart" --values - \
+    >"${tmp_dir}/bridge.yaml"
+yq eval-all -e '
+  select(.kind == "ConfigMap" and .metadata.name == "matrix-a2a-bridge-agents") |
+  .data."agents.yaml" | from_yaml | .agents."agent-demo-helper" as $mapping |
+  (
+    ($mapping.namespace == "kagent") and
+    ($mapping.name == "demo-helper") and
+    ($mapping.stage == "dev") and
+    (($mapping.allowedSenders | length) == 1) and
+    ($mapping.allowedSenders[0] == "@alice:ci.fgentic.example")
+  )
+' "${tmp_dir}/bridge.yaml" >/dev/null || fail "generated mapping is absent from effective agents.yaml"
+
+if ! (
+  cd "${tmp_dir}"
+  bash "${repo_root}/scripts/test-agent-zoo.sh"
+) >"${tmp_dir}/agent-zoo.log" 2>&1; then
+  cat "${tmp_dir}/agent-zoo.log" >&2
+  fail "generated scaffold does not pass the exact check:agent-zoo contract"
+fi
+
+if FGENTIC_REPO_ROOT="${tmp_dir}" bash "${repo_root}/scripts/new-agent.sh" demo-helper \
+  >"${tmp_dir}/duplicate.out" 2>"${tmp_dir}/duplicate.err"; then
+  fail "duplicate generation unexpectedly succeeded"
+fi
+rg -q 'refusing to overwrite existing path' "${tmp_dir}/duplicate.err" \
+  || fail "duplicate generation did not fail with an actionable message"
+
+for invalid_name in Demo_Helper ../escape agent/name; do
+  if FGENTIC_REPO_ROOT="${tmp_dir}" bash "${repo_root}/scripts/new-agent.sh" "${invalid_name}" \
+    >"${tmp_dir}/invalid.out" 2>"${tmp_dir}/invalid.err"; then
+    fail "invalid Agent name ${invalid_name} unexpectedly succeeded"
+  fi
+  rg -q 'lowercase Kubernetes DNS label' "${tmp_dir}/invalid.err" \
+    || fail "invalid Agent name ${invalid_name} did not produce the validation error"
+done
+
+if rg -n -i '(api[_-]?key|client[_-]?secret|password):[[:space:]]+[^$]' \
+  "${agent_manifest}" "${mapping_component}" "${golden_fixture}"; then
+  fail "generated files contain credential-shaped data"
+fi
+
+echo "Agent scaffold generation and effective render contracts passed."
