@@ -107,6 +107,38 @@ if ! (
   fail "generated scaffold does not pass the exact check:agents contract"
 fi
 
+# Remote targets are governed mappings but deliberately have no local kagent Agent. Prove the
+# generalized gate preserves that supported trust boundary while applying sender/stage policy.
+bridge_release="${tmp_dir}/apps/matrix-a2a-bridge/deploy/helmrelease.yaml"
+cp "${bridge_release}" "${tmp_dir}/bridge-helmrelease.yaml"
+yq -i '.spec.values.agents."agent-remote-test" = {
+  "url": "https://agents.partner.example/a2a/reviewer",
+  "timeout": "30s",
+  "tokenBudget": 4096,
+  "cardIdentity": {
+    "name": "Partner reviewer",
+    "organization": "Partner Example",
+    "keyID": "partner-reviewer-2026-07",
+    "publicKey": {
+      "kty": "EC",
+      "crv": "P-256",
+      "x": "axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY",
+      "y": "T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU"
+    }
+  },
+  "description": "Reviews documents through a governed partner endpoint.",
+  "stage": "prod",
+  "allowedSenders": ["@alice:${server_name}"]
+}' "${bridge_release}"
+if ! (
+  cd "${tmp_dir}"
+  bash "${repo_root}/scripts/test-agent-zoo.sh"
+) >"${tmp_dir}/remote-mapping.log" 2>&1; then
+  cat "${tmp_dir}/remote-mapping.log" >&2
+  fail "valid pinned remote mapping did not pass the generalized check:agents contract"
+fi
+cp "${tmp_dir}/bridge-helmrelease.yaml" "${bridge_release}"
+
 expect_authoring_failure() {
   local case_name="$1"
   local expected="$2"

@@ -176,15 +176,12 @@ mise --cd apps/matrix-a2a-bridge exec -- \
   --schema agents.schema.json \
   --config "${tmp_dir}/agents.yaml"
 expected_mappings="agent-${actual_agents//$'\n'/$'\n'agent-}"
-actual_mappings="$(yq -N -r '.agents | keys | .[]' "${tmp_dir}/agents.yaml" | sort)"
-[[ "${actual_mappings}" == "${expected_mappings}" ]] \
-  || fail "every effective bridge mapping must match exactly one rendered in-repo Agent"
-while IFS= read -r agent; do
-  mapping="agent-${agent}"
-  assert_yq \
-    "select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"agents.yaml\" | from_yaml | .agents.\"${mapping}\" as \$mapping | (\$mapping.namespace == \"kagent\" and \$mapping.name == \"${agent}\")" \
-    "${tmp_dir}/bridge.yaml" \
-    "${mapping} must resolve to the matching kagent Agent"
+# Pinned remote mappings intentionally have no local kagent CRD. Keep the local mapping set a
+# bijection with rendered Agents, then apply the common sender/stage policy to every mapping below.
+actual_local_mappings="$(yq -N -r '.agents | to_entries[] | select(.value.namespace == "kagent") | .key' "${tmp_dir}/agents.yaml" | sort)"
+[[ "${actual_local_mappings}" == "${expected_mappings}" ]] \
+  || fail "every local bridge mapping must match exactly one rendered in-repo Agent"
+while IFS= read -r mapping; do
   assert_yq \
     "select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"agents.yaml\" | from_yaml | .agents.\"${mapping}\".allowedSenders as \$senders | ((\$senders | length) == 1 and \$senders[0] == \"@alice:ci.fgentic.example\")" \
     "${tmp_dir}/bridge.yaml" \
@@ -193,6 +190,13 @@ while IFS= read -r agent; do
     "select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"agents.yaml\" | from_yaml | .agents.\"${mapping}\".stage as \$stage | (\$stage == \"dev\" or \$stage == \"prod\")" \
     "${tmp_dir}/bridge.yaml" \
     "${mapping} must carry an explicit dev or prod stage"
+done < <(yq -N -r '.agents | keys | .[]' "${tmp_dir}/agents.yaml" | sort)
+while IFS= read -r agent; do
+  mapping="agent-${agent}"
+  assert_yq \
+    "select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"agents.yaml\" | from_yaml | .agents.\"${mapping}\" as \$mapping | (\$mapping.namespace == \"kagent\" and \$mapping.name == \"${agent}\")" \
+    "${tmp_dir}/bridge.yaml" \
+    "${mapping} must resolve to the matching kagent Agent"
   assert_yq \
     "select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"agents.yaml\" | from_yaml | .agents.\"${mapping}\".description | length > 0" \
     "${tmp_dir}/bridge.yaml" \
