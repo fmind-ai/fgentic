@@ -44,6 +44,17 @@ yq --input-format toml --output-format json '.tasks."agent:gate".run' \
 	jq -e '. == "bash scripts/agent-gate.sh"' >/dev/null ||
 	fail "mise must expose the portable final-gate mutex"
 
+yq --output-format json '
+  {
+    "check": ."pre-commit".commands.check.run,
+    "test": ."pre-push".commands.test.run
+  }
+' "${root_dir}/lefthook.yml" |
+	jq -e '
+    .check == "mise run agent:gate -- check" and
+    .test == "mise run agent:gate -- test"
+  ' >/dev/null || fail "git hooks must serialize aggregate gates across worktrees"
+
 for guidance in \
 	"${root_dir}/.agents/AGENTS.md" \
 	"${root_dir}/.agents/skills/github-flow/SKILL.md" \
@@ -65,6 +76,9 @@ fi
 
 bash -n "${root_dir}/scripts/agent-setup.sh"
 bash -n "${root_dir}/scripts/agent-gate.sh"
+if bash "${root_dir}/scripts/agent-gate.sh" invalid >/dev/null 2>&1; then
+	fail "agent gate accepted an unsupported mode"
+fi
 if rg --quiet '\bflock\b' "${root_dir}/scripts/agent-gate.sh"; then
 	fail "agent gate must remain portable to macOS without flock"
 fi

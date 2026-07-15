@@ -26,7 +26,7 @@ Repo: `fmind-ai/fgentic` (public, Apache-2.0). All work is issue-driven; automat
 1. A claim is stale only after 12 hours with no heartbeat, branch, commit, or PR. Verify all four signals and comment with the takeover reason before replacing it. On abandonment, comment with the handoff state and run `gh issue edit <N> --remove-label status/in-progress --remove-assignee @me`; an active PR keeps the claim until merge or explicit handoff.
 1. Read the issue's **Tasks + Acceptance criteria and follow them literally** — don't substitute your own scope.
 1. Branch `<type>/<slug>` off `main`; one concern per branch.
-1. During development, run only the focused checks that cover the changed boundary. Near PR readiness, run `mise run agent:gate` once; it serializes the required warning-free `mise run check` then `mise run test` across local worktrees. Re-run focused checks after narrow fixes, and re-run the aggregate gate only when a later change can invalidate it. Never weaken an assertion, skip a test, or suppress a lint to get green.
+1. During development, run only the focused checks that cover the changed boundary. In an installed local worktree, the commit hook runs warning-free `check` and the push hook runs warning-free `test`, both through the shared mutex; do not duplicate them manually. In a hookless hosted/disposable environment, run `mise run agent:gate` once near PR readiness. Re-run focused checks after narrow fixes and only the invalidated hook/gate after later changes. Never weaken an assertion, skip a test, or suppress a lint to get green.
 1. Commit: Conventional Commits **with DCO sign-off** (`git commit -s`). No AI-attribution trailers.
 
 ## Authoring issues & epics (keep the backlog consistent)

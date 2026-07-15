@@ -33,8 +33,8 @@ pre-commit:
       run: mise run check:leaks --staged # staged scan gates the incoming commit (history mode can't)
     check:
       priority: 3
-      run: mise run check
+      run: mise run agent:gate -- check
 pre-push:
   commands:
     test:
-      run: mise run test
+      run: mise run agent:gate -- test

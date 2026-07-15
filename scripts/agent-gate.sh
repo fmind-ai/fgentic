@@ -14,6 +14,21 @@ fi
 	exit 2
 }
 
+mode="${1:-all}"
+if (($# > 1)); then
+	echo "error: usage: scripts/agent-gate.sh [check|test]" >&2
+	exit 2
+fi
+case "${mode}" in
+all) tasks=(check test) ;;
+check | test) tasks=("${mode}") ;;
+*)
+	echo "error: usage: scripts/agent-gate.sh [check|test]" >&2
+	exit 2
+	;;
+esac
+readonly mode
+
 wait_seconds="${FGENTIC_AGENT_GATE_WAIT_SECONDS:-3600}"
 [[ "${wait_seconds}" =~ ^[1-9][0-9]*$ ]] || {
 	echo "error: FGENTIC_AGENT_GATE_WAIT_SECONDS must be a positive integer" >&2
@@ -60,9 +75,13 @@ while ! mkdir "${lock_dir}" 2>/dev/null; do
 	sleep 2
 done
 
-trap cleanup EXIT HUP INT TERM
+trap cleanup EXIT
+trap 'exit 129' HUP
+trap 'exit 130' INT
+trap 'exit 143' TERM
 printf '%s\t%s\t%s\t%s\n' "${host}" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${root_dir}" >"${owner_file}"
 
-echo "Acquired the Fgentic agent gate; running check then test." >&2
-"${mise_bin}" --cd "${root_dir}" run check
-"${mise_bin}" --cd "${root_dir}" run test
+echo "Acquired the Fgentic agent gate; running ${tasks[*]}." >&2
+for task in "${tasks[@]}"; do
+	"${mise_bin}" --cd "${root_dir}" run "${task}"
+done
