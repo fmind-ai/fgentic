@@ -150,7 +150,7 @@ run = "dprint check"
 
 [tasks."check:terraform"]
 alias = "ct"
-description = "Terraform fmt-check + validate (no backend/creds needed)"
+description = "Terraform fmt-check + validate + mocked contracts (no backend/creds needed)"
 run = """
 terraform fmt -check -recursive infra
 for dir in infra/terraform infra/terraform/bootstrap; do
@@ -158,6 +158,7 @@ for dir in infra/terraform infra/terraform/bootstrap; do
   terraform -chdir="$dir" init -backend=false -input=false >/dev/null
   terraform -chdir="$dir" validate
 done
+terraform -chdir=infra/terraform test
 """
 
 [tasks."check:manifests"]

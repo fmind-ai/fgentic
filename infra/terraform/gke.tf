@@ -38,8 +38,8 @@ resource "google_container_cluster" "cluster" {
     }
   }
 
-  # Keyless GCP access for pods that opt in (KSA annotation) — and required for the node pool's
-  # GKE_METADATA mode below.
+  # Keyless GCP access for workload principals. Direct IAM grants need no KSA annotation; the
+  # GSA-impersonation path used by CNPG backups does. The node pool must use GKE_METADATA below.
   workload_identity_config {
     workload_pool = "${var.project_id}.svc.id.goog"
   }
