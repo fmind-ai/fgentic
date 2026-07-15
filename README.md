@@ -193,7 +193,7 @@ CONTRIBUTING.md          # how to contribute (workflow, labels, DCO) — with GO
 Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the workflow (issues, labels, DCO sign-off) and [GOVERNANCE.md](GOVERNANCE.md) for how the project is run; all participants are expected to follow our [Code of Conduct](CODE_OF_CONDUCT.md). The short version:
 
 1. Start with [docs/](docs/) — the [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones) are the backlog; [design decisions](docs/design-decisions.md) and ADRs in [docs/adr/](docs/adr/) capture what is settled (propose a new ADR to revisit one).
-1. `mise run check` and `mise run test` must pass warning-free; git hooks (lefthook) enforce the same tasks locally that CI runs.
+1. The warning-free `check` and `test` gates must pass; installed git hooks serialize them across worktrees, while hookless environments run `mise run agent:gate` once near PR readiness.
 1. Conventions live in [.agents/AGENTS.md](.agents/AGENTS.md) (they bind human and AI contributors alike): Go, type-safe, small composable units, no tech debt, Conventional Commits, DCO sign-off.
 1. Never commit plaintext secrets — SOPS-encrypted `*.sops.yaml` only (gitleaks runs pre-commit).
 

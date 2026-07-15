@@ -39,6 +39,43 @@ yq --input-format toml --output-format json '.setup.script' \
 	jq -e '. == "mise run agent:setup"' >/dev/null ||
 	fail "Codex local environment must use the shared agent setup task"
 
+yq --input-format toml --output-format json '.tasks."agent:gate".run' \
+	"${root_dir}/mise.toml" |
+	jq -e '. == "bash scripts/agent-gate.sh"' >/dev/null ||
+	fail "mise must expose the portable final-gate mutex"
+
+yq --output-format json '
+  {
+    "check": ."pre-commit".commands.check.run,
+    "test": ."pre-push".commands.test.run
+  }
+' "${root_dir}/lefthook.yml" |
+	jq -e '
+    .check == "mise run agent:gate -- check" and
+    .test == "mise run agent:gate -- test"
+  ' >/dev/null || fail "git hooks must serialize aggregate gates across worktrees"
+
+for guidance in \
+	"${root_dir}/.agents/AGENTS.md" \
+	"${root_dir}/.agents/skills/github-flow/SKILL.md" \
+	"${root_dir}/CONTRIBUTING.md"; do
+	rg --quiet 'status/in-progress' "${guidance}" ||
+		fail "${guidance#"${root_dir}/"} lost the issue-claim protocol"
+	rg --quiet 'mise run agent:gate' "${guidance}" ||
+		fail "${guidance#"${root_dir}/"} lost the serialized validation contract"
+done
+
+for runbook in \
+	"${root_dir}/README.md" \
+	"${root_dir}/.agents/skills/bridge-dev/SKILL.md" \
+	"${root_dir}/.agents/skills/flux-gitops/SKILL.md" \
+	"${root_dir}/.agents/skills/local-cluster/SKILL.md" \
+	"${root_dir}/.agents/skills/matrix-agents/SKILL.md" \
+	"${root_dir}/.agents/skills/terraform-gke/SKILL.md"; do
+	rg --quiet 'mise run agent:gate' "${runbook}" ||
+		fail "${runbook#"${root_dir}/"} lost the serialized validation contract"
+done
+
 git -C "${root_dir}" check-ignore --quiet .claude/worktrees/probe ||
 	fail ".claude/worktrees must be ignored"
 
@@ -49,4 +86,11 @@ if rg --line-number \
 fi
 
 bash -n "${root_dir}/scripts/agent-setup.sh"
+bash -n "${root_dir}/scripts/agent-gate.sh"
+if bash "${root_dir}/scripts/agent-gate.sh" invalid >/dev/null 2>&1; then
+	fail "agent gate accepted an unsupported mode"
+fi
+if rg --quiet '\bflock\b' "${root_dir}/scripts/agent-gate.sh"; then
+	fail "agent gate must remain portable to macOS without flock"
+fi
 echo "Agent discovery and worktree setup contracts passed"

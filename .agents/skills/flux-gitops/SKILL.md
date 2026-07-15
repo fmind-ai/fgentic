@@ -28,7 +28,7 @@ Delivery is Flux v2, pull-based. **Never `kubectl apply` / `helm upgrade` by han
 
 ## Validate before committing
 
-1. `mise run check` runs everything CI runs: dprint, terraform validate, **kubeconform** (`scripts/kubeconform.sh` — schema-validates the chart render + raw manifests), **trivy config**, gitleaks, actionlint.
+1. During development, run only the focused checks for the changed surface, such as `mise run check:manifests`, `check:overlays`, or `check:charts`. The installed commit/push hooks serialize the complete warning-free gates across worktrees; in a hookless environment, run `mise run agent:gate` once near PR readiness. The aggregate check includes dprint, terraform validate, **kubeconform** (`scripts/kubeconform.sh` — schema-validates the chart render + raw manifests), **trivy config**, gitleaks, and actionlint.
 1. To preview a Helm render locally: `helm template <release> <chart> -f <values>` — remember Flux substitution variables stay unexpanded outside the cluster.
 
 ## Debug reconciliation

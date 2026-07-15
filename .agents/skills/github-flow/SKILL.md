@@ -20,9 +20,13 @@ Repo: `fmind-ai/fgentic` (public, Apache-2.0). All work is issue-driven; automat
 
 ## Picking up an issue
 
+1. Inspect the issue's assignees, `status/in-progress` label, comments, related branches/worktrees, and open PRs. Skip any active claim.
+1. Claim the issue before editing: `gh issue edit <N> --add-assignee @me --add-label status/in-progress`, then leave a UTC-stamped comment naming the session and intended branch. Re-read the issue immediately; if another active claim appeared, stop and choose another issue. This is a cooperative GitHub lease, not an atomic mutex.
+1. Hosted agents that cannot mutate GitHub must be handed one already-claimed issue. They do not select an issue from the queue.
+1. A claim is stale only after 12 hours with no heartbeat, branch, commit, or PR. Verify all four signals and comment with the takeover reason before replacing it. On abandonment, comment with the handoff state and run `gh issue edit <N> --remove-label status/in-progress --remove-assignee @me`; an active PR keeps the claim until merge or explicit handoff.
 1. Read the issue's **Tasks + Acceptance criteria and follow them literally** — don't substitute your own scope.
 1. Branch `<type>/<slug>` off `main`; one concern per branch.
-1. Before claiming done: `mise run check` + `mise run test` **warning-free** (hooks and CI run the exact same tasks). Never weaken an assertion, skip a test, or suppress a lint to get green.
+1. During development, run only the focused checks that cover the changed boundary. In an installed local worktree, the commit hook runs warning-free `check` and the push hook runs warning-free `test`, both through the shared mutex; do not duplicate them manually. In a hookless hosted/disposable environment, run `mise run agent:gate` once near PR readiness. Re-run focused checks after narrow fixes and only the invalidated hook/gate after later changes. Never weaken an assertion, skip a test, or suppress a lint to get green.
 1. Commit: Conventional Commits **with DCO sign-off** (`git commit -s`). No AI-attribution trailers.
 
 ## Authoring issues & epics (keep the backlog consistent)
