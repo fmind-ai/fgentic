@@ -38,6 +38,8 @@ Environment:
                        deny (default) or allow; allow changes only the ephemeral Git snapshot
   FGENTIC_DEMO_CACHE_DIR
                        optional persistent BuildKit cache directory for the source image
+  FGENTIC_DEMO_STATE_DIR
+                       optional lifecycle-state root; defaults to the user state directory
 EOF
 }
 

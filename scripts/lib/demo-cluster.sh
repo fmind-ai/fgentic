@@ -224,7 +224,7 @@ cluster_attached_volume_names() {
 		[ -z "${container_id}" ] || container_ids[${#container_ids[@]}]="${container_id}"
 	done <<<"${container_output}"
 	((${#container_ids[@]} > 0)) || return 0
-	inspect_output="$(docker inspect "${container_ids[@]}")" || return 1
+	inspect_output="$(docker container inspect "${container_ids[@]}")" || return 1
 	volume_output="$(jq --raw-output \
 		'.[].Mounts[]? | select(.Type == "volume") | .Name' <<<"${inspect_output}")" || return 1
 	printf '%s\n' "${volume_output}" | awk 'NF' | sort -u
@@ -268,6 +268,435 @@ cluster_owned_image_bytes() {
 	printf '%s\n' "${total}"
 }
 
+teardown_receipt_path() {
+	local state_root
+	state_root="${FGENTIC_DEMO_STATE_DIR:-${XDG_STATE_HOME:-${HOME:?}/.local/state}/fgentic}"
+	printf '%s/cluster-teardown/%s.json\n' "${state_root}" "${CLUSTER_NAME}"
+}
+
+teardown_receipt_exists() {
+	local receipt
+	receipt="$(teardown_receipt_path)"
+	[ -e "${receipt}" ]
+}
+
+validate_teardown_receipt_file() {
+	local receipt="$1"
+	[ -f "${receipt}" ] && [ ! -L "${receipt}" ] || return 1
+	jq --exit-status --arg cluster "${CLUSTER_NAME}" --arg owner "${OWNER_LABEL}" \
+		--arg profile "${PROFILE}" '
+      . as $receipt |
+      (keys == ["cluster", "containers", "generation", "images", "network", "owner", "profile", "schema", "volumes"]) and
+      (.schema == "fgentic.cluster-teardown.v1") and
+      (.cluster == $cluster) and
+      (.owner == $owner) and
+      (.profile == $profile) and
+      (.generation | type == "string" and length > 0) and
+      (.containers | type == "array" and length > 0) and
+      (all(.containers[];
+        (keys == ["id", "name"]) and
+        (.id | type == "string" and length > 0) and
+        (.name | type == "string" and length > 0))) and
+      ([.containers[] | select(.id == $receipt.generation and .name == ("k3d-" + $cluster + "-server-0"))] | length == 1) and
+      (.network | type == "object") and
+      (.network | keys == ["cluster_label", "id", "name"]) and
+      (.network.id | type == "string" and length > 0) and
+      (.network.name == ("k3d-" + $cluster)) and
+      (.network.cluster_label == "" or .network.cluster_label == $cluster) and
+      (.volumes | type == "array" and length > 0) and
+      (all(.volumes[];
+        (keys == ["attachments", "created_at", "kind", "name"]) and
+        (.name | type == "string" and length > 0) and
+        (.created_at | type == "string" and length > 0) and
+        (.kind == "images" or .kind == "anonymous") and
+        (.attachments | type == "array" and length > 0) and
+        (all(.attachments[]; type == "string" and length > 0)) and
+        (all(.attachments[]; . as $id | any($receipt.containers[]; .id == $id))) and
+        (if .kind == "images" then .name == ("k3d-" + $cluster + "-images") else true end))) and
+      ([.volumes[] | select(.kind == "images")] | length == 1) and
+      (.images | type == "array") and
+      (all(.images[];
+        (keys == ["id", "repo_tags"]) and
+        (.id | type == "string" and length > 0) and
+        (.repo_tags | type == "array") and
+        (all(.repo_tags[]; type == "string" and length > 0))))
+    ' "${receipt}" >/dev/null 2>&1
+}
+
+teardown_receipt_fail() {
+	local receipt
+	receipt="$(teardown_receipt_path)"
+	echo "error: $*" >&2
+	echo "error: no resource was adopted; inspect only: jq . ${receipt}" >&2
+	exit 1
+}
+
+require_valid_teardown_receipt() {
+	local receipt
+	receipt="$(teardown_receipt_path)"
+	validate_teardown_receipt_file "${receipt}" ||
+		teardown_receipt_fail "malformed or stale teardown receipt for ${CLUSTER_NAME}"
+}
+
+write_teardown_receipt() {
+	local container_id container_output image_id image_output network_output receipt state_dir
+	local server_id temporary volume name volume_output
+	local container_ids=()
+	local image_ids=()
+	local volume_names=()
+	receipt="$(teardown_receipt_path)"
+	state_dir="${receipt%/*}"
+	[ ! -e "${receipt}" ] || teardown_receipt_fail "teardown receipt already exists for ${CLUSTER_NAME}"
+
+	container_output="$(cluster_container_ids)" ||
+		die "could not inspect ${CLUSTER_NAME} containers before receipt creation"
+	while IFS= read -r container_id; do
+		[ -z "${container_id}" ] || container_ids[${#container_ids[@]}]="${container_id}"
+	done <<<"${container_output}"
+	((${#container_ids[@]} > 0)) || die "${CLUSTER_NAME} has no containers to record"
+	container_output="$(docker container inspect "${container_ids[@]}")" ||
+		die "could not capture ${CLUSTER_NAME} container identities"
+	server_id="$(jq --exit-status --raw-output --arg cluster "${CLUSTER_NAME}" \
+		--arg owner "${OWNER_LABEL}" '
+      [.[] | select(
+        (.Name | ltrimstr("/")) == ("k3d-" + $cluster + "-server-0") and
+        .Config.Labels."k3d.cluster" == $cluster and
+        .Config.Labels."dev.fgentic.demo" == $owner
+      )] | if length == 1 then .[0].Id else empty end
+    ' <<<"${container_output}")" || die "could not prove ${CLUSTER_NAME} receipt generation"
+	jq --exit-status --arg cluster "${CLUSTER_NAME}" '
+      all(.[]; .Config.Labels."k3d.cluster" == $cluster)
+    ' <<<"${container_output}" >/dev/null ||
+		die "refusing to record containers outside ${CLUSTER_NAME}"
+
+	network_output="$(docker network inspect "k3d-${CLUSTER_NAME}")" ||
+		die "could not capture ${CLUSTER_NAME} network identity"
+	jq --exit-status --arg cluster "${CLUSTER_NAME}" '
+      length == 1 and
+      .[0].Name == ("k3d-" + $cluster) and
+      .[0].Labels.app == "k3d" and
+      ((.[0].Labels."k3d.cluster" // "") == "" or
+       .[0].Labels."k3d.cluster" == $cluster)
+    ' <<<"${network_output}" >/dev/null ||
+		die "refusing to record foreign network k3d-${CLUSTER_NAME}"
+
+	volume_output="$(cluster_attached_volume_names)" ||
+		die "could not inspect ${CLUSTER_NAME} attached volumes before receipt creation"
+	while IFS= read -r name; do
+		[ -z "${name}" ] || volume_names[${#volume_names[@]}]="${name}"
+	done <<<"${volume_output}"
+	((${#volume_names[@]} > 0)) || die "${CLUSTER_NAME} has no attached volumes to record"
+	volume_output="$(docker volume inspect "${volume_names[@]}")" ||
+		die "could not capture ${CLUSTER_NAME} volume identities"
+	jq --exit-status --arg cluster "${CLUSTER_NAME}" '
+      all(.[];
+        if .Name == ("k3d-" + $cluster + "-images") then
+          .Labels.app == "k3d" and .Labels."k3d.cluster" == $cluster
+        else
+          ((.Labels // {}) | has("com.docker.volume.anonymous"))
+        end)
+    ' <<<"${volume_output}" >/dev/null ||
+		die "refusing to record foreign volume attached to ${CLUSTER_NAME}"
+
+	image_output="$(cluster_owned_image_ids)" ||
+		die "could not inspect ${CLUSTER_NAME} local images before receipt creation"
+	while IFS= read -r image_id; do
+		[ -z "${image_id}" ] || image_ids[${#image_ids[@]}]="${image_id}"
+	done <<<"${image_output}"
+	if ((${#image_ids[@]} > 0)); then
+		image_output="$(docker image inspect "${image_ids[@]}")" ||
+			die "could not capture ${CLUSTER_NAME} local-image identities"
+		jq --exit-status --arg cluster "${CLUSTER_NAME}" '
+        all(.[]; .Config.Labels."dev.fgentic.demo.cluster" == $cluster)
+      ' <<<"${image_output}" >/dev/null ||
+			die "refusing to record a foreign local image for ${CLUSTER_NAME}"
+	else
+		image_output='[]'
+	fi
+
+	mkdir -p "${state_dir}" ||
+		die "could not create ${CLUSTER_NAME} teardown state directory"
+	chmod 700 "${state_dir}" ||
+		die "could not protect ${CLUSTER_NAME} teardown state directory"
+	temporary="$(mktemp "${state_dir}/.${CLUSTER_NAME}.XXXXXX")" ||
+		die "could not create temporary ${CLUSTER_NAME} teardown receipt"
+	chmod 600 "${temporary}" || {
+		rm -f "${temporary}"
+		die "could not protect temporary ${CLUSTER_NAME} teardown receipt"
+	}
+	if ! jq --null-input \
+		--arg schema 'fgentic.cluster-teardown.v1' \
+		--arg profile "${PROFILE}" --arg cluster "${CLUSTER_NAME}" \
+		--arg owner "${OWNER_LABEL}" --arg generation "${server_id}" \
+		--argjson containers "${container_output}" \
+		--argjson network "${network_output}" \
+		--argjson volumes "${volume_output}" \
+		--argjson images "${image_output}" '
+      {
+        schema: $schema,
+        profile: $profile,
+        cluster: $cluster,
+        owner: $owner,
+        generation: $generation,
+        containers: ($containers | map({id: .Id, name: (.Name | ltrimstr("/"))}) | sort_by(.name)),
+        network: ($network[0] | {
+          id: .Id,
+          name: .Name,
+          cluster_label: (.Labels."k3d.cluster" // "")
+        }),
+        volumes: ($volumes | map(. as $volume | {
+          name: .Name,
+          created_at: .CreatedAt,
+          kind: (if .Name == ("k3d-" + $cluster + "-images") then "images" else "anonymous" end),
+          attachments: ($containers | [
+            .[] |
+            select(any(.Mounts[]?; .Type == "volume" and .Name == $volume.Name)) |
+            .Id
+          ] | sort)
+        }) | sort_by(.name)),
+        images: ($images | map({id: .Id, repo_tags: ((.RepoTags // []) | sort)}) | sort_by(.id))
+      }
+    ' >"${temporary}"; then
+		rm -f "${temporary}"
+		die "could not construct ${CLUSTER_NAME} teardown receipt"
+	fi
+	if ! validate_teardown_receipt_file "${temporary}"; then
+		rm -f "${temporary}"
+		die "refusing to persist an invalid ${CLUSTER_NAME} teardown receipt"
+	fi
+	if ! mv "${temporary}" "${receipt}"; then
+		rm -f "${temporary}"
+		die "could not atomically persist ${CLUSTER_NAME} teardown receipt"
+	fi
+}
+
+validate_receipt_container() {
+	local actual actual_id generation id name object="$1" receipt
+	id="$(jq --raw-output '.id' <<<"${object}")"
+	name="$(jq --raw-output '.name' <<<"${object}")"
+	if actual="$(docker container inspect "${id}" 2>/dev/null)"; then
+		jq --exit-status --arg id "${id}" --arg name "${name}" \
+			--arg cluster "${CLUSTER_NAME}" '
+          length == 1 and .[0].Id == $id and
+          (.[0].Name | ltrimstr("/")) == $name and
+          .[0].Config.Labels."k3d.cluster" == $cluster
+        ' <<<"${actual}" >/dev/null ||
+			teardown_receipt_fail "container identity or ownership changed for ${name}"
+		receipt="$(teardown_receipt_path)"
+		generation="$(jq --raw-output '.generation' "${receipt}")"
+		if [ "${id}" = "${generation}" ]; then
+			jq --exit-status --arg owner "${OWNER_LABEL}" \
+				'.[0].Config.Labels."dev.fgentic.demo" == $owner' \
+				<<<"${actual}" >/dev/null ||
+				teardown_receipt_fail "server ownership changed for ${name}"
+		fi
+		return 0
+	fi
+	if actual="$(docker container inspect "${name}" 2>/dev/null)"; then
+		actual_id="$(jq --raw-output '.[0].Id' <<<"${actual}")"
+		teardown_receipt_fail "container name ${name} was reused by ${actual_id}"
+	fi
+	return 1
+}
+
+validate_receipt_network() {
+	local actual actual_id cluster_label id name object="$1"
+	id="$(jq --raw-output '.id' <<<"${object}")"
+	name="$(jq --raw-output '.name' <<<"${object}")"
+	cluster_label="$(jq --raw-output '.cluster_label' <<<"${object}")"
+	if actual="$(docker network inspect "${id}" 2>/dev/null)"; then
+		jq --exit-status --arg id "${id}" --arg name "${name}" \
+			--arg cluster_label "${cluster_label}" '
+          length == 1 and .[0].Id == $id and .[0].Name == $name and
+          (.[0].Labels."k3d.cluster" // "") == $cluster_label and
+          .[0].Labels.app == "k3d"
+        ' <<<"${actual}" >/dev/null ||
+			teardown_receipt_fail "network identity or ownership changed for ${name}"
+		return 0
+	fi
+	if actual="$(docker network inspect "${name}" 2>/dev/null)"; then
+		actual_id="$(jq --raw-output '.[0].Id' <<<"${actual}")"
+		teardown_receipt_fail "network name ${name} was reused by ${actual_id}"
+	fi
+	return 1
+}
+
+validate_receipt_volume() {
+	local actual actual_created actual_kind attachment_id created kind name object="$1"
+	name="$(jq --raw-output '.name' <<<"${object}")"
+	created="$(jq --raw-output '.created_at' <<<"${object}")"
+	kind="$(jq --raw-output '.kind' <<<"${object}")"
+	if ! actual="$(docker volume inspect "${name}" 2>/dev/null)"; then
+		return 1
+	fi
+	actual_created="$(jq --raw-output '.[0].CreatedAt' <<<"${actual}")"
+	[ "${actual_created}" = "${created}" ] ||
+		teardown_receipt_fail "volume name ${name} was reused with a different creation identity"
+	if jq --exit-status '.[0].Labels.app == "k3d"' <<<"${actual}" >/dev/null; then
+		actual_kind=images
+	elif jq --exit-status '((.[0].Labels // {}) | has("com.docker.volume.anonymous"))' \
+		<<<"${actual}" >/dev/null; then
+		actual_kind=anonymous
+	else
+		teardown_receipt_fail "volume ownership changed for ${name}"
+	fi
+	[ "${actual_kind}" = "${kind}" ] ||
+		teardown_receipt_fail "volume kind changed for ${name}"
+	if [ "${kind}" = images ]; then
+		jq --exit-status --arg cluster "${CLUSTER_NAME}" \
+			'.[0].Labels."k3d.cluster" == $cluster' <<<"${actual}" >/dev/null ||
+			teardown_receipt_fail "image-volume ownership changed for ${name}"
+	fi
+	while IFS= read -r attachment_id; do
+		[ -n "${attachment_id}" ] || continue
+		if actual="$(docker container inspect "${attachment_id}" 2>/dev/null)"; then
+			jq --exit-status --arg volume "${name}" \
+				'any(.[0].Mounts[]?; .Type == "volume" and .Name == $volume)' \
+				<<<"${actual}" >/dev/null ||
+				teardown_receipt_fail "recorded attachment from ${attachment_id} to ${name} changed"
+		fi
+	done < <(jq --raw-output '.attachments[]' <<<"${object}")
+	return 0
+}
+
+validate_receipt_image() {
+	local actual actual_id id object="$1" ref
+	id="$(jq --raw-output '.id' <<<"${object}")"
+	if actual="$(docker image inspect "${id}" 2>/dev/null)"; then
+		actual_id="$(jq --raw-output '.[0].Id' <<<"${actual}")"
+		if [ "${actual_id}" != "${id}" ] ||
+			! jq --exit-status --arg cluster "${CLUSTER_NAME}" \
+				'.[0].Config.Labels."dev.fgentic.demo.cluster" == $cluster' \
+				<<<"${actual}" >/dev/null; then
+			teardown_receipt_fail "local-image identity or ownership changed for ${id}"
+		fi
+	fi
+	while IFS= read -r ref; do
+		[ -n "${ref}" ] || continue
+		if actual="$(docker image inspect "${ref}" 2>/dev/null)"; then
+			actual_id="$(jq --raw-output '.[0].Id' <<<"${actual}")"
+			[ "${actual_id}" = "${id}" ] ||
+				teardown_receipt_fail "local-image reference ${ref} was reused by ${actual_id}"
+		fi
+	done < <(jq --raw-output '.repo_tags[]' <<<"${object}")
+	docker image inspect "${id}" >/dev/null 2>&1
+}
+
+validate_teardown_receipt_resources() {
+	local cluster_status generation generation_present=no object receipt
+	receipt="$(teardown_receipt_path)"
+	generation="$(jq --raw-output '.generation' "${receipt}")"
+	while IFS= read -r object; do
+		if validate_receipt_container "${object}"; then
+			[ "$(jq --raw-output '.id' <<<"${object}")" != "${generation}" ] ||
+				generation_present=yes
+		fi
+	done < <(jq --compact-output '.containers[]' "${receipt}")
+	validate_receipt_network "$(jq --compact-output '.network' "${receipt}")" || true
+	while IFS= read -r object; do
+		validate_receipt_volume "${object}" || true
+	done < <(jq --compact-output '.volumes[]' "${receipt}")
+	while IFS= read -r object; do
+		validate_receipt_image "${object}" || true
+	done < <(jq --compact-output '.images[]' "${receipt}")
+	if cluster_exists; then
+		[ "${generation_present}" = yes ] ||
+			teardown_receipt_fail "live k3d metadata no longer matches receipt generation ${generation}"
+	else
+		cluster_status=$?
+		[ "${cluster_status}" -eq 1 ] ||
+			teardown_receipt_fail "could not inspect k3d metadata during recovery"
+	fi
+}
+
+teardown_receipt_complete() {
+	local cluster_status object receipt
+	receipt="$(teardown_receipt_path)"
+	if cluster_exists; then
+		return 1
+	else
+		cluster_status=$?
+		[ "${cluster_status}" -eq 1 ] || return "${cluster_status}"
+	fi
+	while IFS= read -r object; do
+		validate_receipt_container "${object}" && return 1
+	done < <(jq --compact-output '.containers[]' "${receipt}")
+	validate_receipt_network "$(jq --compact-output '.network' "${receipt}")" && return 1
+	while IFS= read -r object; do
+		validate_receipt_volume "${object}" && return 1
+	done < <(jq --compact-output '.volumes[]' "${receipt}")
+	while IFS= read -r object; do
+		validate_receipt_image "${object}" && return 1
+	done < <(jq --compact-output '.images[]' "${receipt}")
+	return 0
+}
+
+print_teardown_recovery_diagnostics() {
+	local object receipt
+	receipt="$(teardown_receipt_path)"
+	echo "error: ${CLUSTER_NAME} teardown remains pending; inspect exact recorded identities:" >&2
+	echo "  jq . ${receipt}" >&2
+	while IFS= read -r object; do
+		echo "  docker container inspect $(jq --raw-output '.id' <<<"${object}")" >&2
+	done < <(jq --compact-output '.containers[]' "${receipt}")
+	echo "  docker network inspect $(jq --raw-output '.network.id' "${receipt}")" >&2
+	while IFS= read -r object; do
+		echo "  docker volume inspect $(jq --raw-output '.name' <<<"${object}")" >&2
+	done < <(jq --compact-output '.volumes[]' "${receipt}")
+	while IFS= read -r object; do
+		echo "  docker image inspect $(jq --raw-output '.id' <<<"${object}")" >&2
+	done < <(jq --compact-output '.images[]' "${receipt}")
+}
+
+recover_teardown_receipt() {
+	local attempt cluster_status id object receipt status
+	receipt="$(teardown_receipt_path)"
+	require_valid_teardown_receipt
+	validate_teardown_receipt_resources
+	if cluster_exists; then
+		k3d cluster delete "${CLUSTER_NAME}" || true
+	else
+		cluster_status=$?
+		[ "${cluster_status}" -eq 1 ] ||
+			teardown_receipt_fail "could not inspect k3d metadata before recovery"
+	fi
+
+	for attempt in 1 2 3; do
+		while IFS= read -r object; do
+			if validate_receipt_container "${object}"; then
+				id="$(jq --raw-output '.id' <<<"${object}")"
+				docker rm --force --volumes "${id}" >/dev/null 2>&1 || true
+			fi
+		done < <(jq --compact-output '.containers[]' "${receipt}")
+		object="$(jq --compact-output '.network' "${receipt}")"
+		if validate_receipt_network "${object}"; then
+			docker network rm "$(jq --raw-output '.id' <<<"${object}")" >/dev/null 2>&1 || true
+		fi
+		while IFS= read -r object; do
+			if validate_receipt_volume "${object}"; then
+				docker volume rm "$(jq --raw-output '.name' <<<"${object}")" >/dev/null 2>&1 || true
+			fi
+		done < <(jq --compact-output '.volumes[]' "${receipt}")
+		while IFS= read -r object; do
+			if validate_receipt_image "${object}"; then
+				docker image rm --force "$(jq --raw-output '.id' <<<"${object}")" \
+					>/dev/null 2>&1 || true
+			fi
+		done < <(jq --compact-output '.images[]' "${receipt}")
+		if teardown_receipt_complete; then
+			rm -f "${receipt}"
+			rmdir "${receipt%/*}" >/dev/null 2>&1 || true
+			return 0
+		else
+			status=$?
+			[ "${status}" -eq 1 ] || return "${status}"
+		fi
+		[ "${attempt}" -eq 3 ] || sleep 2
+	done
+	print_teardown_recovery_diagnostics
+	return 1
+}
+
 require_owned_evaluation_cluster() {
 	cluster_exists || die "${CLUSTER_NAME} does not exist"
 	cluster_owned_by_demo ||
@@ -292,72 +721,6 @@ cluster_artifacts_exist() {
 	fi
 	image_output="$(cluster_owned_image_ids)" || return 2
 	[ -n "${image_output}" ]
-}
-
-cluster_cleanup_complete() {
-	local cleanup_status
-	if cluster_exists; then
-		return 1
-	else
-		cleanup_status=$?
-		[ "${cleanup_status}" -eq 1 ] || return "${cleanup_status}"
-	fi
-	if cluster_runtime_artifacts_exist; then
-		return 1
-	else
-		cleanup_status=$?
-		[ "${cleanup_status}" -eq 1 ] || return "${cleanup_status}"
-	fi
-	return 0
-}
-
-cleanup_cluster_artifacts() {
-	local attempt cleanup_status container_output
-	local container_id
-	local container_ids=()
-	local network_owner
-	local volume_owner
-	for attempt in 1 2 3; do
-		container_ids=()
-		container_output="$(cluster_container_ids)" || return 1
-		while IFS= read -r container_id; do
-			[ -z "${container_id}" ] || container_ids[${#container_ids[@]}]="${container_id}"
-		done <<<"${container_output}"
-		if ((${#container_ids[@]} > 0)); then
-			# Ownership was proven from the server's private runtime label before k3d deletion;
-			# the exact k3d.cluster label selects the remaining nodes and load balancer only.
-			docker rm --force --volumes "${container_ids[@]}" >/dev/null 2>&1 || true
-		fi
-
-		if network_owner="$(docker network inspect --format '{{index .Labels "app"}}' \
-			"k3d-${CLUSTER_NAME}" 2>/dev/null)"; then
-			[ "${network_owner}" = "k3d" ] ||
-				die "refusing to remove foreign network k3d-${CLUSTER_NAME}"
-			docker network rm "k3d-${CLUSTER_NAME}" >/dev/null 2>&1 || true
-		fi
-
-		if volume_owner="$(docker volume inspect --format '{{index .Labels "app"}}/{{index .Labels "k3d.cluster"}}' \
-			"k3d-${CLUSTER_NAME}-images" 2>/dev/null)"; then
-			[ "${volume_owner}" = "k3d/${CLUSTER_NAME}" ] ||
-				die "refusing to remove foreign volume k3d-${CLUSTER_NAME}-images"
-			docker volume rm "k3d-${CLUSTER_NAME}-images" >/dev/null 2>&1 || true
-		fi
-
-		if cluster_cleanup_complete; then
-			return
-		else
-			cleanup_status=$?
-			[ "${cleanup_status}" -eq 1 ] || return "${cleanup_status}"
-		fi
-		[ "${attempt}" -eq 3 ] || sleep 2
-	done
-
-	echo "error: disposable cluster cleanup did not complete; inspect exact owned resources:" >&2
-	echo "  k3d cluster list --output json" >&2
-	echo "  docker ps -a --filter label=k3d.cluster=${CLUSTER_NAME}" >&2
-	echo "  docker network inspect k3d-${CLUSTER_NAME}" >&2
-	echo "  docker volume inspect k3d-${CLUSTER_NAME}-images" >&2
-	return 1
 }
 
 prune_owned_host_images() {
@@ -833,6 +1196,10 @@ demo_up() {
 		require_command "${command}"
 	done
 	docker info >/dev/null 2>&1 || die "Docker daemon is not running"
+	if teardown_receipt_exists; then
+		require_valid_teardown_receipt
+		die "${CLUSTER_NAME} teardown recovery is pending; run the matching down command before up"
+	fi
 	if [ -n "${FGENTIC_DEMO_CACHE_DIR:-}" ]; then
 		docker buildx version >/dev/null 2>&1 ||
 			die "FGENTIC_DEMO_CACHE_DIR requires Docker buildx"
@@ -990,6 +1357,12 @@ demo_status() {
 	local artifact_status capacity_mode container_output image_bytes retained_bytes running_output state
 	local total_containers running_containers volume_bytes
 	require_cluster_runtime
+	if teardown_receipt_exists; then
+		require_valid_teardown_receipt
+		validate_teardown_receipt_resources
+		echo "Cluster ${CLUSTER_NAME}: state=recovery-pending receipt=$(teardown_receipt_path); run the matching down command to resume exact cleanup."
+		return
+	fi
 	if ! cluster_exists; then
 		if cluster_artifacts_exist; then
 			die "refusing orphan inspection for ${CLUSTER_NAME}: owner-labelled server evidence is unavailable"
@@ -1027,6 +1400,8 @@ demo_stop() {
 	local image_volume_bytes retained_bytes
 	local before_output running_output
 	require_cluster_runtime
+	teardown_receipt_exists &&
+		die "${CLUSTER_NAME} teardown recovery is pending; stop cannot preserve partial state"
 	require_owned_evaluation_cluster
 	before_output="$(cluster_container_ids)" ||
 		die "could not inspect ${CLUSTER_NAME} containers before stopping"
@@ -1055,56 +1430,22 @@ demo_stop() {
 }
 
 demo_down() {
-	local artifact_status image_id image_output owned_volume volume_output
-	local image_ids=()
-	local owned_volumes=()
-	require_command docker
-	require_command k3d
-	require_command jq
+	local artifact_status
+	require_cluster_runtime
+	if teardown_receipt_exists; then
+		recover_teardown_receipt || die "could not finish ${CLUSTER_NAME} teardown recovery"
+		echo "Recovered teardown for ${CLUSTER_NAME}. The reusable local CA and FGENTIC_DEMO_CACHE_DIR, when set, were preserved."
+		return
+	fi
 	if cluster_exists; then
 		cluster_owned_by_demo ||
 			die "refusing to delete ${CLUSTER_NAME}: it was not created by scripts/demo.sh"
-		volume_output="$(cluster_attached_volume_names)" ||
-			die "could not inspect ${CLUSTER_NAME} attached volumes before deletion"
-		while IFS= read -r owned_volume; do
-			[ -z "${owned_volume}" ] || owned_volumes[${#owned_volumes[@]}]="${owned_volume}"
-		done <<<"${volume_output}"
-		image_output="$(cluster_owned_image_ids)" ||
-			die "could not inspect ${CLUSTER_NAME} local images before deletion"
-		while IFS= read -r image_id; do
-			[ -z "${image_id}" ] || image_ids[${#image_ids[@]}]="${image_id}"
-		done <<<"${image_output}"
-		k3d cluster delete "${CLUSTER_NAME}" || true
-		cleanup_cluster_artifacts
-		for owned_volume in "${owned_volumes[@]}"; do
-			if docker volume inspect "${owned_volume}" >/dev/null 2>&1; then
-				if [ "${owned_volume}" = "k3d-${CLUSTER_NAME}-images" ]; then
-					[ "$(docker volume inspect --format '{{index .Labels "app"}}/{{index .Labels "k3d.cluster"}}' \
-						"${owned_volume}")" = "k3d/${CLUSTER_NAME}" ] ||
-						die "refusing to remove foreign volume ${owned_volume}"
-				else
-					docker volume inspect "${owned_volume}" |
-						jq -e '.[0].Labels | has("com.docker.volume.anonymous")' >/dev/null ||
-						die "refusing to remove non-anonymous retained volume ${owned_volume}"
-				fi
-				docker volume rm "${owned_volume}" >/dev/null
-			fi
-		done
-		for owned_volume in "${owned_volumes[@]}"; do
-			! docker volume inspect "${owned_volume}" >/dev/null 2>&1 ||
-				die "owned volume ${owned_volume} remains after deleting ${CLUSTER_NAME}"
-		done
-		for image_id in "${image_ids[@]}"; do
-			docker image rm "${image_id}" >/dev/null 2>&1 || true
-		done
-		image_output="$(cluster_owned_image_ids)" ||
-			die "could not verify ${CLUSTER_NAME} local image cleanup"
-		[ -z "${image_output}" ] ||
-			die "owned local images remain after deleting ${CLUSTER_NAME}"
+		write_teardown_receipt
+		recover_teardown_receipt || die "could not finish ${CLUSTER_NAME} teardown"
 		echo "The reusable local CA and FGENTIC_DEMO_CACHE_DIR, when set, were preserved."
 	else
 		if cluster_artifacts_exist; then
-			die "refusing orphan cleanup for ${CLUSTER_NAME}: owner-labelled server evidence is unavailable"
+			teardown_receipt_fail "refusing orphan cleanup for ${CLUSTER_NAME}: teardown receipt and owner-labelled server evidence are unavailable"
 		else
 			artifact_status=$?
 			[ "${artifact_status}" -eq 1 ] ||

@@ -501,6 +501,10 @@ echo "Applied platform-settings-overrides and requested a reconcile of all Flux 
 description = "Install and seed the small evaluation profile without GitHub credentials"
 run = "bash scripts/demo.sh up"
 
+[tasks."demo:status"]
+description = "Show the evaluation cluster state, including pending teardown recovery"
+run = "bash scripts/demo.sh status"
+
 [tasks."demo:down"]
 description = "Delete only the ephemeral fgentic-demo evaluation cluster"
 run = "bash scripts/demo.sh down"

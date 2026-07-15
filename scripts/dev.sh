@@ -33,6 +33,8 @@ Commands:
 
 Environment:
   FGENTIC_DEMO_CLUSTER  k3d cluster name (default: fgentic-demo)
+  FGENTIC_DEMO_STATE_DIR
+                        optional lifecycle-state root; defaults to the user state directory
 
 The script always uses a temporary kubeconfig. It never reads, changes, or switches the user's
 default Kubernetes context. Run `mise run demo:up` after manifest or profile changes to reconcile
