@@ -10,6 +10,8 @@ Status: Proposed
 
 Customer validation is required before acceptance. Related work: milestone M7, issue #49.
 
+The general beside/bridge/migrate decision framework now lives in the [incumbent-chat coexistence guide](../chat-coexistence.md). This ADR remains the evidence-backed Microsoft Teams worked example.
+
 ## Context
 
 Many target organizations standardize on Microsoft Teams. A bidirectional Teams↔Matrix bridge would appear to remove adoption friction, but the useful question is whether a supportable, tenant-approved integration preserves identity, threads, edits, files, retention, and security semantics. A demo that scrapes Teams or forwards a webhook is not that bridge.

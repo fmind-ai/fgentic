@@ -18,6 +18,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 - [Roadmap](roadmap.md) - phase history and the mapping to GitHub milestones M0–M24 (§13)
 - [Forking & Adapting](forking.md) - the checklist to run Fgentic under your own org, domain, GCP project, and registry
 - [Exit Strategy](exit-strategy.md) - per-layer replacement targets, migration boundaries, one-way doors, and required exit evidence
+- [Incumbent Chat Coexistence](chat-coexistence.md) - choose whether to run Fgentic beside, bridge with, or migrate from an existing chat system
 - [Identity and SSO](identity.md) - MAS as the Matrix OIDC authority, Keycloak as the reference upstream IdP
 - [Model Provider Profiles](models.md) - per-cluster model backends behind agentgateway (D16)
 - [Sovereign Grounding Store](grounding.md) - the composed CNPG + pgvector schema, ACL metadata, and exact-ranking contract (D18)
