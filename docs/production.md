@@ -20,7 +20,7 @@ Choose where prompts and responses may travel before generating secrets. The exa
 | 3    | `azure-openai`                  | Azure resource boundary; select Regional or EU Data Zone rather than Global when geography must be constrained            |
 | —    | `demo` evaluation fixture       | Not a language model and not supported by the `local` or `gcp` production overlays; never use it for a production install |
 
-Set `llm_provider` and `llm_model` in `clusters/<env>/platform-settings.yaml`. API profiles require their documented environment variable when secrets are generated. Vertex uses Workload Identity on GKE and a cluster-only ADC Secret on k3d.
+The tracked `local` and `gcp` references select `vertex` / `google/gemini-2.5-flash`. Change `llm_provider` and `llm_model` in `clusters/<env>/platform-settings.yaml` when a different boundary is required. API-key profiles require their documented environment variable when secrets are generated. Vertex uses a cluster-only ADC Secret on k3d; the GKE reference is designed for Workload Identity, with its required Vertex role tracked in [#400](https://github.com/fmind-ai/fgentic/issues/400). In every profile, the model credential terminates at agentgateway rather than an Agent.
 
 ## Prerequisites
 

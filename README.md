@@ -93,15 +93,16 @@ The final output is the Element URL, `@alice:fgentic.localhost`, its generated p
 
 Choose the model boundary before using non-demo data:
 
-| Choice                        | Sovereignty and cost boundary                                                                                   |
-| ----------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `demo` (default)              | Deterministic cluster-only stub; no model credential, prompt egress, or token charge; not a real language model |
-| `vllm`                        | Real self-hosted model; strongest sovereignty, but roughly 2.7 GB of downloads and 4–6 GiB RAM                  |
-| `mistral`                     | EU-hosted API path; prompts leave the cluster and the selected account is billed                                |
-| `vertex`/`anthropic`/`openai` | Hyperscaler API path; residency and billing depend on the selected account/profile                              |
-| `azure-openai`                | Azure deployment boundary; region/data-zone selection and billing remain account controls                       |
+| Choice                       | Sovereignty and cost boundary                                                                                                                     |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `demo` (evaluation default)  | Deterministic cluster-only stub; no model credential, prompt egress, or token charge; not a real language model                                   |
+| `vertex` (local/GCP default) | Vertex AI `google/gemini-2.5-flash`; the credential stays at agentgateway, while prompts leave the cluster and the selected GCP project is billed |
+| `vllm`                       | Real self-hosted model; strongest sovereignty, but roughly 2.7 GB of downloads and 4–6 GiB RAM                                                    |
+| `mistral`                    | EU-hosted API path; prompts leave the cluster and the selected account is billed                                                                  |
+| `anthropic`/`openai`         | Hyperscaler API path; residency and billing depend on the selected account/profile                                                                |
+| `azure-openai`               | Azure deployment boundary; region/data-zone selection and billing remain account controls                                                         |
 
-For example, `FGENTIC_LLM_PROVIDER=vllm mise run demo:up` selects the real credential-free self-hosted profile. API profiles require the matching key, `FGENTIC_LLM_MODEL`, and `FGENTIC_ALLOW_PAID_PROVIDER=yes`; see the complete [provider contract](docs/models.md). Do not use evaluation credentials or the deterministic stub in production.
+For example, `FGENTIC_LLM_PROVIDER=vllm mise run demo:up` selects the real credential-free self-hosted profile. Vertex defaults to `google/gemini-2.5-flash` and uses ADC locally; the GKE reference is designed for Workload Identity, with its required Vertex role tracked in [#400](https://github.com/fmind-ai/fgentic/issues/400). Mistral, Anthropic, OpenAI, and Azure OpenAI require the matching key and an explicit `FGENTIC_LLM_MODEL`. Every paid provider requires `FGENTIC_ALLOW_PAID_PROVIDER=yes` in the disposable demo lifecycle. See the complete [provider contract](docs/models.md). Do not use evaluation credentials or the deterministic stub in production.
 
 To exercise the federation thesis without an external model or provider account, use the canonical profile:
 
