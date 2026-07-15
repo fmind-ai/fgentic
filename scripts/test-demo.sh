@@ -565,6 +565,46 @@ rg --fixed-strings \
 run_dev_fixture stop
 rg --fixed-strings 'k3d cluster stop fgentic-demo' "${dev_fake_state}/commands" >/dev/null
 
+dev_receipt_dir="${dev_fake_state}/lifecycle/cluster-teardown"
+mkdir -p "${dev_receipt_dir}"
+jq --null-input '{
+  schema: "fgentic.cluster-teardown.v1",
+  profile: "demo",
+  cluster: "fgentic-demo",
+  owner: "true",
+  generation: "container-server-id",
+  containers: [{id: "container-server-id", name: "k3d-fgentic-demo-server-0"}],
+  network: {id: "network-id", name: "k3d-fgentic-demo", cluster_label: "fgentic-demo"},
+  volumes: [{
+    name: "k3d-fgentic-demo-images",
+    created_at: "2026-07-15T00:00:00Z",
+    kind: "images",
+    attachments: ["container-server-id"]
+  }],
+  images: []
+}' >"${dev_receipt_dir}/fgentic-demo.json"
+for action in up reload stop; do
+	: >"${dev_fake_state}/commands"
+	if PATH="${dev_fake_bin}:${PATH}" \
+		KUBECONFIG="${WORK_DIR}/must-not-be-used" \
+		FAKE_DEV_COMMANDS="${dev_fake_state}/commands" \
+		FGENTIC_DEMO_STATE_DIR="${dev_fake_state}/lifecycle" \
+		"${DEV}" "${action}" >"${dev_fake_state}/${action}-pending.txt" 2>&1; then
+		echo "error: dev:${action} ignored pending teardown recovery" >&2
+		exit 1
+	fi
+	rg --fixed-strings 'teardown recovery is pending' \
+		"${dev_fake_state}/${action}-pending.txt" >/dev/null
+	[ ! -s "${dev_fake_state}/commands" ] || {
+		echo "error: dev:${action} mutated pending teardown state" >&2
+		exit 1
+	}
+done
+[ -f "${dev_receipt_dir}/fgentic-demo.json" ] || {
+	echo 'error: blocked development action cleared the teardown receipt' >&2
+	exit 1
+}
+
 : >"${dev_fake_state}/commands"
 if PATH="${dev_fake_bin}:${PATH}" FAKE_DEV_COMMANDS="${dev_fake_state}/commands" \
 	FAKE_DEV_OWNER=foreign "${DEV}" reload >"${dev_fake_state}/foreign.txt" 2>&1; then
@@ -578,140 +618,7 @@ if rg --regexp 'cluster start|docker build|image import|rollout restart' \
 	exit 1
 fi
 
-fake_bin="${WORK_DIR}/fake-bin"
-mkdir -p "${fake_bin}"
-cat >"${fake_bin}/k3d" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-state="${FAKE_DOCKER_STATE:?}"
-case "${1:-} ${2:-}" in
-"cluster list")
-	if [ -f "${state}/cluster" ]; then
-		printf '[{"name":"%s"}]\n' "${FAKE_CLUSTER_NAME:?}"
-	else
-		printf '[]\n'
-	fi
-	;;
-"cluster delete")
-	printf 'cluster-delete\n' >>"${state}/commands"
-	rm -f "${state}/cluster"
-	if [ "${FAKE_TEARDOWN_SCENARIO:?}" = clean ]; then
-		rm -f "${state}/container" "${state}/network" "${state}/volume"
-	fi
-	;;
-*) exit 2 ;;
-esac
-EOF
-cat >"${fake_bin}/docker" <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-state="${FAKE_DOCKER_STATE:?}"
-case "${1:-}" in
-inspect)
-	[ -f "${state}/container" ] || exit 1
-	if [ "${2:-}" = --format ]; then
-		if [ "${FAKE_TEARDOWN_SCENARIO:?}" = foreign ]; then
-			printf 'foreign\n'
-		else
-			printf 'true\n'
-		fi
-	else
-		printf '[{"Mounts":[{"Type":"volume","Name":"k3d-%s-images"}]}]\n' \
-			"${FAKE_CLUSTER_NAME:?}"
-	fi
-	;;
-ps)
-	if [ -f "${state}/container" ]; then
-		printf 'owned-container\n'
-	fi
-	;;
-rm)
-	shift
-	[ "${1:-}" = --force ] && shift
-	[ "${1:-}" = --volumes ] && shift
-	for container_id in "$@"; do
-		printf 'container-rm:%s\n' "${container_id}" >>"${state}/commands"
-	done
-	rm -f "${state}/container"
-	;;
-network)
-	case "${2:-}" in
-	inspect)
-		[ -f "${state}/network" ] || exit 1
-		printf 'k3d\n'
-		;;
-	rm)
-		printf 'network-rm\n' >>"${state}/commands"
-		rm -f "${state}/network"
-		;;
-	*) exit 2 ;;
-	esac
-	;;
-volume)
-	case "${2:-}" in
-	inspect)
-		[ -f "${state}/volume" ] || exit 1
-		printf 'k3d/%s\n' "${FAKE_CLUSTER_NAME:?}"
-		;;
-	rm)
-		printf 'volume-rm\n' >>"${state}/commands"
-		rm -f "${state}/volume"
-		;;
-	*) exit 2 ;;
-	esac
-	;;
-images) ;;
-image) ;;
-*) exit 2 ;;
-esac
-EOF
-chmod +x "${fake_bin}/docker" "${fake_bin}/k3d"
-
-run_teardown_fixture() {
-	local scenario="$1"
-	local state="${WORK_DIR}/teardown-${scenario}"
-	mkdir -p "${state}"
-	touch "${state}/cluster" "${state}/container" "${state}/network" "${state}/volume"
-	if [ "${scenario}" = foreign ]; then
-		if PATH="${fake_bin}:${PATH}" FAKE_DOCKER_STATE="${state}" \
-			FAKE_CLUSTER_NAME=fgentic-demo-teardown FAKE_TEARDOWN_SCENARIO="${scenario}" \
-			FGENTIC_DEMO_CLUSTER=fgentic-demo-teardown "${DEMO}" down \
-			>"${state}/output" 2>&1; then
-			echo 'error: demo teardown removed a foreign control cluster' >&2
-			exit 1
-		fi
-		rg --fixed-strings 'refusing to delete' "${state}/output" >/dev/null
-		[ -f "${state}/cluster" ] && [ -f "${state}/container" ] &&
-			[ -f "${state}/network" ] && [ -f "${state}/volume" ] || {
-			echo 'error: foreign teardown fixture was mutated' >&2
-			exit 1
-		}
-		return
-	fi
-
-	if ! PATH="${fake_bin}:${PATH}" FAKE_DOCKER_STATE="${state}" \
-		FAKE_CLUSTER_NAME=fgentic-demo-teardown FAKE_TEARDOWN_SCENARIO="${scenario}" \
-		FGENTIC_DEMO_CLUSTER=fgentic-demo-teardown "${DEMO}" down \
-		>"${state}/output" 2>&1; then
-		cat "${state}/output" >&2
-		return 1
-	fi
-	for resource in cluster container network volume; do
-		[ ! -e "${state}/${resource}" ] || {
-			echo "error: ${scenario} teardown retained ${resource}" >&2
-			exit 1
-		}
-	done
-	rg --fixed-strings 'were preserved' "${state}/output" >/dev/null
-}
-
-run_teardown_fixture clean
-run_teardown_fixture transient
-run_teardown_fixture foreign
-rg --fixed-strings 'container-rm:owned-container' \
-	"${WORK_DIR}/teardown-transient/commands" >/dev/null
-rg --fixed-strings 'network-rm' "${WORK_DIR}/teardown-transient/commands" >/dev/null
-rg --fixed-strings 'volume-rm' "${WORK_DIR}/teardown-transient/commands" >/dev/null
+"${ROOT_DIR}/scripts/test-demo-teardown.sh"
 
 kubectl kustomize "${ROOT_DIR}/clusters/demo" >"${WORK_DIR}/cluster.yaml"
 assert_yq \

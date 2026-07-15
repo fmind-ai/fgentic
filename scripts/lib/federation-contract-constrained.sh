@@ -448,32 +448,19 @@ check_federation_constrained_failure_guards() {
 	); then
 		fail 'owned-image accounting masked a failed image producer'
 	fi
-	extract_demo_functions "${cleanup_helpers}" cluster_cleanup_complete
+	extract_demo_functions "${cleanup_helpers}" teardown_receipt_complete
 	if (
 		# shellcheck disable=SC1090
 		source "${cleanup_helpers}"
 		cluster_exists() { return 42; }
-		cluster_runtime_artifacts_exist() { return 43; }
-		cluster_cleanup_complete
+		teardown_receipt_path() { printf '/does/not/matter\n'; }
+		teardown_receipt_complete
 	); then
-		fail 'cluster cleanup converted a failed cluster inventory into success'
+		fail 'receipt cleanup converted a failed cluster inventory into success'
 	else
 		cleanup_status=$?
 		[ "${cleanup_status}" -eq 42 ] ||
-			fail 'cluster cleanup did not preserve its cluster-inventory failure status'
-	fi
-	if (
-		# shellcheck disable=SC1090
-		source "${cleanup_helpers}"
-		cluster_exists() { return 1; }
-		cluster_runtime_artifacts_exist() { return 43; }
-		cluster_cleanup_complete
-	); then
-		fail 'cluster cleanup converted a failed runtime inventory into success'
-	else
-		cleanup_status=$?
-		[ "${cleanup_status}" -eq 43 ] ||
-			fail 'cluster cleanup did not preserve its runtime-inventory failure status'
+			fail 'receipt cleanup did not preserve its cluster-inventory failure status'
 	fi
 
 	extract_demo_functions "${artifact_helpers}" \
@@ -486,6 +473,7 @@ check_federation_constrained_failure_guards() {
 			exit 1
 		}
 		require_cluster_runtime() { return 0; }
+		teardown_receipt_exists() { return 1; }
 		cluster_exists() { return 1; }
 		cluster_container_ids() { return 0; }
 		cluster_network_exists() { return 1; }
@@ -505,7 +493,12 @@ check_federation_constrained_failure_guards() {
 			echo "error: $*" >&2
 			exit 1
 		}
-		require_command() { return 0; }
+		require_cluster_runtime() { return 0; }
+		teardown_receipt_exists() { return 1; }
+		teardown_receipt_fail() {
+			echo "error: $*" >&2
+			exit 1
+		}
 		cluster_exists() { return 1; }
 		cluster_container_ids() { return 0; }
 		cluster_network_exists() { return 1; }
@@ -526,6 +519,7 @@ check_federation_constrained_failure_guards() {
 			exit 1
 		}
 		require_cluster_runtime() { return 0; }
+		teardown_receipt_exists() { return 1; }
 		require_owned_evaluation_cluster() { return 0; }
 		cluster_container_ids() { printf 'container-id\n'; }
 		cluster_volume_identity() { printf 'volume-id\n'; }

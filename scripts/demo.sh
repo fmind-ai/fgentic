@@ -33,6 +33,7 @@ Environment:
   FGENTIC_DEMO_CLUSTER       k3d cluster name (default: fgentic-demo)
   FGENTIC_DEMO_TIMEOUT       reconciliation timeout (default: 15m)
   FGENTIC_DEMO_CACHE_DIR     optional persistent BuildKit cache directory
+  FGENTIC_DEMO_STATE_DIR     optional lifecycle-state root; defaults to the user state directory
   FGENTIC_FED_CONSTRAINED    federation profile only: yes enables the opt-in laptop budget
   FGENTIC_FED_NO_PROGRESS_TIMEOUT
                              constrained federation no-progress timeout (default: 20m)
