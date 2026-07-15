@@ -8,6 +8,8 @@ description: Identity architecture: MAS as the Matrix-facing OIDC authority with
 
 Fgentic uses Matrix Authentication Service (MAS) as the Matrix-facing OAuth/OIDC authority and an upstream OpenID Connect provider as the human identity source. The reference provider is Keycloak; Entra ID or another conformant provider replaces the SOPS-backed MAS provider fragment without changing Element, Synapse, or the bridge.
 
+Authentication audit is not inferred from MAS access logs or Synapse log formatting. [ADR 0018](adr/0018-content-bounded-identity-audit.md) defines the optional exact-version evidence boundary: a committed MAS authentication can be joined to a later Synapse event by full MXID, but the platform cannot prove that a particular MAS session or token submitted that event and does not attribute failed MAS attempts to a named user.
+
 ## Reference login contract
 
 The browser flow is Element → MAS (`auth.<server_name>`) → Keycloak (`id.<server_name>`) → MAS. The upstream provider ID is the stable ULID `01H8PKNWKKRPCBW4YGH1RWV279`, so the matching redirect URI is always:

@@ -19,3 +19,4 @@ Settled designs (including the D1–D18 register) are revisited by proposing a n
 - [0015 — Federated Agent Rooms Remain Unencrypted for v1](0015-federated-room-encryption.md) - purpose-scoped plaintext rooms with classification and bilateral controls
 - [0016 — Durable Delegation Ledger with At-Most-Once A2A Recovery](0016-durable-delegation-ledger.md) - pre-ACK jobs, fenced recovery, explicit A2A ambiguity, and deterministic Matrix projection
 - [0017 — Permission-Aware Retrieval Identity Binding](0017-permission-aware-identity-binding.md) - gateway-projected identity and complete output-audience ACL prefiltering
+- [0018 — Content-Bounded Matrix Identity Audit](0018-content-bounded-identity-audit.md) - opt-in authentication/event evidence from exact pinned source records, never generic logs
