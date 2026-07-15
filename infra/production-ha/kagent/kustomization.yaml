@@ -30,94 +30,94 @@ patches:
       # The chart exposes replicas for all four workloads but not consistent placement values.
       # A Flux post-renderer therefore adds the same hostname-spread contract to the rendered pods.
       - op: add
-        path: /spec/postRenderers
+        path: /spec/postRenderers/-
         value:
-          - kustomize:
-              patches:
-                - target:
-                    group: apps
-                    version: v1
-                    kind: Deployment
+          kustomize:
+            patches:
+              - target:
+                  group: apps
+                  version: v1
+                  kind: Deployment
+                  name: kagent-controller
+                patch: |
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
                     name: kagent-controller
-                  patch: |
-                    apiVersion: apps/v1
-                    kind: Deployment
-                    metadata:
-                      name: kagent-controller
-                    spec:
-                      template:
-                        spec:
-                          topologySpreadConstraints:
-                            - maxSkew: 1
-                              topologyKey: kubernetes.io/hostname
-                              whenUnsatisfiable: DoNotSchedule
-                              labelSelector:
-                                matchLabels:
-                                  app.kubernetes.io/instance: kagent
-                                  app.kubernetes.io/name: kagent
-                                  app.kubernetes.io/component: controller
-                - target:
-                    group: apps
-                    version: v1
-                    kind: Deployment
+                  spec:
+                    template:
+                      spec:
+                        topologySpreadConstraints:
+                          - maxSkew: 1
+                            topologyKey: kubernetes.io/hostname
+                            whenUnsatisfiable: DoNotSchedule
+                            labelSelector:
+                              matchLabels:
+                                app.kubernetes.io/instance: kagent
+                                app.kubernetes.io/name: kagent
+                                app.kubernetes.io/component: controller
+              - target:
+                  group: apps
+                  version: v1
+                  kind: Deployment
+                  name: kagent-kmcp-controller-manager
+                patch: |
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
                     name: kagent-kmcp-controller-manager
-                  patch: |
-                    apiVersion: apps/v1
-                    kind: Deployment
-                    metadata:
-                      name: kagent-kmcp-controller-manager
-                    spec:
-                      template:
-                        spec:
-                          topologySpreadConstraints:
-                            - maxSkew: 1
-                              topologyKey: kubernetes.io/hostname
-                              whenUnsatisfiable: DoNotSchedule
-                              labelSelector:
-                                matchLabels:
-                                  app.kubernetes.io/instance: kagent
-                                  app.kubernetes.io/name: kmcp
-                                  control-plane: controller-manager
-                - target:
-                    group: apps
-                    version: v1
-                    kind: Deployment
+                  spec:
+                    template:
+                      spec:
+                        topologySpreadConstraints:
+                          - maxSkew: 1
+                            topologyKey: kubernetes.io/hostname
+                            whenUnsatisfiable: DoNotSchedule
+                            labelSelector:
+                              matchLabels:
+                                app.kubernetes.io/instance: kagent
+                                app.kubernetes.io/name: kmcp
+                                control-plane: controller-manager
+              - target:
+                  group: apps
+                  version: v1
+                  kind: Deployment
+                  name: kagent-tools
+                patch: |
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
                     name: kagent-tools
-                  patch: |
-                    apiVersion: apps/v1
-                    kind: Deployment
-                    metadata:
-                      name: kagent-tools
-                    spec:
-                      template:
-                        spec:
-                          topologySpreadConstraints:
-                            - maxSkew: 1
-                              topologyKey: kubernetes.io/hostname
-                              whenUnsatisfiable: DoNotSchedule
-                              labelSelector:
-                                matchLabels:
-                                  app.kubernetes.io/instance: kagent
-                                  app.kubernetes.io/name: kagent-tools
-                - target:
-                    group: apps
-                    version: v1
-                    kind: Deployment
+                  spec:
+                    template:
+                      spec:
+                        topologySpreadConstraints:
+                          - maxSkew: 1
+                            topologyKey: kubernetes.io/hostname
+                            whenUnsatisfiable: DoNotSchedule
+                            labelSelector:
+                              matchLabels:
+                                app.kubernetes.io/instance: kagent
+                                app.kubernetes.io/name: kagent-tools
+              - target:
+                  group: apps
+                  version: v1
+                  kind: Deployment
+                  name: kagent-ui
+                patch: |
+                  apiVersion: apps/v1
+                  kind: Deployment
+                  metadata:
                     name: kagent-ui
-                  patch: |
-                    apiVersion: apps/v1
-                    kind: Deployment
-                    metadata:
-                      name: kagent-ui
-                    spec:
-                      template:
-                        spec:
-                          topologySpreadConstraints:
-                            - maxSkew: 1
-                              topologyKey: kubernetes.io/hostname
-                              whenUnsatisfiable: DoNotSchedule
-                              labelSelector:
-                                matchLabels:
-                                  app.kubernetes.io/instance: kagent
-                                  app.kubernetes.io/name: kagent
-                                  app.kubernetes.io/component: ui
+                  spec:
+                    template:
+                      spec:
+                        topologySpreadConstraints:
+                          - maxSkew: 1
+                            topologyKey: kubernetes.io/hostname
+                            whenUnsatisfiable: DoNotSchedule
+                            labelSelector:
+                              matchLabels:
+                                app.kubernetes.io/instance: kagent
+                                app.kubernetes.io/name: kagent
+                                app.kubernetes.io/component: ui

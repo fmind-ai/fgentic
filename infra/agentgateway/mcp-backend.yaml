@@ -6,6 +6,8 @@ kind: AgentgatewayBackend
 metadata:
   name: kagent-tools
   namespace: agentgateway-system
+  annotations:
+    fgentic.dev/mcp-catalog-entry: kagent-tools
 spec:
   mcp:
     failureMode: FailClosed

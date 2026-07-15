@@ -1,0 +1,59 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.kagent-dev/kagent-tools",
+  "description": "Read-only Kubernetes diagnostics for the six namespaces in the Fgentic evaluation profile.",
+  "title": "Fgentic read-only Kubernetes tools",
+  "repository": {
+    "url": "https://github.com/kagent-dev/tools",
+    "source": "github",
+    "id": "1013160609"
+  },
+  "version": "0.2.1",
+  "remotes": [
+    {
+      "type": "streamable-http",
+      "url": "http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080/mcp",
+      "headers": [
+        {
+          "name": "Authorization",
+          "description": "Per-agent bearer token provisioned by Fgentic; never store it in this catalog.",
+          "isRequired": true,
+          "isSecret": true
+        }
+      ]
+    }
+  ],
+  "_meta": {
+    "io.modelcontextprotocol.registry/publisher-provided": {
+      "fgentic": {
+        "catalogVersion": 1,
+        "id": "kagent-tools",
+        "vettedBy": "fmind-ai/fgentic maintainers",
+        "vettedAt": "2026-07-15",
+        "sourceLicense": "Apache-2.0",
+        "sourceRevision": "9d18d8318c9542f993dfab8eb134ecf116414271",
+        "image": "ghcr.io/kagent-dev/kagent/tools:0.2.1@sha256:50b431281d3e32666f27a292962fd486aabaac157083a844d037c12137e353aa",
+        "surfacePin": {
+          "path": "infra/agentgateway/mcp-surface.pin.json",
+          "sha256": "bd5b7353c07af5215ecc8d743c3744522216678f1639f9247c85d2b70fd6c9ec",
+          "surfaceSha256": "7289a1a07ef3a6410ea67776a7daef52f1b1de19801330960ce9a697017c52b4"
+        },
+        "allowedTools": [
+          "k8s_describe_resource",
+          "k8s_get_events",
+          "k8s_get_pod_logs",
+          "k8s_get_resource_yaml",
+          "k8s_get_resources"
+        ],
+        "resources": {
+          "agentgatewayBackends": [
+            "kagent-tools"
+          ],
+          "remoteMCPServers": [
+            "kagent-tool-server"
+          ]
+        }
+      }
+    }
+  }
+}

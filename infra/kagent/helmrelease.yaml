@@ -14,6 +14,21 @@ spec:
   upgrade:
     remediation:
       retries: -1
+  # The upstream chart owns the RemoteMCPServer resource, so the post-renderer attaches the
+  # reviewed catalog identity without forking the chart. Static coverage fails if a new server
+  # appears without its own exact catalog annotation.
+  postRenderers:
+    - kustomize:
+        patches:
+          - target:
+              group: kagent.dev
+              version: v1alpha2
+              kind: RemoteMCPServer
+              name: kagent-tool-server
+            patch: |
+              - op: add
+                path: /metadata/annotations/fgentic.dev~1mcp-catalog-entry
+                value: kagent-tools
   dependsOn:
     - name: kagent-crds
   chart:

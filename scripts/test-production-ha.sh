@@ -195,8 +195,8 @@ render_release keycloak keycloak keycloakx "${KEYCLOAK_VERSION}" "${WORK_DIR}/ke
 helm template matrix-a2a-bridge "${ROOT_DIR}/apps/matrix-a2a-bridge/chart" \
   > "${WORK_DIR}/bridge.yaml"
 
-# Apply the exact Flux Helm post-renderer to the pinned chart render. This keeps placement
-# assertions coupled to the declarative release instead of duplicating its patches in the test.
+# Apply every exact Flux Helm post-renderer to the pinned chart render. This keeps catalog and
+# placement assertions coupled to the declarative release instead of duplicating its patches.
 readonly KAGENT_RELEASE="${WORK_DIR}/kagent-helmrelease.yaml"
 readonly KAGENT_POST_RENDER="${WORK_DIR}/kagent-post-render"
 yq 'select(.kind == "HelmRelease" and .metadata.name == "kagent" and
@@ -207,9 +207,14 @@ HELM_RELEASE_PATH="${KAGENT_RELEASE}" yq --null-input '
   .apiVersion = "kustomize.config.k8s.io/v1beta1" |
   .kind = "Kustomization" |
   .resources = ["rendered.yaml"] |
-  .patches = load(strenv(HELM_RELEASE_PATH)).spec.postRenderers[0].kustomize.patches
+  .patches = (load(strenv(HELM_RELEASE_PATH)).spec.postRenderers |
+    map(.kustomize.patches) | flatten)
 ' > "${KAGENT_POST_RENDER}/kustomization.yaml"
 kubectl kustomize "${KAGENT_POST_RENDER}" > "${WORK_DIR}/kagent.yaml"
+
+assert_yq 'select(.kind == "RemoteMCPServer" and .metadata.name == "kagent-tool-server") |
+  .metadata.annotations."fgentic.dev/mcp-catalog-entry" == "kagent-tools"' \
+  "${WORK_DIR}/kagent.yaml" "production kagent render lost its vetted MCP catalog identity"
 
 assert_yq 'select(.kind == "Deployment" and .metadata.name == "traefik") |
   (.spec.replicas == 2 and .spec.template.spec.topologySpreadConstraints[0].topologyKey ==
@@ -339,7 +344,10 @@ assert_yq 'select(.kind == "AgentgatewayParameters" and .metadata.name == "secur
 assert_yq 'select(.kind == "HelmRelease" and .metadata.name == "kagent") |
   ((.spec.values.controller.replicas // 1) == 1 and (.spec.values.ui.replicas // 1) == 1 and
   (.spec.values."kagent-tools".replicaCount // 1) == 1 and
-  (.spec.values.kmcp.controller.replicaCount // 1) == 1 and .spec.postRenderers == null)' \
+  (.spec.values.kmcp.controller.replicaCount // 1) == 1 and
+  (.spec.postRenderers | length) == 1 and
+  (.spec.postRenderers[0].kustomize.patches | length) == 1 and
+  .spec.postRenderers[0].kustomize.patches[0].target.kind == "RemoteMCPServer")' \
   "${LOCAL_RENDER}" "local kagent workloads must remain one replica without HA post-rendering"
 assert_yq 'select(.kind == "HelmRelease" and .metadata.name == "matrix-stack") |
   ((.spec.values.elementWeb.replicas // 1) == 1 and
