@@ -18,7 +18,7 @@ metadata:
 
 1. **One-time bootstrap** (run once per project): `terraform -chdir=infra/terraform/bootstrap init && … apply` with **local** state — it creates the versioned GCS tfstate bucket the main module's partial `backend "gcs"` points at (chicken-and-egg: the bootstrap state never moves remote). Then `terraform -chdir=infra/terraform init -backend-config="bucket=<state_bucket_name>"` (the bucket from bootstrap's `state_bucket` output).
 1. Variables: `cp terraform.tfvars.example terraform.tfvars` (git-ignored; only the example is committed). Defaults: `europe-west1`, `e2-standard-4` × 2 nodes, zonal, `deletion_protection = false`.
-1. Change loop: edit → `mise run format` (terraform fmt) → `mise run check` (fmt-check + `validate` run backend-less in CI — no creds needed) → `terraform plan` → PR → apply only with approval.
+1. Change loop: edit → `mise run format` (terraform fmt) → `mise run check:terraform` (fmt-check + `validate` run backend-less in CI — no creds needed) → `terraform plan` → PR → apply only with approval. Installed commit/push hooks serialize the complete gates across worktrees; in a hookless environment, run `mise run agent:gate` once near PR readiness.
 1. After apply: `terraform output -raw gke_connect_command` to get credentials; point DNS A records (`fgentic.fmind.ai` + `chat.`/`matrix.`/`auth.`/`id.`/`grafana.`) at `terraform output -raw ingress_ip`; then Flux bootstrap with `--path=clusters/gcp` (matrix-agents runbook).
 
 ## Boundaries & conventions

@@ -18,7 +18,7 @@ The bridge is self-contained under `apps/matrix-a2a-bridge/` (own Go module, mis
 
 ## Developing a feature (fast inner loop)
 
-1. **Iterate on the two hot packages, gate on the full suite.** `go test ./internal/a2aclient/ ./internal/bridge/` runs in seconds; the full `mise run test` adds the slow `matrixapp` + `-race` run. Run the full gate only before committing. (The first `go test` after adding a file spends time compiling — not a hang.)
+1. **Iterate on the two hot packages, gate on the full suite once.** `go test ./internal/a2aclient/ ./internal/bridge/` runs in seconds; the root test gate adds the slow `matrixapp` + `-race` run. Let the installed push hook serialize that aggregate gate across worktrees, or run `mise run agent:gate` once near PR readiness in a hookless environment. (The first `go test` after adding a file spends time compiling — not a hang.)
 1. **Recipe — add a per-agent policy/admission knob** (the shape of `extensions` #114, `maxCost` #142, `stage` #128):
    - `internal/bridge/agents.go` — add the field to `agentConfig` (on-disk YAML) **and** `AgentRef`; parse it in `compileAgent` (reject where it doesn't apply, e.g. remote-only fields on a local target); fold operational config into `mappingID(...)` so a change re-keys queued jobs and forces re-validation via `SameTarget`.
    - `internal/config/config.go` — only if the feature needs a global env knob (e.g. `STAGING_ROOMS`); add a `validate()` clause and wire it into the chart `deployment.yaml`/`values.yaml`.

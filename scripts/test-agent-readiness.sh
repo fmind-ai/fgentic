@@ -65,6 +65,17 @@ for guidance in \
 		fail "${guidance#"${root_dir}/"} lost the serialized validation contract"
 done
 
+for runbook in \
+	"${root_dir}/README.md" \
+	"${root_dir}/.agents/skills/bridge-dev/SKILL.md" \
+	"${root_dir}/.agents/skills/flux-gitops/SKILL.md" \
+	"${root_dir}/.agents/skills/local-cluster/SKILL.md" \
+	"${root_dir}/.agents/skills/matrix-agents/SKILL.md" \
+	"${root_dir}/.agents/skills/terraform-gke/SKILL.md"; do
+	rg --quiet 'mise run agent:gate' "${runbook}" ||
+		fail "${runbook#"${root_dir}/"} lost the serialized validation contract"
+done
+
 git -C "${root_dir}" check-ignore --quiet .claude/worktrees/probe ||
 	fail ".claude/worktrees must be ignored"
 
