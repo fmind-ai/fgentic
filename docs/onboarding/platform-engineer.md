@@ -43,6 +43,6 @@ Version pins that bind each other move together: Gateway API v1.4.0 experimental
 
 At minimum, assign owners for Flux reconciliation, Kubernetes capacity, ESS/Matrix, identity, CNPG and restore drills, agentgateway/model egress, Agents/MCP, observability, vulnerabilities, certificates/DNS, federation policy, secrets, and incident response. Route component-internal failures to the appropriate upstream project without dropping the Fgentic-level negative controls.
 
-The consolidated day-2 handbook remains tracked by [#377](https://github.com/fmind-ai/fgentic/issues/377). Until it lands, use [Production Installation](../production.md), [Observability](../observability.md), [Federation Onboarding](../federation-onboarding.md), [Exit Strategy](../exit-strategy.md), and the project skills as the operator sources.
+Use the [Day-2 Operations Handbook](../operations-handbook.md) to connect monitoring, scaling, recovery, alert-keyed incident response, and upgrades to those component owners. Its repository source does not replace target-cluster evidence or the separate documentation-site publication gate.
 
 > **Own vs compose.** Fgentic owns the GitOps composition, bridge lifecycle, policy wiring, environment contract, and validation gates. Flux, Kubernetes, ESS, CloudNativePG, kagent, agentgateway, cert-manager, Traefik, and the model backend own their internal runtime behavior. The operator owns the assembled service and its evidence.

@@ -73,7 +73,7 @@ For each migrated scope, retain:
 1. final-writer freeze, delta capture, cutover time, rollback deadline, outstanding tasks, and side-effect reconciliation;
 1. revoked incumbent credentials/routes/apps, retained copies and expiry owners, and the target incident/support escalation map.
 
-The consolidated post-cutover operations handbook remains tracked by [#377](https://github.com/fmind-ai/fgentic/issues/377). Until it exists, use [Production Installation](production.md), [Observability](observability.md), [Exit Strategy](exit-strategy.md), the security and federation runbooks, and the repository skills as the operational sources.
+After cutover, use the [Day-2 Operations Handbook](operations-handbook.md) with [Production Installation](production.md), [Observability](observability.md), [Exit Strategy](exit-strategy.md), the security and federation runbooks, and the repository skills. The handbook is repository source; its publication and every target-cluster drill remain separate evidence gates.
 
 ## Publication status
 
