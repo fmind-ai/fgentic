@@ -134,6 +134,37 @@ The repository owns its development cluster; no global Kubernetes setup, default
 
 `mise run dev:status` reports the lightweight cluster, `mise run dev:stop` releases its active CPU/RAM while preserving state and images, and `mise run dev:down` deletes only that owned cluster. All `dev:*` commands use a temporary kubeconfig and reject a same-named cluster without the demo ownership label. Docker Desktop on macOS and Docker Engine on Linux are both supported through the repo-pinned mise toolchain; ports 80/443 on `127.0.0.1` must be free while the demo is running.
 
+## Develop with coding agents
+
+Fresh clones and worktrees use one non-mutating bootstrap:
+
+```bash
+mise run agent:setup
+```
+
+It installs the pinned root and application toolchains, downloads both Go modules, and syncs the locked Python environment. It does not install Git hooks, rewrite dependency manifests, create a cluster, load credentials, or select a paid provider.
+
+Both local agent products can create worktrees automatically:
+
+1. **Claude Code CLI:** run `claude --worktree <name>`. Claude creates `.claude/worktrees/<name>` from fresh `origin/HEAD`; the tracked `SessionStart` hook runs `agent:setup` automatically. Run plain `claude` once first to accept workspace trust. See [Claude Code worktrees](https://code.claude.com/docs/en/worktrees).
+1. **Codex App:** select **Worktree** for the task and choose the checked-in Fgentic local environment. Codex creates its managed worktree and `.codex/environments/environment.toml` runs `agent:setup`. This worktree mode is in the Codex App, not Codex CLI. See [Codex worktrees](https://developers.openai.com/codex/environments/git-worktrees) and [local environments](https://developers.openai.com/codex/environments/local-environment).
+1. **Codex CLI:** use an existing worktree/clone with `codex -C <path>`. The CLI does not create a worktree automatically. A second full clone is safe and simple when duplicated Git objects and dependencies are acceptable; otherwise use `git worktree add` once or use the Codex App.
+
+For Codex Cloud or Claude Code on the web, configure this repository setup script in the provider environment:
+
+```bash
+set -eu
+curl https://mise.run | sh
+export PATH="$HOME/.local/bin:$PATH"
+printf '\nexport PATH="$HOME/.local/bin:$PATH"\n' >> "$HOME/.bashrc"
+mise trust --all --yes
+mise run agent:setup
+```
+
+Keep provider credentials, ADC, SOPS keys, kubeconfigs, and local platform overrides out of hosted environments. The repository contains the shared `AGENTS.md`, `CLAUDE.md`, project skills, attribution-safe Claude settings, and deterministic checks needed by fresh hosted clones. See [Codex Cloud environments](https://developers.openai.com/codex/environments/cloud-environment) and [Claude Code on the web](https://code.claude.com/docs/en/claude-code-on-the-web).
+
+Use cloud agents by default for parallel code, documentation, unit-test, and PR work that should continue without your laptop. Use local agents only when the task needs Docker/k3d, ignored local configuration, or machine-specific acceptance. Multiple worktrees or clones may read the same cluster, but **exactly one path owns mutations at a time**: image builds/imports and `dev:*`, `demo:*`, `fed:*`, `cluster:*`, kind, or runtime-test lifecycles are serialized because their Docker daemon, cluster names, image tags, and host ports are shared.
+
 ## Production
 
 Production is a separate GitOps path: SOPS-encrypted secrets, a reviewed git source, the full observability and SSO layers, and Flux reconciliation. Follow the self-contained [production installation](docs/production.md), then the [security](docs/security.md), [identity](docs/identity.md), and [operator](.agents/skills/matrix-agents/SKILL.md) runbooks. Enable an external network only through the [opt-in interop contract](docs/interop.md); the [Slack provider walkthrough](docs/interop-slack.md) is separate because it requires a workspace owner and live evidence.
@@ -150,7 +181,10 @@ infra/{namespaces,terraform,flux,gateway,postgres,matrix,keycloak,agentgateway,m
 clusters/               # Flux entrypoints: base/ DAG + demo/, federation/, local/ (k3d), and gcp/ (GKE) overlays
 docs/                    # the specification split by topic (architecture, decisions, security, federation, …) + docs/adr/
 .github/                 # CI (mise gates) + CD (signed, digest-pinned bridge image) + issue/PR templates
-.agents/                 # AGENTS.md + operator runbooks
+.agents/                 # canonical agent instructions, shared skills, and operator runbooks
+.claude/                 # Claude skills bridge, fresh-worktree setup, and attribution policy
+.codex/                  # Codex App local environment (automatic worktree setup)
+AGENTS.md                # root discovery link to .agents/AGENTS.md
 CONTRIBUTING.md          # how to contribute (workflow, labels, DCO) — with GOVERNANCE, SECURITY, MAINTAINERS, ADOPTERS
 ```
 

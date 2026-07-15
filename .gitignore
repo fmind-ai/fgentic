@@ -52,6 +52,7 @@ coverage.out
 
 # --- Agent scratch (global standard) ---
 .agents/tmp/
+.claude/worktrees/
 
 # --- OS / editor ---
 .DS_Store

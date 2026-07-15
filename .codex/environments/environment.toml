@@ -1,0 +1,2 @@
+[setup]
+script = "mise run agent:setup"

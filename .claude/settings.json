@@ -1,0 +1,24 @@
+{
+  "attribution": {
+    "sessionUrl": false
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "args": [],
+            "command": "${CLAUDE_PROJECT_DIR}/scripts/agent-setup.sh",
+            "statusMessage": "Preparing the pinned Fgentic development environment",
+            "timeout": 600,
+            "type": "command"
+          }
+        ],
+        "matcher": "startup"
+      }
+    ]
+  },
+  "worktree": {
+    "baseRef": "fresh"
+  }
+}

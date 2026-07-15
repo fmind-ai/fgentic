@@ -68,6 +68,10 @@ run = [
   "mise --cd apps/synapse-federation-policy run install",
 ]
 
+[tasks."agent:setup"]
+description = "Prepare pinned tools and locked dependencies for a fresh agent clone or worktree"
+run = "bash scripts/agent-setup.sh"
+
 [tasks.format]
 alias = "f"
 description = "Format everything (config/markup, Terraform, and applications)"
@@ -136,6 +140,7 @@ depends = [
   "check:federation-onboarding",
   "check:smoke-workflow",
   "check:mautrix-bridges",
+  "check:agent-readiness",
   "check:github-actions",
   "check:workflows",
   "check:app",
@@ -147,6 +152,10 @@ depends = [
 alias = "cf"
 description = "Verify config/markup formatting (dprint)"
 run = "dprint check"
+
+[tasks."check:agent-readiness"]
+description = "Validate shared Codex/Claude discovery and non-mutating worktree setup"
+run = "bash scripts/test-agent-readiness.sh"
 
 [tasks."check:terraform"]
 alias = "ct"
