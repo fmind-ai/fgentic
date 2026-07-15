@@ -95,6 +95,10 @@ run = "bash test/integration/run-load.sh"
 description = "Evaluate the three sample agents against the selected local model profile"
 run = "bash scripts/eval-models.sh"
 
+[tasks."eval:golden"]
+description = "Verify shipped Agent contracts against the deterministic demo response"
+run = "bash scripts/eval-golden.sh"
+
 [tasks.format]
 alias = "f"
 description = "Format all sources and documents"

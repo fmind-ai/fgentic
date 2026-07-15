@@ -434,6 +434,11 @@ description = "Evaluate the three sample agents against an approved local model 
 dir = "apps/matrix-a2a-bridge"
 run = "mise run eval:models"
 
+[tasks."eval:golden"]
+description = "Verify shipped Agent contracts against the deterministic demo response"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run eval:golden"
+
 [tasks.build]
 alias = "b"
 description = "Build all application artifacts"
