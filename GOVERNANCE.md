@@ -6,7 +6,7 @@ Fgentic aims for vendor-neutral, open governance compatible with a future founda
 
 1. The project is led by its maintainers, listed in [MAINTAINERS.md](MAINTAINERS.md). While there is a single maintainer, that maintainer decides; decisions of record land in [docs/adr/](docs/adr/) or the topic specs under [docs/](docs/), never in private channels.
 1. All decisions, roadmaps, and discussions are public: GitHub issues, milestones, ADRs, and Discussions. There is no private decision path except security reports ([SECURITY.md](SECURITY.md)).
-1. Settled design decisions ([docs/design-decisions.md](docs/design-decisions.md) D1–D16, ADRs) are revisited by proposing a new ADR with evidence — not relitigated per-PR.
+1. Settled design decisions (the `D<n>` register in [docs/design-decisions.md](docs/design-decisions.md) and ADRs) are revisited by proposing a new ADR with evidence — not relitigated per-PR.
 
 ## Contributor ladder
 
