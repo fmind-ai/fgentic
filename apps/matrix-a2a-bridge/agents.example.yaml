@@ -52,7 +52,7 @@ agents:
   # <url>/.well-known/agent-card.json. The bridge accepts only ES256 cards whose protected JWS
   # key ID, name, provider organization, and P-256 public JWK match this pin. `tokenBudget` is a
   # positive partner-enforced maximum-token scalar sent through the
-  # https://fgentic.fmind.ai/a2a/extensions/token-budget/v1 extension on message/send.
+  # https://fgentic.fmind.ai/a2a/extensions/token-budget/v1 extension on SendMessage.
   # It is not bridge-observed or hard local model-token accounting. The target timeout is an
   # additional whole-delegation ceiling combined with the global request/task timeouts.
   # `extensions` (optional, remote only) lists extra A2A extension URIs to activate on top of the

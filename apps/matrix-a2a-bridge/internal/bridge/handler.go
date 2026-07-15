@@ -27,10 +27,10 @@ import (
 )
 
 const (
-	// pollInitial/pollMax bound the tasks/get backoff for long-running tasks (SPEC §6).
+	// pollInitial/pollMax bound the GetTask backoff for long-running tasks (SPEC §6).
 	pollInitial = 2 * time.Second
 	pollMax     = 15 * time.Second
-	// pollErrorBudget tolerates transient tasks/get failures before giving up on a task.
+	// pollErrorBudget tolerates transient GetTask failures before giving up on a task.
 	pollErrorBudget = 3
 
 	workingText          = "⏳ working on it…"
@@ -601,8 +601,8 @@ func (b *Bridge) abandonContinuation(evt *event.Event, open *openTask, reason, o
 
 // continueOpenTask resumes a paused task with the sender's answer. It re-validates the mapping,
 // sender policy, remote trust, and rate limits at resume time (config may have changed while paused),
-// then message/sends the answer with the same taskID+contextID and follows the reused placeholder to
-// a terminal state (or another pause). A rate-limited answer re-registers the task so it can retry.
+// then calls SendMessage with the answer and same taskID+contextID, following the reused placeholder
+// to a terminal state (or another pause). A rate-limited answer re-registers the task so it can retry.
 func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open *openTask, answer string) {
 	inflightDelegations.Inc()
 	defer inflightDelegations.Dec()
@@ -1015,7 +1015,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 	audit.terminalStage = "message_result"
 	audit.contextID = orDefault(res.ContextID, contextID)
 	audit.taskID = res.TaskID
-	audit.activated = res.ActivatedExtensions // extension set the remote echoed on message/send (#114)
+	audit.activated = res.ActivatedExtensions // extension set the remote echoed on SendMessage (#114)
 	if res.ContextID != "" {
 		if err := b.store.SetContext(ctx, evt.RoomID.String(), localpart, res.ContextID); err != nil {
 			b.log.Error("store context", "room", evt.RoomID, "ghost", localpart, "err", err)
@@ -1027,7 +1027,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 		terminalAudit.contextID = orDefault(terminalAudit.contextID, contextID)
 		terminalAudit.dedupVerdict = audit.dedupVerdict
 		terminalAudit.rateLimitVerdict = audit.rateLimitVerdict
-		terminalAudit.activated = res.ActivatedExtensions // negotiated once on message/send, not per poll
+		terminalAudit.activated = res.ActivatedExtensions // negotiated once on SendMessage, not per poll
 		terminalAudit.mediaIn = audit.mediaIn             // inbound files were forwarded on the initial send
 		audit = terminalAudit
 		return
@@ -1174,7 +1174,7 @@ func (b *Bridge) allowNotice(sender senderIdentity, roomID id.RoomID, scope stri
 		b.noticeRoomLimits.Allow(roomID.String())
 }
 
-// awaitTask handles a long-running task (SPEC §6): post a working placeholder, poll tasks/get
+// awaitTask handles a long-running task (SPEC §6): post a working placeholder, poll GetTask
 // with backoff until the task is terminal or TaskTimeout elapses, then edit the placeholder
 // into the final answer (Matrix edits are the open-standard substitute for streaming).
 func (b *Bridge) awaitTask(
@@ -1284,14 +1284,14 @@ func (b *Bridge) awaitTask(
 				return audit
 			}
 			if pollErrors++; pollErrors < pollErrorBudget {
-				b.log.Warn("tasks/get failed, retrying", "task", res.TaskID,
+				b.log.Warn("GetTask failed, retrying", "task", res.TaskID,
 					"reason", "task_poll_failed", "error_type", fmt.Sprintf("%T", err))
 				continue
 			}
 			delegationsTotal.WithLabelValues(localpart, outcomeLost).Inc()
 			audit.outcome = outcomeLost
 			audit.terminalReason = "task_poll_failed"
-			b.log.Error("tasks/get failed", "task", res.TaskID, "agent", ref.Path(),
+			b.log.Error("GetTask failed", "task", res.TaskID, "agent", ref.Path(),
 				"reason", "task_poll_failed", "error_type", fmt.Sprintf("%T", err))
 			b.editReply(ctx, intent, evt.RoomID, placeholder,
 				fmt.Sprintf("⚠️ lost track of agent %q's task — see the bridge logs.", localpart))
@@ -1437,7 +1437,7 @@ func taskCanceler(task *inflightTask) id.UserID {
 }
 
 // finishCanceled completes a delegation that a room member canceled (#98): ask the agent to stop
-// (best-effort tasks/cancel, so token burn halts at the source), edit the placeholder into a
+// (best-effort CancelTask, so token burn halts at the source), edit the placeholder into a
 // content-free "canceled by" notice, and audit who canceled. The poll context is already dead, so
 // the agent-side cancel runs on a fresh deadline off the still-live delegation context, which keeps
 // the A2A user attribution and any per-remote ceiling.

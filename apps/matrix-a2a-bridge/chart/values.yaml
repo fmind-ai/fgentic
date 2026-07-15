@@ -16,8 +16,8 @@ config:
   #   http://kagent-controller.kagent.svc.cluster.local:8083
   a2aBaseURL: http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080
   ghostPrefix: agent-
-  requestTimeout: 60s # transport deadline for one A2A message/send
-  taskTimeout: 10m # overall deadline when polling a long-running task (tasks/get)
+  requestTimeout: 60s # transport deadline for one A2A SendMessage
+  taskTimeout: 10m # overall deadline when polling a long-running task (GetTask)
   inputWaitTimeout: 10m # how long a paused (input-required) task waits for a threaded reply (#116)
   shutdownTimeout: 25s # dispatcher drain before cancellation; pod grace also covers intake/telemetry
   concurrency: 16 # max in-flight delegations across all rooms (per-room FIFO regardless)

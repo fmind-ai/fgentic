@@ -7,7 +7,7 @@ It is the first surface of **ActivityPub as a second, additive federation transp
 ## What it does today (M18 F1)
 
 - Serves each `agent-<name>` as an AP `Service` actor at `/ap/agents/<name>`, with `/.well-known/webfinger` resolving `acct:agent-<name>@<server_name>`.
-- Turns an inbound `Create(Note)` mention into one A2A `message/send`, threaded by a per-`(actor, thread)` `contextId` that is never reused across agents.
+- Turns an inbound `Create(Note)` mention into one A2A `SendMessage`, threaded by a per-`(actor, thread)` `contextId` that is never reused across agents.
 - Publishes the reply as a `Create(Note)` `inReplyTo` the triggering object, in the agent's outbox.
 
 ## Federation policy border (M18 F3)

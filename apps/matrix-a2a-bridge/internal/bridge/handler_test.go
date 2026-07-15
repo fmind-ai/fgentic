@@ -72,7 +72,7 @@ func (s *transientGetStore) Get(ctx context.Context, taskID a2a.TaskID) (*taskst
 	if s.getFailures > 0 {
 		s.getFailures--
 		s.mu.Unlock()
-		return nil, errors.New("scripted transient tasks/get failure")
+		return nil, errors.New("scripted transient GetTask failure")
 	}
 	s.mu.Unlock()
 	return s.Store.Get(ctx, taskID)
@@ -1266,7 +1266,7 @@ func (c *scriptedA2AClient) PollTask(_ context.Context, target a2aclient.Target,
 	c.pollPaths = append(c.pollPaths, target.String())
 	c.pollTasks = append(c.pollTasks, taskID)
 	if len(c.polls) == 0 {
-		return a2aclient.Result{}, errors.New("unexpected tasks/get")
+		return a2aclient.Result{}, errors.New("unexpected GetTask")
 	}
 	next := c.polls[0]
 	c.polls = c.polls[1:]
@@ -1496,7 +1496,7 @@ func TestRateLimitedDispatchEmitsExplicitAuditVerdict(t *testing.T) {
 
 func TestAwaitTaskPollsWithCappedBackoffAndEmptyReplyFallback(t *testing.T) {
 	client := &scriptedA2AClient{polls: []scriptedPoll{
-		{err: errors.New("temporary tasks/get failure")},
+		{err: errors.New("temporary GetTask failure")},
 		{result: a2aclient.Result{TaskID: "task-1"}},
 		{result: a2aclient.Result{TaskID: "task-1", Terminal: true}},
 	}}
@@ -1581,7 +1581,7 @@ func TestAwaitTaskRetriesTransientRealWireFailureWithCappedBackoff(t *testing.T)
 		t.Fatalf("Call result = %+v, want a non-terminal task", working)
 	}
 
-	// Arm the fault only after message/send has created the task, so the first tasks/get
+	// Arm the fault only after SendMessage has created the task, so the first GetTask
 	// crosses the JSON-RPC wire as a transient protocol error.
 	store.failNextGets(1)
 	b, intent, evt, ref, recorder := pollingHarness(t, client)

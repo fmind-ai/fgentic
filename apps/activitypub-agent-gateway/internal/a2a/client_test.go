@@ -38,9 +38,11 @@ func testServer(t *testing.T, executor a2asrv.AgentExecutor) (*Client, *[]string
 
 	users := &[]string{}
 	card := &a2a.AgentCard{
-		Name:                "docs-qa fixture",
-		Version:             "test",
-		SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface(server.URL+testAgentPath, a2a.TransportProtocolJSONRPC)},
+		Name:    "docs-qa fixture",
+		Version: "test",
+		// The card deliberately advertises an unusable direct route. Calls can succeed only when the
+		// client binds SDK transport selection back to the operator-configured server URL.
+		SupportedInterfaces: []*a2a.AgentInterface{a2a.NewAgentInterface("http://127.0.0.1:1"+testAgentPath, a2a.TransportProtocolJSONRPC)},
 		DefaultInputModes:   []string{"text/plain"},
 		DefaultOutputModes:  []string{"text/plain"},
 	}

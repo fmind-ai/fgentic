@@ -39,7 +39,7 @@ Human in Element:  "@agent-k8s why is pod payments-7c9 crashing?"
         ▼
    Synapse ──push──▶ matrix-a2a-bridge (Go appservice)
                           │  detect @mention → map @agent-k8s → (kagent, k8s-agent)
-                          │  A2A message/send ── through agentgateway ──▶ kagent agent
+                          │  A2A SendMessage ── through agentgateway ──▶ kagent agent
                           ◀── reply text ─────────────────────────────────┘
                           │  post as ghost @agent-k8s (reply to the original message)
         ▼

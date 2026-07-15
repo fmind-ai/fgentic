@@ -19,8 +19,8 @@ config:
   #   http://kagent-controller.kagent.svc.cluster.local:8083
   a2aBaseURL: http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080
   ghostPrefix: agent-
-  requestTimeout: 60s # transport deadline for one A2A message/send
-  taskTimeout: 10m # overall deadline when polling a long-running task (tasks/get)
+  requestTimeout: 60s # transport deadline for one A2A SendMessage
+  taskTimeout: 10m # overall deadline when polling a long-running task (GetTask)
   shutdownTimeout: 25s # HTTP drain on SIGTERM
   logLevel: info
   logFormat: json

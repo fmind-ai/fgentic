@@ -1,13 +1,13 @@
 // Package a2a is a thin, gateway-focused wrapper over the official A2A Go SDK
 // (github.com/a2aproject/a2a-go/v2) — the same client kagent uses. It resolves a local agent's
-// AgentCard through agentgateway, sends one non-streaming message (message/send), extracts the
-// reply text from the returned Task-or-Message sum type, and polls tasks/get for long-running
+// AgentCard through agentgateway, sends one non-streaming message (SendMessage), extracts the
+// reply text from the returned Task-or-Message sum type, and polls GetTask for long-running
 // tasks. Streaming is intentionally unused (fire-and-forget delegation, docs/bridge.md §6).
 //
-// Only LOCAL kagent targets are dialed here: reaching kagent solely through agentgateway keeps
-// the model-credential chokepoint intact (docs/design-decisions.md D6). Pinned remote A2A agents
-// and their Signed AgentCard verification are a separate outbound trust boundary landed by later
-// federation work, never by this gateway's inbound AP surface.
+// Only LOCAL kagent targets are dialed here. The default operator-configured base is agentgateway,
+// preserving the model-credential chokepoint (docs/design-decisions.md D6); an explicit direct base
+// remains available for unsecured development. Pinned remote A2A agents and their Signed AgentCard
+// verification are a separate outbound trust boundary, never this gateway's inbound AP surface.
 package a2a
 
 import (
@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"time"
@@ -130,9 +131,9 @@ func agentPath(namespace, name string) string {
 	return "/api/a2a/" + namespace + "/" + name
 }
 
-// Call delegates text to the local kagent agent namespace/name via A2A message/send. A non-empty
+// Call delegates text to the local kagent agent namespace/name via A2A SendMessage. A non-empty
 // contextID threads the conversation (kagent maps contextId 1:1 to a persistent session). It
-// returns the agent's reply text, polling tasks/get until the task is terminal when the agent
+// returns the agent's reply text, polling GetTask until the task is terminal when the agent
 // runs long. The caller stamps the asserted actor with WithUser before invoking.
 func (c *Client) Call(ctx context.Context, namespace, name, text, contextID string) (string, error) {
 	if namespace == "" || name == "" {
@@ -155,7 +156,7 @@ func (c *Client) Call(ctx context.Context, namespace, name, text, contextID stri
 		Config:  &a2a.SendMessageConfig{ReturnImmediately: true},
 	})
 	if err != nil {
-		return "", fmt.Errorf("a2a message/send to %s/%s: %w", namespace, name, err)
+		return "", fmt.Errorf("a2a SendMessage to %s/%s: %w", namespace, name, err)
 	}
 
 	switch v := res.(type) {
@@ -164,11 +165,11 @@ func (c *Client) Call(ctx context.Context, namespace, name, text, contextID stri
 	case *a2a.Task:
 		return c.awaitTask(ctx, client, namespace, name, v)
 	default:
-		return "", fmt.Errorf("a2a message/send to %s/%s: unexpected result type", namespace, name)
+		return "", fmt.Errorf("a2a SendMessage to %s/%s: unexpected result type", namespace, name)
 	}
 }
 
-// awaitTask polls tasks/get until the task reaches a terminal state or TaskTimeout elapses,
+// awaitTask polls GetTask until the task reaches a terminal state or TaskTimeout elapses,
 // then returns its text. A failed/canceled/rejected terminal state is surfaced as an error so
 // the inbox never publishes agent-side error detail as a governed reply.
 func (c *Client) awaitTask(ctx context.Context, client *sdk.Client, namespace, name string, task *a2a.Task) (string, error) {
@@ -191,15 +192,14 @@ func (c *Client) awaitTask(ctx context.Context, client *sdk.Client, namespace, n
 		}
 		polled, err := client.GetTask(deadline, &a2a.GetTaskRequest{ID: task.ID})
 		if err != nil {
-			return "", fmt.Errorf("a2a tasks/get %s from %s/%s: %w", task.ID, namespace, name, err)
+			return "", fmt.Errorf("a2a GetTask %s from %s/%s: %w", task.ID, namespace, name, err)
 		}
 		task = polled
 	}
 }
 
-// clientFor resolves (and caches) an SDK client for a local agent by fetching its AgentCard.
-// Routing baseURL + card path keeps clients pointing through agentgateway when it rewrites the
-// card's advertised URL (a no-op when talking to kagent directly).
+// clientFor resolves (and caches) an SDK client for a local agent by fetching its AgentCard, then
+// binds the selected v1 JSON-RPC interface to the operator-configured route.
 func (c *Client) clientFor(ctx context.Context, namespace, name string) (*sdk.Client, error) {
 	key := namespace + "/" + name
 	c.mu.Lock()
@@ -219,6 +219,14 @@ func (c *Client) clientFor(ctx context.Context, namespace, name string) (*sdk.Cl
 	if card == nil {
 		return nil, fmt.Errorf("resolve agent card %s%s: empty response", c.baseURL, cardPath)
 	}
+	endpoint, err := url.JoinPath(c.baseURL, agentPath(namespace, name))
+	if err != nil {
+		return nil, fmt.Errorf("build local a2a endpoint for %s: %w", key, err)
+	}
+	card, err = bindLocalJSONRPCInterface(card, endpoint)
+	if err != nil {
+		return nil, fmt.Errorf("bind local a2a client for %s: %w", key, err)
+	}
 	client, err := sdk.NewFromCard(
 		ctx, card,
 		sdk.WithJSONRPCTransport(c.httpClient),
@@ -237,6 +245,28 @@ func (c *Client) clientFor(ctx context.Context, namespace, name string) (*sdk.Cl
 	c.mu.Unlock()
 	c.log.Info("resolved a2a agent", "agent", key, "card_name", card.Name)
 	return client, nil
+}
+
+// bindLocalJSONRPCInterface keeps a card fetched through agentgateway from redirecting the SDK to
+// a direct kagent URL in supportedInterfaces. A fresh card/interface view removes every fallback;
+// explicitly configuring the direct kagent base still binds to that operator-selected endpoint.
+func bindLocalJSONRPCInterface(card *a2a.AgentCard, endpoint string) (*a2a.AgentCard, error) {
+	if card == nil {
+		return nil, fmt.Errorf("agent card is empty")
+	}
+	bound := *card
+	for _, agentInterface := range card.SupportedInterfaces {
+		if agentInterface == nil ||
+			agentInterface.ProtocolVersion != a2a.Version ||
+			agentInterface.ProtocolBinding != a2a.TransportProtocolJSONRPC {
+			continue
+		}
+		selected := *agentInterface
+		selected.URL = endpoint
+		bound.SupportedInterfaces = []*a2a.AgentInterface{&selected}
+		return &bound, nil
+	}
+	return nil, fmt.Errorf("agent card has no A2A %s JSON-RPC interface", a2a.Version)
 }
 
 func taskText(t *a2a.Task) string {

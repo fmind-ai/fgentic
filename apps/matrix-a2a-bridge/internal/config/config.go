@@ -47,7 +47,7 @@ type Config struct {
 	// A2ABaseURL is the base the bridge dials for A2A. By default it routes THROUGH agentgateway
 	// (unified LLM/MCP/A2A telemetry + the model-credential chokepoint on the agent's own egress).
 	// Point it directly at kagent (http://kagent-controller.kagent.svc.cluster.local:8083) to skip
-	// the gateway hop — functionally equivalent for fire-and-forget message/send.
+	// the gateway hop — functionally equivalent for fire-and-forget SendMessage.
 	A2ABaseURL string `env:"A2A_BASE_URL" envDefault:"http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080"`
 	// A2AAPIKey authenticates this bridge workload at agentgateway. It is deliberately separate
 	// from X-User-Id, which carries Matrix attribution but is not a caller credential.
@@ -65,9 +65,9 @@ type Config struct {
 	// transactions carry event JSON and MXC references, not attachment bodies.
 	AppserviceTransactionMaxBytes int64 `env:"APPSERVICE_TRANSACTION_MAX_BYTES" envDefault:"16777216"`
 
-	// RequestTimeout bounds the synchronous A2A message/send transport round trip. TaskTimeout
+	// RequestTimeout bounds the synchronous A2A SendMessage transport round trip. TaskTimeout
 	// bounds the whole delegation when the agent returns a long-running Task that the bridge
-	// polls via tasks/get (SPEC §6).
+	// polls via GetTask (SPEC §6).
 	RequestTimeout time.Duration `env:"REQUEST_TIMEOUT" envDefault:"60s"`
 	TaskTimeout    time.Duration `env:"TASK_TIMEOUT" envDefault:"10m"`
 	// InputWaitTimeout bounds how long a task paused in TASK_STATE_INPUT_REQUIRED waits for the

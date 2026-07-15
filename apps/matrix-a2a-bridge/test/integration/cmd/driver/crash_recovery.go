@@ -402,8 +402,8 @@ func (f fixture) proveAmbiguousA2ARecovery(
 	if err != nil {
 		return err
 	}
-	if countA2AMethod(state.A2AMethods, "message/send") != 1 {
-		return fmt.Errorf("ambiguous A2A methods = %v, want one message/send", state.A2AMethods)
+	if countA2AMethod(state.A2AMethods, "SendMessage") != 1 {
+		return fmt.Errorf("ambiguous A2A methods = %v, want one SendMessage", state.A2AMethods)
 	}
 	return nil
 }
@@ -507,8 +507,8 @@ func (f fixture) proveLongTaskRecovery(
 	if err != nil {
 		return err
 	}
-	if countA2AMethod(state.A2AMethods, "message/send") != 1 || countA2AMethod(state.A2AMethods, "tasks/get") < 2 {
-		return fmt.Errorf("long-task A2A methods = %v, want one message/send and recovered tasks/get", state.A2AMethods)
+	if countA2AMethod(state.A2AMethods, "SendMessage") != 1 || countA2AMethod(state.A2AMethods, "GetTask") < 2 {
+		return fmt.Errorf("long-task A2A methods = %v, want one SendMessage and recovered GetTask", state.A2AMethods)
 	}
 	stats, err := f.fetchStubStats(ctx)
 	if err != nil {
@@ -765,9 +765,7 @@ func (f fixture) longProjectionCounts(
 func countA2AMethod(methods []string, want string) int {
 	count := 0
 	for _, method := range methods {
-		if strings.EqualFold(method, want) ||
-			(want == "message/send" && strings.EqualFold(method, "SendMessage")) ||
-			(want == "tasks/get" && strings.EqualFold(method, "GetTask")) {
+		if method == want {
 			count++
 		}
 	}

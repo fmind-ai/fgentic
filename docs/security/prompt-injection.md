@@ -10,7 +10,7 @@ Prompt injection is an unresolved model-behavior risk, not an input-validation b
 
 ## 7.2.1 Implemented containment
 
-1. **Provenance envelope.** Before A2A `message/send`, the bridge adds the sender MXID, sender homeserver, and room ID in a bridge-generated block, followed by the room text in a separate `UNTRUSTED MATRIX CONTENT` block. The identifiers are quoted and come from the Matrix event rather than the message body. Contract tests assert the envelope on the real A2A wire path.
+1. **Provenance envelope.** Before A2A `SendMessage`, the bridge adds the sender MXID, sender homeserver, and room ID in a bridge-generated block, followed by the room text in a separate `UNTRUSTED MATRIX CONTENT` block. The identifiers are quoted and come from the Matrix event rather than the message body. Contract tests assert the envelope on the real A2A wire path.
 1. **Invocation policy.** Only mapped local ghosts resolve. Per-agent homeserver and sender allowlists, room and sender rate limits, and the local-homeserver check run before model work. These controls limit who can spend tokens; they do not make an allowed sender's content safe.
 1. **Loop break.** Ghost replies use `m.notice`, and the bridge never delegates an `m.notice`. This prevents automatic reply loops; it does not make agent output trustworthy if a human copies or quotes it into a new `m.text` message.
 1. **Least privilege outside the model.** Model credentials remain in agentgateway, agent workloads receive only their required tools, and NetworkPolicies constrain service paths. Consequential actions require an external authorization or human-approval control; a model saying that an action is approved is never approval.
