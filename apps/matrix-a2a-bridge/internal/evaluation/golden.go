@@ -261,16 +261,29 @@ func validateAgentGoldenSuite(
 }
 
 func validateRubric(scenarioID string, rubric Rubric) error {
+	for _, forbidden := range rubric.Forbidden {
+		if strings.TrimSpace(forbidden) == "" {
+			return fmt.Errorf("scenario %q forbidden values must be non-blank", scenarioID)
+		}
+	}
 	switch rubric.Kind {
 	case RubricExact:
-		if len(rubric.Expected) != 1 {
-			return fmt.Errorf("scenario %q exact rubric needs one expected value", scenarioID)
+		if len(rubric.Expected) != 1 || strings.TrimSpace(rubric.Expected[0]) == "" {
+			return fmt.Errorf("scenario %q exact rubric needs one non-blank expected value", scenarioID)
 		}
 	case RubricContains:
 		if len(rubric.Expected) == 0 {
-			return fmt.Errorf("scenario %q contains rubric needs expected values", scenarioID)
+			return fmt.Errorf("scenario %q contains rubric needs non-blank expected values", scenarioID)
+		}
+		for _, expected := range rubric.Expected {
+			if strings.TrimSpace(expected) == "" {
+				return fmt.Errorf("scenario %q contains rubric needs non-blank expected values", scenarioID)
+			}
 		}
 	case RubricRegex:
+		if strings.TrimSpace(rubric.Pattern) == "" {
+			return fmt.Errorf("scenario %q regex rubric needs a non-blank pattern", scenarioID)
+		}
 		if _, err := regexp.Compile(rubric.Pattern); err != nil {
 			return fmt.Errorf("scenario %q regex rubric: %w", scenarioID, err)
 		}

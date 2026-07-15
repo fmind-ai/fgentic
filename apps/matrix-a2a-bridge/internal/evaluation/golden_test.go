@@ -101,6 +101,34 @@ func TestVerifyAgentGoldenSuitesRejectsOptionalJudge(t *testing.T) {
 	}
 }
 
+func TestVerifyAgentGoldenSuitesRejectsEmptyDeterministicAssertions(t *testing.T) {
+	tests := []struct {
+		name   string
+		rubric Rubric
+		want   string
+	}{
+		{name: "exact", rubric: Rubric{Kind: RubricExact, Expected: []string{" "}}, want: "non-blank expected"},
+		{name: "contains", rubric: Rubric{Kind: RubricContains, Expected: []string{"answer", ""}}, want: "non-blank expected"},
+		{name: "regex", rubric: Rubric{Kind: RubricRegex, Pattern: ""}, want: "non-blank pattern"},
+		{name: "forbidden", rubric: Rubric{Kind: RubricExact, Expected: []string{"deterministic answer"}, Forbidden: []string{" "}}, want: "forbidden values"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			suite := goldenTestSuite(t)
+			suite.Scenarios[0].Rubric = test.rubric
+			_, err := VerifyAgentGoldenSuites(
+				[]AgentGoldenSuite{suite},
+				strings.NewReader(goldenTestAgents),
+				strings.NewReader(goldenTestPrompts),
+				GoldenAnswers{Answers: []GoldenAnswer{{ScenarioID: "helper-smoke", Answer: "deterministic answer"}}},
+			)
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("VerifyAgentGoldenSuites error = %v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
 func goldenTestSuite(t *testing.T) AgentGoldenSuite {
 	t.Helper()
 	digest, err := AgentContractDigest(
