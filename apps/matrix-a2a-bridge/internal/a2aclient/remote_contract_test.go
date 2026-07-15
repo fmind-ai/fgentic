@@ -20,6 +20,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/a2aproject/a2a-go/v2/a2asrv"
@@ -46,6 +47,8 @@ type remoteContractFixture struct {
 	return304      bool
 	cardStatus     int
 	echoExtensions bool
+	callStarted    chan<- struct{}
+	callRelease    <-chan struct{}
 
 	cardHeaders []http.Header
 	callHeaders []http.Header
@@ -84,7 +87,15 @@ func newRemoteContractFixture(
 		fixture.mu.Lock()
 		fixture.callHeaders = append(fixture.callHeaders, req.Header.Clone())
 		echo := fixture.echoExtensions
+		started := fixture.callStarted
+		release := fixture.callRelease
 		fixture.mu.Unlock()
+		if started != nil {
+			started <- struct{}{}
+		}
+		if release != nil {
+			<-release
+		}
 		// A spec-compliant A2A server echoes the extensions it activated back to the caller.
 		if echo {
 			if requested := req.Header.Values(a2a.SvcParamExtensions); len(requested) > 0 {
@@ -511,6 +522,64 @@ func TestRemoteCardWithdrawalQuarantinesButTransientStatusRetains(t *testing.T) 
 				t.Fatalf("transient HTTP error = %v, ready = %v", err, client.IsReady(target))
 			}
 		})
+	}
+}
+
+func TestRemoteCardWithdrawalFencesInFlightCallWithoutBlockingRefresh(t *testing.T) {
+	fixture, client, target := newRemoteContractFixture(t, nil, "")
+	if _, err := client.ResolveAgentCard(t.Context(), target); err != nil {
+		t.Fatalf("initial ResolveAgentCard: %v", err)
+	}
+
+	callStarted := make(chan struct{}, 1)
+	callRelease := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseCall := func() { releaseOnce.Do(func() { close(callRelease) }) }
+	t.Cleanup(releaseCall)
+	fixture.mu.Lock()
+	fixture.callStarted = callStarted
+	fixture.callRelease = callRelease
+	fixture.mu.Unlock()
+
+	callDone := make(chan error, 1)
+	go func() {
+		_, err := client.Call(t.Context(), target, "slow remote prompt", "", nil)
+		callDone <- err
+	}()
+	select {
+	case <-callStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("remote call did not reach the blocked transport")
+	}
+
+	fixture.mu.Lock()
+	fixture.cardStatus = http.StatusGone
+	fixture.mu.Unlock()
+	refreshDone := make(chan error, 1)
+	go func() {
+		_, err := client.ResolveAgentCard(t.Context(), target)
+		refreshDone <- err
+	}()
+	select {
+	case err := <-refreshDone:
+		if !errors.Is(err, ErrRemoteTargetUntrusted) {
+			t.Fatalf("withdrawal refresh error = %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("withdrawal refresh blocked behind the in-flight remote call")
+	}
+	if client.IsReady(target) {
+		t.Fatal("withdrawal refresh left the remote target ready")
+	}
+
+	releaseCall()
+	select {
+	case err := <-callDone:
+		if !errors.Is(err, ErrRemoteTargetUntrusted) {
+			t.Fatalf("in-flight call error = %v, want trust-generation failure", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("in-flight remote call did not finish after release")
 	}
 }
 
