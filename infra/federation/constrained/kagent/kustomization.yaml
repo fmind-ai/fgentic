@@ -1,0 +1,41 @@
+# Federation retains only the docs-qa runtime and kagent controller; both receive a lab-sized
+# envelope while the already-disabled UI, KMCP, and tool server remain absent.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: kagent
+      namespace: kagent
+    patch: |
+      - op: add
+        path: /spec/values/controller/resources
+        value:
+          requests:
+            memory: 64Mi
+          limits:
+            memory: 256Mi
+      - op: add
+        path: /spec/values/controller/env
+        value:
+          - name: GOMAXPROCS
+            value: "1"
+          - name: GOGC
+            value: "25"
+          - name: GOMEMLIMIT
+            value: 64MiB
+  - target:
+      group: kagent.dev
+      version: v1alpha2
+      kind: Agent
+      name: docs-qa
+      namespace: kagent
+    patch: |
+      - op: replace
+        path: /spec/declarative/deployment/resources/requests/memory
+        value: 64Mi
+      - op: replace
+        path: /spec/declarative/deployment/resources/limits/memory
+        value: 256Mi

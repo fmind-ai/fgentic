@@ -501,6 +501,18 @@ run = "bash scripts/dev.sh down"
 description = "Reconcile and prove the provider-free federation hardening lab"
 run = "bash scripts/federation.sh up"
 
+[tasks."fed:up:constrained"]
+description = "Reconcile the opt-in serialized federation profile for a constrained laptop"
+run = "FGENTIC_FED_CONSTRAINED=yes bash scripts/federation.sh up"
+
+[tasks."fed:status"]
+description = "Show active/stopped state and retained federation-lab disk bytes"
+run = "bash scripts/federation.sh status"
+
+[tasks."fed:stop"]
+description = "Stop the owned federation cluster while preserving its image volume"
+run = "bash scripts/federation.sh stop"
+
 [tasks."fed:down"]
 description = "Delete only the owned fgentic-fed federation cluster"
 run = "bash scripts/federation.sh down"

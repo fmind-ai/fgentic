@@ -1,0 +1,74 @@
+# The federation proof needs these controllers, but not their production reconciliation throughput.
+# Keep hard cgroup limits unchanged while aligning Go scheduling and GC with a one-node laptop.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: traefik
+      namespace: gateway
+    patch: |
+      - op: add
+        path: /spec/values/deployment/goMemLimitPercentage
+        value: 0.5
+      - op: add
+        path: /spec/values/env
+        value:
+          - name: GOGC
+            value: "25"
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: cert-manager
+      namespace: cert-manager
+    patch: |
+      - op: add
+        path: /spec/postRenderers
+        value:
+          - kustomize:
+              patches:
+                - target:
+                    group: apps
+                    version: v1
+                    kind: Deployment
+                    name: cert-manager(|-cainjector|-webhook)
+                  patch: |
+                    - op: add
+                      path: /spec/template/spec/containers/0/env/-
+                      value: {name: GOMAXPROCS, value: "1"}
+                    - op: add
+                      path: /spec/template/spec/containers/0/env/-
+                      value: {name: GOGC, value: "25"}
+                    - op: add
+                      path: /spec/template/spec/containers/0/env/-
+                      value: {name: GOMEMLIMIT, value: 64MiB}
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: cloudnative-pg
+      namespace: cnpg-system
+    patch: |
+      - op: add
+        path: /spec/postRenderers
+        value:
+          - kustomize:
+              patches:
+                - target:
+                    group: apps
+                    version: v1
+                    kind: Deployment
+                    name: cloudnative-pg
+                  patch: |
+                    - op: add
+                      path: /spec/template/spec/containers/0/env/-
+                      value: {name: GOMAXPROCS, value: "1"}
+                    - op: add
+                      path: /spec/template/spec/containers/0/env/-
+                      value: {name: GOGC, value: "25"}
+                    - op: add
+                      path: /spec/template/spec/containers/0/env/-
+                      value: {name: GOMEMLIMIT, value: 64MiB}

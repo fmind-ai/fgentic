@@ -27,11 +27,11 @@ snapshot_source() {
       .data.openai_host = strenv(OPENAI_HOST) |
       .data.azure_openai_resource = strenv(AZURE_OPENAI_RESOURCE) |
       .data.demo_bridge_tag = strenv(BRIDGE_TAG)
-    ' "${SNAPSHOT_DIR}/${OVERLAY_PATH}/platform-settings.yaml"
+    ' "${SNAPSHOT_DIR}/${PLATFORM_SETTINGS_PATH}"
 	if [ "${PROFILE}" = "federation" ]; then
 		FED_GATEWAY_IP="${FEDERATION_GATEWAY_IP}" yq --inplace \
 			'.data.federation_gateway_ip = strenv(FED_GATEWAY_IP)' \
-			"${SNAPSHOT_DIR}/${OVERLAY_PATH}/platform-settings.yaml"
+			"${SNAPSHOT_DIR}/${PLATFORM_SETTINGS_PATH}"
 		configure_federation_policy_snapshot
 		sign_federation_agent_card_snapshot
 	fi
@@ -120,7 +120,7 @@ sign_federation_agent_card_snapshot() {
 	local template policy settings bundle marker_count signed_card card_server card_partner
 	template="${SNAPSHOT_DIR}/${FEDERATION_AGENT_CARD_TEMPLATE_PATH}"
 	policy="${SNAPSHOT_DIR}/${FEDERATION_AGENT_CARD_POLICY_PATH}"
-	settings="${SNAPSHOT_DIR}/${OVERLAY_PATH}/platform-settings.yaml"
+	settings="${SNAPSHOT_DIR}/${PLATFORM_SETTINGS_PATH}"
 	bundle="${WORK_DIR}/agent-card-bundle.json"
 	AGENT_CARD_PUBLIC_FILE="${WORK_DIR}/agent-card.json"
 	AGENT_CARD_JWK_FILE="${WORK_DIR}/public-jwk.json"

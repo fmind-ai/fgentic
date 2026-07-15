@@ -1,0 +1,79 @@
+# The tiny lab room graph needs much less cache than a general-purpose homeserver. The explicit
+# ceiling also replaces ESS's 4 GiB per-Synapse default without changing the canonical profile.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+    patch: |
+      - op: add
+        path: /spec/values/synapse/resources
+        value:
+          requests:
+            memory: 128Mi
+          limits:
+            memory: 640Mi
+      - op: add
+        path: /spec/values/synapse/additional/05-constrained-memory
+        value:
+          config: |
+            caches:
+              global_factor: 0.1
+            # Ten idle database connections per homeserver dominate a tiny three-room lab.
+            # Keep one warm connection and two slots for short concurrent proof bursts.
+            database:
+              args:
+                cp_min: 1
+                cp_max: 2
+      - op: add
+        path: /spec/values/haproxy
+        value:
+          resources:
+            requests:
+              memory: 32Mi
+            limits:
+              memory: 96Mi
+      # ESS lets HAProxy auto-size itself from the host CPU count. A 16-core laptop therefore
+      # allocated roughly 80 MiB per otherwise-idle proxy. Keep threading automatic, but bound
+      # HAProxy's own allocator for this three-room lab; 32 MB passed the complete federation proof.
+      - op: add
+        path: /spec/postRenderers
+        value:
+          - kustomize:
+              patches:
+                - target:
+                    group: apps
+                    version: v1
+                    kind: Deployment
+                    name: ess-haproxy
+                  patch: |
+                    apiVersion: apps/v1
+                    kind: Deployment
+                    metadata:
+                      name: ess-haproxy
+                    spec:
+                      template:
+                        spec:
+                          containers:
+                            - name: haproxy
+                              args:
+                                - -f
+                                - /usr/local/etc/haproxy/haproxy.cfg
+                                - -dW
+                                - -m
+                                - "32"
+                # Synapse already preloads jemalloc. Two arenas and prompt decay bound
+                # post-proof fragmentation without changing Python or the canonical profile.
+                - target:
+                    group: apps
+                    version: v1
+                    kind: StatefulSet
+                    name: ess-synapse-main
+                  patch: |
+                    - op: add
+                      path: /spec/template/spec/containers/0/env/-
+                      value:
+                        name: MALLOC_CONF
+                        value: narenas:2,background_thread:true,dirty_decay_ms:1000,muzzy_decay_ms:1000

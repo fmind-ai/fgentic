@@ -1,0 +1,47 @@
+# The federation issuer is one disposable, single-node test realm. Local caches and a bounded JVM
+# heap are deliberate here; the canonical and production profiles retain clustered Infinispan.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: keycloak
+      namespace: keycloak
+    patch: |
+      - op: replace
+        path: /spec/values/resources/requests/memory
+        value: 256Mi
+      - op: replace
+        path: /spec/values/resources/limits/memory
+        value: 640Mi
+      - op: add
+        path: /spec/values/cache
+        value:
+          stack: custom
+      - op: replace
+        path: /spec/values/extraEnv
+        value: |
+          - name: KC_HOSTNAME
+            value: https://id.${federation_partner_server_name}
+          - name: KC_DB_URL_PROPERTIES
+            value: "?sslmode=require"
+          - name: KC_DB_POOL_MAX_SIZE
+            value: "5"
+          - name: KC_CACHE
+            value: local
+          - name: JAVA_OPTS_KC_HEAP
+            value: >-
+              -XX:InitialRAMPercentage=8.0
+              -XX:MaxRAMPercentage=30.0
+              -XX:ActiveProcessorCount=1
+              -Xss512k
+              -XX:ReservedCodeCacheSize=64m
+              -XX:MinHeapFreeRatio=10
+              -XX:MaxHeapFreeRatio=30
+              -XX:G1PeriodicGCInterval=30000
+          - name: MALLOC_ARENA_MAX
+            value: "2"
+          - name: MALLOC_TRIM_THRESHOLD_
+            value: "131072"

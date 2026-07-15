@@ -12,7 +12,7 @@ source "${ROOT_DIR}/scripts/lib.sh"
 
 usage() {
 	cat <<'EOF'
-usage: scripts/federation.sh up|down
+usage: scripts/federation.sh up|status|stop|down
 
 Creates the owned fgentic-fed k3d cluster with three provider-free Synapse homeservers:
   org-a.fgentic.localhost
@@ -20,12 +20,20 @@ Creates the owned fgentic-fed k3d cluster with three provider-free Synapse homes
   org-c.fgentic.localhost (denied control)
 
 `up` reconciles the lab, proves a bidirectional A/B exchange plus C's rejection, and leaves the
-cluster running for inspection. `down` deletes only that ownership-labelled cluster and its local
-images.
+cluster running for inspection. `stop` releases CPU/RAM while retaining the exact owned cluster
+and image volume for same-mode reuse. `down` deletes only that ownership-labelled cluster and its
+local images; run it before switching between canonical and constrained capacity.
 
 Environment:
   FGENTIC_FED_CLUSTER  must be fgentic-fed when set
   FGENTIC_FED_TIMEOUT  reconciliation timeout (default: 20m)
+  FGENTIC_FED_CONSTRAINED
+                       yes enables the opt-in serialized, right-sized laptop profile (default: no)
+  FGENTIC_FED_NO_PROGRESS_TIMEOUT
+                       constrained no-progress timeout (default: 20m)
+  FGENTIC_FED_MAX_TIMEOUT
+                       constrained absolute timeout (default: 60m)
+  FGENTIC_FED_TRACE    yes writes allowlisted resource-only JSON under .agents/tmp (default: no)
   FGENTIC_FED_POLICY_PROBE
                        deny (default) or allow; allow changes only the ephemeral Git snapshot
   FGENTIC_DEMO_CACHE_DIR
@@ -41,6 +49,14 @@ fi
 cluster_name="${FGENTIC_FED_CLUSTER:-${FEDERATION_CLUSTER}}"
 [ "${cluster_name}" = "${FEDERATION_CLUSTER}" ] ||
 	die "FGENTIC_FED_CLUSTER must be ${FEDERATION_CLUSTER}"
+case "${FGENTIC_FED_CONSTRAINED:-no}" in
+yes | no) ;;
+*) die "FGENTIC_FED_CONSTRAINED must be yes or no" ;;
+esac
+case "${FGENTIC_FED_TRACE:-no}" in
+yes | no) ;;
+*) die "FGENTIC_FED_TRACE must be yes or no" ;;
+esac
 
 case "$1" in
 up)
@@ -53,6 +69,11 @@ up)
 	export FGENTIC_DEMO_CLUSTER="${cluster_name}"
 	export FGENTIC_DEMO_TIMEOUT="${FGENTIC_FED_TIMEOUT:-20m}"
 	exec "${ROOT_DIR}/scripts/demo.sh" up
+	;;
+status | stop)
+	export FGENTIC_DEMO_PROFILE=federation
+	export FGENTIC_DEMO_CLUSTER="${cluster_name}"
+	exec "${ROOT_DIR}/scripts/demo.sh" "$1"
 	;;
 down)
 	export FGENTIC_DEMO_PROFILE=federation

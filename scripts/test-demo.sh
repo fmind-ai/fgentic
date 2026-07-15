@@ -174,12 +174,17 @@ bash -n "${DEMO_SOURCES[@]}" "${DEV}" "${ROOT_DIR}/scripts/seed-demo.sh"
 	k3d() {
 		early_image_calls+=("k3d:$*")
 	}
+	resource_trace_require_volume_sample() { return 0; }
+	prune_owned_host_images() {
+		early_image_calls+=("prune:$1")
+	}
 	build_and_load_images
 	[ "${early_image_calls[0]}" = 'build:fgentic-demo-source:fixture' ]
 	[ "${early_image_calls[1]}" = 'build:matrix-a2a-bridge:fixture' ]
 	[ "${early_image_calls[2]}" = \
 		'k3d:image import --mode auto --cluster fgentic-demo-fixture fgentic-demo-source:fixture' ]
-	[ "${#early_image_calls[@]}" -eq 3 ]
+	[ "${early_image_calls[3]}" = 'prune:fgentic-demo-source' ]
+	[ "${#early_image_calls[@]}" -eq 4 ]
 	bridge_image_calls="${WORK_DIR}/bridge-image-calls"
 	: >"${bridge_image_calls}"
 	kubectl() {
@@ -276,6 +281,25 @@ rg --fixed-strings 'render_bootstrap_namespaces | kubectl apply --filename -' \
 	PROFILE=federation
 	render_bootstrap_namespaces >"${WORK_DIR}/federation-bootstrap-namespaces.yaml"
 )
+(
+	# Profile-specific tuning must remain a successful no-op for the ordinary demo, and an empty
+	# controller query is also a successful no-op while Flux is between install transitions.
+	# shellcheck source=scripts/lib/demo-cluster.sh
+	source "${ROOT_DIR}/scripts/lib/demo-cluster.sh"
+	PROFILE=demo
+	kubectl() { fail 'federation tuning queried Kubernetes for the demo profile'; }
+	configure_federation_flux_controllers
+	configure_federation_metrics_server
+
+	PROFILE=federation
+	FEDERATION_CONSTRAINED=no
+	FLUX_LEADER_ELECTION_LEASE_DURATION=180s
+	FLUX_LEADER_ELECTION_RENEW_DEADLINE=170s
+	FLUX_LEADER_ELECTION_RETRY_PERIOD=30s
+	kubectl() { printf '{"items":[]}\n'; }
+	configure_ephemeral_flux_controllers
+	configure_federation_flux_controllers
+)
 for stream in demo-bootstrap-namespaces.yaml federation-bootstrap-namespaces.yaml; do
 	if rg --fixed-strings '${quota_' "${WORK_DIR}/${stream}" >/dev/null; then
 		echo "error: ${stream} contains unresolved quota substitution" >&2
@@ -334,8 +358,9 @@ rg --fixed-strings 'local CA certificate not found' "${WORK_DIR}/seed-startup.tx
 	exit 1
 }
 (
-	# Validate the generated cluster config without creating a cluster. Both disposable profiles
-	# need the explicit disk floor; only federation moves ingress to its alternate loopback.
+	# Validate the generated cluster config without creating a cluster. Every disposable profile
+	# needs the explicit disk floor; federation alone moves ingress to its alternate loopback, and
+	# only its explicit constrained capacity mode tunes the k3s process.
 	# shellcheck source=scripts/lib/demo-config.sh
 	source "${ROOT_DIR}/scripts/lib/demo-config.sh"
 	CLUSTER_NAME=fgentic-demo-fixture
@@ -343,8 +368,11 @@ rg --fixed-strings 'local CA certificate not found' "${WORK_DIR}/seed-startup.tx
 	PROFILE=demo
 	render_k3d_config "${WORK_DIR}/demo-k3d.yaml"
 	PROFILE=federation
+	FEDERATION_CONSTRAINED=no
 	render_k3d_config "${WORK_DIR}/federation-k3d.yaml"
-	for config in demo-k3d.yaml federation-k3d.yaml; do
+	FEDERATION_CONSTRAINED=yes
+	render_k3d_config "${WORK_DIR}/federation-constrained-k3d.yaml"
+	for config in demo-k3d.yaml federation-k3d.yaml federation-constrained-k3d.yaml; do
 		assert_yq \
 			'.options.k3s.extraArgs[] |
         select(.arg == "--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<1Gi,imagefs.available<1Gi,nodefs.inodesFree<5%,imagefs.inodesFree<5%") |
@@ -379,6 +407,22 @@ rg --fixed-strings 'local CA certificate not found' "${WORK_DIR}/seed-startup.tx
 		"${WORK_DIR}/demo-k3d.yaml" 'demo ingress ports changed'
 	assert_yq '.ports[0].port == "127.0.0.2:80:80" and .ports[1].port == "127.0.0.2:443:443"' \
 		"${WORK_DIR}/federation-k3d.yaml" 'federation ingress ports changed'
+	assert_yq '.ports[0].port == "127.0.0.2:80:80" and .ports[1].port == "127.0.0.2:443:443"' \
+		"${WORK_DIR}/federation-constrained-k3d.yaml" \
+		'constrained federation ingress ports changed'
+	for config in demo-k3d.yaml federation-k3d.yaml; do
+		assert_yq \
+			'[.env[]? | select((.envVar == "GOGC=50") or (.envVar == "GOMEMLIMIT=1GiB"))] | length == 0' \
+			"${WORK_DIR}/${config}" "${config} unexpectedly tunes the k3s Go runtime"
+	done
+	assert_yq '
+      ((.env | length) == 2) and
+      (.env[0].envVar == "GOGC=50") and
+      (.env[0].nodeFilters[0] == "server:*") and
+      (.env[1].envVar == "GOMEMLIMIT=1GiB") and
+      (.env[1].nodeFilters[0] == "server:*")
+    ' "${WORK_DIR}/federation-constrained-k3d.yaml" \
+		'constrained federation config omits the k3s Go runtime budget'
 )
 for entrypoint in "${SHARED_HELPER_ENTRYPOINTS[@]}"; do
 	rg --fixed-strings 'source "${ROOT_DIR}/scripts/lib.sh"' "${entrypoint}" >/dev/null || {
@@ -565,18 +609,26 @@ state="${FAKE_DOCKER_STATE:?}"
 case "${1:-}" in
 inspect)
 	[ -f "${state}/container" ] || exit 1
-	if [ "${FAKE_TEARDOWN_SCENARIO:?}" = foreign ]; then
-		printf 'foreign\n'
+	if [ "${2:-}" = --format ]; then
+		if [ "${FAKE_TEARDOWN_SCENARIO:?}" = foreign ]; then
+			printf 'foreign\n'
+		else
+			printf 'true\n'
+		fi
 	else
-		printf 'true\n'
+		printf '[{"Mounts":[{"Type":"volume","Name":"k3d-%s-images"}]}]\n' \
+			"${FAKE_CLUSTER_NAME:?}"
 	fi
 	;;
 ps)
-	[ -f "${state}/container" ] && printf 'owned-container\n'
+	if [ -f "${state}/container" ]; then
+		printf 'owned-container\n'
+	fi
 	;;
 rm)
 	shift
 	[ "${1:-}" = --force ] && shift
+	[ "${1:-}" = --volumes ] && shift
 	for container_id in "$@"; do
 		printf 'container-rm:%s\n' "${container_id}" >>"${state}/commands"
 	done
@@ -637,10 +689,13 @@ run_teardown_fixture() {
 		return
 	fi
 
-	PATH="${fake_bin}:${PATH}" FAKE_DOCKER_STATE="${state}" \
+	if ! PATH="${fake_bin}:${PATH}" FAKE_DOCKER_STATE="${state}" \
 		FAKE_CLUSTER_NAME=fgentic-demo-teardown FAKE_TEARDOWN_SCENARIO="${scenario}" \
 		FGENTIC_DEMO_CLUSTER=fgentic-demo-teardown "${DEMO}" down \
-		>"${state}/output"
+		>"${state}/output" 2>&1; then
+		cat "${state}/output" >&2
+		return 1
+	fi
 	for resource in cluster container network volume; do
 		[ ! -e "${state}/${resource}" ] || {
 			echo "error: ${scenario} teardown retained ${resource}" >&2
@@ -853,8 +908,8 @@ rg --fixed-strings 'http://fgentic-demo-source.flux-system.svc.cluster.local:808
 for retry_contract in \
 	'if flux reconcile source git flux-system --timeout=2m >/dev/null &&' \
 	"expected_revision=\"main@sha1:\${SOURCE_REVISION}\"" \
-	"! kustomizations=\"\$(kubectl --namespace flux-system get kustomizations --output json)\"" \
-	"! helmreleases=\"\$(kubectl get helmreleases --all-namespaces --output json)\""; do
+	"! kustomizations=\"\$(kubectl --request-timeout=10s --namespace flux-system \\" \
+	"! helmreleases=\"\$(kubectl --request-timeout=10s get helmreleases \\"; do
 	rg --fixed-strings "${retry_contract}" "${DEMO_SOURCES[@]}" >/dev/null || {
 		echo "error: demo lifecycle does not retry transient API failures" >&2
 		exit 1

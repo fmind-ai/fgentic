@@ -2,24 +2,25 @@
 # Definition-only cluster lifecycle helpers sourced by scripts/demo.sh.
 configure_ephemeral_flux_controllers() {
 	local deployment
+	local deployment_output
 	local patch
 	local deployments=()
 
 	# Ephemeral profiles run on the same constrained workstation as clusters/local. Keep the
 	# single-replica controllers alive through API-server I/O stalls instead of flapping every
 	# dependent Kustomization after the default 15-second leader-election lease expires.
+	deployment_output="$(kubectl --namespace flux-system get deployments \
+		--selector app.kubernetes.io/part-of=flux --output json | \
+		jq --raw-output --arg lease \
+			"--leader-election-lease-duration=${FLUX_LEADER_ELECTION_LEASE_DURATION}" '
+        .items[] |
+        select((((.spec.template.spec.containers[0].args // []) | index($lease)) == null)) |
+        .metadata.name
+      ')" || die 'could not inspect Flux controller leader-election settings'
 	while IFS= read -r deployment; do
 		[ -z "${deployment}" ] || deployments[${#deployments[@]}]="${deployment}"
-	done < <(
-		kubectl --namespace flux-system get deployments \
-			--selector app.kubernetes.io/part-of=flux --output json |
-			jq --raw-output --arg lease "--leader-election-lease-duration=${FLUX_LEADER_ELECTION_LEASE_DURATION}" '
-          .items[] |
-          select((((.spec.template.spec.containers[0].args // []) | index($lease)) == null)) |
-          .metadata.name
-        '
-	)
-	((${#deployments[@]} > 0)) || return
+	done <<<"${deployment_output}"
+	((${#deployments[@]} > 0)) || return 0
 
 	patch="$(jq --null-input --compact-output \
 		--arg lease "--leader-election-lease-duration=${FLUX_LEADER_ELECTION_LEASE_DURATION}" \
@@ -39,13 +40,95 @@ configure_ephemeral_flux_controllers() {
 		kubectl --namespace flux-system rollout status deployment "${deployment}" --timeout=3m
 	done
 }
+
+configure_federation_flux_controllers() {
+	local deployment
+	local deployment_output
+	local patch
+	local deployments=()
+
+	[ "${PROFILE}" = federation ] || return 0
+
+	# Flux's generated controller Pods see every host CPU and derive a 1 GiB Go memory target. The
+	# constrained lab uses one scheduler thread and a request-sized soft heap, while the default
+	# profile explicitly restores the upstream runtime and resource values after constrained reuse.
+	deployment_output="$(kubectl --namespace flux-system get deployments \
+		--selector app.kubernetes.io/part-of=flux --output json | \
+		jq --raw-output '.items[].metadata.name')" ||
+		die 'could not inspect Flux controllers for federation runtime tuning'
+	while IFS= read -r deployment; do
+		[ -z "${deployment}" ] || deployments[${#deployments[@]}]="${deployment}"
+	done <<<"${deployment_output}"
+	((${#deployments[@]} > 0)) || return 0
+
+	if [ "${FEDERATION_CONSTRAINED}" = yes ]; then
+		# Keep a 256 MiB cgroup ceiling for short reconcile bursts; GOMEMLIMIT is a soft target.
+		patch='{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"GOMAXPROCS","value":"1"},{"name":"GOGC","value":"25"},{"name":"GOMEMLIMIT","value":null,"valueFrom":{"resourceFieldRef":{"containerName":"manager","resource":"requests.memory"}}}],"resources":{"limits":{"memory":"256Mi"},"requests":{"memory":"64Mi"}}}]}}}}'
+	else
+		patch='{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"GOMAXPROCS","$patch":"delete"},{"name":"GOGC","$patch":"delete"},{"name":"GOMEMLIMIT","value":null,"valueFrom":{"resourceFieldRef":{"containerName":"manager","resource":"limits.memory"}}}],"resources":{"limits":{"memory":"1Gi"},"requests":{"memory":"64Mi"}}}]}}}}'
+	fi
+	for deployment in "${deployments[@]}"; do
+		kubectl --namespace flux-system patch deployment "${deployment}" \
+			--type strategic --patch "${patch}" >/dev/null
+	done
+	for deployment in "${deployments[@]}"; do
+		kubectl --namespace flux-system rollout status deployment "${deployment}" --timeout=3m
+	done
+}
+
+configure_federation_metrics_server() {
+	local attempt changed=no current deployment desired pods
+
+	[ "${PROFILE}" = federation ] || return 0
+	desired=1
+	[ "${FEDERATION_CONSTRAINED}" = yes ] && desired=0
+	deployment=""
+	for attempt in 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19 20 21 22 23 24; do
+		if deployment="$(kubectl --namespace kube-system get deployment metrics-server \
+			--ignore-not-found --output name 2>/dev/null)"; then
+			[ -n "${deployment}" ] && break
+			[ "${desired}" = 1 ] && return
+		fi
+		[ "${attempt}" -eq 24 ] || sleep 5
+	done
+	[ -n "${deployment}" ] || die 'the constrained federation profile could not find metrics-server'
+	current="$(kubectl --namespace kube-system get deployment metrics-server \
+		--output jsonpath='{.spec.replicas}')"
+	if [ "${current}" != "${desired}" ]; then
+		kubectl --namespace kube-system scale deployment metrics-server \
+			--replicas "${desired}" >/dev/null
+		changed=yes
+	fi
+	if [ "${desired}" = 0 ]; then
+		if ! pods="$(kubectl --namespace kube-system get pods \
+			--selector k8s-app=metrics-server --output name)"; then
+			die 'could not inspect metrics-server Pods after scaling to zero'
+		fi
+		if [ -n "${pods}" ]; then
+			kubectl --namespace kube-system wait --for=delete pod \
+				--selector k8s-app=metrics-server --timeout=2m >/dev/null
+		fi
+		return
+	fi
+	[ "${changed}" = no ] ||
+		kubectl --namespace kube-system rollout status deployment/metrics-server --timeout=2m
+}
 random_hex() {
 	openssl rand -hex "$1"
 }
 
 cluster_exists() {
-	k3d cluster list --output json | jq -e --arg name "${CLUSTER_NAME}" \
-		'any(.[]; .name == $name)' >/dev/null
+	local cluster_output query_status
+	cluster_output="$(k3d cluster list --output json)" ||
+		die 'could not inspect the k3d cluster inventory'
+	if jq -e --arg name "${CLUSTER_NAME}" \
+		'any(.[]; .name == $name)' <<<"${cluster_output}" >/dev/null; then
+		return 0
+	else
+		query_status=$?
+		[ "${query_status}" -eq 1 ] || die 'k3d returned an invalid cluster inventory'
+		return 1
+	fi
 }
 
 cluster_owned_by_demo() {
@@ -53,8 +136,36 @@ cluster_owned_by_demo() {
 		"k3d-${CLUSTER_NAME}-server-0" 2>/dev/null || true)" = "${OWNER_LABEL}" ]
 }
 
+cluster_capacity_mode() {
+	docker inspect --format '{{index .Config.Labels "dev.fgentic.demo.capacity"}}' \
+		"k3d-${CLUSTER_NAME}-server-0"
+}
+
 cluster_container_ids() {
 	docker ps --all --filter "label=k3d.cluster=${CLUSTER_NAME}" --quiet
+}
+
+cluster_running_container_ids() {
+	docker ps --filter "label=k3d.cluster=${CLUSTER_NAME}" --quiet
+}
+
+cluster_running() {
+	local cluster_output query_status running running_output total total_output
+	total_output="$(cluster_container_ids)" || return 2
+	running_output="$(cluster_running_container_ids)" || return 2
+	total="$(sort <<<"${total_output}")" || return 2
+	running="$(sort <<<"${running_output}")" || return 2
+	[ -n "${total}" ] && [ "${running}" = "${total}" ] || return 1
+	cluster_output="$(k3d cluster list --output json)" || return 2
+	if jq -e --arg name "${CLUSTER_NAME}" '
+      any(.[]; .name == $name and .serversRunning == .serversCount and .serversCount > 0)
+    ' <<<"${cluster_output}" >/dev/null; then
+		return 0
+	else
+		query_status=$?
+		[ "${query_status}" -eq 1 ] || return 2
+		return 1
+	fi
 }
 
 cluster_network_exists() {
@@ -65,29 +176,157 @@ cluster_volume_exists() {
 	docker volume inspect "k3d-${CLUSTER_NAME}-images" >/dev/null 2>&1
 }
 
+cluster_volume_identity() {
+	docker volume inspect "k3d-${CLUSTER_NAME}-images" 2>/dev/null |
+		jq --exit-status --raw-output --arg cluster "${CLUSTER_NAME}" '
+      .[0] |
+      select(.Labels.app == "k3d" and .Labels."k3d.cluster" == $cluster) |
+      (.Name + "@" + .CreatedAt)
+    '
+}
+
+docker_volume_bytes() {
+	local bytes mountpoint reader_image volume="$1"
+	docker volume inspect "${volume}" >/dev/null 2>&1 || return 1
+	# Linux exposes the named-volume mount directly. Docker Desktop does not, so use an already
+	# present lab image as a pull-free, network-free reader while the cluster is stopped.
+	mountpoint="$(docker volume inspect --format '{{.Mountpoint}}' \
+		"${volume}" 2>/dev/null || true)"
+	if [ -n "${mountpoint}" ] && [ -d "${mountpoint}" ] && du -sb "${mountpoint}" >/dev/null 2>&1; then
+		bytes="$(du -sb "${mountpoint}" | awk 'NR == 1 { print $1 }')"
+		[[ "${bytes}" =~ ^[0-9]+$ ]] || return 1
+		printf '%s\n' "${bytes}"
+		return
+	fi
+	reader_image="${SOURCE_BASE_IMAGE:-}"
+	if [ -z "${reader_image}" ] || ! docker image inspect "${reader_image}" >/dev/null 2>&1; then
+		reader_image="$(docker inspect --format '{{.Image}}' \
+			"k3d-${CLUSTER_NAME}-server-0" 2>/dev/null || true)"
+	fi
+	[ -n "${reader_image}" ] || return 1
+	docker image inspect "${reader_image}" >/dev/null 2>&1 || return 1
+	bytes="$(docker run --rm --pull never --network none --entrypoint /bin/du \
+		--volume "${volume}:/volume:ro" "${reader_image}" -sb /volume \
+		2>/dev/null | awk 'NR == 1 { print $1 }')"
+	[[ "${bytes}" =~ ^[0-9]+$ ]] || return 1
+	printf '%s\n' "${bytes}"
+}
+
+cluster_volume_bytes() {
+	docker_volume_bytes "k3d-${CLUSTER_NAME}-images"
+}
+
+cluster_attached_volume_names() {
+	local container_id container_output inspect_output volume_output
+	local container_ids=()
+	container_output="$(cluster_container_ids)" || return 1
+	while IFS= read -r container_id; do
+		[ -z "${container_id}" ] || container_ids[${#container_ids[@]}]="${container_id}"
+	done <<<"${container_output}"
+	((${#container_ids[@]} > 0)) || return 0
+	inspect_output="$(docker inspect "${container_ids[@]}")" || return 1
+	volume_output="$(jq --raw-output \
+		'.[].Mounts[]? | select(.Type == "volume") | .Name' <<<"${inspect_output}")" || return 1
+	printf '%s\n' "${volume_output}" | awk 'NF' | sort -u
+}
+
+cluster_retained_storage_bytes() {
+	local attached_volumes bytes container_id container_output total=0 volume
+	attached_volumes="$(cluster_attached_volume_names)" || return 1
+	while IFS= read -r volume; do
+		[ -n "${volume}" ] || continue
+		bytes="$(docker_volume_bytes "${volume}")" || return 1
+		total=$((total + bytes))
+	done <<<"${attached_volumes}"
+	container_output="$(cluster_container_ids)" || return 1
+	while IFS= read -r container_id; do
+		[ -n "${container_id}" ] || continue
+		bytes="$(docker container inspect --size --format '{{.SizeRw}}' "${container_id}")" ||
+			return 1
+		[[ "${bytes}" =~ ^[0-9]+$ ]] || return 1
+		total=$((total + bytes))
+	done <<<"${container_output}"
+	printf '%s\n' "${total}"
+}
+
+cluster_owned_image_ids() {
+	local image_output
+	image_output="$(docker images \
+		--filter "label=dev.fgentic.demo.cluster=${CLUSTER_NAME}" --quiet)" || return 1
+	printf '%s\n' "${image_output}" | awk 'NF' | sort -u
+}
+
+cluster_owned_image_bytes() {
+	local image_id image_output size total=0
+	image_output="$(cluster_owned_image_ids)" || return 1
+	while IFS= read -r image_id; do
+		[ -n "${image_id}" ] || continue
+		size="$(docker image inspect --format '{{.Size}}' "${image_id}")" || return 1
+		[[ "${size}" =~ ^[0-9]+$ ]] || return 1
+		total=$((total + size))
+	done <<<"${image_output}"
+	printf '%s\n' "${total}"
+}
+
+require_owned_evaluation_cluster() {
+	cluster_exists || die "${CLUSTER_NAME} does not exist"
+	cluster_owned_by_demo ||
+		die "refusing to manage ${CLUSTER_NAME}: it was not created by scripts/demo.sh"
+	cluster_volume_identity >/dev/null ||
+		die "refusing to manage ${CLUSTER_NAME}: its image volume is missing or foreign"
+}
+
+cluster_runtime_artifacts_exist() {
+	local container_output
+	container_output="$(cluster_container_ids)" || return 2
+	[ -n "${container_output}" ] || cluster_network_exists || cluster_volume_exists
+}
+
 cluster_artifacts_exist() {
-	[ -n "$(cluster_container_ids)" ] || cluster_network_exists || cluster_volume_exists
+	local artifact_status image_output
+	if cluster_runtime_artifacts_exist; then
+		return 0
+	else
+		artifact_status=$?
+		[ "${artifact_status}" -eq 1 ] || return "${artifact_status}"
+	fi
+	image_output="$(cluster_owned_image_ids)" || return 2
+	[ -n "${image_output}" ]
 }
 
 cluster_cleanup_complete() {
-	! cluster_exists && ! cluster_artifacts_exist
+	local cleanup_status
+	if cluster_exists; then
+		return 1
+	else
+		cleanup_status=$?
+		[ "${cleanup_status}" -eq 1 ] || return "${cleanup_status}"
+	fi
+	if cluster_runtime_artifacts_exist; then
+		return 1
+	else
+		cleanup_status=$?
+		[ "${cleanup_status}" -eq 1 ] || return "${cleanup_status}"
+	fi
+	return 0
 }
 
 cleanup_cluster_artifacts() {
-	local attempt
+	local attempt cleanup_status container_output
 	local container_id
 	local container_ids=()
 	local network_owner
 	local volume_owner
 	for attempt in 1 2 3; do
 		container_ids=()
+		container_output="$(cluster_container_ids)" || return 1
 		while IFS= read -r container_id; do
 			[ -z "${container_id}" ] || container_ids[${#container_ids[@]}]="${container_id}"
-		done < <(cluster_container_ids)
+		done <<<"${container_output}"
 		if ((${#container_ids[@]} > 0)); then
 			# Ownership was proven from the server's private runtime label before k3d deletion;
 			# the exact k3d.cluster label selects the remaining nodes and load balancer only.
-			docker rm --force "${container_ids[@]}" >/dev/null 2>&1 || true
+			docker rm --force --volumes "${container_ids[@]}" >/dev/null 2>&1 || true
 		fi
 
 		if network_owner="$(docker network inspect --format '{{index .Labels "app"}}' \
@@ -104,7 +343,12 @@ cleanup_cluster_artifacts() {
 			docker volume rm "k3d-${CLUSTER_NAME}-images" >/dev/null 2>&1 || true
 		fi
 
-		cluster_cleanup_complete && return
+		if cluster_cleanup_complete; then
+			return
+		else
+			cleanup_status=$?
+			[ "${cleanup_status}" -eq 1 ] || return "${cleanup_status}"
+		fi
 		[ "${attempt}" -eq 3 ] || sleep 2
 	done
 
@@ -114,6 +358,68 @@ cleanup_cluster_artifacts() {
 	echo "  docker network inspect k3d-${CLUSTER_NAME}" >&2
 	echo "  docker volume inspect k3d-${CLUSTER_NAME}-images" >&2
 	return 1
+}
+
+prune_owned_host_images() {
+	local image_output image_ref remaining_output repository="$1"
+	local image_refs=()
+	image_output="$(docker images \
+		--filter "label=dev.fgentic.demo.cluster=${CLUSTER_NAME}" \
+		--filter "reference=${repository}:*" --format '{{.Repository}}:{{.Tag}}')" ||
+		die "could not inspect ${CLUSTER_NAME} host images for ${repository}"
+	while IFS= read -r image_ref; do
+		[ -z "${image_ref}" ] || image_refs[${#image_refs[@]}]="${image_ref}"
+	done <<<"${image_output}"
+	((${#image_refs[@]} > 0)) || return 0
+	docker image rm "${image_refs[@]}" >/dev/null ||
+		die "could not remove imported ${CLUSTER_NAME} host images for ${repository}"
+	remaining_output="$(docker images \
+		--filter "label=dev.fgentic.demo.cluster=${CLUSTER_NAME}" \
+		--filter "reference=${repository}:*" --quiet)" ||
+		die "could not verify ${CLUSTER_NAME} host-image pruning for ${repository}"
+	[ -z "${remaining_output}" ] ||
+		die "stale ${CLUSTER_NAME} host images remain for ${repository}"
+}
+
+prune_stale_node_images() {
+	local active_image="$1" active_ref image_output node node_output repository stale_output
+	local stale_ref
+	local nodes=()
+	repository="${active_image%:*}"
+	active_ref="docker.io/library/${active_image}"
+	node_output="$(docker ps --filter "label=k3d.cluster=${CLUSTER_NAME}" \
+		--format '{{.Names}}')" || die "could not inspect ${CLUSTER_NAME} runtime nodes"
+	while IFS= read -r node; do
+		case "${node}" in
+		*-server-[0-9]* | *-agent-[0-9]*) nodes[${#nodes[@]}]="${node}" ;;
+		esac
+	done <<<"${node_output}"
+	((${#nodes[@]} > 0)) || die "${CLUSTER_NAME} has no running runtime node"
+	for node in "${nodes[@]}"; do
+		image_output="$(docker exec "${node}" crictl images --output json)" ||
+			die "could not inspect imported images on ${node}"
+		jq --exit-status --arg active "${active_ref}" \
+			'any(.images[].repoTags[]?; . == $active)' <<<"${image_output}" >/dev/null ||
+			die "active imported image ${active_image} is missing from ${node}"
+		stale_output="$(jq --raw-output --arg active "${active_ref}" \
+			--arg prefix "docker.io/library/${repository}:" '
+          .images[].repoTags[]? |
+          select(startswith($prefix) and . != $active)
+        ' <<<"${image_output}")" || die "could not parse imported images on ${node}"
+		while IFS= read -r stale_ref; do
+			[ -z "${stale_ref}" ] ||
+				docker exec "${node}" crictl rmi "${stale_ref}" >/dev/null ||
+				die "could not prune stale image ${stale_ref} from ${node}"
+		done <<<"${stale_output}"
+		image_output="$(docker exec "${node}" crictl images --output json)" ||
+			die "could not verify imported images on ${node}"
+		jq --exit-status --arg active "${active_ref}" \
+			--arg prefix "docker.io/library/${repository}:" '
+          all(.images[].repoTags[]?; . as $ref |
+            (($ref | startswith($prefix) | not) or $ref == $active))
+        ' <<<"${image_output}" >/dev/null ||
+			die "stale ${repository} images remain on ${node}"
+	done
 }
 
 build_and_load_images() {
@@ -136,6 +442,10 @@ EOF
 	# The source is the first side-loaded workload requested; delay only the bridge image through
 	# the much longer platform dependency chain.
 	k3d image import --mode auto --cluster "${CLUSTER_NAME}" "${SOURCE_IMAGE}" >/dev/null
+	resource_trace_require_volume_sample
+	# k3d copied the image into its owned image volume. Dropping the transient host image prevents
+	# random-tagged images from accumulating on every stop/up reuse, including pre-fix leftovers.
+	prune_owned_host_images "${SOURCE_IMAGE%:*}"
 }
 
 load_bridge_image_if_requested() {
@@ -151,6 +461,8 @@ load_bridge_image_if_requested() {
 	# Loading only after Flux applies this exact HelmRelease tag leaves the long dependency wait
 	# behind us and can precede Pod creation, narrowing the unused pullPolicy=Never image window.
 	k3d image import --mode auto --cluster "${CLUSTER_NAME}" "${BRIDGE_IMAGE}" >/dev/null || return 2
+	resource_trace_require_volume_sample
+	prune_owned_host_images "${BRIDGE_IMAGE%:*}"
 }
 
 build_image() {
@@ -296,7 +608,62 @@ timeout_seconds() {
 	esac
 }
 
-wait_for_platform() {
+platform_is_ready() {
+	local expected_revision="$1"
+	local kustomizations="$2"
+	local helmreleases="$3"
+	jq -e --arg revision "${expected_revision}" '
+    (.items | length > 0) and all(.items[];
+      .status.observedGeneration == .metadata.generation and
+      .status.lastAppliedRevision == $revision and
+      any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+  ' <<<"${kustomizations}" >/dev/null &&
+		jq -e '
+      (.items | length > 0) and all(.items[];
+        .status.observedGeneration == .metadata.generation and
+        any(.status.conditions[]?; .type == "Ready" and .status == "True"))
+    ' <<<"${helmreleases}" >/dev/null
+}
+
+print_platform_wait_diagnostics() {
+	local reason="$1"
+	local timeout="${2:-10s}"
+	echo "${reason}:" >&2
+	[ "${timeout}" != 0s ] || return 0
+	flux get kustomizations --timeout="${timeout}" >&2 || true
+	flux get helmreleases --all-namespaces --timeout="${timeout}" >&2 || true
+}
+
+deadline_timeout() {
+	local deadline="$1"
+	local maximum="$2"
+	local remaining=$((deadline - SECONDS))
+	((remaining > 0)) || return 1
+	((remaining <= maximum)) || remaining="${maximum}"
+	printf '%ss' "${remaining}"
+}
+
+sleep_before_deadline() {
+	local deadline="$1"
+	local remaining=$((deadline - SECONDS))
+	((remaining > 0)) || return 0
+	((remaining <= 5)) || remaining=5
+	sleep "${remaining}"
+}
+
+deadline_diagnostic_timeout() {
+	local deadline="$1"
+	local remaining=$((deadline - SECONDS))
+	((remaining > 2)) || {
+		printf '0s'
+		return
+	}
+	remaining=$((remaining / 2))
+	((remaining <= 5)) || remaining=5
+	printf '%ss' "${remaining}"
+}
+
+wait_for_platform_fixed() {
 	local bridge_image_loaded bridge_image_status expected_revision deadline kustomizations helmreleases
 	expected_revision="main@sha1:${SOURCE_REVISION}"
 	deadline=$((SECONDS + $(timeout_seconds "${DEMO_TIMEOUT}")))
@@ -317,35 +684,131 @@ wait_for_platform() {
 				fi
 			fi
 		fi
-		if ! kustomizations="$(kubectl --namespace flux-system get kustomizations --output json)" ||
-			! helmreleases="$(kubectl get helmreleases --all-namespaces --output json)"; then
+		if ! kustomizations="$(kubectl --request-timeout=10s --namespace flux-system \
+			get kustomizations --output json)" ||
+			! helmreleases="$(kubectl --request-timeout=10s get helmreleases \
+				--all-namespaces --output json)"; then
 			sleep 5
 			continue
 		fi
+		resource_trace_record_ready_layers "${expected_revision}" "${kustomizations}"
 		if [ "${bridge_image_loaded}" = true ] &&
-			jq -e --arg revision "${expected_revision}" '
-        (.items | length > 0) and all(.items[];
-          .status.observedGeneration == .metadata.generation and
-          .status.lastAppliedRevision == $revision and
-          any(.status.conditions[]?; .type == "Ready" and .status == "True"))
-      ' <<<"${kustomizations}" >/dev/null &&
-			jq -e '
-          (.items | length > 0) and all(.items[];
-            .status.observedGeneration == .metadata.generation and
-            any(.status.conditions[]?; .type == "Ready" and .status == "True"))
-        ' <<<"${helmreleases}" >/dev/null; then
+			platform_is_ready "${expected_revision}" "${kustomizations}" "${helmreleases}"; then
 			return
 		fi
 		sleep 5
 	done
 
-	echo "Flux did not reconcile the evaluation revision within ${DEMO_TIMEOUT}:" >&2
 	if [ "${bridge_image_loaded}" = false ]; then
 		echo "Bridge HelmRelease did not request the expected image ${BRIDGE_IMAGE}." >&2
 	fi
-	flux get kustomizations >&2 || true
-	flux get helmreleases --all-namespaces >&2 || true
+	print_platform_wait_diagnostics \
+		"Flux did not reconcile the evaluation revision within ${DEMO_TIMEOUT}"
 	return 1
+}
+
+collect_platform_milestones() {
+	local expected_revision="$1"
+	local kustomizations="$2"
+	local helmreleases="$3"
+	jq --raw-output --arg revision "${expected_revision}" '
+    .items[]? as $item |
+    if $item.status.observedGeneration == $item.metadata.generation then
+      "kustomization/\($item.metadata.name)/generation/\($item.metadata.generation)/observed"
+    else empty end,
+    if
+      $item.status.observedGeneration == $item.metadata.generation and
+      $item.status.lastAppliedRevision == $revision
+    then
+      "kustomization/\($item.metadata.name)/revision/\($revision)"
+    else empty end,
+    if
+      $item.status.observedGeneration == $item.metadata.generation and
+      $item.status.lastAppliedRevision == $revision and
+      any($item.status.conditions[]?; .type == "Ready" and .status == "True")
+    then
+      "kustomization/\($item.metadata.name)/generation/\($item.metadata.generation)/revision/\($revision)/ready"
+    else empty end
+  ' <<<"${kustomizations}"
+	jq --raw-output '
+    .items[]? as $item |
+    ($item.metadata.namespace + "/" + $item.metadata.name) as $name |
+    if $item.status.observedGeneration == $item.metadata.generation then
+      "helmrelease/\($name)/generation/\($item.metadata.generation)/observed"
+    else empty end,
+    if
+      $item.status.observedGeneration == $item.metadata.generation and
+      any($item.status.conditions[]?; .type == "Ready" and .status == "True")
+    then
+      "helmrelease/\($name)/generation/\($item.metadata.generation)/ready"
+    else empty end
+  ' <<<"${helmreleases}"
+}
+
+wait_for_platform_constrained() {
+	local after before expected_revision hard_deadline helmreleases kustomizations
+	local last_progress milestones no_progress_seconds max_seconds now request_timeout
+	expected_revision="main@sha1:${SOURCE_REVISION}"
+	no_progress_seconds="${FEDERATION_NO_PROGRESS_SECONDS}"
+	max_seconds="${FEDERATION_MAX_SECONDS}"
+	hard_deadline=$((SECONDS + max_seconds))
+	last_progress="${SECONDS}"
+	milestones="${WORK_DIR}/platform-milestones"
+	: >"${milestones}"
+
+	while ((SECONDS < hard_deadline)); do
+		now="${SECONDS}"
+		if ! request_timeout="$(deadline_timeout "${hard_deadline}" 10)" ||
+			! kustomizations="$(kubectl --request-timeout="${request_timeout}" \
+				--namespace flux-system get kustomizations --output json)" ||
+			! request_timeout="$(deadline_timeout "${hard_deadline}" 10)" ||
+			! helmreleases="$(kubectl --request-timeout="${request_timeout}" get \
+				helmreleases --all-namespaces --output json)"; then
+			now="${SECONDS}"
+			if ((now - last_progress >= no_progress_seconds)); then
+				print_platform_wait_diagnostics \
+					"Flux made no observable progress for ${FEDERATION_NO_PROGRESS_TIMEOUT}" \
+					"$(deadline_diagnostic_timeout "${hard_deadline}")"
+				return 1
+			fi
+			sleep_before_deadline "${hard_deadline}"
+			continue
+		fi
+
+		before="$(wc -l <"${milestones}" | tr -d ' ')"
+		collect_platform_milestones "${expected_revision}" "${kustomizations}" \
+			"${helmreleases}" >>"${milestones}"
+		LC_ALL=C sort -u "${milestones}" >"${milestones}.next"
+		mv "${milestones}.next" "${milestones}"
+		after="$(wc -l <"${milestones}" | tr -d ' ')"
+		if ((after > before)); then
+			last_progress="${SECONDS}"
+			echo "Flux convergence progress: ${after} immutable milestones observed."
+			resource_trace_record_ready_layers "${expected_revision}" "${kustomizations}"
+		fi
+		if platform_is_ready "${expected_revision}" "${kustomizations}" "${helmreleases}"; then
+			return
+		fi
+		if ((SECONDS - last_progress >= no_progress_seconds)); then
+			print_platform_wait_diagnostics \
+				"Flux made no observable progress for ${FEDERATION_NO_PROGRESS_TIMEOUT}" \
+				"$(deadline_diagnostic_timeout "${hard_deadline}")"
+			return 1
+		fi
+		sleep_before_deadline "${hard_deadline}"
+	done
+
+	print_platform_wait_diagnostics \
+		"Flux did not reconcile within the absolute ${FEDERATION_MAX_TIMEOUT} cap" 0s
+	return 1
+}
+
+wait_for_platform() {
+	if [ "${PROFILE}" = "federation" ] && [ "${FEDERATION_CONSTRAINED}" = "yes" ]; then
+		wait_for_platform_constrained
+	else
+		wait_for_platform_fixed
+	fi
 }
 
 render_bootstrap_namespaces() {
@@ -363,6 +826,9 @@ render_bootstrap_namespaces() {
 }
 
 demo_up() {
+	local actual_capacity_mode artifact_status cluster_present=no container_output current_container_ids
+	local current_volume_identity reused_container_ids="" reused_volume_identity="" running_status
+	local runtime_labels=()
 	for command in base64 curl docker git jq k3d kubectl flux yq openssl rg tar; do
 		require_command "${command}"
 	done
@@ -387,22 +853,77 @@ demo_up() {
 	WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo.XXXXXX")"
 	KUBECONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/fgentic-demo-kubeconfig.XXXXXX")"
 	cleanup() {
+		resource_trace_finish || true
 		rm -rf "${WORK_DIR}" "${KUBECONFIG_FILE}"
 	}
 	trap cleanup EXIT INT TERM
 
-	if ! cluster_exists; then
-		render_k3d_config "${WORK_DIR}/k3d-config.yaml"
-		k3d cluster create --config "${WORK_DIR}/k3d-config.yaml" \
-			--runtime-label "dev.fgentic.demo=${OWNER_LABEL}@server:*" \
-			--kubeconfig-update-default=false --kubeconfig-switch-context=false
-	else
+	# Refuse foreign or interrupted same-name state before tracing or mutation. In particular, do
+	# not let k3d silently adopt a retained image volume from a previously interrupted deletion.
+	if cluster_exists; then
+		cluster_present=yes
 		cluster_owned_by_demo ||
 			die "refusing to reuse ${CLUSTER_NAME}: it was not created by scripts/demo.sh"
-		k3d cluster start "${CLUSTER_NAME}" >/dev/null 2>&1 || true
+		if [ "${PROFILE}" = federation ]; then
+			actual_capacity_mode="$(cluster_capacity_mode)" ||
+				die "could not inspect ${CLUSTER_NAME} capacity mode"
+			[ "${actual_capacity_mode}" = "${FEDERATION_CAPACITY_MODE}" ] ||
+				die "refusing to switch ${CLUSTER_NAME} from ${actual_capacity_mode:-unlabelled} to ${FEDERATION_CAPACITY_MODE} capacity in place; run fed:down first"
+		fi
+		container_output="$(cluster_container_ids)" ||
+			die "could not inspect ${CLUSTER_NAME} containers before reuse"
+		reused_container_ids="$(sort <<<"${container_output}")" ||
+			die "could not order ${CLUSTER_NAME} container identities"
+		reused_volume_identity="$(cluster_volume_identity)" ||
+			die "refusing to reuse ${CLUSTER_NAME}: its image volume is missing or foreign"
+	else
+		if cluster_artifacts_exist; then
+			die "refusing orphan reuse for ${CLUSTER_NAME}: owner-labelled server evidence is unavailable"
+		else
+			artifact_status=$?
+			[ "${artifact_status}" -eq 1 ] ||
+				die "could not inspect retained artifacts for ${CLUSTER_NAME}"
+		fi
+		render_k3d_config "${WORK_DIR}/k3d-config.yaml"
+	fi
+	if [ "${PROFILE}" = "federation" ]; then
+		# Ownership is proven above; begin before create/start to include the actual boot peak.
+		resource_trace_start
+	fi
+
+	if [ "${cluster_present}" = no ]; then
+		runtime_labels=(--runtime-label "dev.fgentic.demo=${OWNER_LABEL}@server:*")
+		if [ "${PROFILE}" = federation ]; then
+			runtime_labels+=(--runtime-label \
+				"dev.fgentic.demo.capacity=${FEDERATION_CAPACITY_MODE}@server:*")
+		fi
+		k3d cluster create --config "${WORK_DIR}/k3d-config.yaml" \
+			"${runtime_labels[@]}" \
+			--kubeconfig-update-default=false --kubeconfig-switch-context=false
+	else
+		if cluster_running; then
+			:
+		else
+			running_status=$?
+			[ "${running_status}" -eq 1 ] ||
+				die "could not inspect ${CLUSTER_NAME} runtime state before reuse"
+			k3d cluster start "${CLUSTER_NAME}" >/dev/null
+		fi
+		cluster_running || die "${CLUSTER_NAME} did not become ready after k3d start"
+		container_output="$(cluster_container_ids)" ||
+			die "could not inspect ${CLUSTER_NAME} containers after start"
+		current_container_ids="$(sort <<<"${container_output}")" ||
+			die "could not order ${CLUSTER_NAME} container identities after start"
+		[ "${current_container_ids}" = "${reused_container_ids}" ] ||
+			die "refusing to continue: k3d replaced retained containers while starting ${CLUSTER_NAME}"
+		current_volume_identity="$(cluster_volume_identity)" ||
+			die "could not inspect ${CLUSTER_NAME} image volume after start"
+		[ "${current_volume_identity}" = "${reused_volume_identity}" ] ||
+			die "refusing to continue: k3d replaced the retained image volume while starting ${CLUSTER_NAME}"
 	fi
 	k3d kubeconfig get "${CLUSTER_NAME}" >"${KUBECONFIG_FILE}"
 	export KUBECONFIG="${KUBECONFIG_FILE}"
+	configure_federation_metrics_server
 	if [ "${PROFILE}" = "federation" ]; then
 		FEDERATION_GATEWAY_IP="$(docker inspect "k3d-${CLUSTER_NAME}-serverlb" |
 			jq -er --arg network "k3d-${CLUSTER_NAME}" \
@@ -414,6 +935,7 @@ demo_up() {
 	build_and_load_images
 	flux install >/dev/null
 	configure_ephemeral_flux_controllers
+	configure_federation_flux_controllers
 	kubectl --namespace flux-system rollout status deployment/source-controller --timeout=2m
 	if ! kubectl get customresourcedefinition \
 		gateways.gateway.networking.k8s.io httproutes.gateway.networking.k8s.io \
@@ -433,33 +955,161 @@ demo_up() {
 	apply_source_server
 	kubectl apply --kustomize "${SNAPSHOT_DIR}/${OVERLAY_PATH}" >/dev/null
 
-	echo "Reconciling the ${PROFILE} evaluation profile (timeout ${DEMO_TIMEOUT})..."
+	resource_trace_set_phase reconcile
+	if [ "${PROFILE}" = "federation" ] && [ "${FEDERATION_CONSTRAINED}" = "yes" ]; then
+		echo "Reconciling the constrained federation profile (no progress ${FEDERATION_NO_PROGRESS_TIMEOUT}; absolute cap ${FEDERATION_MAX_TIMEOUT})..."
+	else
+		echo "Reconciling the ${PROFILE} evaluation profile (timeout ${DEMO_TIMEOUT})..."
+	fi
 	wait_for_platform
+	prune_stale_node_images "${SOURCE_IMAGE}"
+	if [ "${PROFILE}" = demo ]; then
+		prune_stale_node_images "${BRIDGE_IMAGE}"
+	fi
 	local admission_context
 	admission_context="$(kubectl config current-context)"
 	ADMISSION_POLICY_CONTEXT="${admission_context}" \
 		"${ROOT_DIR}/scripts/test-admission-policies.sh" --runtime
+	resource_trace_set_phase proof
 	"${ROOT_DIR}/${SEED_SCRIPT}"
+	if [ "${PROFILE}" = "federation" ]; then
+		resource_trace_collect_idle
+		resource_trace_finish
+	fi
+}
+
+require_cluster_runtime() {
+	local command
+	for command in docker jq k3d rg; do
+		require_command "${command}"
+	done
+	docker info >/dev/null 2>&1 || die "Docker daemon is not running"
+}
+
+demo_status() {
+	local artifact_status capacity_mode container_output image_bytes retained_bytes running_output state
+	local total_containers running_containers volume_bytes
+	require_cluster_runtime
+	if ! cluster_exists; then
+		if cluster_artifacts_exist; then
+			die "refusing orphan inspection for ${CLUSTER_NAME}: owner-labelled server evidence is unavailable"
+		else
+			artifact_status=$?
+			[ "${artifact_status}" -eq 1 ] ||
+				die "could not inspect retained artifacts for ${CLUSTER_NAME}"
+		fi
+		echo "Federation cluster ${CLUSTER_NAME}: state=absent retained_bytes=0"
+		return
+	fi
+	require_owned_evaluation_cluster
+	container_output="$(cluster_container_ids)" || die "could not inspect ${CLUSTER_NAME} containers"
+	running_output="$(cluster_running_container_ids)" ||
+		die "could not inspect running ${CLUSTER_NAME} containers"
+	total_containers="$(awk 'NF { count++ } END { print count + 0 }' <<<"${container_output}")"
+	running_containers="$(awk 'NF { count++ } END { print count + 0 }' <<<"${running_output}")"
+	state=partial
+	[ "${running_containers}" -gt 0 ] || state=stopped
+	[ "${running_containers}" -ne "${total_containers}" ] || state=running
+	volume_bytes="$(cluster_volume_bytes || printf 'unknown')"
+	retained_bytes="$(cluster_retained_storage_bytes || printf 'unknown')"
+	image_bytes="$(cluster_owned_image_bytes)" ||
+		die "could not inspect ${CLUSTER_NAME} local images"
+	capacity_mode=standard
+	if [ "${PROFILE}" = federation ]; then
+		capacity_mode="$(cluster_capacity_mode)" ||
+			die "could not inspect ${CLUSTER_NAME} capacity mode"
+	fi
+	echo "Federation cluster ${CLUSTER_NAME}: state=${state} capacity_mode=${capacity_mode} running_containers=${running_containers}/${total_containers} image_volume_bytes=${volume_bytes} retained_cluster_bytes=${retained_bytes} local_image_virtual_bytes=${image_bytes}"
+}
+
+demo_stop() {
+	local after_container_ids after_identity after_output before_container_ids before_identity
+	local image_volume_bytes retained_bytes
+	local before_output running_output
+	require_cluster_runtime
+	require_owned_evaluation_cluster
+	before_output="$(cluster_container_ids)" ||
+		die "could not inspect ${CLUSTER_NAME} containers before stopping"
+	before_container_ids="$(sort <<<"${before_output}")" ||
+		die "could not order ${CLUSTER_NAME} container identities before stopping"
+	before_identity="$(cluster_volume_identity)" ||
+		die "could not inspect ${CLUSTER_NAME} image volume before stopping"
+	k3d cluster stop "${CLUSTER_NAME}" >/dev/null
+	running_output="$(cluster_running_container_ids)" ||
+		die "could not verify ${CLUSTER_NAME} stopped containers"
+	[ -z "${running_output}" ] ||
+		die "${CLUSTER_NAME} still has running containers after k3d stop"
+	after_output="$(cluster_container_ids)" ||
+		die "could not inspect ${CLUSTER_NAME} retained containers after stopping"
+	after_container_ids="$(sort <<<"${after_output}")" ||
+		die "could not order ${CLUSTER_NAME} retained container identities"
+	[ "${after_container_ids}" = "${before_container_ids}" ] ||
+		die "${CLUSTER_NAME} container identity changed while stopping"
+	after_identity="$(cluster_volume_identity)" ||
+		die "${CLUSTER_NAME} lost its owned image volume while stopping"
+	[ "${after_identity}" = "${before_identity}" ] ||
+		die "${CLUSTER_NAME} image volume identity changed while stopping"
+	image_volume_bytes="$(cluster_volume_bytes || printf 'unknown')"
+	retained_bytes="$(cluster_retained_storage_bytes || printf 'unknown')"
+	echo "Federation cluster ${CLUSTER_NAME}: state=stopped running_containers=0 image_volume_bytes=${image_volume_bytes} retained_cluster_bytes=${retained_bytes}; the exact image volume is preserved."
 }
 
 demo_down() {
+	local artifact_status image_id image_output owned_volume volume_output
+	local image_ids=()
+	local owned_volumes=()
 	require_command docker
 	require_command k3d
 	require_command jq
 	if cluster_exists; then
 		cluster_owned_by_demo ||
 			die "refusing to delete ${CLUSTER_NAME}: it was not created by scripts/demo.sh"
+		volume_output="$(cluster_attached_volume_names)" ||
+			die "could not inspect ${CLUSTER_NAME} attached volumes before deletion"
+		while IFS= read -r owned_volume; do
+			[ -z "${owned_volume}" ] || owned_volumes[${#owned_volumes[@]}]="${owned_volume}"
+		done <<<"${volume_output}"
+		image_output="$(cluster_owned_image_ids)" ||
+			die "could not inspect ${CLUSTER_NAME} local images before deletion"
+		while IFS= read -r image_id; do
+			[ -z "${image_id}" ] || image_ids[${#image_ids[@]}]="${image_id}"
+		done <<<"${image_output}"
 		k3d cluster delete "${CLUSTER_NAME}" || true
 		cleanup_cluster_artifacts
-		local image_id
-		for image_id in $(docker images \
-			--filter "label=dev.fgentic.demo.cluster=${CLUSTER_NAME}" --quiet); do
+		for owned_volume in "${owned_volumes[@]}"; do
+			if docker volume inspect "${owned_volume}" >/dev/null 2>&1; then
+				if [ "${owned_volume}" = "k3d-${CLUSTER_NAME}-images" ]; then
+					[ "$(docker volume inspect --format '{{index .Labels "app"}}/{{index .Labels "k3d.cluster"}}' \
+						"${owned_volume}")" = "k3d/${CLUSTER_NAME}" ] ||
+						die "refusing to remove foreign volume ${owned_volume}"
+				else
+					docker volume inspect "${owned_volume}" |
+						jq -e '.[0].Labels | has("com.docker.volume.anonymous")' >/dev/null ||
+						die "refusing to remove non-anonymous retained volume ${owned_volume}"
+				fi
+				docker volume rm "${owned_volume}" >/dev/null
+			fi
+		done
+		for owned_volume in "${owned_volumes[@]}"; do
+			! docker volume inspect "${owned_volume}" >/dev/null 2>&1 ||
+				die "owned volume ${owned_volume} remains after deleting ${CLUSTER_NAME}"
+		done
+		for image_id in "${image_ids[@]}"; do
 			docker image rm "${image_id}" >/dev/null 2>&1 || true
 		done
+		image_output="$(cluster_owned_image_ids)" ||
+			die "could not verify ${CLUSTER_NAME} local image cleanup"
+		[ -z "${image_output}" ] ||
+			die "owned local images remain after deleting ${CLUSTER_NAME}"
 		echo "The reusable local CA and FGENTIC_DEMO_CACHE_DIR, when set, were preserved."
-	elif cluster_artifacts_exist; then
-		die "refusing orphan cleanup for ${CLUSTER_NAME}: owner-labelled server evidence is unavailable"
 	else
+		if cluster_artifacts_exist; then
+			die "refusing orphan cleanup for ${CLUSTER_NAME}: owner-labelled server evidence is unavailable"
+		else
+			artifact_status=$?
+			[ "${artifact_status}" -eq 1 ] ||
+				die "could not inspect retained artifacts for ${CLUSTER_NAME}"
+		fi
 		echo "Demo cluster ${CLUSTER_NAME} does not exist."
 	fi
 }

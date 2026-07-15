@@ -1,0 +1,20 @@
+# Five small lab databases do not need the production-shaped shared-buffer or cgroup envelope.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: postgresql.cnpg.io
+      version: v1
+      kind: Cluster
+      name: platform-pg
+      namespace: postgres
+    patch: |
+      - op: replace
+        path: /spec/resources/requests/memory
+        value: 192Mi
+      - op: replace
+        path: /spec/resources/limits/memory
+        value: 384Mi
+      - op: add
+        path: /spec/postgresql/parameters/shared_buffers
+        value: 8MB
