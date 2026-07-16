@@ -269,7 +269,7 @@ assert_equal "$({
       | .spec.traffic.rateLimit.conditional[0].policy.global.descriptors
     ' "${tmp_dir}/agentgateway.yaml" | jq -Sc .
 })" \
-	'[{"entries":[{"expression":"apiKey.agent + \":\" + json(request.body).params.name","name":"agent_tool"}],"unit":"Requests"},{"entries":[{"expression":"apiKey.agent","name":"agent"}],"unit":"Requests"}]' \
+	'[{"entries":[{"expression":"sha256.encode(request.headers[\"authorization\"]) + \":\" + json(request.body).params.name","name":"agent_tool"}],"unit":"Requests"},{"entries":[{"expression":"sha256.encode(request.headers[\"authorization\"])","name":"agent"}],"unit":"Requests"}]' \
 	"independent per-agent and per-tool quota descriptors"
 quota_policy_json="$({
 	yq eval-all -N -o=json -I=0 '
@@ -775,11 +775,11 @@ binds:
                 descriptors:
                   - entries:
                       - key: agent_tool
-                        value: 'json(request.body).method == "tools/call" ? apiKey.agent + ":" + json(request.body).params.name : null'
+                        value: 'json(request.body).method == "tools/call" ? sha256.encode(request.headers["authorization"]) + ":" + json(request.body).params.name : null'
                     type: requests
                   - entries:
                       - key: agent
-                        value: 'json(request.body).method == "tools/call" ? apiKey.agent : null'
+                        value: 'json(request.body).method == "tools/call" ? sha256.encode(request.headers["authorization"]) : null'
                     type: requests
               mcpAuthorization:
                 rules:

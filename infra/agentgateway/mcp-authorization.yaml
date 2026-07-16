@@ -27,9 +27,10 @@ spec:
             apiKey.agent == "platform-helper" &&
             request.path == "/mcp" &&
             request.method in ["POST", "GET", "DELETE"]
-    # Rate limits are applied only after strict API-key authentication has bound apiKey.agent.
-    # They are independent from any future human-approval token: each accepted tools/call checks
-    # both the agent+tool burst ceiling and the broader per-agent hourly ceiling.
+    # Rate limits run after strict API-key authentication, but agentgateway's remote-rate-limit
+    # CEL context intentionally exposes request data rather than apiKey metadata. Hash the
+    # validated bearer so Redis receives a stable per-Agent pseudonym, never the credential.
+    # Authorization still binds the readable apiKey.agent identity independently.
     rateLimit:
       conditional:
         - condition: >-
@@ -49,11 +50,12 @@ spec:
                 - entries:
                     - name: agent_tool
                       expression: >-
-                        apiKey.agent + ":" + json(request.body).params.name
+                        sha256.encode(request.headers["authorization"]) + ":" +
+                        json(request.body).params.name
                   unit: Requests
                 - entries:
                     - name: agent
-                      expression: apiKey.agent
+                      expression: sha256.encode(request.headers["authorization"])
                   unit: Requests
   backend:
     mcp:
