@@ -11,6 +11,7 @@ readonly -a NAMESPACE_FILES=(
   "${ROOT_DIR}/apps/activitypub-agent-gateway/deploy/namespace.yaml"
 )
 readonly CRD_FIXTURE="${ROOT_DIR}/scripts/testdata/admission-policies/agent-crd.yaml"
+readonly FLUX_CRD_FIXTURE="${ROOT_DIR}/scripts/testdata/admission-policies/kustomization-crd.yaml"
 readonly DIGEST_IMAGE="registry.k8s.io/pause@sha256:7031c1b283388d2c2b555df8906cc39a3fcec4ee08d94a6af11c0cfe7e99e7f5"
 
 fail() {
@@ -212,6 +213,20 @@ static_contract() {
       fail "${namespace_file#"${ROOT_DIR}/"} has a platform namespace without admission labels"
   done
   [[ "${namespace_count}" -gt 0 ]] || fail "no managed namespaces found"
+  yq -e '
+    .apiVersion == "apiextensions.k8s.io/v1" and
+    .kind == "CustomResourceDefinition" and
+    .metadata.name == "kustomizations.kustomize.toolkit.fluxcd.io" and
+    .spec.scope == "Namespaced" and
+    .spec.versions[0].name == "v1" and
+    .spec.versions[0].served == true and
+    .spec.versions[0].storage == true and
+    ((.spec.versions[0].schema.openAPIV3Schema.properties.spec.required | sort | join(",")) ==
+      "interval,prune,sourceRef") and
+    ((.spec.versions[0].schema.openAPIV3Schema.properties.spec.properties.sourceRef.required |
+      sort | join(",")) == "kind,name")
+  ' "${FLUX_CRD_FIXTURE}" >/dev/null ||
+    fail "the admission test Flux Kustomization fixture must stay minimal and structural"
   for namespace in bridges models trivy-system; do
     yq -e "select(.kind == \"Namespace\" and .metadata.name == \"${namespace}\") |
       .metadata.labels.\"fgentic.dev/image-policy\" == \"enforce\"" \
@@ -284,6 +299,58 @@ runtime_contract() {
   "${kube[@]}" api-resources --api-group=admissionregistration.k8s.io \
     | grep -q '^validatingadmissionpolicies' || fail "ValidatingAdmissionPolicy v1 is unavailable"
 
+  provider_kustomizations_manifest() {
+    cat <<'EOF'
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: agentgateway-provider
+  namespace: flux-system
+  labels:
+    fgentic.dev/llm-provider: demo
+spec:
+  suspend: true
+  interval: 1h
+  path: ./infra/agentgateway/providers/profiles/demo
+  prune: false
+  sourceRef:
+    kind: GitRepository
+    name: fgentic-admission-test
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: agentgateway-admission
+  namespace: flux-system
+  labels:
+    fgentic.dev/llm-provider: demo
+spec:
+  suspend: true
+  interval: 1h
+  path: ./infra/agentgateway/admission
+  prune: false
+  sourceRef:
+    kind: GitRepository
+    name: fgentic-admission-test
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: agentgateway-provider-egress
+  namespace: flux-system
+  labels:
+    fgentic.dev/llm-provider: demo
+spec:
+  suspend: true
+  interval: 1h
+  path: ./infra/agentgateway/providers/egress/demo
+  prune: false
+  sourceRef:
+    kind: GitRepository
+    name: fgentic-admission-test
+EOF
+  }
+
   local namespace="fgentic-admission-probe-$$"
   local enforce_namespace="${namespace}-enforce"
   ADMISSION_TEST_NAMESPACE="${namespace}"
@@ -292,6 +359,9 @@ runtime_contract() {
   ADMISSION_TEST_POLICIES_OWNED=false
   ADMISSION_TEST_CRD_OWNED=false
   ADMISSION_TEST_PLATFORM_SETTINGS_OWNED=false
+  ADMISSION_TEST_FLUX_NAMESPACE_OWNED=false
+  ADMISSION_TEST_FLUX_CRD_OWNED=false
+  ADMISSION_TEST_PROVIDER_KUSTOMIZATIONS_OWNED=false
 
   cleanup() {
     local result="$1"
@@ -308,13 +378,28 @@ runtime_contract() {
       "${cleanup_kube[@]}" delete --filename "${CRD_FIXTURE}" --ignore-not-found --wait=false \
         >/dev/null 2>&1 || true
     fi
+    # Remove the owned policies before their provider-delete guard so the inert Flux fixtures can
+    # be cleaned without weakening or mutating a pre-existing installation.
+    if [[ "${ADMISSION_TEST_POLICIES_OWNED}" == true ]]; then
+      "${cleanup_kube[@]}" delete --kustomize "${POLICY_DIR}" --ignore-not-found \
+        >/dev/null 2>&1 || true
+    fi
+    if [[ "${ADMISSION_TEST_PROVIDER_KUSTOMIZATIONS_OWNED}" == true ]]; then
+      "${cleanup_kube[@]}" delete kustomization \
+        agentgateway-provider agentgateway-admission agentgateway-provider-egress \
+        --namespace flux-system --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    fi
     if [[ "${ADMISSION_TEST_PLATFORM_SETTINGS_OWNED}" == true ]]; then
       "${cleanup_kube[@]}" delete configmap platform-settings --namespace flux-system \
         --ignore-not-found --wait=false >/dev/null 2>&1 || true
     fi
-    if [[ "${ADMISSION_TEST_POLICIES_OWNED}" == true ]]; then
-      "${cleanup_kube[@]}" delete --kustomize "${POLICY_DIR}" --ignore-not-found \
-        >/dev/null 2>&1 || true
+    if [[ "${ADMISSION_TEST_FLUX_CRD_OWNED}" == true ]]; then
+      "${cleanup_kube[@]}" delete --filename "${FLUX_CRD_FIXTURE}" \
+        --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    fi
+    if [[ "${ADMISSION_TEST_FLUX_NAMESPACE_OWNED}" == true ]]; then
+      "${cleanup_kube[@]}" delete namespace flux-system --ignore-not-found \
+        --wait=true --timeout=30s >/dev/null 2>&1 || true
     fi
     exit "${result}"
   }
@@ -323,16 +408,56 @@ runtime_contract() {
   trap 'cleanup "$?"' EXIT
   trap 'cleanup 130' INT TERM
 
-  local existing_policies existing_bindings
+  local existing_policies existing_bindings fresh_policy_install=false
   existing_policies="$("${kube[@]}" get validatingadmissionpolicy -o name 2>/dev/null |
     grep -c '\.fgentic\.dev$' || true)"
   existing_bindings="$("${kube[@]}" get validatingadmissionpolicybinding -o name 2>/dev/null |
     grep -c '\.fgentic\.dev$' || true)"
   if [[ "${existing_policies}" -eq 0 && "${existing_bindings}" -eq 0 ]]; then
-    ADMISSION_TEST_POLICIES_OWNED=true
-    "${kube[@]}" apply --server-side --field-manager=fgentic-admission-test -k "${POLICY_DIR}" >/dev/null
+    fresh_policy_install=true
   elif [[ "${existing_policies}" -ne 7 || "${existing_bindings}" -ne 8 ]]; then
     fail "found a partial fgentic.dev admission installation; refusing to mutate it"
+  fi
+
+  if ! "${kube[@]}" get namespace flux-system >/dev/null 2>&1; then
+    [[ "${fresh_policy_install}" == true ]] ||
+      fail "pre-installed policies require the existing flux-system namespace"
+    ADMISSION_TEST_FLUX_NAMESPACE_OWNED=true
+    "${kube[@]}" create namespace flux-system >/dev/null
+  fi
+  if ! "${kube[@]}" get customresourcedefinition \
+    kustomizations.kustomize.toolkit.fluxcd.io >/dev/null 2>&1; then
+    [[ "${fresh_policy_install}" == true ]] ||
+      fail "pre-installed policies require the Flux Kustomization CRD"
+    ADMISSION_TEST_FLUX_CRD_OWNED=true
+    "${kube[@]}" apply --filename "${FLUX_CRD_FIXTURE}" >/dev/null
+    "${kube[@]}" wait --for=condition=Established \
+      customresourcedefinition/kustomizations.kustomize.toolkit.fluxcd.io \
+      --timeout=30s >/dev/null
+  fi
+
+  local provider_kustomization_count=0 provider_kustomization
+  for provider_kustomization in \
+    agentgateway-provider \
+    agentgateway-admission \
+    agentgateway-provider-egress; do
+    if "${kube[@]}" get kustomization --namespace flux-system \
+      "${provider_kustomization}" >/dev/null 2>&1; then
+      provider_kustomization_count=$((provider_kustomization_count + 1))
+    fi
+  done
+  if [[ "${provider_kustomization_count}" -ne 0 &&
+    "${provider_kustomization_count}" -ne 3 ]]; then
+    fail "found a partial provider Kustomization installation; refusing to mutate it"
+  fi
+  if [[ "${provider_kustomization_count}" -eq 0 &&
+    "${fresh_policy_install}" != true ]]; then
+    fail "pre-installed policies require all three provider Kustomizations"
+  fi
+
+  if [[ "${fresh_policy_install}" == true ]]; then
+    ADMISSION_TEST_POLICIES_OWNED=true
+    "${kube[@]}" apply --server-side --field-manager=fgentic-admission-test -k "${POLICY_DIR}" >/dev/null
   fi
 
   local deadline=$((SECONDS + 30))
@@ -354,6 +479,11 @@ runtime_contract() {
     <<<"${policy_json}")"
   [[ "${warning_count}" -eq 0 ]] ||
     fail "admission policy type checking reported warnings"
+
+  if [[ "${provider_kustomization_count}" -eq 0 ]]; then
+    ADMISSION_TEST_PROVIDER_KUSTOMIZATIONS_OWNED=true
+    provider_kustomizations_manifest | "${kube[@]}" apply --filename=- >/dev/null
+  fi
 
   if ! "${kube[@]}" get customresourcedefinition agents.kagent.dev >/dev/null 2>&1; then
     ADMISSION_TEST_CRD_OWNED=true
