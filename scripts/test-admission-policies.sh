@@ -35,10 +35,10 @@ static_contract() {
   binding_count="$(grep -c '^kind: ValidatingAdmissionPolicyBinding$' <<<"${rendered}")"
   failure_policy_count="$(yq -r 'select(.kind == "ValidatingAdmissionPolicy" and
     .spec.failurePolicy != "Fail") | .metadata.name' <<<"${rendered}" | wc -l)"
-  [[ "${policy_count}" -eq 5 ]] ||
-    fail "expected exactly five admission policies"
-  [[ "${binding_count}" -eq 6 ]] ||
-    fail "expected exactly six admission policy bindings"
+  [[ "${policy_count}" -eq 7 ]] ||
+    fail "expected exactly seven admission policies"
+  [[ "${binding_count}" -eq 8 ]] ||
+    fail "expected exactly eight admission policy bindings"
   [[ "${failure_policy_count}" -eq 0 ]] ||
     fail "every admission policy must fail closed on CEL errors"
 
@@ -112,6 +112,27 @@ static_contract() {
   require_validation_fragment "approved-agent-references.fgentic.dev" \
     "platform-helper must use only its reviewed MCP Authorization Secret reference" \
     "!has(h.value)"
+  require_validation_fragment "model-provider-handoff-freeze.fgentic.dev" \
+    "provider overrides cannot be introduced while the model-residency handoff is guarded" \
+    'object.metadata.name != "platform-settings-overrides"'
+  require_validation_fragment "model-provider-handoff-freeze.fgentic.dev" \
+    "llm_provider is frozen while the model-residency handoff is guarded" \
+    'object.data["llm_provider"] == oldObject.data["llm_provider"]'
+  require_validation_fragment "model-provider-handoff-freeze.fgentic.dev" \
+    "provider-bearing platform settings cannot be deleted while the model-residency handoff is guarded" \
+    'request.operation != "DELETE"'
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "provider Kustomization identity is frozen while the model-residency handoff is guarded" \
+    'object.metadata.labels["fgentic.dev/llm-provider"] == oldObject.metadata.labels["fgentic.dev/llm-provider"]'
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "provider Kustomization paths are frozen while the model-residency handoff is guarded" \
+    "object.spec.path == oldObject.spec.path"
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "inline provider substitution must equal the frozen provider identity" \
+    'object.spec.postBuild.substitute["llm_provider"] == object.metadata.labels["fgentic.dev/llm-provider"]'
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "provider Kustomizations cannot be deleted while the model-residency handoff is guarded" \
+    'request.operation != "DELETE"'
 
   yq -e '
     select(.kind == "ValidatingAdmissionPolicyBinding" and
@@ -125,6 +146,49 @@ static_contract() {
     ((.spec.validationActions | join(",")) == "Deny,Audit" and
       .spec.matchResources.namespaceSelector.matchLabels."fgentic.dev/image-policy" == "enforce")
   ' <<<"${rendered}" >/dev/null || fail "digest-clean namespaces must fail closed"
+  yq -e '
+    select(.kind == "ValidatingAdmissionPolicyBinding" and
+      .metadata.name == "model-provider-handoff-freeze.fgentic.dev") |
+    ((.spec.validationActions | join(",")) == "Deny,Audit" and
+      .spec.matchResources.namespaceSelector.matchLabels."kubernetes.io/metadata.name" ==
+        "flux-system")
+  ' <<<"${rendered}" >/dev/null ||
+    fail "the temporary provider freeze must fail closed in flux-system"
+  yq -e '
+    select(.kind == "ValidatingAdmissionPolicy" and
+      .metadata.name == "model-provider-handoff-freeze.fgentic.dev") |
+    ((.spec.matchConstraints.resourceRules[0].operations | sort | join(",")) ==
+      "CREATE,DELETE,UPDATE" and
+      .spec.matchConditions[0].name == "platform-settings")
+  ' <<<"${rendered}" >/dev/null ||
+    fail "the temporary provider freeze must cover settings creation, mutation, and deletion"
+  yq -e '
+    select(.kind == "ValidatingAdmissionPolicy" and
+      .metadata.name == "model-provider-kustomization-freeze.fgentic.dev") |
+    ((.spec.matchConstraints.resourceRules[0].operations | sort | join(",")) ==
+      "CREATE,DELETE,UPDATE" and
+      .spec.matchConditions[0].name == "model-provider-kustomizations")
+  ' <<<"${rendered}" >/dev/null ||
+    fail "the temporary provider freeze must cover rendered Flux provider Kustomizations"
+  yq -e '
+    select(.kind == "ValidatingAdmissionPolicyBinding" and
+      .metadata.name == "model-provider-kustomization-freeze.fgentic.dev") |
+    ((.spec.validationActions | join(",")) == "Deny,Audit" and
+      .spec.matchResources.namespaceSelector.matchLabels."kubernetes.io/metadata.name" ==
+        "flux-system")
+  ' <<<"${rendered}" >/dev/null ||
+    fail "the rendered-provider freeze must fail closed in flux-system"
+
+  local guarded_resource
+  for guarded_resource in \
+    "${ROOT_DIR}/infra/agentgateway/admission/a2a-route.yaml" \
+    "${ROOT_DIR}/infra/agentgateway/admission/a2a-authorization.yaml" \
+    "${ROOT_DIR}/infra/agentgateway/providers/egress/demo/networkpolicy.yaml" \
+    "${ROOT_DIR}/infra/agentgateway/providers/egress/vllm/networkpolicy.yaml"; do
+    yq -e '.metadata.annotations."kustomize.toolkit.fluxcd.io/prune" == "disabled"' \
+      "${guarded_resource}" >/dev/null ||
+      fail "the temporary provider freeze must remain paired with every handoff prune guard"
+  done
 
   local namespace_count=0
   local namespace_file namespace_file_count
@@ -227,6 +291,7 @@ runtime_contract() {
   ADMISSION_TEST_AGENT_NAMESPACE_OWNED=false
   ADMISSION_TEST_POLICIES_OWNED=false
   ADMISSION_TEST_CRD_OWNED=false
+  ADMISSION_TEST_PLATFORM_SETTINGS_OWNED=false
 
   cleanup() {
     local result="$1"
@@ -242,6 +307,10 @@ runtime_contract() {
     if [[ "${ADMISSION_TEST_CRD_OWNED}" == true ]]; then
       "${cleanup_kube[@]}" delete --filename "${CRD_FIXTURE}" --ignore-not-found --wait=false \
         >/dev/null 2>&1 || true
+    fi
+    if [[ "${ADMISSION_TEST_PLATFORM_SETTINGS_OWNED}" == true ]]; then
+      "${cleanup_kube[@]}" delete configmap platform-settings --namespace flux-system \
+        --ignore-not-found --wait=false >/dev/null 2>&1 || true
     fi
     if [[ "${ADMISSION_TEST_POLICIES_OWNED}" == true ]]; then
       "${cleanup_kube[@]}" delete --kustomize "${POLICY_DIR}" --ignore-not-found \
@@ -262,7 +331,7 @@ runtime_contract() {
   if [[ "${existing_policies}" -eq 0 && "${existing_bindings}" -eq 0 ]]; then
     ADMISSION_TEST_POLICIES_OWNED=true
     "${kube[@]}" apply --server-side --field-manager=fgentic-admission-test -k "${POLICY_DIR}" >/dev/null
-  elif [[ "${existing_policies}" -ne 5 || "${existing_bindings}" -ne 6 ]]; then
+  elif [[ "${existing_policies}" -ne 7 || "${existing_bindings}" -ne 8 ]]; then
     fail "found a partial fgentic.dev admission installation; refusing to mutate it"
   fi
 
@@ -274,12 +343,12 @@ runtime_contract() {
       [.items[] | select(.metadata.name | test("\\.fgentic\\.dev$")) |
         select(.status.observedGeneration == .metadata.generation)] | length
     ' <<<"${policy_json}")"
-    if [[ "${observed_policy_count}" -eq 5 ]]; then
+    if [[ "${observed_policy_count}" -eq 7 ]]; then
       break
     fi
     sleep 1
   done
-  [[ "${observed_policy_count}" -eq 5 ]] ||
+  [[ "${observed_policy_count}" -eq 7 ]] ||
     fail "admission policies were not observed within 30 seconds"
   warning_count="$(yq -r '[.items[].status.typeChecking.expressionWarnings[]?] | length' \
     <<<"${policy_json}")"
@@ -421,6 +490,148 @@ spec:
           toolNames: [k8s_get_resources]
 EOF
   }
+
+  local platform_settings_json
+  if ! platform_settings_json="$("${kube[@]}" get configmap platform-settings \
+    --namespace flux-system -o json 2>/dev/null)"; then
+    printf '%s\n' \
+      'apiVersion: v1' \
+      'kind: ConfigMap' \
+      'metadata:' \
+      '  name: platform-settings' \
+      '  namespace: flux-system' \
+      'data:' \
+      '  llm_provider: demo' |
+      "${kube[@]}" create --dry-run=server --filename=- >/dev/null
+    ADMISSION_TEST_PLATFORM_SETTINGS_OWNED=true
+    printf '%s\n' \
+      'apiVersion: v1' \
+      'kind: ConfigMap' \
+      'metadata:' \
+      '  name: platform-settings' \
+      '  namespace: flux-system' \
+      'data:' \
+      '  server_name: admission.invalid' |
+      "${kube[@]}" create --filename=- >/dev/null
+    platform_settings_json="$("${kube[@]}" get configmap platform-settings \
+      --namespace flux-system -o json)"
+  fi
+
+  local frozen_provider alternate_provider
+  frozen_provider="$(yq -r '.data.llm_provider // ""' <<<"${platform_settings_json}")"
+  alternate_provider=openai
+  [[ "${frozen_provider}" != "${alternate_provider}" ]] || alternate_provider=demo
+  expect_denied "llm_provider is frozen while the model-residency handoff is guarded" \
+    "${kube[@]}" patch configmap platform-settings --namespace flux-system \
+    --type=merge --dry-run=server \
+    --patch "{\"data\":{\"llm_provider\":\"${alternate_provider}\"}}"
+  "${kube[@]}" patch configmap platform-settings --namespace flux-system \
+    --type=merge --dry-run=server --patch '{"data":{"handoff_probe":"unchanged-provider"}}' \
+    >/dev/null
+  if yq -e 'has("data") and (.data | has("llm_provider"))' <<<"${platform_settings_json}" \
+    >/dev/null; then
+    expect_denied "llm_provider is frozen while the model-residency handoff is guarded" \
+      "${kube[@]}" patch configmap platform-settings --namespace flux-system \
+      --type=merge --dry-run=server --patch '{"data":{"llm_provider":null}}'
+    expect_denied \
+      "provider-bearing platform settings cannot be deleted while the model-residency handoff is guarded" \
+      "${kube[@]}" delete configmap platform-settings --namespace flux-system --dry-run=server
+  fi
+
+  local provider_override_exists=false
+  if "${kube[@]}" get configmap platform-settings-overrides --namespace flux-system \
+    >/dev/null 2>&1; then
+    provider_override_exists=true
+  fi
+  if [[ "${provider_override_exists}" == true ]]; then
+    local provider_override_json
+    provider_override_json="$("${kube[@]}" get configmap platform-settings-overrides \
+      --namespace flux-system -o json)"
+    frozen_provider="$(yq -r '.data.llm_provider // ""' <<<"${provider_override_json}")"
+    alternate_provider=openai
+    [[ "${frozen_provider}" != "${alternate_provider}" ]] || alternate_provider=demo
+    expect_denied "llm_provider is frozen while the model-residency handoff is guarded" \
+      "${kube[@]}" patch configmap platform-settings-overrides --namespace flux-system \
+      --type=merge --dry-run=server \
+      --patch "{\"data\":{\"llm_provider\":\"${alternate_provider}\"}}"
+    if yq -e 'has("data") and (.data | has("llm_provider"))' \
+      <<<"${provider_override_json}" >/dev/null; then
+      expect_denied "llm_provider is frozen while the model-residency handoff is guarded" \
+        "${kube[@]}" patch configmap platform-settings-overrides --namespace flux-system \
+        --type=merge --dry-run=server --patch '{"data":{"llm_provider":null}}'
+      expect_denied \
+        "provider-bearing platform settings cannot be deleted while the model-residency handoff is guarded" \
+        "${kube[@]}" delete configmap platform-settings-overrides --namespace flux-system \
+        --dry-run=server
+    fi
+  else
+    printf '%s\n' \
+      'apiVersion: v1' \
+      'kind: ConfigMap' \
+      'metadata:' \
+      '  name: platform-settings-overrides' \
+      '  namespace: flux-system' \
+      'data:' \
+      '  llm_provider: openai' |
+      expect_manifest_denied \
+        "provider overrides cannot be introduced while the model-residency handoff is guarded"
+    printf '%s\n' \
+      'apiVersion: v1' \
+      'kind: ConfigMap' \
+      'metadata:' \
+      '  name: platform-settings-overrides' \
+      '  namespace: flux-system' \
+      'data:' \
+      '  gcp_project: unchanged-provider' |
+      "${kube[@]}" create --dry-run=server --filename=- >/dev/null
+  fi
+
+  local provider_kustomization provider_kustomization_json provider_label provider_path alternate_path
+  for provider_kustomization in \
+    agentgateway-provider \
+    agentgateway-admission \
+    agentgateway-provider-egress; do
+    provider_kustomization_json="$("${kube[@]}" get kustomization \
+      --namespace flux-system "${provider_kustomization}" -o json)"
+    provider_label="$(yq -r '.metadata.labels."fgentic.dev/llm-provider"' \
+      <<<"${provider_kustomization_json}")"
+    [[ -n "${provider_label}" && "${provider_label}" != "null" ]] ||
+      fail "${provider_kustomization} has no selected-provider identity"
+    alternate_provider=openai
+    [[ "${provider_label}" != "${alternate_provider}" ]] || alternate_provider=demo
+    provider_path="$(yq -r '.spec.path' <<<"${provider_kustomization_json}")"
+    alternate_path=./infra/agentgateway/providers/profiles/openai
+    [[ "${provider_path}" != "${alternate_path}" ]] ||
+      alternate_path=./infra/agentgateway/providers/profiles/demo
+
+    expect_denied \
+      "provider Kustomization identity is frozen while the model-residency handoff is guarded" \
+      "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
+      --type=merge --dry-run=server \
+      --patch "{\"metadata\":{\"labels\":{\"fgentic.dev/llm-provider\":\"${alternate_provider}\"}}}"
+    expect_denied \
+      "provider Kustomization paths are frozen while the model-residency handoff is guarded" \
+      "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
+      --type=merge --dry-run=server \
+      --patch "{\"spec\":{\"path\":\"${alternate_path}\"}}"
+    expect_denied \
+      "provider Kustomizations cannot be deleted while the model-residency handoff is guarded" \
+      "${kube[@]}" delete kustomization --namespace flux-system "${provider_kustomization}" \
+      --dry-run=server
+  done
+
+  provider_label="$("${kube[@]}" get kustomization --namespace flux-system \
+    agentgateway-provider -o jsonpath='{.metadata.labels.fgentic\.dev/llm-provider}')"
+  alternate_provider=openai
+  [[ "${provider_label}" != "${alternate_provider}" ]] || alternate_provider=demo
+  expect_denied "inline provider substitution must equal the frozen provider identity" \
+    "${kube[@]}" patch kustomization --namespace flux-system agentgateway-provider \
+    --type=merge --dry-run=server \
+    --patch "{\"spec\":{\"postBuild\":{\"substitute\":{\"llm_provider\":\"${alternate_provider}\"}}}}"
+  "${kube[@]}" patch kustomization --namespace flux-system agentgateway-provider \
+    --type=merge --dry-run=server \
+    --patch "{\"spec\":{\"postBuild\":{\"substitute\":{\"llm_provider\":\"${provider_label}\"}}}}" \
+    >/dev/null
 
   expect_denied "managed namespaces must declare a valid Pod Security enforce level" \
     bash -c "printf '%s\n' 'apiVersion: v1' 'kind: Namespace' 'metadata:' \

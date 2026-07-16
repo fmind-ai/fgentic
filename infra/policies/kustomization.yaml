@@ -3,5 +3,6 @@ kind: Kustomization
 resources:
   - agent-references.yaml
   - image-references.yaml
+  - model-provider-handoff-freeze.yaml
   - namespace-pss.yaml
   - service-exposure.yaml
