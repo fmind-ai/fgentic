@@ -66,3 +66,9 @@ func TestDecodeRejectsMultipleDocuments(t *testing.T) {
 		t.Fatal("Decode unexpectedly accepted multiple documents")
 	}
 }
+
+func TestParseClassificationRejectsUnknown(t *testing.T) {
+	if _, err := ParseClassification("confidential"); err == nil {
+		t.Fatal("ParseClassification accepted an unknown value")
+	}
+}

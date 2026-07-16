@@ -56,6 +56,7 @@ yq -e '
     ($mapping.namespace == "kagent") and
     ($mapping.name == "demo-helper") and
     ($mapping.stage == "dev") and
+    ($mapping.dataClassification == "public") and
     (($mapping.allowedSenders | length) == 1)
   )
 ' "${mapping_component}" >/dev/null || fail "generated bridge mapping is invalid"
@@ -94,6 +95,7 @@ yq eval-all -e '
     ($mapping.namespace == "kagent") and
     ($mapping.name == "demo-helper") and
     ($mapping.stage == "dev") and
+    ($mapping.dataClassification == "public") and
     (($mapping.allowedSenders | length) == 1) and
     ($mapping.allowedSenders[0] == "@alice:ci.fgentic.example")
   )

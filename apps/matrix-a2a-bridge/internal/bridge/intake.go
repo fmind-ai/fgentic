@@ -267,7 +267,7 @@ func (b *Bridge) recordCapacityDenials(
 		}
 		ref := &AgentRef{}
 		if current, found := b.agents.Lookup(job.GhostLocalpart); found &&
-			current.MappingID() == job.TargetFingerprint {
+			current.MatchesMappingID(job.TargetFingerprint) {
 			ref = current
 		}
 

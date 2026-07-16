@@ -144,6 +144,7 @@ patches:
           name: ${name}
           description: Development scaffold for the ${name} Agent.
           stage: dev
+          dataClassification: public
           allowedSenders:
             - "@alice:\${server_name}"
 EOF
@@ -199,6 +200,7 @@ agents:
     name: ${name}
     description: Development scaffold for the ${name} Agent.
     stage: dev
+    dataClassification: public
     allowedSenders:
       - "@alice:\${server_name}"
 EOF

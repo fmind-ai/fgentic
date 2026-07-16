@@ -12,6 +12,7 @@ import (
 	"maunium.net/go/mautrix/id"
 
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/a2aclient"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/modelcatalog"
 )
 
 const validRemoteAgentsYAML = `agents:
@@ -67,6 +68,9 @@ func TestLoadAgents(t *testing.T) {
 	}
 	if ref.MappingID() == "" {
 		t.Error("MappingID() is empty")
+	}
+	if got := ref.Classification(); got != modelcatalog.ClassificationRegulated {
+		t.Errorf("Classification() = %q, want fail-closed regulated default", got)
 	}
 	if ref.Description != "Diagnoses cluster health during startup outages." {
 		t.Errorf("Description = %q", ref.Description)
@@ -159,6 +163,16 @@ func TestLoadAgentsRejectsInvalidConfig(t *testing.T) {
 			name:    "remote target without timeout",
 			content: strings.Replace(validRemoteAgentsYAML, "    timeout: 12s\n", "", 1),
 			want:    "timeout must be positive",
+		},
+		{
+			name: "remote target with local classification policy",
+			content: strings.Replace(
+				validRemoteAgentsYAML,
+				"    timeout: 12s\n",
+				"    timeout: 12s\n    dataClassification: public\n",
+				1,
+			),
+			want: "dataClassification is only valid for a local target",
 		},
 		{
 			name:    "remote target with zero timeout",
@@ -414,6 +428,40 @@ func TestLoadAgentsRejectsInvalidStage(t *testing.T) {
 	_, err := LoadAgents(writeTemp(t, "agents:\n  agent-x: {namespace: kagent, name: x, stage: staging}\n"))
 	if err == nil || !strings.Contains(err.Error(), `stage must be "dev" or "prod"`) {
 		t.Fatalf("LoadAgents invalid stage err = %v", err)
+	}
+}
+
+func TestLoadAgentsDataClassification(t *testing.T) {
+	publicAgents, err := LoadAgents(writeTemp(t, "agents:\n  agent-x: {namespace: kagent, name: x, dataClassification: public}\n"))
+	if err != nil {
+		t.Fatalf("LoadAgents public: %v", err)
+	}
+	publicRef, _ := publicAgents.Lookup("agent-x")
+	if got := publicRef.Classification(); got != modelcatalog.ClassificationPublic {
+		t.Fatalf("Classification() = %q, want public", got)
+	}
+	if !strings.HasPrefix(publicRef.MappingID(), "v2:") {
+		t.Fatalf("MappingID() = %q, want a versioned fingerprint", publicRef.MappingID())
+	}
+	if !publicRef.MatchesMappingID(publicRef.legacyMappingID) {
+		t.Fatal("pre-classification fingerprint is not accepted during the producer rollout")
+	}
+
+	regulatedAgents, err := LoadAgents(writeTemp(t, "agents:\n  agent-x: {namespace: kagent, name: x}\n"))
+	if err != nil {
+		t.Fatalf("LoadAgents default: %v", err)
+	}
+	regulatedRef, _ := regulatedAgents.Lookup("agent-x")
+	if publicRef.SameTarget(regulatedRef) || publicRef.MappingID() == regulatedRef.MappingID() {
+		t.Fatal("classification change did not re-key the immutable mapping")
+	}
+	if regulatedRef.MatchesMappingID(publicRef.MappingID()) {
+		t.Fatal("classification change still accepts a new versioned fingerprint")
+	}
+
+	_, err = LoadAgents(writeTemp(t, "agents:\n  agent-x: {namespace: kagent, name: x, dataClassification: confidential}\n"))
+	if err == nil || !strings.Contains(err.Error(), `classification "confidential" is not supported`) {
+		t.Fatalf("LoadAgents invalid classification err = %v", err)
 	}
 }
 

@@ -25,6 +25,7 @@ import (
 	"maunium.net/go/mautrix/id"
 
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/a2aclient"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/modelcatalog"
 )
 
 const agentsSchemaVersion = 1
@@ -45,15 +46,19 @@ type AgentRef struct {
 	// AllowedSenders restricts invocation to matching user IDs (glob with '*', e.g.
 	// "@ops-*:partner.example"). Empty means: any user on an allowed server.
 	AllowedSenders []string `yaml:"allowedSenders,omitempty"`
+	// DataClassification is the highest-sensitivity room content this mapping may receive. Omission
+	// fails closed to regulated; current public sample agents declare public explicitly.
+	DataClassification modelcatalog.Classification `yaml:"dataClassification"`
 
-	senderRes  []*regexp.Regexp // compiled AllowedSenders
-	avatar     id.ContentURI
-	target     a2aclient.Target
-	timeout    time.Duration
-	maxCost    uint64 // per-remote credit-unit ceiling on the verified skill quote (0 = no gate)
-	dev        bool   // stage:dev — invocable only in configured staging rooms (#128)
-	allowMedia bool   // remote opt-in to move file bytes across the org boundary (#115)
-	mappingID  string
+	senderRes       []*regexp.Regexp // compiled AllowedSenders
+	avatar          id.ContentURI
+	target          a2aclient.Target
+	timeout         time.Duration
+	maxCost         uint64 // per-remote credit-unit ceiling on the verified skill quote (0 = no gate)
+	dev             bool   // stage:dev — invocable only in configured staging rooms (#128)
+	allowMedia      bool   // remote opt-in to move file bytes across the org boundary (#115)
+	mappingID       string
+	legacyMappingID string // pre-classification fingerprint accepted only during the producer rollout
 }
 
 // agentConfig is the on-disk shape. Runtime code only receives an AgentRef containing a
@@ -68,6 +73,9 @@ type agentConfig struct {
 	// Stage gates blast radius (#128): `dev` agents are invocable only in the bridge's configured
 	// staging rooms; `prod` (the default) is unrestricted. Valid for both local and remote targets.
 	Stage *string `yaml:"stage,omitempty"`
+	// DataClassification is forwarded only to the authenticated local agentgateway A2A admission
+	// boundary. It is never sent to a configured remote agent.
+	DataClassification *string `yaml:"dataClassification,omitempty"`
 
 	Timeout      *time.Duration      `yaml:"timeout,omitempty"`
 	TokenBudget  *uint64             `yaml:"tokenBudget,omitempty"`
@@ -149,6 +157,11 @@ func (a *AgentRef) IsDev() bool {
 	return a.dev
 }
 
+// Classification returns the reviewed data class bound into local agentgateway admission.
+func (a *AgentRef) Classification() modelcatalog.Classification {
+	return a.DataClassification
+}
+
 // AllowsMedia reports whether this remote mapping opted into moving file bytes across the org
 // boundary (#115). It is only consulted for remote targets; local media is governed by the global
 // MIME/size policy, so a local mapping's value is not meaningful.
@@ -160,6 +173,15 @@ func (a *AgentRef) AllowsMedia() bool {
 // caches can use it to avoid carrying metadata across a same-URL signer change.
 func (a *AgentRef) MappingID() string {
 	return a.mappingID
+}
+
+// MatchesMappingID accepts both the current classification-bound fingerprint and the exact
+// pre-migration fingerprint. The compatibility branch lets work queued by the previous bridge
+// drain while this producer-only release rolls out; the enforcement follow-up removes it after the
+// compatible image is pinned. New jobs always persist MappingID and therefore re-key on a class
+// change immediately.
+func (a *AgentRef) MatchesMappingID(mappingID string) bool {
+	return a != nil && (mappingID == a.mappingID || mappingID == a.legacyMappingID)
 }
 
 // SameTarget protects queued work from configuration reloads. A change to any routing, trust,
@@ -241,19 +263,26 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 	if hasLocal == hasRemote {
 		return nil, fmt.Errorf("agent %q: exactly one target form is required: namespace+name or url", ghost)
 	}
+	if hasRemote && cfg.DataClassification != nil {
+		return nil, fmt.Errorf("agent %q: dataClassification is only valid for a local target", ghost)
+	}
 
 	namespace := configuredString(cfg.Namespace)
 	name := configuredString(cfg.Name)
+	classification, err := compileDataClassification(ghost, cfg.DataClassification)
+	if err != nil {
+		return nil, err
+	}
 	ref := &AgentRef{
-		Namespace:      namespace,
-		Name:           name,
-		Description:    cfg.Description,
-		AvatarURL:      cfg.AvatarURL,
-		AllowedServers: append([]string(nil), cfg.AllowedServers...),
-		AllowedSenders: append([]string(nil), cfg.AllowedSenders...),
+		Namespace:          namespace,
+		Name:               name,
+		Description:        cfg.Description,
+		AvatarURL:          cfg.AvatarURL,
+		AllowedServers:     append([]string(nil), cfg.AllowedServers...),
+		AllowedSenders:     append([]string(nil), cfg.AllowedSenders...),
+		DataClassification: classification,
 	}
 
-	var err error
 	if hasLocal {
 		if namespace == "" || name == "" {
 			return nil, fmt.Errorf("agent %q: both namespace and name are required for a local target", ghost)
@@ -285,8 +314,24 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 	if err := ref.compileSenders(ghost); err != nil {
 		return nil, err
 	}
-	ref.mappingID = mappingID(ref.target, ref.timeout, ref.maxCost, ref.dev, ref.allowMedia)
+	ref.mappingID = mappingID(
+		ref.target, ref.timeout, ref.maxCost, ref.dev, ref.allowMedia, ref.DataClassification,
+	)
+	ref.legacyMappingID = legacyMappingID(
+		ref.target, ref.timeout, ref.maxCost, ref.dev, ref.allowMedia,
+	)
 	return ref, nil
+}
+
+func compileDataClassification(ghost string, configured *string) (modelcatalog.Classification, error) {
+	if configured == nil {
+		return modelcatalog.ClassificationRegulated, nil
+	}
+	classification, err := modelcatalog.ParseClassification(*configured)
+	if err != nil {
+		return "", fmt.Errorf("agent %q: %w", ghost, err)
+	}
+	return classification, nil
 }
 
 // compileStage validates the optional per-agent stage flag. The default (unset) is `prod`.
@@ -409,10 +454,31 @@ func compileCardIdentity(cfg *cardIdentityConfig) (a2aclient.CardIdentity, error
 	}, nil
 }
 
-func mappingID(target a2aclient.Target, timeout time.Duration, maxCost uint64, dev, allowMedia bool) string {
+func mappingID(
+	target a2aclient.Target,
+	timeout time.Duration,
+	maxCost uint64,
+	dev, allowMedia bool,
+	classification modelcatalog.Classification,
+) string {
 	identity := target.IdentityFingerprint()
 	sum := sha256.Sum256([]byte(fmt.Sprintf(
-		"%s\x00%x\x00%d\x00%d\x00%d\x00%t\x00%t", target.ID(), identity, target.TokenBudget(), timeout, maxCost, dev, allowMedia,
+		"%s\x00%x\x00%d\x00%d\x00%d\x00%t\x00%t\x00%s",
+		target.ID(), identity, target.TokenBudget(), timeout, maxCost, dev, allowMedia, classification,
+	)))
+	return "v2:" + hex.EncodeToString(sum[:])
+}
+
+func legacyMappingID(
+	target a2aclient.Target,
+	timeout time.Duration,
+	maxCost uint64,
+	dev, allowMedia bool,
+) string {
+	identity := target.IdentityFingerprint()
+	sum := sha256.Sum256([]byte(fmt.Sprintf(
+		"%s\x00%x\x00%d\x00%d\x00%d\x00%t\x00%t",
+		target.ID(), identity, target.TokenBudget(), timeout, maxCost, dev, allowMedia,
 	)))
 	return hex.EncodeToString(sum[:])
 }

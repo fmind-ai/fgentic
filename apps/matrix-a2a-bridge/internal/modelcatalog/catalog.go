@@ -182,3 +182,14 @@ func (m Model) Supports(capability Capability) bool {
 	}
 	return false
 }
+
+// ParseClassification converts an external policy value into the closed classification enum.
+func ParseClassification(value string) (Classification, error) {
+	classification := Classification(value)
+	switch classification {
+	case ClassificationPublic, ClassificationApprovedNonPublic, ClassificationRestricted, ClassificationRegulated:
+		return classification, nil
+	default:
+		return "", fmt.Errorf("classification %q is not supported", value)
+	}
+}

@@ -92,6 +92,11 @@ type a2aClient interface {
 	QuoteAdmission(target a2aclient.Target, maxCost uint64) a2aclient.QuoteVerdict
 }
 
+func withAgentPolicyContext(ctx context.Context, userID string, ref *AgentRef) context.Context {
+	ctx = a2aclient.WithUser(ctx, userID)
+	return a2aclient.WithDataClassification(ctx, ref.Classification())
+}
+
 type pollWaitFunc func(context.Context, time.Duration) error
 
 // delegationAuditResult is the terminal, content-free audit outcome for one resolved target.
@@ -721,7 +726,7 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 		b.logDelegationAudit(reply, ref, open.localpart, currentSender, audit)
 	}()
 
-	a2aCtx := a2aclient.WithUser(ctx, reply.Sender.String())
+	a2aCtx := withAgentPolicyContext(ctx, reply.Sender.String(), ref)
 	cancelDelegation := func() {}
 	if ref.Timeout() > 0 {
 		a2aCtx, cancelDelegation = context.WithTimeout(a2aCtx, ref.Timeout())
@@ -1069,7 +1074,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 	audit.a2aUserID = evt.Sender.String()
 	audit.contextID = contextID
 
-	a2aCtx := a2aclient.WithUser(ctx, evt.Sender.String())
+	a2aCtx := withAgentPolicyContext(ctx, evt.Sender.String(), ref)
 	cancelDelegation := func() {}
 	if ref.Timeout() > 0 {
 		a2aCtx, cancelDelegation = context.WithTimeout(a2aCtx, ref.Timeout())

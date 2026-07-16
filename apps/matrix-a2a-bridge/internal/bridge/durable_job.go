@@ -238,7 +238,7 @@ func (b *Bridge) callPreparedJob(
 		return b.finishDurableWithoutReply(ctx, job, state.StateDead, "durable_a2a_unsupported",
 			fmt.Errorf("A2A client does not support durable calls"))
 	}
-	a2aCtx := a2aclient.WithUser(ctx, job.SenderMXID)
+	a2aCtx := withAgentPolicyContext(ctx, job.SenderMXID, ref)
 	deadline, _ := b.durableTaskDeadline(*job, ref, payload)
 	a2aCtx, cancelDelegation := context.WithDeadline(a2aCtx, deadline)
 	defer cancelDelegation()
@@ -366,7 +366,9 @@ func (b *Bridge) resumeKnownTask(ctx context.Context, job *state.Job) error {
 		return b.finishDurableWithoutReply(ctx, job, state.StateDead, "durable_a2a_unsupported",
 			fmt.Errorf("A2A client does not support durable task resume"))
 	}
-	overallCtx, cancelOverall := context.WithDeadline(a2aclient.WithUser(ctx, job.SenderMXID), deadline)
+	overallCtx, cancelOverall := context.WithDeadline(
+		withAgentPolicyContext(ctx, job.SenderMXID, ref), deadline,
+	)
 	defer cancelOverall()
 	pollCtx, cancel := context.WithTimeout(overallCtx, b.cfg.RequestTimeout)
 	result, err := client.ResumeTask(pollCtx, ref.Target(), job.A2ATaskID)
@@ -646,7 +648,7 @@ func (b *Bridge) revalidateDurableJob(job state.Job, evt *event.Event) (senderId
 	if !ok || ref == nil {
 		return sender, nil, errorAgentMappingChanged
 	}
-	if ref.MappingID() != job.TargetFingerprint {
+	if !ref.MatchesMappingID(job.TargetFingerprint) {
 		// Never attribute persisted work to a replacement mapping. The immutable fingerprint remains
 		// the only trustworthy actor evidence once the original mapping disappears.
 		return sender, nil, errorAgentMappingChanged
@@ -759,7 +761,7 @@ func (b *Bridge) finishDurableWithoutReply(
 	}
 	var ref *AgentRef
 	_, currentRef, ok := b.agents.SnapshotSenderTarget(evt.Sender, job.GhostLocalpart)
-	if ok && currentRef != nil && currentRef.MappingID() == job.TargetFingerprint {
+	if ok && currentRef != nil && currentRef.MatchesMappingID(job.TargetFingerprint) {
 		ref = currentRef
 	}
 	if payload.Audit.Outcome == "" {

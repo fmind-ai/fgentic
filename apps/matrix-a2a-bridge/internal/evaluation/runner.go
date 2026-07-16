@@ -69,7 +69,14 @@ func (r *Runner) Run(ctx context.Context, config RunConfig, scenarios []Scenario
 		}
 
 		started := time.Now()
-		scenarioCtx, cancel := context.WithTimeout(a2aclient.WithUser(ctx, config.UserID), config.ScenarioTimeout)
+		// The fixed evaluation suite contains only repository-published prompts and bypasses Matrix
+		// mappings, so bind its reviewed public class explicitly instead of relying on the local
+		// transport's fail-closed regulated default.
+		policyCtx := a2aclient.WithDataClassification(
+			a2aclient.WithUser(ctx, config.UserID),
+			modelcatalog.ClassificationPublic,
+		)
+		scenarioCtx, cancel := context.WithTimeout(policyCtx, config.ScenarioTimeout)
 		answer, err := r.callScenario(scenarioCtx, scenario, config.PollInterval)
 		cancel()
 		if err != nil {
