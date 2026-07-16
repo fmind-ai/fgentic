@@ -176,7 +176,7 @@ reset_delegation_quota_fixture() {
 verify_cross_org_delegation() {
 	local org_b_secret untrusted_secret wrong_audience_secret
 	local document status response before_tokens after_tokens denied_path_status missing_extension_status
-	local before_receipts after_denials after_receipt receipt tampered
+	local before_receipts after_denials after_receipt receipt request request_hash tampered
 	reset_delegation_quota_fixture
 	verify_public_agent_card
 	verify_kagent_not_public
@@ -226,6 +226,8 @@ verify_cross_org_delegation() {
 
 	before_tokens="$(agentgateway_token_total)"
 	document="$(a2a_document 3000)"
+	request="${WORK_DIR}/a2a-valid-request.json"
+	printf '%s' "${document}" >"${request}"
 	response="${WORK_DIR}/a2a-valid.json"
 	status="$(a2a_status "${response}" "${ORG_B_A2A_TOKEN}" "${document}")"
 	[ "${status}" = "200" ] || die "authorized org B delegation returned HTTP ${status}"
@@ -239,12 +241,14 @@ verify_cross_org_delegation() {
 		die "authorized delegation did not increase aggregate model-token metrics"
 	receipt="${WORK_DIR}/usage-receipt.json"
 	jq -e --arg extension "${USAGE_RECEIPT_EXTENSION}" \
-		'.result.metadata[$extension]' "${response}" >"${receipt}" ||
+		'(.result.message // .result.task // .result).metadata[$extension]' \
+		"${response}" >"${receipt}" ||
 		die "authorized org B delegation returned no signed usage receipt"
 	"${ROOT_DIR}/scripts/usage-receipt.sh" verify --input "${receipt}" \
 		--public-key "${USAGE_RECEIPT_PUBLIC_JWK}" --key-id "${USAGE_RECEIPT_KEY_ID}"
+	request_hash="$("${ROOT_DIR}/scripts/usage-receipt.sh" request-hash --input "${request}")"
 	jq -e --arg azp org-b-a2a --arg schema fgentic.usage-receipt.v1 \
-		--arg key_id "${USAGE_RECEIPT_KEY_ID}" '
+		--arg key_id "${USAGE_RECEIPT_KEY_ID}" --arg request_hash "${request_hash}" '
       .receipt.schema == $schema and .receipt.azp == $azp and
       .receipt.tokensReserved == 3000 and .receipt.tokensConsumed == null and
       .receipt.keyId == $key_id and
@@ -252,8 +256,21 @@ verify_cross_org_delegation() {
       (.receipt.outcome | type == "string" and length > 0) and
       (.receipt.taskId | type == "string" and length > 0) and
       (.receipt.contextId | type == "string" and length > 0) and
-      (.receipt.requestHash | test("^sha256:[0-9a-f]{64}$"))
+      .receipt.requestHash == $request_hash
     ' "${receipt}" >/dev/null || die "signed usage receipt contract is incomplete"
+	jq -e --slurpfile receipt "${receipt}" '
+      (.result.message // .result.task // .result) as $result |
+      $receipt[0].receipt.taskId == ($result.taskId // $result.id) and
+      $receipt[0].receipt.contextId == $result.contextId and
+      (
+        if .result.message != null then
+          $receipt[0].receipt.outcome == "TASK_STATE_COMPLETED"
+        else
+          $receipt[0].receipt.outcome == $result.status.state
+        end
+      )
+    ' "${response}" >/dev/null ||
+		die "signed usage receipt does not match the authorized A2A result"
 	tampered="${WORK_DIR}/usage-receipt-tampered.json"
 	jq '.receipt.tokensReserved += 1' "${receipt}" >"${tampered}"
 	if "${ROOT_DIR}/scripts/usage-receipt.sh" verify --input "${tampered}" \

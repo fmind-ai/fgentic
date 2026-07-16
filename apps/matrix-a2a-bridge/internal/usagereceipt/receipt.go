@@ -21,6 +21,8 @@ import (
 // Schema is the immutable version discriminator inside each signed receipt.
 const Schema = "fgentic.usage-receipt.v1"
 
+const maxJCSSafeInteger = uint64(1<<53 - 1)
+
 var (
 	azpRE  = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._:@/-]{0,255}$`)
 	hashRE = regexp.MustCompile(`^sha256:[0-9a-f]{64}$`)
@@ -92,8 +94,11 @@ func (r Receipt) Validate() error {
 	if !hashRE.MatchString(r.RequestHash) {
 		return fmt.Errorf("receipt requestHash must be a sha256 identifier")
 	}
-	if r.TokensReserved == 0 {
-		return fmt.Errorf("receipt tokensReserved must be positive")
+	if !validTokenReservation(r.TokensReserved) {
+		return fmt.Errorf(
+			"receipt tokensReserved must be between 1 and %d",
+			maxJCSSafeInteger,
+		)
 	}
 	if r.TokensConsumed != nil {
 		return fmt.Errorf("receipt tokensConsumed must remain null until per-consumer actuals exist")
@@ -106,6 +111,10 @@ func (r Receipt) Validate() error {
 		return fmt.Errorf("receipt keyId is invalid")
 	}
 	return nil
+}
+
+func validTokenReservation(value uint64) bool {
+	return value > 0 && value <= maxJCSSafeInteger
 }
 
 func validIdentifier(value string) bool {

@@ -2,10 +2,13 @@ package usagereceipt
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
+	"slices"
 	"testing"
 
+	"github.com/a2aproject/a2a-go/v2/a2a"
 	extprocv3 "github.com/envoyproxy/go-control-plane/envoy/service/ext_proc/v3"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -52,7 +55,17 @@ func TestExternalProcessorInjectsReceiptOverBufferedProtocol(t *testing.T) {
 	if response, err := stream.Recv(); err != nil || response.GetRequestBody() == nil {
 		t.Fatalf("Recv request continuation: response %v, err %v", response, err)
 	}
-	upstream := []byte(`{"jsonrpc":"2.0","id":"request-1","result":{"kind":"message","taskId":"task-1","contextId":"context-1"}}`)
+	upstream := []byte(`{
+  "jsonrpc":"2.0",
+  "id":"request-1",
+  "result":{"message":{
+    "messageId":"reply-1",
+    "taskId":"task-1",
+    "contextId":"context-1",
+    "role":"ROLE_AGENT",
+    "parts":[]
+  }}
+}`)
 	if err := stream.Send(processingBody(false, upstream)); err != nil {
 		t.Fatalf("Send response body: %v", err)
 	}
@@ -63,6 +76,17 @@ func TestExternalProcessorInjectsReceiptOverBufferedProtocol(t *testing.T) {
 	mutation := response.GetResponseBody().GetResponse().GetBodyMutation().GetBody()
 	if len(mutation) == 0 {
 		t.Fatal("external processor returned no response-body mutation")
+	}
+	var envelope struct {
+		Result a2a.StreamResponse `json:"result"`
+	}
+	if err := json.Unmarshal(mutation, &envelope); err != nil {
+		t.Fatalf("decode external-processor response through a2a-go: %v", err)
+	}
+	message, ok := envelope.Result.Event.(*a2a.Message)
+	if !ok || message.Metadata[ExtensionURI] == nil ||
+		!slices.Contains(message.Extensions, ExtensionURI) {
+		t.Fatalf("external processor omitted native A2A extension data: %#v", envelope.Result.Event)
 	}
 	signed := receiptFromResponse(t, mutation)
 	if err := Verify(signed, &processor.Key.PublicKey, processor.KeyID); err != nil {

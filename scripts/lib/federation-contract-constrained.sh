@@ -354,6 +354,52 @@ check_federation_constrained_state_transitions() {
 		rg --fixed-strings --line-regexp "${milestone}" <<<"${milestones}" >/dev/null ||
 			fail "current-generation progress omits ${milestone}"
 	done
+
+	local constrained_wait_helpers="${WORK_DIR}/constrained-wait-image.sh"
+	extract_demo_functions "${constrained_wait_helpers}" \
+		bridge_image_wait_required load_bridge_image_for_platform wait_for_platform_constrained
+	(
+		# shellcheck disable=SC1090
+		source "${constrained_wait_helpers}"
+		image_attempts=0
+		load_bridge_image_if_requested() {
+			image_attempts=$((image_attempts + 1))
+			[ "${image_attempts}" -ge 2 ]
+		}
+		deadline_timeout() { printf '10s'; }
+		kubectl() { printf '%s\n' '{"items":[]}'; }
+		collect_platform_milestones() { :; }
+		platform_is_ready() { return 0; }
+		resource_trace_record_ready_layers() { :; }
+		sleep_before_deadline() { :; }
+		print_platform_wait_diagnostics() { :; }
+		PROFILE=federation
+		SOURCE_REVISION=deadbeef
+		BRIDGE_IMAGE=matrix-a2a-bridge:test
+		FEDERATION_NO_PROGRESS_SECONDS=10
+		FEDERATION_MAX_SECONDS=10
+		wait_for_platform_constrained
+		[ "${image_attempts}" -eq 2 ] ||
+			fail 'constrained reconciliation returned before importing the receipt image'
+	)
+	local constrained_image_failure="${WORK_DIR}/constrained-image-import-failure.txt"
+	if (
+		# shellcheck disable=SC1090
+		source "${constrained_wait_helpers}"
+		load_bridge_image_if_requested() { return 2; }
+		flux() { :; }
+		PROFILE=federation
+		SOURCE_REVISION=deadbeef
+		BRIDGE_IMAGE=matrix-a2a-bridge:test
+		FEDERATION_NO_PROGRESS_SECONDS=10
+		FEDERATION_MAX_SECONDS=10
+		wait_for_platform_constrained
+	) >"${constrained_image_failure}" 2>&1; then
+		fail 'constrained reconciliation ignored a failed receipt image import'
+	fi
+	rg --fixed-strings 'matrix-a2a-bridge:test, but its image import failed' \
+		"${constrained_image_failure}" >/dev/null ||
+		fail 'constrained receipt image import failure lacks a bounded diagnostic'
 }
 
 check_federation_constrained_node_capacity() {

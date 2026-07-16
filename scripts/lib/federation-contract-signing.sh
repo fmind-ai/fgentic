@@ -149,4 +149,73 @@ if rg --fixed-strings 'ca.key' "${LIFECYCLE}" "${DEMO_SOURCES[@]}" \
 	fail 'federation assets reference the private local-CA key'
 fi
 
+# A retained pre-receipt lab has an AgentCard key and public ConfigMap, but no receipt key or JWK.
+# Upgrading that exact state must add the new independent key rather than treating a missing
+# ConfigMap data entry as the literal go-template string "<no value>".
+legacy_private_key="$(base64 <"${WORK_DIR}/agent-card-private.pem" | tr -d '\n')"
+legacy_key_id="$(printf '%s' fgentic-org-a-docs-qa-v1 | base64 | tr -d '\n')"
+legacy_public_jwk="$(<"${WORK_DIR}/agent-card-public-jwk.json")"
+legacy_bootstrap="$(jq --null-input --arg private_key "${legacy_private_key}" \
+	--arg key_id "${legacy_key_id}" '{
+    data: {
+      "agent-card-private-key": $private_key,
+      "agent-card-key-id": $key_id
+    }
+  }')"
+legacy_configmap="$(jq --null-input --arg public_jwk "${legacy_public_jwk}" '{
+    data: {"public-jwk.json": $public_jwk}
+  }')"
+legacy_patch="${WORK_DIR}/legacy-receipt-bootstrap-patch"
+: >"${legacy_patch}"
+(
+	# shellcheck source=scripts/lib/demo-federation.sh
+	source "${ROOT_DIR}/scripts/lib/demo-federation.sh"
+	die() {
+		echo "error: $*" >&2
+		exit 1
+	}
+	apply_secret() {
+		die "legacy bootstrap unexpectedly replaced its existing Secret"
+	}
+	kubectl() {
+		case "$*" in
+		'create namespace flux-system --dry-run=client --output=yaml')
+			printf '%s\n' 'apiVersion: v1' 'kind: Namespace'
+			;;
+		'apply --filename -')
+			cat >/dev/null
+			;;
+		*'get secret fgentic-demo-bootstrap --output json'*)
+			printf '%s\n' "${legacy_bootstrap}"
+			;;
+		*'get configmap fgentic-agent-card --output json'*)
+			printf '%s\n' "${legacy_configmap}"
+			;;
+		*'get secret fgentic-demo-bootstrap')
+			return 0
+			;;
+		*'create secret generic fgentic-demo-bootstrap '*'--output=json'*)
+			printf '%s\n' '{"data":{"usage-receipt-private-key":"fixture"}}'
+			;;
+		*'patch secret fgentic-demo-bootstrap '*)
+			cat >/dev/null
+			printf '%s\n' patched >"${legacy_patch}"
+			;;
+		*) die "unexpected legacy bootstrap kubectl call: $*" ;;
+		esac
+	}
+	FEDERATION_AGENT_CARD_CONFIGMAP=fgentic-agent-card
+	FEDERATION_AGENT_CARD_DEFAULT_KEY_ID=fgentic-org-a-docs-qa-v1
+	FEDERATION_USAGE_RECEIPT_DEFAULT_KEY_ID=fgentic-org-a-usage-receipt-v1
+	prepare_federation_agent_card_key
+	[ -z "${EXISTING_USAGE_RECEIPT_JWK_FILE}" ] ||
+		die "legacy ConfigMap exposed a nonexistent usage-receipt JWK"
+	[ "${USAGE_RECEIPT_KEY_ID}" = "${FEDERATION_USAGE_RECEIPT_DEFAULT_KEY_ID}" ] ||
+		die "legacy upgrade generated the wrong usage-receipt key ID"
+	[ -s "${USAGE_RECEIPT_PRIVATE_KEY}" ] ||
+		die "legacy upgrade did not generate a usage-receipt private key"
+)
+[ "$(<"${legacy_patch}")" = patched ] ||
+	fail 'legacy federation bootstrap did not persist the new usage-receipt key'
+
 }

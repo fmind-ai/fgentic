@@ -83,3 +83,36 @@ func TestReceiptRejectsInventedConsumptionAndUnknownFields(t *testing.T) {
 		t.Fatal("Parse accepted an extension field that could carry content")
 	}
 }
+
+func TestReceiptRejectsJCSUnsafeReservation(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	receipt, err := New(
+		"org-b-a2a", "task-1", "context-1",
+		"sha256:"+strings.Repeat("c", 64), maxJCSSafeInteger,
+		time.Date(2026, 7, 16, 8, 30, 0, 0, time.UTC),
+		"TASK_STATE_COMPLETED", "receipt-key",
+	)
+	if err != nil {
+		t.Fatalf("New max-safe receipt: %v", err)
+	}
+	signed, err := Sign(receipt, key)
+	if err != nil {
+		t.Fatalf("Sign max-safe receipt: %v", err)
+	}
+	tampered := signed
+	tampered.Receipt.TokensReserved--
+	if err := Verify(tampered, &key.PublicKey, receipt.KeyID); err == nil {
+		t.Fatal("Verify accepted max-safe reservation tamper")
+	}
+	if _, err := New(
+		"org-b-a2a", "task-1", "context-1",
+		"sha256:"+strings.Repeat("c", 64), maxJCSSafeInteger+1,
+		time.Date(2026, 7, 16, 8, 30, 0, 0, time.UTC),
+		"TASK_STATE_COMPLETED", "receipt-key",
+	); err == nil {
+		t.Fatal("New accepted a reservation outside the JCS safe-integer range")
+	}
+}

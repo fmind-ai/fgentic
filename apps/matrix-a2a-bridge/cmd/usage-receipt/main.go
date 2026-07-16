@@ -24,9 +24,8 @@ import (
 )
 
 const (
-	maxKeyBytes     = 64 << 10
-	maxReceiptBytes = 64 << 10
-	maxGRPCBytes    = 128 << 10
+	maxFileBytes = 64 << 10
+	maxGRPCBytes = 128 << 10
 )
 
 func main() {
@@ -40,13 +39,17 @@ func main() {
 
 func run(args []string, stdout io.Writer) error {
 	if len(args) == 0 {
-		return fmt.Errorf("expected serve, public-jwk, or verify subcommand")
+		return fmt.Errorf(
+			"expected serve, public-jwk, request-hash, verify, or archive-count subcommand",
+		)
 	}
 	switch args[0] {
 	case "serve":
 		return runServe(args[1:])
 	case "public-jwk":
 		return runPublicJWK(args[1:], stdout)
+	case "request-hash":
+		return runRequestHash(args[1:], stdout)
 	case "verify":
 		return runVerify(args[1:])
 	case "archive-count":
@@ -54,6 +57,30 @@ func run(args []string, stdout io.Writer) error {
 	default:
 		return fmt.Errorf("unknown subcommand %q", args[0])
 	}
+}
+
+func runRequestHash(args []string, stdout io.Writer) error {
+	flags := flag.NewFlagSet("request-hash", flag.ContinueOnError)
+	flags.SetOutput(io.Discard)
+	inputPath := flags.String("input", "", "accepted A2A JSON request path")
+	if err := flags.Parse(args); err != nil {
+		return fmt.Errorf("parse request-hash flags: %w", err)
+	}
+	if flags.NArg() != 0 || *inputPath == "" {
+		return fmt.Errorf("request-hash requires --input")
+	}
+	raw, err := readBoundedFile(*inputPath, "A2A request")
+	if err != nil {
+		return err
+	}
+	hash, err := usagereceipt.RequestHash(raw)
+	if err != nil {
+		return err
+	}
+	if _, err := fmt.Fprintln(stdout, hash); err != nil {
+		return fmt.Errorf("write A2A request hash: %w", err)
+	}
+	return nil
 }
 
 func runArchiveCount(args []string, stdout io.Writer) error {
@@ -194,7 +221,7 @@ func runVerify(args []string) error {
 	if flags.NArg() != 0 || *inputPath == "" || *publicKeyPath == "" || *keyID == "" {
 		return fmt.Errorf("verify requires --input, --public-key, and --key-id")
 	}
-	raw, err := readBoundedFile(*inputPath, maxReceiptBytes, "signed usage receipt")
+	raw, err := readBoundedFile(*inputPath, "signed usage receipt")
 	if err != nil {
 		return err
 	}
@@ -202,7 +229,7 @@ func runVerify(args []string) error {
 	if err != nil {
 		return err
 	}
-	jwk, err := readBoundedFile(*publicKeyPath, maxKeyBytes, "public JWK")
+	jwk, err := readBoundedFile(*publicKeyPath, "public JWK")
 	if err != nil {
 		return err
 	}
@@ -214,19 +241,19 @@ func runVerify(args []string) error {
 }
 
 func readPrivateKey(path string) (*ecdsa.PrivateKey, error) {
-	raw, err := readBoundedFile(path, maxKeyBytes, "private key")
+	raw, err := readBoundedFile(path, "private key")
 	if err != nil {
 		return nil, err
 	}
 	return agentcardjws.ParseP256PrivateKeyPEM(raw)
 }
 
-func readBoundedFile(path string, limit int64, label string) ([]byte, error) {
+func readBoundedFile(path, label string) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, fmt.Errorf("open %s: %w", label, err)
 	}
-	raw, readErr := io.ReadAll(io.LimitReader(file, limit+1))
+	raw, readErr := io.ReadAll(io.LimitReader(file, maxFileBytes+1))
 	closeErr := file.Close()
 	if readErr != nil {
 		return nil, fmt.Errorf("read %s: %w", label, readErr)
@@ -234,8 +261,8 @@ func readBoundedFile(path string, limit int64, label string) ([]byte, error) {
 	if closeErr != nil {
 		return nil, fmt.Errorf("close %s: %w", label, closeErr)
 	}
-	if int64(len(raw)) > limit {
-		return nil, fmt.Errorf("%s exceeds %d bytes", label, limit)
+	if len(raw) > maxFileBytes {
+		return nil, fmt.Errorf("%s exceeds %d bytes", label, maxFileBytes)
 	}
 	return raw, nil
 }

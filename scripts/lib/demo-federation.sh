@@ -51,7 +51,8 @@ snapshot_source() {
 	git --git-dir="${SOURCE_CONTEXT}/repo.git" update-server-info
 }
 prepare_federation_agent_card_key() {
-	local bootstrap_json encoded_private_key encoded_receipt_key public_artifacts_exist
+	local bootstrap_json configmap_json encoded_private_key encoded_receipt_key
+	local existing_receipt_jwk public_artifacts_exist
 	AGENT_CARD_PRIVATE_KEY="${WORK_DIR}/agent-card-private-key.pem"
 	AGENT_CARD_KEY_ID=""
 	EXISTING_AGENT_CARD_JWK_FILE=""
@@ -68,25 +69,33 @@ prepare_federation_agent_card_key() {
 	bootstrap_json="$(kubectl --namespace flux-system get secret fgentic-demo-bootstrap \
 		--output json 2>/dev/null || printf '{}')"
 	public_artifacts_exist=false
-	if kubectl --namespace agentgateway-system get configmap \
-		"${FEDERATION_AGENT_CARD_CONFIGMAP}" >/dev/null 2>&1; then
+	if configmap_json="$(kubectl --namespace agentgateway-system get configmap \
+		"${FEDERATION_AGENT_CARD_CONFIGMAP}" --output json 2>/dev/null)"; then
 		public_artifacts_exist=true
 		EXISTING_AGENT_CARD_JWK_FILE="${WORK_DIR}/existing-public-jwk.json"
-		kubectl --namespace agentgateway-system get configmap \
-			"${FEDERATION_AGENT_CARD_CONFIGMAP}" \
-			--output 'go-template={{index .data "public-jwk.json"}}' \
-			>"${EXISTING_AGENT_CARD_JWK_FILE}"
+		jq -er '.data["public-jwk.json"] | select(type == "string" and length > 0)' \
+			<<<"${configmap_json}" >"${EXISTING_AGENT_CARD_JWK_FILE}" ||
+			die "existing federation AgentCard public JWK is invalid"
 		jq -e '
       keys == ["alg", "crv", "key_ops", "kid", "kty", "use", "x", "y"] and
       .kty == "EC" and .crv == "P-256" and .alg == "ES256" and
       .use == "sig" and .key_ops == ["verify"] and (has("d") | not)
     ' "${EXISTING_AGENT_CARD_JWK_FILE}" >/dev/null ||
 			die "existing federation AgentCard public JWK is invalid"
-		if kubectl --namespace agentgateway-system get configmap \
-			"${FEDERATION_AGENT_CARD_CONFIGMAP}" \
-			--output 'go-template={{index .data "usage-receipt-public-jwk.json"}}' \
-			>"${WORK_DIR}/existing-usage-receipt-public-jwk.json" 2>/dev/null; then
-			EXISTING_USAGE_RECEIPT_JWK_FILE="${WORK_DIR}/existing-usage-receipt-public-jwk.json"
+		existing_receipt_jwk="${WORK_DIR}/existing-usage-receipt-public-jwk.json"
+		if jq -er '
+          .data["usage-receipt-public-jwk.json"] |
+          select(type == "string" and length > 0)
+        ' <<<"${configmap_json}" >"${existing_receipt_jwk}"; then
+			jq -e '
+          keys == ["alg", "crv", "key_ops", "kid", "kty", "use", "x", "y"] and
+          .kty == "EC" and .crv == "P-256" and .alg == "ES256" and
+          .use == "sig" and .key_ops == ["verify"] and (has("d") | not)
+        ' "${existing_receipt_jwk}" >/dev/null ||
+				die "existing federation usage-receipt public JWK is invalid"
+			EXISTING_USAGE_RECEIPT_JWK_FILE="${existing_receipt_jwk}"
+		else
+			rm -f "${existing_receipt_jwk}"
 		fi
 	fi
 
@@ -143,6 +152,7 @@ prepare_federation_agent_card_key() {
 			--from-literal="usage-receipt-key-id=${USAGE_RECEIPT_KEY_ID}"
 	fi
 	bootstrap_json=""
+	configmap_json=""
 	encoded_private_key=""
 	encoded_receipt_key=""
 }

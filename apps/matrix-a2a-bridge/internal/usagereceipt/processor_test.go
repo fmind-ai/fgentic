@@ -8,9 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/a2aproject/a2a-go/v2/a2a"
 )
 
 func TestProcessorInjectsAndArchivesTerminalReceipt(t *testing.T) {
@@ -18,7 +21,7 @@ func TestProcessorInjectsAndArchivesTerminalReceipt(t *testing.T) {
 	request, err := ParseRequest([]byte(`{
   "jsonrpc":"2.0","id":"request-1","method":"SendMessage","params":{"message":{
     "messageId":"message-1","role":"ROLE_USER","parts":[{"text":"untrusted prompt"}],
-    "metadata":{"https://fgentic.fmind.ai/a2a/extensions/token-budget/v1":{"maxTokens":9007199254740993}}
+    "metadata":{"https://fgentic.fmind.ai/a2a/extensions/token-budget/v1":{"maxTokens":3000}}
   }}}
 `))
 	if err != nil {
@@ -41,11 +44,25 @@ func TestProcessorInjectsAndArchivesTerminalReceipt(t *testing.T) {
 	if string(envelope.ID) != "9007199254740993" {
 		t.Fatalf("numeric JSON-RPC id changed during receipt injection: %s", envelope.ID)
 	}
+	var sdkEnvelope struct {
+		Result a2a.StreamResponse `json:"result"`
+	}
+	if err := json.Unmarshal(updated, &sdkEnvelope); err != nil {
+		t.Fatalf("decode updated response through a2a-go: %v", err)
+	}
+	message, ok := sdkEnvelope.Result.Event.(*a2a.Message)
+	if !ok || message.Metadata[ExtensionURI] == nil ||
+		!slices.Contains(message.Extensions, ExtensionURI) {
+		t.Fatalf(
+			"a2a-go message did not retain usage receipt metadata: %#v",
+			sdkEnvelope.Result.Event,
+		)
+	}
 	signed := receiptFromResponse(t, updated)
 	if err := Verify(signed, &processor.Key.PublicKey, processor.KeyID); err != nil {
 		t.Fatalf("Verify response receipt: %v", err)
 	}
-	if signed.Receipt.TokensReserved != 9007199254740993 || signed.Receipt.TokensConsumed != nil ||
+	if signed.Receipt.TokensReserved != 3000 || signed.Receipt.TokensConsumed != nil ||
 		signed.Receipt.AZP != "org-b-a2a" || signed.Receipt.TaskID != "task-1" ||
 		signed.Receipt.RequestHash != request.RequestHash {
 		t.Fatalf("response receipt = %+v", signed.Receipt)
@@ -85,6 +102,15 @@ func TestProcessorCorrelatesWorkingTaskToGetTask(t *testing.T) {
 	if err != nil || !attached {
 		t.Fatalf("completed response = attached %v, err %v", attached, err)
 	}
+	var taskEnvelope struct {
+		Result a2a.Task `json:"result"`
+	}
+	if err := json.Unmarshal(updated, &taskEnvelope); err != nil {
+		t.Fatalf("decode updated task response through a2a-go: %v", err)
+	}
+	if taskEnvelope.Result.Metadata[ExtensionURI] == nil {
+		t.Fatalf("a2a-go task did not retain usage receipt metadata: %#v", taskEnvelope.Result)
+	}
 	signed := receiptFromResponse(t, updated)
 	if signed.Receipt.TokensReserved != 1000 || signed.Receipt.Outcome != "TASK_STATE_COMPLETED" {
 		t.Fatalf("completed receipt = %+v", signed.Receipt)
@@ -104,6 +130,92 @@ func TestProcessorCorrelatesWorkingTaskToGetTask(t *testing.T) {
 	}
 	if archive, err := os.ReadFile(archivePath); err != nil || strings.Count(string(archive), "\n") != 1 {
 		t.Fatalf("archive after retried GetTask = %q, err %v", archive, err)
+	}
+}
+
+func TestRequestHashCanonicalizationRejectsUnsafeIntegers(t *testing.T) {
+	first, err := RequestHash([]byte(`{"jsonrpc":"2.0","id":"request-1","value":0.1}`))
+	if err != nil {
+		t.Fatalf("RequestHash first: %v", err)
+	}
+	second, err := RequestHash([]byte("{\n  \"value\": 0.1, \"id\": \"request-1\", \"jsonrpc\": \"2.0\"\n}"))
+	if err != nil {
+		t.Fatalf("RequestHash second: %v", err)
+	}
+	if first != second {
+		t.Fatalf("canonical request hashes differ: %s != %s", first, second)
+	}
+	if _, err := RequestHash([]byte(`{"jsonrpc":"2.0","id":9007199254740992}`)); err != nil {
+		t.Fatalf("RequestHash rejected an exactly representable integer: %v", err)
+	}
+	for _, raw := range []string{
+		`{"jsonrpc":"2.0","id":9007199254740993}`,
+		`{"jsonrpc":"2.0","id":"request-1","metadata":{"unsafe":-9007199254740993}}`,
+		`{"jsonrpc":"2.0","id":"request-1","metadata":{"unsafe":9007199254740992.5}}`,
+	} {
+		if _, err := RequestHash([]byte(raw)); err == nil {
+			t.Fatalf("RequestHash accepted unsafe integer: %s", raw)
+		}
+	}
+}
+
+func TestProcessorRejectsNonObjectResultMetadata(t *testing.T) {
+	processor, _ := testProcessor(t)
+	request, err := ParseRequest([]byte(`{
+  "jsonrpc":"2.0",
+  "id":"request-1",
+  "method":"SendMessage",
+  "params":{"message":{"metadata":{
+    "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1":{"maxTokens":1000}
+  }}}
+}`))
+	if err != nil {
+		t.Fatalf("ParseRequest: %v", err)
+	}
+	response := []byte(`{
+  "jsonrpc":"2.0",
+  "id":"request-1",
+  "result":{"message":{
+    "messageId":"reply-1",
+    "taskId":"task-1",
+    "contextId":"context-1",
+    "role":"ROLE_AGENT",
+    "parts":[],
+    "metadata":"invalid"
+  }}
+}`)
+	if _, _, err := processor.TransformResponse(request, response); err == nil {
+		t.Fatal("TransformResponse replaced non-object A2A metadata")
+	}
+}
+
+func TestProcessorRejectsNonArrayMessageExtensions(t *testing.T) {
+	processor, _ := testProcessor(t)
+	request, err := ParseRequest([]byte(`{
+  "jsonrpc":"2.0",
+  "id":"request-1",
+  "method":"SendMessage",
+  "params":{"message":{"metadata":{
+    "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1":{"maxTokens":1000}
+  }}}
+}`))
+	if err != nil {
+		t.Fatalf("ParseRequest: %v", err)
+	}
+	response := []byte(`{
+  "jsonrpc":"2.0",
+  "id":"request-1",
+  "result":{"message":{
+    "messageId":"reply-1",
+    "taskId":"task-1",
+    "contextId":"context-1",
+    "role":"ROLE_AGENT",
+    "parts":[],
+    "extensions":"invalid"
+  }}
+}`)
+	if _, _, err := processor.TransformResponse(request, response); err == nil {
+		t.Fatal("TransformResponse replaced non-array A2A message extensions")
 	}
 }
 
@@ -182,15 +294,26 @@ func testProcessor(t *testing.T) (*Processor, string) {
 
 func receiptFromResponse(t *testing.T, raw []byte) Signed {
 	t.Helper()
+	type metadataCarrier struct {
+		Metadata map[string]json.RawMessage `json:"metadata"`
+	}
 	var envelope struct {
 		Result struct {
-			Metadata map[string]json.RawMessage `json:"metadata"`
+			metadataCarrier
+			Message *metadataCarrier `json:"message"`
+			Task    *metadataCarrier `json:"task"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
-	receiptRaw := envelope.Result.Metadata[ExtensionURI]
+	carrier := &envelope.Result.metadataCarrier
+	if envelope.Result.Message != nil {
+		carrier = envelope.Result.Message
+	} else if envelope.Result.Task != nil {
+		carrier = envelope.Result.Task
+	}
+	receiptRaw := carrier.Metadata[ExtensionURI]
 	if len(receiptRaw) == 0 {
 		t.Fatalf("response has no %s metadata: %s", ExtensionURI, raw)
 	}

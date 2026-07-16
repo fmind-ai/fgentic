@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"strings"
 	"time"
 
@@ -50,9 +51,9 @@ type Processor struct {
 
 // ParseRequest records only the content-free evidence needed for a later receipt.
 func ParseRequest(raw []byte) (requestEvidence, error) {
-	canonical, err := jcs.Transform(raw)
+	requestHash, err := RequestHash(raw)
 	if err != nil {
-		return requestEvidence{}, fmt.Errorf("canonicalize A2A request: %w", err)
+		return requestEvidence{}, err
 	}
 	var request struct {
 		Method string `json:"method"`
@@ -81,12 +82,13 @@ func ParseRequest(raw []byte) (requestEvidence, error) {
 		}
 		budgetDecoder := json.NewDecoder(bytes.NewReader(budgetRaw))
 		budgetDecoder.DisallowUnknownFields()
-		if err := budgetDecoder.Decode(&budget); err != nil || budget.MaxTokens == 0 {
+		if err := budgetDecoder.Decode(&budget); err != nil ||
+			expectEOF(budgetDecoder) != nil ||
+			!validTokenReservation(budget.MaxTokens) {
 			return requestEvidence{}, fmt.Errorf("SendMessage token-budget metadata is invalid")
 		}
-		digest := sha256.Sum256(canonical)
 		return requestEvidence{
-			Method: request.Method, RequestHash: "sha256:" + hex.EncodeToString(digest[:]),
+			Method: request.Method, RequestHash: requestHash,
 			TokensReserved: budget.MaxTokens,
 		}, nil
 	case "GetTask":
@@ -97,6 +99,71 @@ func ParseRequest(raw []byte) (requestEvidence, error) {
 	default:
 		return requestEvidence{}, nil
 	}
+}
+
+// RequestHash returns the RFC 8785 hash bound into a usage receipt. Integers outside the
+// interoperable IEEE-754 safe range are rejected before canonicalization so distinct accepted
+// requests cannot collapse onto the same signed hash.
+func RequestHash(raw []byte) (string, error) {
+	if err := validateJCSInput(raw); err != nil {
+		return "", err
+	}
+	canonical, err := jcs.Transform(raw)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize A2A request: %w", err)
+	}
+	digest := sha256.Sum256(canonical)
+	return "sha256:" + hex.EncodeToString(digest[:]), nil
+}
+
+func validateJCSInput(raw []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return fmt.Errorf("decode A2A request for canonicalization: %w", err)
+	}
+	if err := expectEOF(decoder); err != nil {
+		return fmt.Errorf("decode A2A request for canonicalization: %w", err)
+	}
+	if err := validateJCSNumbers(value); err != nil {
+		return fmt.Errorf("validate A2A request for canonicalization: %w", err)
+	}
+	return nil
+}
+
+func validateJCSNumbers(value any) error {
+	switch typed := value.(type) {
+	case json.Number:
+		rawRational, ok := new(big.Rat).SetString(string(typed))
+		if !ok {
+			return fmt.Errorf("invalid JSON number")
+		}
+		canonical, err := jcs.Transform([]byte(typed))
+		if err != nil {
+			return fmt.Errorf("canonicalize JSON number: %w", err)
+		}
+		canonicalRational, ok := new(big.Rat).SetString(string(canonical))
+		if !ok {
+			return fmt.Errorf("invalid canonical JSON number")
+		}
+		if rawRational.Cmp(canonicalRational) != 0 {
+			return fmt.Errorf("JSON number loses precision under RFC 8785")
+		}
+	case []any:
+		for _, item := range typed {
+			if err := validateJCSNumbers(item); err != nil {
+				return err
+			}
+		}
+	case map[string]any:
+		for _, item := range typed {
+			if err := validateJCSNumbers(item); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // TransformResponse signs and injects a receipt when raw contains a terminal result. Nonterminal,
@@ -224,10 +291,22 @@ func (p *Processor) deletePending(taskID string, receipt Receipt) error {
 }
 
 func attachReceipt(raw []byte, result map[string]any, signed Signed) ([]byte, bool, error) {
-	metadata, ok := result["metadata"].(map[string]any)
+	carrier, message, err := receiptCarrier(result)
+	if err != nil {
+		return nil, false, err
+	}
+	if message {
+		if err := activateMessageExtension(carrier); err != nil {
+			return nil, false, err
+		}
+	}
+	metadata, ok := carrier["metadata"].(map[string]any)
 	if !ok {
+		if _, exists := carrier["metadata"]; exists {
+			return nil, false, fmt.Errorf("A2A response metadata is not an object")
+		}
 		metadata = make(map[string]any)
-		result["metadata"] = metadata
+		carrier["metadata"] = metadata
 	}
 	signedJSON, err := Marshal(signed)
 	if err != nil {
@@ -249,6 +328,46 @@ func attachReceipt(raw []byte, result map[string]any, signed Signed) ([]byte, bo
 		return nil, false, fmt.Errorf("encode receipt-bearing A2A response: %w", err)
 	}
 	return updated, true, nil
+}
+
+func receiptCarrier(result map[string]any) (map[string]any, bool, error) {
+	message, hasMessage := result["message"].(map[string]any)
+	task, hasTask := result["task"].(map[string]any)
+	if hasMessage && hasTask {
+		return nil, false, fmt.Errorf("A2A response contains both message and task results")
+	}
+	if hasMessage {
+		return message, true, nil
+	}
+	if hasTask {
+		return task, false, nil
+	}
+	kind, _ := result["kind"].(string)
+	_, hasMessageID := result["messageId"].(string)
+	return result, strings.EqualFold(kind, "message") || hasMessageID, nil
+}
+
+func activateMessageExtension(message map[string]any) error {
+	raw, exists := message["extensions"]
+	if !exists {
+		message["extensions"] = []any{ExtensionURI}
+		return nil
+	}
+	extensions, ok := raw.([]any)
+	if !ok {
+		return fmt.Errorf("A2A message extensions is not an array")
+	}
+	for _, extension := range extensions {
+		uri, ok := extension.(string)
+		if !ok {
+			return fmt.Errorf("A2A message extension URI is not a string")
+		}
+		if uri == ExtensionURI {
+			return nil
+		}
+	}
+	message["extensions"] = append(extensions, ExtensionURI)
+	return nil
 }
 
 func (p *Processor) validate() error {

@@ -157,7 +157,8 @@ func (s *PendingStore) Save(taskID string, evidence pendingEvidence) (returnErr 
 	if err != nil {
 		return err
 	}
-	if !hashRE.MatchString(evidence.RequestHash) || evidence.TokensReserved == 0 {
+	if !hashRE.MatchString(evidence.RequestHash) ||
+		!validTokenReservation(evidence.TokensReserved) {
 		return fmt.Errorf("pending usage receipt evidence is invalid")
 	}
 	existing, found, err := s.Load(taskID)
@@ -241,7 +242,8 @@ func (s *PendingStore) Load(taskID string) (pendingEvidence, bool, error) {
 	decoder.DisallowUnknownFields()
 	var evidence pendingEvidence
 	if err := decoder.Decode(&evidence); err != nil || expectEOF(decoder) != nil ||
-		!hashRE.MatchString(evidence.RequestHash) || evidence.TokensReserved == 0 {
+		!hashRE.MatchString(evidence.RequestHash) ||
+		!validTokenReservation(evidence.TokensReserved) {
 		return pendingEvidence{}, false, fmt.Errorf("pending usage receipt evidence is invalid")
 	}
 	return evidence, true, nil
