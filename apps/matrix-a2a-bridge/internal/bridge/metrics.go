@@ -44,6 +44,11 @@ var (
 		Name: "fgentic_delegation_recovery_outcomes_total",
 		Help: "Hard-crash recovery outcomes requiring operator attention.",
 	}, []string{"outcome"})
+
+	agentReplyQualitySignals = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "fgentic_agent_reply_quality_signals_total",
+		Help: "Content-free human quality reactions on known terminal agent replies.",
+	}, []string{"ghost", "signal"})
 )
 
 // Outcome labels for fgentic_delegations_total.
