@@ -132,6 +132,14 @@ flux_render gcp "${GCP_RENDER}"
 flux_render local "${LOCAL_RENDER}"
 
 echo "==> Checking the production Flux contract"
+assert_yq 'select(.kind == "VolumeSnapshotClass" and
+  .metadata.name == "fgentic-synapse-media") |
+  (.driver == "pd.csi.storage.gke.io" and .deletionPolicy == "Retain")' \
+  "${GCP_RENDER}" "the GKE reference must retain PD CSI media snapshots"
+assert_yq 'select(.kind == "HelmRelease" and .metadata.name == "matrix-stack" and
+  .metadata.namespace == "matrix") | .spec.values.synapse.media.storage |
+  (.size == "10Gi" and .storageClassName == "standard-rwo" and .resourcePolicy == "keep")' \
+  "${GCP_RENDER}" "production Synapse media must use the retained snapshot-capable PVC"
 assert_yq 'select(.kind == "Cluster" and .metadata.name == "platform-pg" and
   .metadata.namespace == "postgres") | (.spec.instances == 3 and
   .spec.resources.requests.cpu != null and .spec.resources.requests.memory != null and
@@ -250,6 +258,10 @@ assert_yq 'select(.kind == "StatefulSet" and .metadata.name == "ess-synapse-main
     .resources.requests.cpu == null or .resources.requests.memory == null or
     .resources.limits.cpu == null or .resources.limits.memory == null)] | length) == 0' \
   "${WORK_DIR}/matrix.yaml" "Synapse must stay one bounded fast-restart instance"
+assert_yq 'select(.kind == "PersistentVolumeClaim" and .metadata.name == "ess-synapse-media") |
+  (.metadata.annotations."helm.sh/resource-policy" == "keep" and
+  .spec.storageClassName == "standard-rwo" and .spec.resources.requests.storage == "10Gi")' \
+  "${WORK_DIR}/matrix.yaml" "the rendered Synapse media PVC lost its retained CSI contract"
 
 assert_yq 'select(.kind == "Deployment" and .metadata.name == "agentgateway") |
   .spec.template.metadata.labels as $labels |
@@ -330,6 +342,13 @@ for manifest in traefik matrix agentgateway kagent keycloak bridge; do
 done
 
 echo "==> Proving the production component is opt-in"
+assert_yq 'select(.kind == "HelmRelease" and .metadata.name == "matrix-stack" and
+  .metadata.namespace == "matrix") | .spec.values.synapse.media.storage |
+  (.size == "10Gi" and .storageClassName == "local-path" and .resourcePolicy == "keep")' \
+  "${LOCAL_RENDER}" "local Synapse media must stay on an explicitly retained local PVC"
+assert_yq_all '[select(.kind == "VolumeSnapshotClass" and
+  .metadata.name == "fgentic-synapse-media")] | length == 0' \
+  "${LOCAL_RENDER}" "local must not claim the GKE media snapshot boundary"
 assert_yq 'select(.kind == "Cluster" and .metadata.name == "platform-pg") |
   .spec.instances == 1' "${LOCAL_RENDER}" "local CNPG must remain one instance"
 assert_yq 'select(.kind == "HelmRelease" and .metadata.name == "traefik") |

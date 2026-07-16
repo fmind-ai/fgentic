@@ -51,6 +51,28 @@ patches:
                 name: platform-pg-nightly
                 namespace: postgres
               $patch: delete
+  # Keep local Synapse media explicit and retained. local-path cannot provide VolumeSnapshots;
+  # this overlay is persistent across Pod restarts but is not production recovery evidence.
+  - patch: |
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: matrix
+        namespace: flux-system
+      spec:
+        patches:
+          - target:
+              kind: HelmRelease
+              name: matrix-stack
+              namespace: matrix
+            patch: |
+              - op: add
+                path: /spec/values/synapse/media
+                value:
+                  storage:
+                    size: 10Gi
+                    storageClassName: local-path
+                    resourcePolicy: keep
   # The bridge image is side-loaded into k3d (`mise run bridge:load`), never pulled from GHCR
   # (the repo/package is private and local runs should not depend on registry state).
   - patch: |

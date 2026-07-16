@@ -20,3 +20,4 @@ Settled designs (including the D1–D20 register) are revisited by proposing a n
 - [0016 — Durable Delegation Ledger with At-Most-Once A2A Recovery](0016-durable-delegation-ledger.md) - pre-ACK jobs, fenced recovery, explicit A2A ambiguity, and deterministic Matrix projection
 - [0017 — Permission-Aware Retrieval Identity Binding](0017-permission-aware-identity-binding.md) - gateway-projected identity and complete output-audience ACL prefiltering
 - [0018 — Content-Bounded Matrix Identity Audit](0018-content-bounded-identity-audit.md) - opt-in authentication/event evidence from exact pinned source records, never generic logs
+- [0019 — Snapshot-Backed Synapse Media PVC](0019-synapse-media-store.md) - retained local PVC and explicit CSI snapshot recovery for the GKE reference

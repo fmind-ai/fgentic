@@ -44,6 +44,15 @@ resource "google_container_cluster" "cluster" {
     workload_pool = "${var.project_id}.svc.id.goog"
   }
 
+  # Synapse media uses the pre-installed standard-rwo StorageClass. Standard clusters do not
+  # guarantee the PD CSI driver unless this addon is explicit; the same driver provides the
+  # VolumeSnapshot boundary used by the isolated media restore drill (ADR 0019).
+  addons_config {
+    gce_persistent_disk_csi_driver_config {
+      enabled = true
+    }
+  }
+
   datapath_provider = "ADVANCED_DATAPATH" # Dataplane V2 (Cilium) => NetworkPolicy enforcement
 
   release_channel {
