@@ -60,6 +60,7 @@ for contract in \
 	'--data-binary @-' \
 	'FGENTIC_TCK_BEARER_TOKEN="${access_token}"' \
 		'FGENTIC_TCK_EXTENSION_URI="${TOKEN_BUDGET_EXTENSION}"' \
+		'FGENTIC_TCK_USAGE_RECEIPT_URI="${USAGE_RECEIPT_EXTENSION}"' \
 		'--transport jsonrpc -m must' \
 		'UV_BIN="$(mise --cd "${ROOT_DIR}/apps/synapse-federation-policy" which uv)"' \
 		'UV_PROJECT_ENVIRONMENT="${VENV_DIR}" "${UV_BIN}" sync --locked' \
@@ -85,6 +86,8 @@ if rg --quiet --fixed-strings -- 'export KUBECONFIG' "${RUNNER}"; then
 fi
 for contract in \
 	'unexpected TCK JSON-RPC request URL' \
+	'"A2A-Extensions": f"{token_budget_uri}, {usage_receipt_uri}"' \
+	'for extension_uri in (token_budget_uri, usage_receipt_uri)' \
 	'http_client.post = adapted_post' \
 	'http_client.build_request = adapted_build_request'; do
 	rg --quiet --fixed-strings -- "${contract}" "${PLUGIN}" ||
