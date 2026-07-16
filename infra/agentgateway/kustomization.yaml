@@ -14,5 +14,6 @@ resources:
   - mcp-route.yaml
   - mcp-authorization.yaml
   - mcp-audit.yaml
+  - mcp-rate-limit.yaml
   - tracing-policy.yaml
   - networkpolicy.yaml

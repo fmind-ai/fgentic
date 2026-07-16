@@ -122,6 +122,120 @@ patches:
       metadata:
         name: mcp-tool-audit
         namespace: agentgateway-system
+  # The federation lab has no local MCP caller, so it must not retain idle quota state or pods.
+  - target:
+      version: v1
+      kind: ConfigMap
+      name: mcp-tool-rate-limit
+      namespace: agentgateway-system
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: mcp-tool-rate-limit
+        namespace: agentgateway-system
+  - target:
+      version: v1
+      kind: PersistentVolumeClaim
+      name: mcp-tool-rate-limit-redis
+      namespace: agentgateway-system
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: PersistentVolumeClaim
+      metadata:
+        name: mcp-tool-rate-limit-redis
+        namespace: agentgateway-system
+  - target:
+      version: v1
+      kind: Service
+      name: mcp-tool-rate-limit
+      namespace: agentgateway-system
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: mcp-tool-rate-limit
+        namespace: agentgateway-system
+  - target:
+      version: v1
+      kind: Service
+      name: mcp-tool-rate-limit-redis
+      namespace: agentgateway-system
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: Service
+      metadata:
+        name: mcp-tool-rate-limit-redis
+        namespace: agentgateway-system
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: mcp-tool-rate-limit
+      namespace: agentgateway-system
+    patch: |
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: mcp-tool-rate-limit
+        namespace: agentgateway-system
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: mcp-tool-rate-limit-redis
+      namespace: agentgateway-system
+    patch: |
+      $patch: delete
+      apiVersion: apps/v1
+      kind: Deployment
+      metadata:
+        name: mcp-tool-rate-limit-redis
+        namespace: agentgateway-system
+  - target:
+      group: networking.k8s.io
+      version: v1
+      kind: NetworkPolicy
+      name: agentgateway-allow-mcp-rate-limit-egress
+      namespace: agentgateway-system
+    patch: |
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: agentgateway-allow-mcp-rate-limit-egress
+        namespace: agentgateway-system
+  - target:
+      group: networking.k8s.io
+      version: v1
+      kind: NetworkPolicy
+      name: mcp-tool-rate-limit
+      namespace: agentgateway-system
+    patch: |
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: mcp-tool-rate-limit
+        namespace: agentgateway-system
+  - target:
+      group: networking.k8s.io
+      version: v1
+      kind: NetworkPolicy
+      name: mcp-tool-rate-limit-redis
+      namespace: agentgateway-system
+    patch: |
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: mcp-tool-rate-limit-redis
+        namespace: agentgateway-system
   # Observability is intentionally absent from this disposable profile.
   - target:
       group: agentgateway.dev

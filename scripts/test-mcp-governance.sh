@@ -188,7 +188,7 @@ rendered_targets="$({
 assert_equal "${rendered_targets}" "${pinned_backends}" "complete MCP target pin coverage"
 assert_equal "$(jq -r '.servers | length' "${pin_path}")" "1" "MCP pin server count"
 
-for resource in mcp-backend.yaml mcp-route.yaml mcp-authorization.yaml mcp-audit.yaml; do
+for resource in mcp-backend.yaml mcp-route.yaml mcp-authorization.yaml mcp-audit.yaml mcp-rate-limit.yaml; do
 	yq -e ".resources | contains([\"${resource}\"])" \
 		"${REPO_ROOT}/infra/agentgateway/kustomization.yaml" >/dev/null \
 		|| fail "agentgateway kustomization omits ${resource}"
@@ -239,15 +239,65 @@ mcp_runtime="${mcp_expression//$'\n'/ }"
 assert_equal "$({
 	yq eval-all -N -r '
       select(.kind == "AgentgatewayPolicy" and .metadata.name == "platform-helper-mcp-authorization")
-      | [.spec.traffic.apiKeyAuthentication.mode,
+      | [.spec.traffic.buffer.request.maxBytes,
+         .spec.traffic.apiKeyAuthentication.mode,
          .spec.traffic.apiKeyAuthentication.secretRef.name,
          .spec.traffic.authorization.action,
          .spec.backend.mcp.authorization.action] | join("|")
     ' "${tmp_dir}/agentgateway.yaml"
-})" "Strict|mcp-agent-callers|Require|Require" "MCP authentication modes"
+})" "64Ki|Strict|mcp-agent-callers|Require|Require" "MCP buffered authentication modes"
 assert_contains "${traffic_expression}" 'apiKey.agent == "platform-helper"' "per-agent authentication"
 assert_contains "${traffic_expression}" 'request.path == "/mcp"' "MCP path authorization"
 assert_contains "${traffic_expression}" 'request.method in ["POST", "GET", "DELETE"]' "MCP method authorization"
+assert_equal "$({
+	yq eval-all -N -r '
+      select(.kind == "AgentgatewayPolicy" and .metadata.name == "platform-helper-mcp-authorization")
+      | .spec.traffic.rateLimit.conditional[0]
+      | [.condition,
+         .policy.global.backendRef.name,
+         (.policy.global.backendRef.port | tostring),
+         .policy.global.failureMode,
+         .policy.global.domain,
+         (.policy.global.descriptors | length | tostring)] | join("|")
+    ' "${tmp_dir}/agentgateway.yaml"
+})" \
+	'request.method == "POST" && request.path == "/mcp" && json(request.body).method == "tools/call"|mcp-tool-rate-limit|8081|FailClosed|fgentic-mcp-tools|2' \
+	"fail-closed MCP quota policy"
+assert_equal "$({
+	yq eval-all -N -o=json -I=0 '
+      select(.kind == "AgentgatewayPolicy" and .metadata.name == "platform-helper-mcp-authorization")
+      | .spec.traffic.rateLimit.conditional[0].policy.global.descriptors
+    ' "${tmp_dir}/agentgateway.yaml" | jq -Sc .
+})" \
+	'[{"entries":[{"expression":"apiKey.agent + \":\" + json(request.body).params.name","name":"agent_tool"}],"unit":"Requests"},{"entries":[{"expression":"apiKey.agent","name":"agent"}],"unit":"Requests"}]' \
+	"independent per-agent and per-tool quota descriptors"
+quota_policy_json="$({
+	yq eval-all -N -o=json -I=0 '
+      select(.kind == "AgentgatewayPolicy" and .metadata.name == "platform-helper-mcp-authorization")
+      | .spec.traffic.rateLimit
+    ' "${tmp_dir}/agentgateway.yaml"
+})"
+[[ "${quota_policy_json,,}" != *'approval'* && "${quota_policy_json,,}" != *'human'* ]] \
+	|| fail "MCP quota policy is coupled to a human-approval field"
+assert_equal "$({
+	yq eval-all -N -r '
+      select(.kind == "ConfigMap" and .metadata.name == "mcp-tool-rate-limit")
+      | .data."config.yaml" | from_yaml
+      | [.domain,
+         .descriptors[0].key,
+         .descriptors[0].rate_limit.unit,
+         (.descriptors[0].rate_limit.requests_per_unit | tostring),
+         .descriptors[1].key,
+         .descriptors[1].rate_limit.unit,
+         (.descriptors[1].rate_limit.requests_per_unit | tostring)] | join("|")
+    ' "${tmp_dir}/agentgateway.yaml"
+})" "fgentic-mcp-tools|agent_tool|second|2|agent|hour|300" \
+	"config-driven MCP quota defaults"
+assert_equal "$({
+	yq eval-all -N -r '
+      [select(.kind == "ConfigMap" and .metadata.name == "mcp-tool-rate-limit")] | length
+    ' "${REPO_ROOT}/infra/agentgateway/parameters.yaml"
+})" "1" "MCP quota parameters source"
 expected_tools="$(jq -r '
   .["_meta"]["io.modelcontextprotocol.registry/publisher-provided"].fgentic.allowedTools[]
 ' "${catalog_entry_path}")"
@@ -267,9 +317,64 @@ assert_equal "$({
       | [.spec.frontend.accessLog.filter,
          (.spec.frontend.accessLog.attributes.add | map(.name) | join(","))] | join("|")
     ' "${tmp_dir}/agentgateway.yaml"
-})" \
-	'request.path == "/mcp" && mcp.methodName == "tools/call"|audit.kind,fgentic.agent,mcp.method,mcp.tool.name,mcp.tool.target' \
-	"content-free MCP audit contract"
+	})" \
+		'request.method == "POST" && request.path == "/mcp" && json(request.body).method == "tools/call"|audit.kind,fgentic.agent,mcp.method,mcp.tool.name,mcp.tool.target,mcp.quota.policy' \
+		"content-free MCP audit contract"
+assert_equal "$({
+	yq eval-all -N -r '
+      select(.kind == "AgentgatewayPolicy" and .metadata.name == "mcp-tool-audit")
+      | .spec.frontend.accessLog.attributes.add[]
+      | select(.name == "mcp.quota.policy") | .expression
+    ' "${tmp_dir}/agentgateway.yaml"
+})" '"per_agent_and_tool_admission"' "MCP quota audit classification"
+
+for workload in mcp-tool-rate-limit mcp-tool-rate-limit-redis; do
+	assert_equal "$({
+		WORKLOAD="${workload}" yq eval-all -N -r '
+        select(.kind == "Deployment" and .metadata.name == strenv(WORKLOAD))
+        | [(.spec.replicas | tostring),
+           (.spec.template.spec.automountServiceAccountToken | tostring),
+           (.spec.template.spec.containers[0].image | contains("@sha256:") | tostring),
+           (.spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem | tostring),
+           (.spec.template.spec.containers[0].resources.requests.cpu != null | tostring),
+           (.spec.template.spec.containers[0].resources.requests.memory != null | tostring),
+           (.spec.template.spec.containers[0].resources.limits.cpu != null | tostring),
+           (.spec.template.spec.containers[0].resources.limits.memory != null | tostring)]
+        | join("|")
+      ' "${tmp_dir}/agentgateway.yaml"
+	})" "1|false|true|true|true|true|true|true" "bounded ${workload} runtime"
+done
+assert_equal "$({
+	yq eval-all -N -r '
+      select(.kind == "Deployment" and .metadata.name == "mcp-tool-rate-limit-redis")
+      | [.spec.template.spec.containers[0].args[]] | join("|")
+    ' "${tmp_dir}/agentgateway.yaml"
+})" '--save||--appendonly|yes|--appendfsync|everysec' "persistent MCP quota store"
+assert_equal "$({
+	yq eval-all -N -r '
+      [select(.kind == "NetworkPolicy" and
+        (.metadata.name == "agentgateway-allow-mcp-rate-limit-egress" or
+         .metadata.name == "mcp-tool-rate-limit" or
+         .metadata.name == "mcp-tool-rate-limit-redis"))] | length
+    ' "${tmp_dir}/agentgateway.yaml"
+})" "3" "MCP quota NetworkPolicy inventory"
+assert_equal "$({
+	yq eval-all -N -r '
+      select(.kind == "NetworkPolicy" and
+        .metadata.name == "agentgateway-allow-mcp-rate-limit-egress")
+      | [.spec.podSelector.matchLabels."app.kubernetes.io/name",
+         .spec.egress[0].to[0].podSelector.matchLabels."app.kubernetes.io/name",
+         (.spec.egress[0].ports[0].port | tostring)] | join("|")
+    ' "${tmp_dir}/agentgateway.yaml"
+})" "agentgateway-proxy|mcp-tool-rate-limit|8081" "proxy-to-MCP-quota egress"
+assert_equal "$({
+	yq eval-all -N -r '
+      select(.kind == "NetworkPolicy" and .metadata.name == "mcp-tool-rate-limit")
+      | [.spec.ingress[0].from[0].podSelector.matchLabels."app.kubernetes.io/name",
+         .spec.egress[1].to[0].podSelector.matchLabels."app.kubernetes.io/name",
+         (.spec.egress[1].ports[0].port | tostring)] | join("|")
+    ' "${tmp_dir}/agentgateway.yaml"
+})" "agentgateway-proxy|mcp-tool-rate-limit-redis|6379" "MCP-quota-to-Redis boundary"
 
 gateway_version="$({
 	yq eval-all -N -r '
@@ -460,6 +565,16 @@ assert_equal "$({
       [select(.kind == "AgentgatewayBackend" and .spec.mcp != null)] | length
     ' "${tmp_dir}/federation.yaml"
 })" "0" "federation profile MCP backend count"
+assert_equal "$({
+	yq eval-all -N -r '
+      [select(
+        .metadata.namespace == "agentgateway-system" and
+        (.metadata.name == "agentgateway-allow-mcp-rate-limit-egress" or
+         .metadata.name == "mcp-tool-rate-limit" or
+         .metadata.name == "mcp-tool-rate-limit-redis")
+      )] | length
+    ' "${tmp_dir}/federation.yaml"
+})" "0" "federation profile MCP quota runtime count"
 yq eval-all -N -o=yaml '
     select(.kind == "HelmRelease" and .metadata.name == "kagent") | .spec.values
   ' "${tmp_dir}/federation.yaml" \
@@ -586,14 +701,29 @@ tools_image="$({
       | .spec.template.spec.containers[] | select(.name == "tools") | .image
     ' "${tmp_dir}/kagent-chart.yaml"
 })"
+rate_limit_image="$({
+	yq eval-all -N -r '
+      select(.kind == "Deployment" and .metadata.name == "mcp-tool-rate-limit")
+      | .spec.template.spec.containers[] | select(.name == "rate-limit") | .image
+    ' "${tmp_dir}/agentgateway.yaml"
+})"
+redis_image="$({
+	yq eval-all -N -r '
+      select(.kind == "Deployment" and .metadata.name == "mcp-tool-rate-limit-redis")
+      | .spec.template.spec.containers[] | select(.name == "redis") | .image
+    ' "${tmp_dir}/agentgateway.yaml"
+})"
 network="fgentic-mcp-governance-$RANDOM-$$"
 gateway_container="${network}-gateway"
 tools_container="${network}-tools"
 pin_container="${network}-pin-tools"
+rate_limit_container="${network}-rate-limit"
+redis_container="${network}-redis"
 runtime_dir="$(mktemp -d)"
 
 cleanup_runtime() {
-	docker rm -f "${gateway_container}" "${tools_container}" "${pin_container}" >/dev/null 2>&1 || true
+	docker rm -f "${gateway_container}" "${tools_container}" "${pin_container}" \
+		"${rate_limit_container}" "${redis_container}" >/dev/null 2>&1 || true
 	docker network rm "${network}" >/dev/null 2>&1 || true
 	rm -rf "${runtime_dir}"
 	cleanup_static
@@ -606,13 +736,14 @@ config:
     format: json
 frontendPolicies:
   accessLog:
-    filter: 'request.path == "/mcp" && mcp.methodName == "tools/call"'
+    filter: 'request.method == "POST" && request.path == "/mcp" && json(request.body).method == "tools/call"'
     add:
       audit.kind: '"fgentic.mcp_tool_call.v1"'
       fgentic.agent: apiKey.agent
-      mcp.method: mcp.methodName
-      mcp.tool.name: mcp.tool.name
-      mcp.tool.target: mcp.tool.target
+      mcp.method: json(request.body).method
+      mcp.tool.name: json(request.body).params.name
+      mcp.tool.target: '"kagent-tools"'
+      mcp.quota.policy: '"per_agent_and_tool_admission"'
 binds:
   - port: 3000
     listeners:
@@ -631,6 +762,19 @@ binds:
               authorization:
                 rules:
                   - require: '${traffic_runtime}'
+              remoteRateLimit:
+                domain: fgentic-mcp-tools
+                host: ${rate_limit_container}:8081
+                failureMode: failClosed
+                descriptors:
+                  - entries:
+                      - key: agent_tool
+                        value: 'json(request.body).method == "tools/call" ? apiKey.agent + ":" + json(request.body).params.name : null'
+                    type: requests
+                  - entries:
+                      - key: agent
+                        value: 'json(request.body).method == "tools/call" ? apiKey.agent : null'
+                    type: requests
               mcpAuthorization:
                 rules:
                   - require: '${mcp_runtime}'
@@ -643,6 +787,33 @@ binds:
 EOF
 
 docker network create "${network}" >/dev/null
+mkdir -p "${runtime_dir}/ratelimit/config"
+cat >"${runtime_dir}/ratelimit/config/config.yaml" <<'EOF'
+domain: fgentic-mcp-tools
+descriptors:
+  - key: agent_tool
+    rate_limit:
+      unit: hour
+      requests_per_unit: 2
+  - key: agent
+    rate_limit:
+      unit: hour
+      requests_per_unit: 3
+EOF
+docker run --rm --name "${redis_container}" --network "${network}" -d \
+	"${redis_image}" --save '' --appendonly no >/dev/null
+for _ in {1..50}; do
+	docker exec "${redis_container}" redis-cli ping 2>/dev/null | rg -q '^PONG$' && break
+	sleep 0.2
+done
+docker exec "${redis_container}" redis-cli ping 2>/dev/null | rg -q '^PONG$' \
+	|| fail "MCP quota Redis fixture did not become ready"
+docker run --rm --name "${rate_limit_container}" --network "${network}" \
+	-v "${runtime_dir}/ratelimit/config:/data/ratelimit/config:ro" \
+	-e USE_STATSD=false -e LOG_LEVEL=info -e RUNTIME_ROOT=/data \
+	-e RUNTIME_SUBDIRECTORY=ratelimit -e RUNTIME_IGNOREDOTFILES=true \
+	-e REDIS_SOCKET_TYPE=tcp -e REDIS_URL="${redis_container}:6379" \
+	-d --entrypoint /bin/ratelimit "${rate_limit_image}" >/dev/null
 mapfile -t pinned_command < <(jq -r '.servers[0].provenance.command[]' "${pin_path}")
 mapfile -t pinned_arguments < <(jq -r '.servers[0].provenance.arguments[]' "${pin_path}")
 docker run --rm --name "${pin_container}" --network "${network}" \
@@ -805,6 +976,54 @@ assert_equal "$(jq -r '.["http.status"]' <<<"${denied_audit}")" "400" "rejected 
 [[ "${denied_audit}" != *"fixture-platform-helper-key"* ]] || fail "MCP audit leaked the bearer credential"
 [[ "${denied_audit}" != *'arguments'* ]] || fail "rejected MCP audit unexpectedly contains arguments"
 
+flush_quota() {
+	docker exec "${redis_container}" redis-cli FLUSHALL >/dev/null
+}
+mcp_call_status() {
+	local id="$1"
+	local tool="$2"
+	mcp_request "$(jq -cn --argjson id "${id}" --arg tool "${tool}" '
+      {jsonrpc: "2.0", id: $id, method: "tools/call", params: {name: $tool, arguments: {}}}
+    ')" --output /dev/null --write-out '%{http_code}'
+}
+
+# The static contract pins a two-per-second tool burst. The fixture uses the same count in a
+# one-hour window so the third-call denial is deterministic even at a wall-clock boundary.
+flush_quota
+assert_equal "$(mcp_call_status 10 fixture_tool_same)" "400" "first per-tool quota admission"
+assert_equal "$(mcp_call_status 11 fixture_tool_same)" "400" "second per-tool quota admission"
+assert_equal "$(mcp_call_status 12 fixture_tool_same)" "429" "per-tool quota denial"
+
+# Unique tool keys leave the tool ceiling untouched and isolate the independent Agent ceiling.
+flush_quota
+assert_equal "$(mcp_call_status 20 fixture_tool_1)" "400" "first per-agent quota admission"
+assert_equal "$(mcp_call_status 21 fixture_tool_2)" "400" "second per-agent quota admission"
+assert_equal "$(mcp_call_status 22 fixture_tool_3)" "400" "third per-agent quota admission"
+assert_equal "$(mcp_call_status 23 fixture_tool_4)" "429" "per-agent quota denial"
+
+quota_audit=""
+for _ in {1..20}; do
+	quota_audit="$(docker logs "${gateway_container}" 2>&1 \
+		| jq -Rrc 'fromjson? | select(.["audit.kind"] == "fgentic.mcp_tool_call.v1" and .["mcp.tool.name"] == "fixture_tool_4" and .["http.status"] == 429)' \
+		| tail -1)"
+	[ -n "${quota_audit}" ] && break
+	sleep 0.1
+done
+[ -n "${quota_audit}" ] || fail "no content-free MCP quota-denial audit was emitted"
+assert_equal "$(jq -r '.["fgentic.agent"]' <<<"${quota_audit}")" "platform-helper" \
+	"quota-denial audit agent"
+assert_equal "$(jq -r '.["mcp.quota.policy"]' <<<"${quota_audit}")" \
+	"per_agent_and_tool_admission" "quota-denial audit policy"
+[[ "${quota_audit}" != *'arguments'* ]] || fail "quota-denial audit unexpectedly contains arguments"
+[[ "${quota_audit}" != *"fixture-platform-helper-key"* ]] \
+	|| fail "quota-denial audit leaked the bearer credential"
+
+# Quota availability is fail-closed and remains independent of tool authorization or approval.
+flush_quota
+docker stop "${rate_limit_container}" >/dev/null
+assert_equal "$(mcp_call_status 30 fixture_backend_unavailable)" "500" \
+	"MCP quota backend fail-closed denial"
+
 terminate_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
 	--request DELETE \
 	--header "Authorization: ${fixture_bearer}" \
@@ -817,4 +1036,4 @@ case "${terminate_status}" in
 esac
 
 echo "MCP session protocol: subsequent requests used ${negotiated_protocol_version}; ${unsupported_protocol_version} was rejected with 400"
-echo "MCP governance runtime contract passed (${gateway_image}; ${tools_image})"
+echo "MCP governance runtime contract passed (${gateway_image}; ${tools_image}; ${rate_limit_image}; ${redis_image})"

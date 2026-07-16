@@ -12,6 +12,9 @@ spec:
       kind: HTTPRoute
       name: kagent-tools-mcp
   traffic:
+    buffer:
+      request:
+        maxBytes: 64Ki
     apiKeyAuthentication:
       mode: Strict
       secretRef:
@@ -24,6 +27,34 @@ spec:
             apiKey.agent == "platform-helper" &&
             request.path == "/mcp" &&
             request.method in ["POST", "GET", "DELETE"]
+    # Rate limits are applied only after strict API-key authentication has bound apiKey.agent.
+    # They are independent from any future human-approval token: each accepted tools/call checks
+    # both the agent+tool burst ceiling and the broader per-agent hourly ceiling.
+    rateLimit:
+      conditional:
+        - condition: >-
+            request.method == "POST" &&
+            request.path == "/mcp" &&
+            json(request.body).method == "tools/call"
+          policy:
+            global:
+              backendRef:
+                group: ""
+                kind: Service
+                name: mcp-tool-rate-limit
+                port: 8081
+              failureMode: FailClosed
+              domain: fgentic-mcp-tools
+              descriptors:
+                - entries:
+                    - name: agent_tool
+                      expression: >-
+                        apiKey.agent + ":" + json(request.body).params.name
+                  unit: Requests
+                - entries:
+                    - name: agent
+                      expression: apiKey.agent
+                  unit: Requests
   backend:
     mcp:
       authorization:
