@@ -13,3 +13,16 @@ resources:
 components:
   - ../base/provider-selection
   - ../../infra/production-ha/cluster
+patches:
+  # Keep policy durations deployment-configurable while making the production reference finite.
+  # The component is relative to the Matrix Kustomization's ./infra/matrix source path.
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: matrix
+      namespace: flux-system
+    patch: |
+      - op: add
+        path: /spec/components/-
+        value: retention

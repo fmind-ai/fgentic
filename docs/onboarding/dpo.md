@@ -23,7 +23,7 @@ No processor, region, retention term, or legal basis is assumed here. Those are 
 | Service state                | CloudNativePG stores separate service databases; the GCP reference declares 30-day WAL/base-backup retention intent.                                                                           | Confirm the actual storage class, object store, encryption, access, retention, restore, and deletion behavior. A backup manifest is not restore evidence.        |
 | Federated room history       | Every participating homeserver receives room state and history. Cross-server redaction is best effort.                                                                                         | Use [Federation §8.1](../federation.md#81-what-matrix-federation-gives--stated-honestly) and the bilateral agreement before inviting a partner.                  |
 
-The repository does not yet ship a complete retention/GDPR-erasure policy pack; [#137](https://github.com/fmind-ai/fgentic/issues/137) remains open. Do not convert database backup retention, Matrix redaction, or account disablement into an unsupported erasure claim.
+The production-shaped profiles ship a finite Matrix policy and an evidence-bound [retention and data-subject erasure runbook](../retention.md). Its live scratch-room purge and deactivate/redact drill remains required before a deployment claims acceptance. Do not convert database backup retention, Matrix redaction, or account disablement into an unsupported erasure claim.
 
 ## 3. Federated-room classification
 
