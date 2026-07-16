@@ -11,21 +11,20 @@ patches:
       namespace: matrix
     patch: |
       - op: add
-        path: /spec/values/synapse/additional
+        path: /spec/values/synapse/additional/10-retention
         value:
-          10-retention:
-            config: |
-              retention:
-                enabled: true
-                default_policy:
-                  max_lifetime: ${matrix_message_retention_default}
-                allowed_lifetime_min: ${matrix_message_retention_min}
-                allowed_lifetime_max: ${matrix_message_retention_max}
-                purge_jobs:
-                  # One unbounded job covers every effective max_lifetime without gaps.
-                  - interval: ${matrix_message_purge_interval}
-              media_retention:
-                local_media_lifetime: ${matrix_local_media_retention}
-                remote_media_lifetime: ${matrix_remote_media_retention}
-              redaction_retention_period: ${matrix_redaction_retention}
-              forgotten_room_retention_period: ${matrix_forgotten_room_retention}
+          config: |
+            retention:
+              enabled: true
+              default_policy:
+                max_lifetime: ${matrix_message_retention_default}
+              allowed_lifetime_min: ${matrix_message_retention_min}
+              allowed_lifetime_max: ${matrix_message_retention_max}
+              purge_jobs:
+                # One unbounded job covers every effective max_lifetime without gaps.
+                - interval: ${matrix_message_purge_interval}
+            media_retention:
+              local_media_lifetime: ${matrix_local_media_retention}
+              remote_media_lifetime: ${matrix_remote_media_retention}
+            redaction_retention_period: ${matrix_redaction_retention}
+            forgotten_room_retention_period: ${matrix_forgotten_room_retention}
