@@ -1,0 +1,91 @@
+# Temporary fail-closed guard for the model-residency ownership handoff. The guarded demo/vLLM
+# NetworkPolicies cannot be pruned safely during a provider transition, so keep the effective
+# provider immutable until the final revision removes both this policy and the object prune guards.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: model-provider-handoff-freeze.fgentic.dev
+  annotations:
+    fgentic.dev/cel-cost: constant; exact operation, namespace, name, and map-key comparisons
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [""]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [configmaps]
+  matchConditions:
+    - name: platform-settings
+      expression: 'request.operation == "DELETE" ? oldObject.metadata.name in ["platform-settings", "platform-settings-overrides"] : object.metadata.name in ["platform-settings", "platform-settings-overrides"]'
+  validations:
+    - expression: 'request.operation != "CREATE" || object.metadata.name != "platform-settings-overrides" || !has(object.data) || !("llm_provider" in object.data)'
+      message: provider overrides cannot be introduced while the model-residency handoff is guarded
+      reason: Forbidden
+    - expression: 'request.operation != "UPDATE" || (((!has(oldObject.data) || !("llm_provider" in oldObject.data)) && (!has(object.data) || !("llm_provider" in object.data))) || (has(oldObject.data) && "llm_provider" in oldObject.data && has(object.data) && "llm_provider" in object.data && object.data["llm_provider"] == oldObject.data["llm_provider"]))'
+      message: llm_provider is frozen while the model-residency handoff is guarded
+      reason: Forbidden
+    - expression: 'request.operation != "DELETE" || !has(oldObject.data) || !("llm_provider" in oldObject.data)'
+      message: provider-bearing platform settings cannot be deleted while the model-residency handoff is guarded
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: model-provider-handoff-freeze.fgentic.dev
+spec:
+  policyName: model-provider-handoff-freeze.fgentic.dev
+  validationActions: [Deny, Audit]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: flux-system
+---
+# A Flux root apply is staged across objects, not atomic. Freeze the rendered provider identity and
+# inventory paths as well as their ConfigMap input so a rejected settings update cannot partially
+# advance one of the three provider-sensitive Kustomizations.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: model-provider-kustomization-freeze.fgentic.dev
+  annotations:
+    fgentic.dev/cel-cost: constant; exact operation, name, label, path, and map-key comparisons
+spec:
+  failurePolicy: Fail
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [kustomize.toolkit.fluxcd.io]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE, DELETE]
+        resources: [kustomizations]
+  matchConditions:
+    - name: model-provider-kustomizations
+      expression: 'request.operation == "DELETE" ? oldObject.metadata.name in ["agentgateway-provider", "agentgateway-admission", "agentgateway-provider-egress"] : object.metadata.name in ["agentgateway-provider", "agentgateway-admission", "agentgateway-provider-egress"]'
+  validations:
+    - expression: 'request.operation == "DELETE" || (has(object.metadata.labels) && "fgentic.dev/llm-provider" in object.metadata.labels)'
+      message: provider Kustomizations must retain their selected-provider identity
+      reason: Forbidden
+    - expression: 'request.operation != "UPDATE" || (has(oldObject.metadata.labels) && "fgentic.dev/llm-provider" in oldObject.metadata.labels && has(object.metadata.labels) && "fgentic.dev/llm-provider" in object.metadata.labels && object.metadata.labels["fgentic.dev/llm-provider"] == oldObject.metadata.labels["fgentic.dev/llm-provider"])'
+      message: provider Kustomization identity is frozen while the model-residency handoff is guarded
+      reason: Forbidden
+    - expression: 'request.operation != "UPDATE" || object.spec.path == oldObject.spec.path'
+      message: provider Kustomization paths are frozen while the model-residency handoff is guarded
+      reason: Forbidden
+    - expression: 'request.operation == "DELETE" || !has(object.spec.postBuild) || !has(object.spec.postBuild.substitute) || !("llm_provider" in object.spec.postBuild.substitute) || object.spec.postBuild.substitute["llm_provider"] == object.metadata.labels["fgentic.dev/llm-provider"]'
+      message: inline provider substitution must equal the frozen provider identity
+      reason: Forbidden
+    - expression: 'request.operation != "DELETE"'
+      message: provider Kustomizations cannot be deleted while the model-residency handoff is guarded
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: model-provider-kustomization-freeze.fgentic.dev
+spec:
+  policyName: model-provider-kustomization-freeze.fgentic.dev
+  validationActions: [Deny, Audit]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: flux-system
