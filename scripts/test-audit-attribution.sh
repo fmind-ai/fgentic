@@ -5,7 +5,12 @@ set -euo pipefail
 
 bridge_record() {
 	local task_id="$1"
-	jq -cn --arg task_id "${task_id}" '{
+	local agent_version="${2-${AUDIT_AGENT_VERSION:-}}"
+	local agent_contract_sha256="${3-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}"
+	jq -cn \
+		--arg task_id "${task_id}" \
+		--arg agent_version "${agent_version}" \
+		--arg agent_contract_sha256 "${agent_contract_sha256}" '{
 	    level: "INFO",
 	    time: "2026-07-11T09:00:02Z",
 	    msg: "delegation audit",
@@ -20,6 +25,8 @@ bridge_record() {
     ghost: "agent-assistant",
     ghost_mxid: "@agent-assistant:fgentic.localhost",
     agent_path: "/api/a2a/kagent/platform-assistant",
+    agent_version: $agent_version,
+    agent_contract_sha256: $agent_contract_sha256,
     a2a_attempted: true,
     a2a_user_id: "@alice:fgentic.localhost",
     a2a_context_id: "context-1",
@@ -31,6 +38,23 @@ bridge_record() {
 	    dedup_verdict: "accepted",
 	    rate_limit_verdict: "allowed"
 	  }'
+}
+
+fixture_agents() {
+	local contract="${1-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}"
+	printf '%s\n' \
+		'schemaVersion: 1' \
+		'agents:' \
+		'  agent-assistant:' \
+		'    namespace: kagent' \
+		'    name: platform-assistant' \
+		'    description: Integration audit fixture.' \
+		'    stage: prod' \
+		'    dataClassification: public'
+	if [ -n "${contract}" ]; then
+		printf '    agentContractSHA256: %s\n' "${contract}"
+	fi
+	printf '%s\n' '    allowedSenders: ["@alice:fgentic.localhost"]'
 }
 
 duplicate_record() {
@@ -78,9 +102,33 @@ mock_kubectl() {
 			;;
 		duplicate_only) duplicate_record ;;
 		empty_task) bridge_record "" ;;
+		missing_version) bridge_record "task-1" "" ;;
+		mismatched_version) bridge_record "task-1" "sha256:0000000000000000000000000000000000000000000000000000000000000000" ;;
+		legacy_local) bridge_record "task-1" "${AUDIT_LEGACY_AGENT_VERSION}" "" ;;
+		revision_mismatch | kagent_not_ready) bridge_record "task-1" ;;
 		*)
 			printf 'unknown audit test scenario: %s\n' "${AUDIT_SCENARIO}" >&2
 			return 2
+			;;
+		esac
+		;;
+	"-n bridge get configmap matrix-a2a-bridge-agents -o json")
+		if [ "${AUDIT_SCENARIO:-success}" = "legacy_local" ]; then
+			fixture_agents "" | jq -Rs '{data: {"agents.yaml": .}}'
+		else
+			fixture_agents | jq -Rs '{data: {"agents.yaml": .}}'
+		fi
+		;;
+	"-n flux-system get kustomizations bridge kagent -o json")
+		case "${AUDIT_SCENARIO:-success}" in
+		revision_mismatch)
+			printf '%s\n' '{"items":[{"metadata":{"name":"bridge","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"kagent","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:fedcba9876543210","conditions":[{"type":"Ready","status":"True"}]}}]}'
+			;;
+		kagent_not_ready)
+			printf '%s\n' '{"items":[{"metadata":{"name":"bridge","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"kagent","generation":2},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}}]}'
+			;;
+		*)
+			printf '%s\n' '{"items":[{"metadata":{"name":"bridge","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"kagent","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}}]}'
 			;;
 		esac
 		;;
@@ -125,6 +173,21 @@ trap 'rm -rf "${workdir}"' EXIT
 ln -s "${repo_root}/scripts/test-audit-attribution.sh" "${workdir}/kubectl"
 test_path="${workdir}:${PATH}"
 event_id="\$audit-event"
+fixture_agents >"${workdir}/agents.yaml"
+fixture_agents "" >"${workdir}/legacy-agents.yaml"
+AUDIT_AGENT_VERSION="$(
+	mise --cd "${repo_root}/apps/matrix-a2a-bridge" exec -- \
+		go run ./cmd/agent-version \
+		--config "${workdir}/agents.yaml" \
+		--ghost agent-assistant
+)"
+AUDIT_LEGACY_AGENT_VERSION="$(
+	mise --cd "${repo_root}/apps/matrix-a2a-bridge" exec -- \
+		go run ./cmd/agent-version \
+		--config "${workdir}/legacy-agents.yaml" \
+		--ghost agent-assistant
+)"
+export AUDIT_AGENT_VERSION AUDIT_LEGACY_AGENT_VERSION
 
 AUDIT_SCENARIO=success PATH="${test_path}" "${collector}" "${event_id}" 15m \
 	>"${workdir}/success.json"
@@ -138,12 +201,26 @@ jq -e '
 	  and .bridge.duration_ms == 2100
 	  and .bridge.dedup_verdict == "accepted"
 	  and .bridge.rate_limit_verdict == "allowed"
+	  and .bridge.agent_version == .source.agent_version
+	  and .bridge.agent_contract_sha256 == .source.agent_contract_sha256
+	  and .source.ghost == "agent-assistant"
+	  and .source.bridge_git_revision == "main@sha1:0123456789abcdef"
+	  and .source.kagent_git_revision == "main@sha1:0123456789abcdef"
 	  and (.bridge_delivery_audits | length) == 1
   and .kagent.task.metadata.kagent_usage_metadata.totalTokenCount == 12
   and (.agentgateway.requests | length) == 1
   and (.prometheus.delegations | length) == 1
   and (.prometheus.token_usage | length) == 1
 ' "${workdir}/success.json" >/dev/null
+
+AUDIT_SCENARIO=legacy_local PATH="${test_path}" "${collector}" "${event_id}" 15m \
+	>"${workdir}/legacy-local.json"
+jq -e '
+  .bridge.agent_contract_sha256 == ""
+  and .source.agent_contract_sha256 == ""
+  and .bridge.agent_version == .source.agent_version
+  and .source.bridge_git_revision == .source.kagent_git_revision
+' "${workdir}/legacy-local.json" >/dev/null
 
 assert_rejected() {
 	local scenario="$1"
@@ -162,6 +239,10 @@ assert_rejected() {
 assert_rejected absent "no accepted delegation audit record for Matrix event"
 assert_rejected duplicate_only "no accepted delegation audit record for Matrix event"
 assert_rejected ambiguous "multiple delegation audit records for Matrix event"
+assert_rejected missing_version "attempted delegation audit has a missing or invalid agent version contract"
+assert_rejected mismatched_version "attempted delegation agent version does not match the live mapping"
+assert_rejected revision_mismatch "bridge and kagent lastAppliedRevision must match"
+assert_rejected kagent_not_ready "bridge and kagent Kustomizations must be Ready at their current generation"
 
 AUDIT_SCENARIO=redelivered PATH="${test_path}" "${collector}" "${event_id}" 15m \
 	>"${workdir}/redelivered.json"
