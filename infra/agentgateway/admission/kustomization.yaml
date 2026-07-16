@@ -1,0 +1,7 @@
+# Apply the fail-closed policy before exposing its A2A route on a fresh cluster. This layer is
+# provider-labelled and reconciles after the matching backend but before provider egress changes.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - a2a-authorization.yaml
+  - a2a-route.yaml

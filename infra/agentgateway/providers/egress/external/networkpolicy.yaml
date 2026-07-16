@@ -1,0 +1,15 @@
+# External providers intentionally permit public model egress, but this policy is reconciled only
+# after admission has tightened to the provider's catalog ceiling.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentgateway-external-egress
+  namespace: agentgateway-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agentgateway-proxy
+  policyTypes:
+    - Egress
+  egress:
+    - {}

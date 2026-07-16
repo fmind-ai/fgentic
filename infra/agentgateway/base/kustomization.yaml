@@ -1,0 +1,15 @@
+# Stable agentgateway control/data plane. Provider-independent A2A admission is separate because
+# its classification ceiling must reconcile only after the selected model backend is ready.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - helmrelease.yaml
+  - parameters.yaml
+  - gateway.yaml
+  - a2a-backend.yaml
+  - mcp-backend.yaml
+  - mcp-route.yaml
+  - mcp-authorization.yaml
+  - mcp-audit.yaml
+  - tracing-policy.yaml
+  - networkpolicy.yaml

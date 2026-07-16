@@ -20,6 +20,7 @@ render_profile() {
 	{
 		kubectl kustomize "${repo_root}/infra/agentgateway"
 		kubectl kustomize "${repo_root}/infra/agentgateway/providers/profiles/${profile}"
+		kubectl kustomize "${repo_root}/infra/agentgateway/providers/egress/${profile}"
 	} | flux envsubst --strict >"${tmp_dir}/${profile}.yaml"
 }
 
@@ -28,8 +29,8 @@ render_profile() {
 	go run ./cmd/check-model-catalog --repo-root ../..
 )
 
-# The combined policy is owned beside the always-live A2A route. Provider failure or pruning must
-# therefore leave strict workload authentication and fail-closed model admission installed.
+# The combined policy is owned beside the A2A route in one admission layer. Provider profiles must
+# not compete with it, and provider egress must remain separate from the backend core.
 common_render="${tmp_dir}/common.yaml"
 kubectl kustomize "${repo_root}/infra/agentgateway" >"${common_render}"
 policy_count="$(yq eval-all -N '[.] | map(select(.kind == "AgentgatewayPolicy" and .metadata.name == "a2a-bridge-authorization")) | length' "${common_render}")"
@@ -39,10 +40,32 @@ route_count="$(yq eval-all -N '[.] | map(select(.kind == "HTTPRoute" and .metada
 [[ "$(yq -er 'select(.kind == "AgentgatewayPolicy" and .metadata.name == "a2a-bridge-authorization") | .spec.traffic.apiKeyAuthentication.mode' "${common_render}")" == "Strict" ]] \
 	|| fail "common A2A policy must retain strict workload authentication"
 for profile_dir in "${repo_root}"/infra/agentgateway/providers/profiles/*; do
-	profile_policy_count="$(kubectl kustomize "${profile_dir}" | yq eval-all -N '[.] | map(select(.kind == "AgentgatewayPolicy" and .metadata.name == "a2a-bridge-authorization")) | length')"
+	profile_render="$(kubectl kustomize "${profile_dir}")"
+	profile_policy_count="$(yq eval-all -N '[.] | map(select(.kind == "AgentgatewayPolicy" and .metadata.name == "a2a-bridge-authorization")) | length' <<<"${profile_render}")"
 	[[ "${profile_policy_count}" == 0 ]] \
 		|| fail "provider inventory must not compete with the common A2A policy"
+	profile_egress_count="$(yq eval-all -N '[.] | map(select(.kind == "NetworkPolicy" and .metadata.namespace == "agentgateway-system" and (.spec.policyTypes // [] | contains(["Egress"])))) | length' <<<"${profile_render}")"
+	[[ "${profile_egress_count}" == 0 ]] \
+		|| fail "provider backend core must not enable egress before admission reconciles"
 done
+
+# The Flux DAG stamps one provider identity across backend, admission, and egress. Each dependent
+# waits for the matching dependency generation, preventing a desired-value update from racing the
+# actually active backend in either direction.
+kubectl kustomize "${repo_root}/clusters/local" >"${tmp_dir}/local.yaml"
+yq eval-all -o=json '[.]' "${tmp_dir}/local.yaml" >"${tmp_dir}/local.json"
+jq -e '
+  def ks($name): first(.[] | select(.apiVersion == "kustomize.toolkit.fluxcd.io/v1" and .metadata.name == $name));
+  (ks("agentgateway-provider").metadata.labels."fgentic.dev/llm-provider" == "vertex") and
+  (ks("agentgateway").metadata.labels."fgentic.dev/llm-provider" == "vertex") and
+  (ks("agentgateway-provider-egress").metadata.labels."fgentic.dev/llm-provider" == "vertex") and
+  (ks("agentgateway-provider").spec.dependsOn | any(.name == "agentgateway-base")) and
+  (ks("agentgateway").spec.dependsOn[0].name == "agentgateway-provider") and
+  (ks("agentgateway").spec.dependsOn[0].readyExpr | contains("dep.metadata.generation == dep.status.observedGeneration")) and
+  (ks("agentgateway-provider-egress").spec.dependsOn[0].name == "agentgateway") and
+  (ks("agentgateway-provider-egress").spec.dependsOn[0].readyExpr | contains("dep.metadata.generation == dep.status.observedGeneration")) and
+  (ks("kagent").spec.dependsOn | any(.name == "agentgateway-provider-egress"))
+' "${tmp_dir}/local.json" >/dev/null || fail "provider transition DAG is not identity- and generation-locked"
 
 render_profile demo fgentic-demo
 render_profile vertex google/gemini-2.5-flash

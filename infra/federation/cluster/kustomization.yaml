@@ -122,13 +122,13 @@ patches:
       group: kustomize.toolkit.fluxcd.io
       version: v1
       kind: Kustomization
-      name: agentgateway
+      name: agentgateway-base
       namespace: flux-system
     patch: |
       - op: add
         path: /spec/components
         value:
-          - ../federation/delegation
+          - ../../federation/delegation
       - op: replace
         path: /spec/dependsOn
         value:

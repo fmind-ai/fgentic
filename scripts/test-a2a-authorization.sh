@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-policy_file="${repo_root}/infra/agentgateway/a2a-authorization.yaml"
+policy_file="${repo_root}/infra/agentgateway/admission/a2a-authorization.yaml"
 secret_example="${repo_root}/infra/secrets/a2a-authorization.sops.yaml.example"
 runtime=false
 

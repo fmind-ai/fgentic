@@ -267,17 +267,18 @@ spec:
         name: platform-settings-overrides
         optional: true
 ---
-# Common agentgateway control plane + data plane (Gateway and A2A route). Keeping this stable lets
-# provider changes prune only the selected LLM backend and route. Depends on the CRDs chart.
+# Stable agentgateway control/data plane without the model-sensitive A2A admission route. Splitting
+# this base lets provider transitions order backend -> admission -> egress without a dependency
+# cycle around the Gateway and controller resources.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
-  name: agentgateway
+  name: agentgateway-base
   namespace: flux-system
 spec:
   interval: 30m
   retryInterval: 2m
-  path: ./infra/agentgateway
+  path: ./infra/agentgateway/base
   components: []
   prune: true
   wait: true
@@ -295,14 +296,17 @@ spec:
         name: platform-settings-overrides
         optional: true
 ---
-# Selected agentgateway LLM provider. The final path segment is replaced from
+# Selected agentgateway LLM backend and route. The final path segment is replaced from
 # platform-settings.data.llm_provider by each cluster overlay. Reusing this Kustomization name
-# makes Flux prune the previous provider inventory when that setting changes.
+# makes Flux prune the previous provider core when that setting changes. Provider egress is a
+# later layer so an external destination cannot become reachable under the previous ceiling.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
   name: agentgateway-provider
   namespace: flux-system
+  labels:
+    fgentic.dev/llm-provider: vertex
 spec:
   interval: 30m
   retryInterval: 2m
@@ -312,7 +316,7 @@ spec:
   # Self-hosted profiles may need to fetch a pinned model before their HelmRelease is Ready.
   timeout: 45m
   dependsOn:
-    - name: agentgateway
+    - name: agentgateway-base
     - name: platform-secrets
   sourceRef:
     kind: GitRepository
@@ -324,6 +328,67 @@ spec:
       - kind: ConfigMap
         name: platform-settings-overrides
         optional: true
+---
+# A2A workload authentication and classification admission. The provider-selection component
+# gives this Kustomization the same provider label as its dependency. The ready expression blocks
+# reconciliation until the matching backend generation is ready, so a ceiling never broadens
+# while an old external backend is still active.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: agentgateway
+  namespace: flux-system
+  labels:
+    fgentic.dev/llm-provider: vertex
+spec:
+  interval: 30m
+  retryInterval: 2m
+  path: ./infra/agentgateway/admission
+  prune: true
+  wait: true
+  timeout: 10m
+  dependsOn:
+    - name: agentgateway-provider
+      readyExpr: >-
+        dep.metadata.labels['fgentic.dev/llm-provider'] == self.metadata.labels['fgentic.dev/llm-provider'] &&
+        dep.status.conditions.filter(e, e.type == 'Ready').all(e, e.status == 'True') &&
+        dep.metadata.generation == dep.status.observedGeneration
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true
+---
+# Provider egress reconciles only after the matching admission generation. API profiles remove the
+# prior internal-only policy; demo/vLLM install their exact internal allowlist. This ordering makes
+# both external -> sovereign and sovereign -> external switches fail closed.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: agentgateway-provider-egress
+  namespace: flux-system
+  labels:
+    fgentic.dev/llm-provider: vertex
+spec:
+  interval: 30m
+  retryInterval: 2m
+  path: ./infra/agentgateway/providers/egress/vertex
+  prune: true
+  wait: true
+  dependsOn:
+    - name: agentgateway
+      readyExpr: >-
+        dep.metadata.labels['fgentic.dev/llm-provider'] == self.metadata.labels['fgentic.dev/llm-provider'] &&
+        dep.status.conditions.filter(e, e.type == 'Ready').all(e, e.status == 'True') &&
+        dep.metadata.generation == dep.status.observedGeneration
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
 ---
 # kagent platform + extras (ModelConfig + sample Agent). Depends on postgres — the kagent
 # controller migrates its database at startup (which is why it cannot sit in controllers).
@@ -342,7 +407,7 @@ spec:
   timeout: 10m
   dependsOn:
     - name: controllers
-    - name: agentgateway-provider
+    - name: agentgateway-provider-egress
     - name: postgres
     - name: platform-secrets
   sourceRef:

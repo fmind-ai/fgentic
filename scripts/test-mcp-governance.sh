@@ -190,8 +190,8 @@ assert_equal "$(jq -r '.servers | length' "${pin_path}")" "1" "MCP pin server co
 
 for resource in mcp-backend.yaml mcp-route.yaml mcp-authorization.yaml mcp-audit.yaml; do
 	yq -e ".resources | contains([\"${resource}\"])" \
-		"${REPO_ROOT}/infra/agentgateway/kustomization.yaml" >/dev/null \
-		|| fail "agentgateway kustomization omits ${resource}"
+		"${REPO_ROOT}/infra/agentgateway/base/kustomization.yaml" >/dev/null \
+		|| fail "agentgateway base kustomization omits ${resource}"
 done
 
 assert_equal "$({
@@ -364,7 +364,7 @@ assert_equal "$({
               ([.ports[]? | select(.protocol == "TCP" and .port == 8084)] | length) == 1
             )]
       | length
-    ' "${REPO_ROOT}/infra/agentgateway/providers/profiles/vllm/networkpolicy.yaml"
+    ' "${REPO_ROOT}/infra/agentgateway/providers/egress/vllm/networkpolicy.yaml"
 })" "1" "vLLM-profile gateway-to-tool egress"
 
 kagent_repository="$({

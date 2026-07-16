@@ -80,7 +80,7 @@ func run(args []string) error {
 }
 
 func validateModelAdmission(repoRoot string, catalog *modelcatalog.Catalog) error {
-	path := filepath.Join(repoRoot, "infra", "agentgateway", "a2a-authorization.yaml")
+	path := filepath.Join(repoRoot, "infra", "agentgateway", "admission", "a2a-authorization.yaml")
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return fmt.Errorf("read model admission policy %s: %w", path, err)

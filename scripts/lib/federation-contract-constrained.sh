@@ -737,9 +737,11 @@ matrix|postgres
 matrix-b|matrix
 matrix-c|matrix-b
 keycloak|matrix-c
-agentgateway|keycloak
-agentgateway-provider|agentgateway
-kagent|agentgateway-provider
+agentgateway-base|keycloak
+agentgateway-provider|agentgateway-base
+agentgateway|agentgateway-provider
+agentgateway-provider-egress|agentgateway
+kagent|agentgateway-provider-egress
 EOF
 }
 
