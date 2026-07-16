@@ -161,7 +161,9 @@ metadata:
   namespace: flux-system
 spec:
   interval: 30m
-  path: ./infra/gateway
+  # The profile path makes the admin host genuinely opt-in: disabling it removes the listener
+  # (and therefore the certificate SAN) instead of leaving a dormant public surface behind.
+  path: ./infra/gateway/profiles/disabled
   prune: true
   dependsOn:
     - name: controllers
@@ -256,6 +258,34 @@ spec:
   dependsOn:
     - name: postgres
     - name: gateway
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true
+---
+# Optional Ketesa administrator client. The enabled profile owns its namespace, static SPA,
+# route, quotas, and default-deny policy; the disabled profile is empty so prune means zero
+# footprint. ESS 26.6.2 already exposes the MAS adminapi resource on its public service.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: admin
+  namespace: flux-system
+spec:
+  interval: 30m
+  path: ./infra/admin/profiles/disabled
+  prune: true
+  wait: true
+  dependsOn:
+    - name: policies
+    - name: gateway
+    - name: matrix
   sourceRef:
     kind: GitRepository
     name: flux-system

@@ -1,0 +1,6 @@
+# Direct rendering is deliberately empty. Flux selects profiles/enabled only when the tracked
+# admin_console platform setting opts a cluster into the public administrator surface.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - profiles/disabled
