@@ -440,6 +440,12 @@ func TestLoadAgentsDataClassification(t *testing.T) {
 	if got := publicRef.Classification(); got != modelcatalog.ClassificationPublic {
 		t.Fatalf("Classification() = %q, want public", got)
 	}
+	if !strings.HasPrefix(publicRef.MappingID(), "v2:") {
+		t.Fatalf("MappingID() = %q, want a versioned fingerprint", publicRef.MappingID())
+	}
+	if !publicRef.MatchesMappingID(publicRef.legacyMappingID) {
+		t.Fatal("pre-classification fingerprint is not accepted during the producer rollout")
+	}
 
 	regulatedAgents, err := LoadAgents(writeTemp(t, "agents:\n  agent-x: {namespace: kagent, name: x}\n"))
 	if err != nil {
@@ -448,6 +454,9 @@ func TestLoadAgentsDataClassification(t *testing.T) {
 	regulatedRef, _ := regulatedAgents.Lookup("agent-x")
 	if publicRef.SameTarget(regulatedRef) || publicRef.MappingID() == regulatedRef.MappingID() {
 		t.Fatal("classification change did not re-key the immutable mapping")
+	}
+	if regulatedRef.MatchesMappingID(publicRef.MappingID()) {
+		t.Fatal("classification change still accepts a new versioned fingerprint")
 	}
 
 	_, err = LoadAgents(writeTemp(t, "agents:\n  agent-x: {namespace: kagent, name: x, dataClassification: confidential}\n"))

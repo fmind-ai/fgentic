@@ -50,14 +50,15 @@ type AgentRef struct {
 	// fails closed to regulated; current public sample agents declare public explicitly.
 	DataClassification modelcatalog.Classification `yaml:"dataClassification"`
 
-	senderRes  []*regexp.Regexp // compiled AllowedSenders
-	avatar     id.ContentURI
-	target     a2aclient.Target
-	timeout    time.Duration
-	maxCost    uint64 // per-remote credit-unit ceiling on the verified skill quote (0 = no gate)
-	dev        bool   // stage:dev — invocable only in configured staging rooms (#128)
-	allowMedia bool   // remote opt-in to move file bytes across the org boundary (#115)
-	mappingID  string
+	senderRes       []*regexp.Regexp // compiled AllowedSenders
+	avatar          id.ContentURI
+	target          a2aclient.Target
+	timeout         time.Duration
+	maxCost         uint64 // per-remote credit-unit ceiling on the verified skill quote (0 = no gate)
+	dev             bool   // stage:dev — invocable only in configured staging rooms (#128)
+	allowMedia      bool   // remote opt-in to move file bytes across the org boundary (#115)
+	mappingID       string
+	legacyMappingID string // pre-classification fingerprint accepted only during the producer rollout
 }
 
 // agentConfig is the on-disk shape. Runtime code only receives an AgentRef containing a
@@ -172,6 +173,15 @@ func (a *AgentRef) AllowsMedia() bool {
 // caches can use it to avoid carrying metadata across a same-URL signer change.
 func (a *AgentRef) MappingID() string {
 	return a.mappingID
+}
+
+// MatchesMappingID accepts both the current classification-bound fingerprint and the exact
+// pre-migration fingerprint. The compatibility branch lets work queued by the previous bridge
+// drain while this producer-only release rolls out; the enforcement follow-up removes it after the
+// compatible image is pinned. New jobs always persist MappingID and therefore re-key on a class
+// change immediately.
+func (a *AgentRef) MatchesMappingID(mappingID string) bool {
+	return a != nil && (mappingID == a.mappingID || mappingID == a.legacyMappingID)
 }
 
 // SameTarget protects queued work from configuration reloads. A change to any routing, trust,
@@ -306,6 +316,9 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 	}
 	ref.mappingID = mappingID(
 		ref.target, ref.timeout, ref.maxCost, ref.dev, ref.allowMedia, ref.DataClassification,
+	)
+	ref.legacyMappingID = legacyMappingID(
+		ref.target, ref.timeout, ref.maxCost, ref.dev, ref.allowMedia,
 	)
 	return ref, nil
 }
@@ -452,6 +465,20 @@ func mappingID(
 	sum := sha256.Sum256([]byte(fmt.Sprintf(
 		"%s\x00%x\x00%d\x00%d\x00%d\x00%t\x00%t\x00%s",
 		target.ID(), identity, target.TokenBudget(), timeout, maxCost, dev, allowMedia, classification,
+	)))
+	return "v2:" + hex.EncodeToString(sum[:])
+}
+
+func legacyMappingID(
+	target a2aclient.Target,
+	timeout time.Duration,
+	maxCost uint64,
+	dev, allowMedia bool,
+) string {
+	identity := target.IdentityFingerprint()
+	sum := sha256.Sum256([]byte(fmt.Sprintf(
+		"%s\x00%x\x00%d\x00%d\x00%d\x00%t\x00%t",
+		target.ID(), identity, target.TokenBudget(), timeout, maxCost, dev, allowMedia,
 	)))
 	return hex.EncodeToString(sum[:])
 }
