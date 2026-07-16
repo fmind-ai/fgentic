@@ -82,9 +82,11 @@ jq -e '
     exit 1
   }
 
-if [ "$(jq -r '.a2a_attempted' "${workdir}/bridge.json")" = "true" ]; then
+a2a_attempted="$(jq -r '.a2a_attempted' "${workdir}/bridge.json")"
+if [ "${a2a_attempted}" = "true" ]; then
   ghost="$(jq -er '.ghost' "${workdir}/bridge.json")"
   audited_agent_version="$(jq -er '.agent_version' "${workdir}/bridge.json")"
+  agent_contract_sha256="$(jq -r '.agent_contract_sha256 // ""' "${workdir}/bridge.json")"
   kubectl -n "${bridge_namespace}" get configmap matrix-a2a-bridge-agents -o json \
     | jq -er '.data["agents.yaml"]' >"${workdir}/agents.yaml"
   known_agent_version="$(
@@ -106,16 +108,22 @@ if [ "$(jq -r '.a2a_attempted' "${workdir}/bridge.json")" = "true" ]; then
         [.items[] | select(.metadata.name == "bridge" or .metadata.name == "kagent")]
         | if length != 2 then
             error("bridge and kagent Flux revisions are required")
-          else
-            map({key: .metadata.name, value: .status.lastAppliedRevision}) | from_entries
+          elif all(.[];
+            .status.observedGeneration == .metadata.generation
+            and any(.status.conditions[]?; .type == "Ready" and .status == "True")
+          ) then .
+          else error("bridge and kagent Kustomizations must be Ready at their current generation")
           end
+        | map({key: .metadata.name, value: .status.lastAppliedRevision}) | from_entries
         | if ((.bridge // "") == "" or (.kagent // "") == "") then
             error("bridge and kagent lastAppliedRevision must be non-empty")
+          elif .bridge != .kagent then
+            error("bridge and kagent lastAppliedRevision must match")
           else . end
       ' >"${workdir}/source-revisions.json"
   jq -n \
     --arg agent_version "${audited_agent_version}" \
-    --arg agent_contract_sha256 "$(jq -r '.agent_contract_sha256 // ""' "${workdir}/bridge.json")" \
+    --arg agent_contract_sha256 "${agent_contract_sha256}" \
     --arg ghost "${ghost}" \
     --slurpfile revisions "${workdir}/source-revisions.json" '
       {

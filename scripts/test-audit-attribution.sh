@@ -97,6 +97,7 @@ mock_kubectl() {
 		empty_task) bridge_record "" ;;
 		missing_version) bridge_record "task-1" "" ;;
 		mismatched_version) bridge_record "task-1" "sha256:0000000000000000000000000000000000000000000000000000000000000000" ;;
+		revision_mismatch | kagent_not_ready) bridge_record "task-1" ;;
 		*)
 			printf 'unknown audit test scenario: %s\n' "${AUDIT_SCENARIO}" >&2
 			return 2
@@ -107,7 +108,17 @@ mock_kubectl() {
 		fixture_agents | jq -Rs '{data: {"agents.yaml": .}}'
 		;;
 	"-n flux-system get kustomizations bridge kagent -o json")
-		printf '%s\n' '{"items":[{"metadata":{"name":"bridge"},"status":{"lastAppliedRevision":"main@sha1:0123456789abcdef"}},{"metadata":{"name":"kagent"},"status":{"lastAppliedRevision":"main@sha1:0123456789abcdef"}}]}'
+		case "${AUDIT_SCENARIO:-success}" in
+		revision_mismatch)
+			printf '%s\n' '{"items":[{"metadata":{"name":"bridge","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"kagent","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:fedcba9876543210","conditions":[{"type":"Ready","status":"True"}]}}]}'
+			;;
+		kagent_not_ready)
+			printf '%s\n' '{"items":[{"metadata":{"name":"bridge","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"kagent","generation":2},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}}]}'
+			;;
+		*)
+			printf '%s\n' '{"items":[{"metadata":{"name":"bridge","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"kagent","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}}]}'
+			;;
+		esac
 		;;
 	"get --raw "*"/tasks?user_id="*)
 		printf '%s\n' '{"error":false,"data":[{"contextId":"context-1","id":"task-1","kind":"task","metadata":{"kagent_app_name":"kagent__NS__platform_assistant","kagent_invocation_id":"invocation-1","kagent_session_id":"context-1","kagent_user_id":"@alice:fgentic.localhost","kagent_usage_metadata":{"promptTokenCount":10,"candidatesTokenCount":2,"totalTokenCount":12}},"status":{"state":"completed","timestamp":"2026-07-11T09:00:02Z"},"history":[{}],"artifacts":[]}],"message":"ok"}'
@@ -202,6 +213,8 @@ assert_rejected duplicate_only "no accepted delegation audit record for Matrix e
 assert_rejected ambiguous "multiple delegation audit records for Matrix event"
 assert_rejected missing_version "attempted delegation audit has a missing or invalid agent version contract"
 assert_rejected mismatched_version "attempted delegation agent version does not match the live mapping"
+assert_rejected revision_mismatch "bridge and kagent lastAppliedRevision must match"
+assert_rejected kagent_not_ready "bridge and kagent Kustomizations must be Ready at their current generation"
 
 AUDIT_SCENARIO=redelivered PATH="${test_path}" "${collector}" "${event_id}" 15m \
 	>"${workdir}/redelivered.json"

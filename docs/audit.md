@@ -245,7 +245,7 @@ Rollback is ordinary GitOps, not a runtime registry operation:
 
 1. Revert both the Agent CRD/prompt change and its matching `agentContractSHA256`/mapping change in Git.
 1. Let Flux reconcile `kagent` and `bridge`; do not apply either resource manually.
-1. Confirm both Kustomizations report the intended `lastAppliedRevision`, then collect a new single-target audit probe.
+1. Confirm both Kustomizations are Ready at their current generation and report the same intended `lastAppliedRevision`, then collect a new single-target audit probe. The collector rejects a mixed-revision reconcile window so a new bridge mapping cannot be attributed to an older kagent contract.
 1. Require the new `agent_version` to equal the identifier produced before the bad change. Hash equality is the rollback proof; a Git commit message or pod age is not.
 
 A mapping-only rollback is projected through the ConfigMap volume and adopted by the bridge's periodic fail-closed reload without a pod restart. A CRD or prompt rollback still requires kagent reconciliation, but not a bridge restart; the paired mapping digest must change in the same Git revision. An invalid mapping or stale contract is rejected by the authoring gates, and a failed runtime reload retains the last-known valid version rather than partially adopting it.
