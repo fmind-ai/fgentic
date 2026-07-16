@@ -2,10 +2,13 @@ package bridge
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	sdktrace "go.opentelemetry.io/otel/sdk/trace"
+	"go.opentelemetry.io/otel/sdk/trace/tracetest"
 	"maunium.net/go/mautrix/appservice"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
@@ -156,14 +159,115 @@ func TestCancelReactionFromUnauthorizedMemberIgnored(t *testing.T) {
 	}
 }
 
-func TestReactionIgnoresNonCancelGestures(t *testing.T) {
+func TestQualityReactionsOnKnownAgentReplyRecordContentFreeSignal(t *testing.T) {
+	tests := []struct {
+		name   string
+		key    string
+		signal string
+	}{
+		{name: "positive", key: positiveQualityReactionKey, signal: positiveQualitySignal},
+		{name: "negative", key: negativeQualityReactionKey, signal: negativeQualitySignal},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			exporter := tracetest.NewInMemoryExporter()
+			provider := sdktrace.NewTracerProvider(sdktrace.WithSyncer(exporter))
+			t.Cleanup(func() {
+				if err := provider.Shutdown(context.Background()); err != nil {
+					t.Errorf("shutdown tracer provider: %v", err)
+				}
+			})
+
+			client := &scriptedA2AClient{}
+			b, intent, evt, ref, recorder := pollingHarness(t, client)
+			b.tracer = provider.Tracer(tracerName)
+			var output strings.Builder
+			setBridgeLogOutput(b, &output)
+			replyID, _, _ := b.deliverReply(t.Context(), intent, evt, "", "agent-k8s", ref,
+				a2aclient.Result{Text: "sensitive reply body", Terminal: true})
+			if replyID == "" {
+				t.Fatal("terminal m.notice reply was not projected")
+			}
+			events := recorder.snapshot()
+			if len(events) != 1 || events[0].MsgType != event.MsgNotice {
+				t.Fatalf("projected events = %+v, want one m.notice", events)
+			}
+
+			metric := agentReplyQualitySignals.WithLabelValues("agent-k8s", tt.signal)
+			before := counterValue(t, metric)
+			reaction := reactionEvent(id.NewUserID("reviewer", ownServer), evt.RoomID, replyID, tt.key)
+			reaction.ID = id.EventID("$quality-" + tt.signal)
+			b.HandleReaction(t.Context(), reaction)
+
+			if got := counterValue(t, metric); got != before+1 {
+				t.Errorf("quality metric = %v, want %v", got, before+1)
+			}
+			if client.callCount != 0 {
+				t.Fatalf("quality reaction made %d A2A calls", client.callCount)
+			}
+			if got := len(recorder.snapshot()); got != 1 {
+				t.Fatalf("quality reaction emitted %d additional Matrix events", got-1)
+			}
+
+			spans := exporter.GetSpans()
+			if len(spans) != 1 || spans[0].Name != "fgentic.agent_reply.quality_signal" {
+				t.Fatalf("quality spans = %+v, want one normalized signal span", spans)
+			}
+			attributes := attributeMap(spans[0].Attributes)
+			for key, want := range map[string]any{
+				"matrix.room_id":         evt.RoomID.String(),
+				"matrix.event_id":        reaction.ID.String(),
+				"matrix.sender":          reaction.Sender.String(),
+				"matrix.reply_event_id":  replyID.String(),
+				"fgentic.ghost":          "agent-k8s",
+				"fgentic.quality_signal": tt.signal,
+			} {
+				if got := attributes[key]; got != want {
+					t.Errorf("span attribute %s = %#v, want %#v", key, got, want)
+				}
+			}
+			if serialized := fmt.Sprint(spans, output.String()); strings.Contains(serialized, "sensitive reply body") {
+				t.Fatal("quality telemetry contains agent reply content")
+			}
+		})
+	}
+}
+
+func TestQualityReactionIgnoresUnknownWrongRoomAndOwnUsers(t *testing.T) {
+	client := &scriptedA2AClient{}
+	b, _, evt, _, recorder := pollingHarness(t, client)
+	b.replies.record(agentReplyRef{room: evt.RoomID, event: "$known-reply", ghost: "agent-k8s"})
+	metric := agentReplyQualitySignals.WithLabelValues("agent-k8s", positiveQualitySignal)
+	before := counterValue(t, metric)
+
+	cases := []*event.Event{
+		reactionEvent(id.NewUserID("reviewer", ownServer), evt.RoomID, "$unknown", positiveQualityReactionKey),
+		reactionEvent(id.NewUserID("reviewer", ownServer), "!other:"+ownServer, "$known-reply", positiveQualityReactionKey),
+		reactionEvent(id.NewUserID("agent-k8s", ownServer), evt.RoomID, "$known-reply", positiveQualityReactionKey),
+	}
+	for _, reaction := range cases {
+		b.HandleReaction(t.Context(), reaction)
+	}
+
+	if got := counterValue(t, metric); got != before {
+		t.Errorf("ignored quality reactions changed metric from %v to %v", before, got)
+	}
+	if client.callCount != 0 {
+		t.Fatalf("ignored quality reactions made %d A2A calls", client.callCount)
+	}
+	if events := recorder.snapshot(); len(events) != 0 {
+		t.Fatalf("ignored quality reactions emitted Matrix events: %+v", events)
+	}
+}
+
+func TestReactionIgnoresOtherGesturesAndInvalidCancelTargets(t *testing.T) {
 	client := &scriptedA2AClient{}
 	b, _, evt, _, _ := pollingHarness(t, client)
 	// Register a fake in-flight task so the cancel key would match, isolating the key/target/self checks.
 	b.inflight.register(&inflightTask{placeholder: "$reply-1", originalSender: evt.Sender, cancelPoll: func() {}})
 
 	cases := []*event.Event{
-		reactionEvent(evt.Sender, evt.RoomID, "$reply-1", "👍"),                       // wrong emoji
+		reactionEvent(evt.Sender, evt.RoomID, "$reply-1", "🔥"),                       // unsupported emoji
 		cancelReaction(evt.Sender, evt.RoomID, "$unknown"),                           // unknown target
 		cancelReaction(id.NewUserID("agent-k8s", ownServer), evt.RoomID, "$reply-1"), // own ghost
 	}

@@ -143,6 +143,7 @@ type Bridge struct {
 	profiles            *profileStore
 	profileWriter       ghostProfileWriter
 	inflight            *inflightRegistry
+	replies             *agentReplyRegistry // bounded terminal m.notice IDs for quality reactions (#357)
 	openTasks           *openTaskRegistry   // input-required delegations awaiting a reply (#116)
 	media               mediaPolicy         // MIME/size gate for files in both directions (#115)
 	stagingRooms        map[string]struct{} // rooms where stage:dev agents may be invoked (#128)
@@ -186,6 +187,7 @@ func New(cfg config.Config, as *appservice.AppService, agents *AgentMap, client 
 		pollMax:             pollMax,
 		pollWait:            waitForPoll,
 		inflight:            newInflightRegistry(),
+		replies:             newAgentReplyRegistry(qualityReplyRegistryCapacity),
 		openTasks:           newOpenTaskRegistry(),
 		media:               newMediaPolicy(cfg),
 		stagingRooms:        stagingRoomSet(cfg.StagingRooms),
@@ -1669,17 +1671,19 @@ func (b *Bridge) postReply(ctx context.Context, intent *appservice.IntentAPI, ev
 
 // editReply replaces a previously-posted reply (m.replace); falls back to logging when the
 // placeholder was never posted.
-func (b *Bridge) editReply(ctx context.Context, intent *appservice.IntentAPI, roomID id.RoomID, target id.EventID, text string) {
+func (b *Bridge) editReply(ctx context.Context, intent *appservice.IntentAPI, roomID id.RoomID, target id.EventID, text string) bool {
 	trace.SpanFromContext(ctx).AddEvent("matrix.reply.edit")
 	if target == "" {
 		b.log.Error("no placeholder to edit", "room", roomID, "reason", "missing_placeholder")
-		return
+		return false
 	}
 	content := &event.MessageEventContent{MsgType: event.MsgNotice, Body: text}
 	content.SetEdit(target)
 	if _, err := intent.SendMessageEvent(ctx, roomID, event.EventMessage, automatedContent(content)); err != nil {
 		b.log.Error("edit reply", "room", roomID, "err", err)
+		return false
 	}
+	return true
 }
 
 // automatedContent tags bridge-authored message content with the MSC3955 m.automated mixin. The

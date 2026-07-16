@@ -3,6 +3,8 @@ package bridge
 import (
 	"context"
 
+	"go.opentelemetry.io/otel/attribute"
+	"go.opentelemetry.io/otel/trace"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -10,6 +12,13 @@ import (
 // cancelReactionKey is the emoji a room member adds to an agent's in-flight placeholder to cancel
 // the delegation (#98). ❌ (U+274C) is the documented trigger; token burn stops as soon as it lands.
 const cancelReactionKey = "❌"
+
+const (
+	positiveQualityReactionKey = "👍"
+	negativeQualityReactionKey = "👎"
+	positiveQualitySignal      = "positive"
+	negativeQualitySignal      = "negative"
+)
 
 // HandleReaction cancels a long-running delegation when an authorized room member reacts to its
 // placeholder with the cancel emoji. Everything else is ignored: reactions are untrusted room input
@@ -21,14 +30,23 @@ func (b *Bridge) HandleReaction(ctx context.Context, evt *event.Event) {
 		return // the bridge's own ghosts/bot never drive cancellation
 	}
 	rel := evt.Content.AsReaction().GetRelatesTo()
-	if rel.GetAnnotationKey() != cancelReactionKey {
-		return // not a cancel gesture
-	}
-	placeholder := rel.GetAnnotationID()
-	if placeholder == "" {
+	target := rel.GetAnnotationID()
+	if target == "" {
 		return
 	}
-	task, ok := b.inflight.lookup(placeholder)
+	switch rel.GetAnnotationKey() {
+	case positiveQualityReactionKey:
+		b.recordReplyQualitySignal(ctx, evt, target, positiveQualitySignal)
+		return
+	case negativeQualityReactionKey:
+		b.recordReplyQualitySignal(ctx, evt, target, negativeQualitySignal)
+		return
+	case cancelReactionKey:
+		// Continue through the existing cancel-only path below.
+	default:
+		return
+	}
+	task, ok := b.inflight.lookup(target)
 	if !ok {
 		return // the reaction targets something that is not a cancelable in-flight task
 	}
@@ -37,7 +55,7 @@ func (b *Bridge) HandleReaction(ctx context.Context, evt *event.Event) {
 			"ignoring cancel reaction from unauthorized member",
 			"sender", evt.Sender,
 			"room", evt.RoomID,
-			"placeholder", placeholder,
+			"placeholder", target,
 		)
 		return
 	}
@@ -46,9 +64,49 @@ func (b *Bridge) HandleReaction(ctx context.Context, evt *event.Event) {
 			"cancel requested from room",
 			"sender", evt.Sender,
 			"room", evt.RoomID,
-			"placeholder", placeholder,
+			"placeholder", target,
 		)
 	}
+}
+
+// recordReplyQualitySignal accepts only a normalized thumbs-up/down on a successfully projected,
+// process-known terminal m.notice. It never reads the reply, calls Matrix/A2A, or emits another
+// event. High-cardinality operational identifiers stay on the span/log; Prometheus uses only the
+// bounded ghost and signal dimensions.
+func (b *Bridge) recordReplyQualitySignal(
+	ctx context.Context,
+	evt *event.Event,
+	target id.EventID,
+	signal string,
+) {
+	reply, ok := b.replies.lookup(target, evt.RoomID)
+	if !ok {
+		return
+	}
+	agentReplyQualitySignals.WithLabelValues(reply.ghost, signal).Inc()
+	_, span := b.tracer.Start(
+		ctx,
+		"fgentic.agent_reply.quality_signal",
+		trace.WithSpanKind(trace.SpanKindInternal),
+		trace.WithAttributes(
+			attribute.String("matrix.room_id", evt.RoomID.String()),
+			attribute.String("matrix.event_id", evt.ID.String()),
+			attribute.String("matrix.sender", evt.Sender.String()),
+			attribute.String("matrix.reply_event_id", reply.event.String()),
+			attribute.String("fgentic.ghost", reply.ghost),
+			attribute.String("fgentic.quality_signal", signal),
+		),
+	)
+	span.End()
+	b.log.Info(
+		"recorded agent reply quality signal",
+		"sender", evt.Sender,
+		"room", evt.RoomID,
+		"reaction_event", evt.ID,
+		"reply_event", reply.event,
+		"ghost", reply.ghost,
+		"signal", signal,
+	)
 }
 
 // mayCancel authorizes a cancel gesture: the original delegating sender may always stop their own

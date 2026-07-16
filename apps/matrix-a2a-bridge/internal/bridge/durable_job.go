@@ -634,6 +634,15 @@ func (b *Bridge) deliverPendingReply(ctx context.Context, job *state.Job) error 
 	if err := b.transitionDurable(ctx, job, terminalState, patch); err != nil {
 		return err
 	}
+	if payload.Result != nil {
+		replyEventID := eventID
+		if stage == state.MatrixEventEdit {
+			replyEventID = id.EventID(job.MatrixPlaceholderEventID)
+		}
+		b.replies.record(agentReplyRef{
+			room: id.RoomID(job.RoomID), event: replyEventID, ghost: job.GhostLocalpart,
+		})
+	}
 	b.recordDurableTerminal(*job, evt, ref, sender, payload, eventID, mediaOut, mediaRejected)
 	return nil
 }
