@@ -1,0 +1,39 @@
+# Offline public test fixture only. It demonstrates the direct-partner group contract without
+# sharing a parser process or filesystem view with the Matrix fixture. Never render or apply this
+# ConfigMap, and never copy non-public corpus bytes into Git.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: knowledge-source-bundle-partner-public-test-fixture
+  namespace: knowledge
+  annotations:
+    fgentic.fmind.ai/corpus-content: synthetic-public
+    fgentic.fmind.ai/test-fixture-only: "true"
+immutable: true
+data:
+  manifest.json: |
+    {
+      "schema_version": 1,
+      "corpus": "reference-docs",
+      "sources": [
+        {
+          "path": "partner-group.md",
+          "digest": "sha256:eb5c8ed1e69673ed875245a02cf417602a89422f217a51d95a774696af511f9d",
+          "source": {
+            "id": "reference-docs/partner-group",
+            "title": "Partner access example",
+            "locator": "git:docs/examples/partner-group.md",
+            "revision": "sha256:partner-group-v1"
+          },
+          "classification": "public",
+          "allowed_principals": [],
+          "allowed_groups": [
+            "partner/org-b-a2a/product"
+          ]
+        }
+      ]
+    }
+  partner-group.md: |
+    # Partner access example
+
+    This chunk is authorized only for the exact namespaced partner group declared in the manifest.

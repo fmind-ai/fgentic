@@ -385,3 +385,33 @@ spec:
       - kind: ConfigMap
         name: platform-settings-overrides
         optional: true
+---
+# Sovereign document ingestion is structurally opt-in. The disabled profile renders zero objects;
+# an enabled overlay composes the bounded Docling batch, DML-only database writer, and dedicated
+# authenticated embeddings listener. #340 must supply the in-cluster embedding runtime first.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: knowledge-ingestion
+  namespace: flux-system
+spec:
+  interval: 30m
+  retryInterval: 2m
+  path: ./infra/knowledge/profiles/disabled
+  prune: true
+  wait: true
+  timeout: 35m
+  dependsOn:
+    - name: agentgateway
+    - name: postgres
+    - name: platform-secrets
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true

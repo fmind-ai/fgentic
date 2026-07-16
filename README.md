@@ -68,11 +68,14 @@ The plaintext command fallback works in Matrix clients without ghost-MXID autoco
 | Optional reference IdP     | Keycloak 26.7 via the KeycloakX chart                                                                          | `keycloak`            |
 | Optional administrator UI  | Ketesa v1.3.0, locked to the local homeserver and authorized by Synapse/MAS ([runbook](docs/admin-console.md)) | `admin`               |
 | Optional self-hosted model | vLLM CPU + pinned Qwen2.5-0.5B demo model                                                                      | `models`              |
+| Optional grounding ingest  | Bounded Docling batch + authenticated agentgateway embeddings + DML-only writer                                | `knowledge`           |
 | Shared state               | CloudNativePG: scoped service databases plus the composed pgvector knowledge store                             | `postgres`            |
 | Web ingress + TLS          | Gateway API (Traefik) + cert-manager (Let's Encrypt)                                                           | `gateway`             |
 | Observability              | kube-prometheus-stack: Prometheus · Grafana · Alertmanager ([docs/observability.md](docs/observability.md))    | `monitoring`          |
 | Runtime image security     | Trivy Operator: continuous HIGH/CRITICAL feed-drift reports and alert                                          | `trivy-system`        |
 | Delivery                   | Flux v2 pull-based GitOps                                                                                      | `flux-system`         |
+
+The ingestion profile deliberately provisions no source storage. An operator supplies a `knowledge-source-bundle` PVC under that deployment's storage, encryption, backup, and access policy; only the snapshot phase mounts it, read-only. Operational or non-public corpus bytes never belong in this GitOps repository, a plaintext ConfigMap, or SOPS—the checked-in source-bundle ConfigMaps are synthetic public offline fixtures. A separately governed source Git repository may feed the #335 reference connector.
 
 Reference deployment: `fgentic.fmind.ai` (Element at `chat.`, Synapse at `matrix.`, MAS at `auth.`, optional Keycloak IdP at `id.`, optional Ketesa at `admin.`; user IDs `@name:fgentic.fmind.ai` via apex `.well-known` delegation).
 

@@ -1,0 +1,140 @@
+# The main ingestion schedule stays suspended until an operator supplies a reviewed source and the
+# #340 model runtime. Cache expiry is different: once the layer is enabled, this credential-only
+# collector runs independently so a final failed ingestion cannot retain checkpoint rows forever.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: knowledge-ingestion-cache-gc
+  namespace: knowledge
+  labels:
+    app.kubernetes.io/name: knowledge-ingestion-cache-gc
+    app.kubernetes.io/component: cache-gc
+    app.kubernetes.io/part-of: fgentic
+spec:
+  schedule: "17 * * * *"
+  suspend: false
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 1800
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 1
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 300
+      backoffLimit: 2
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: knowledge-ingestion-cache-gc
+            app.kubernetes.io/component: cache-gc
+            app.kubernetes.io/part-of: fgentic
+        spec:
+          serviceAccountName: knowledge-ingestion
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          restartPolicy: Never
+          securityContext:
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: cache-gc
+              image: ghcr.io/cloudnative-pg/postgresql:17.10-202607130907-system-trixie@sha256:c141aec61cab8da3e215aebe0fa155e78442fbb41c982a86743915a967e12af9
+              imagePullPolicy: IfNotPresent
+              command:
+                - psql
+              args:
+                - --quiet
+                - --no-psqlrc
+                - --file=/runtime/gc.sql
+              env:
+                - name: PGHOST
+                  value: platform-pg-rw.postgres.svc.cluster.local
+                - name: PGPORT
+                  value: "5432"
+                - name: PGDATABASE
+                  value: knowledge
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: pg-knowledge-ingestion
+                      key: username
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: pg-knowledge-ingestion
+                      key: password
+                - name: PGSSLMODE
+                  value: require
+                - name: PGCONNECT_TIMEOUT
+                  value: "3"
+                - name: HOME
+                  value: /tmp
+              resources:
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                  ephemeral-storage: 8Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+                  ephemeral-storage: 32Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: runtime
+                  mountPath: /runtime
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: runtime
+              configMap:
+                name: knowledge-ingestion-cache-gc-runtime
+                defaultMode: 0444
+            - name: tmp
+              emptyDir:
+                sizeLimit: 8Mi
+---
+# The collector has no source, model, or agentgateway surface. Its only egress is DNS plus the exact
+# CloudNativePG cluster that owns the cache table.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: knowledge-ingestion-cache-gc
+  namespace: knowledge
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: knowledge-ingestion-cache-gc
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: postgres
+          podSelector:
+            matchLabels:
+              cnpg.io/cluster: platform-pg
+      ports:
+        - protocol: TCP
+          port: 5432

@@ -89,6 +89,14 @@ knowledge_password() {
 	secret_value knowledge-db.sops.yaml postgres "pg-knowledge-$1" '.stringData.password'
 }
 
+knowledge_ingestion_password() {
+	secret_value knowledge-ingestion.sops.yaml postgres pg-knowledge-ingestion '.stringData.password'
+}
+
+knowledge_ingestion_authorization() {
+	secret_value knowledge-ingestion.sops.yaml knowledge knowledge-ingestion-credential '.stringData.authorization'
+}
+
 exercise_db_role() { # exercise_db_role <role> <expected changed files...>
 	local role="$1"
 	local old_synapse old_mas old_bridge old_kagent new_value
@@ -182,6 +190,9 @@ export SOPS_AGE_KEY_FILE="${WORK_DIR}/age.key"
 export FGENTIC_DATA_ROOT="${FIXTURE_ROOT}"
 
 "${GENERATOR}" fixture.localhost local >/dev/null
+[ ! -e "${FIXTURE_ROOT}/clusters/local/secrets/knowledge-ingestion.sops.yaml" ] ||
+	fail "core generation emitted knowledge ingestion secrets"
+FGENTIC_SECRET_SET=knowledge-ingestion "${GENERATOR}" fixture.localhost local >/dev/null
 FGENTIC_SECRET_SET=slack "${GENERATOR}" fixture.localhost local >/dev/null
 # Optional Telegram generation fails before emitting a file unless the operator supplies the exact
 # upstream API application pair. Core generation above neither required nor produced this set.
@@ -303,6 +314,27 @@ assert_equal "${NEW_MCP}" "Bearer ${GATEWAY_MCP}" "MCP credential copies differ"
 assert_changed_files mcp-authorization.sops.yaml
 commit_fixture "rotate MCP fixture"
 
+OLD_KNOWLEDGE_INGESTION_DB="$(knowledge_ingestion_password)"
+OLD_KNOWLEDGE_INGESTION_AUTH="$(knowledge_ingestion_authorization)"
+"${ROTATOR}" fixture.localhost local knowledge-ingestion >/dev/null
+NEW_KNOWLEDGE_INGESTION_DB="$(knowledge_ingestion_password)"
+NEW_KNOWLEDGE_INGESTION_AUTH="$(knowledge_ingestion_authorization)"
+GATEWAY_KNOWLEDGE_INGESTION="$(
+	secret_value knowledge-ingestion.sops.yaml agentgateway-system knowledge-ingestion-callers \
+		'.stringData."knowledge-ingestion" | from_json | .key'
+)"
+assert_changed "${OLD_KNOWLEDGE_INGESTION_DB}" "${NEW_KNOWLEDGE_INGESTION_DB}" \
+	"knowledge ingestion database password"
+assert_changed "${OLD_KNOWLEDGE_INGESTION_AUTH}" "${NEW_KNOWLEDGE_INGESTION_AUTH}" \
+	"knowledge ingestion workload key"
+assert_equal "${NEW_KNOWLEDGE_INGESTION_DB}" \
+	"$(secret_value knowledge-ingestion.sops.yaml knowledge pg-knowledge-ingestion '.stringData.password')" \
+	"knowledge ingestion database copies differ"
+assert_equal "${NEW_KNOWLEDGE_INGESTION_AUTH}" "Bearer ${GATEWAY_KNOWLEDGE_INGESTION}" \
+	"knowledge ingestion gateway copies differ"
+assert_changed_files knowledge-ingestion.sops.yaml
+commit_fixture "rotate knowledge ingestion fixture"
+
 OLD_SYNAPSE="$(pg_password synapse)"
 OLD_MAS="$(pg_password mas)"
 OLD_BRIDGE="$(pg_password bridge)"
@@ -396,9 +428,12 @@ assert_equal "${OLD_BOB}" "$(secret_value keycloak-bootstrap.sops.yaml keycloak 
 assert_changed_files keycloak-bootstrap.sops.yaml
 commit_fixture "rotate Keycloak client fixture"
 
-# Full automatable rotation changes every operational class but leaves the bootstrap-only realm
-# identities/client file byte-for-byte untouched.
+# Full core rotation changes every core operational class but leaves bootstrap-only identities and
+# explicitly generated optional sets byte-for-byte untouched.
 BOOTSTRAP_HASH="$(sha256sum "${FIXTURE_ROOT}/clusters/local/secrets/keycloak-bootstrap.sops.yaml" | awk '{print $1}')"
+KNOWLEDGE_INGESTION_HASH="$(
+	sha256sum "${FIXTURE_ROOT}/clusters/local/secrets/knowledge-ingestion.sops.yaml" | awk '{print $1}'
+)"
 SLACK_HASH="$(sha256sum "${FIXTURE_ROOT}/clusters/local/secrets/mautrix-slack.sops.yaml" | awk '{print $1}')"
 TELEGRAM_HASH="$(sha256sum "${FIXTURE_ROOT}/clusters/local/secrets/mautrix-telegram.sops.yaml" | awk '{print $1}')"
 BEFORE_ALL_AS="$(yq -r '.as_token' <<<"$(registration bridge)")"
@@ -418,6 +453,9 @@ export OPENAI_API_KEY
 assert_equal "${BOOTSTRAP_HASH}" \
 	"$(sha256sum "${FIXTURE_ROOT}/clusters/local/secrets/keycloak-bootstrap.sops.yaml" | awk '{print $1}')" \
 	"full rotation changed bootstrap-only identities"
+assert_equal "${KNOWLEDGE_INGESTION_HASH}" \
+	"$(sha256sum "${FIXTURE_ROOT}/clusters/local/secrets/knowledge-ingestion.sops.yaml" | awk '{print $1}')" \
+	"core full rotation changed the optional knowledge ingestion set"
 assert_equal "${SLACK_HASH}" \
 	"$(sha256sum "${FIXTURE_ROOT}/clusters/local/secrets/mautrix-slack.sops.yaml" | awk '{print $1}')" \
 	"core full rotation changed the optional Slack set"
@@ -459,14 +497,20 @@ assert_equal "${DIRTY_HASH}" \
 	"$(sha256sum "${FIXTURE_ROOT}/clusters/local/secrets/matrix-a2a-bridge-registration.sops.yaml" | awk '{print $1}')" \
 	"dirty-file preflight overwrote ciphertext"
 
-# The legacy full-generation compatibility flag still must not rewrite bootstrap-only identities.
+# The legacy full-generation compatibility flag must also preserve bootstrap-only and optional sets.
 GEN_BOOTSTRAP_HASH="$(sha256sum "${FIXTURE_ROOT}/clusters/local/secrets/keycloak-bootstrap.sops.yaml" | awk '{print $1}')"
+GEN_KNOWLEDGE_INGESTION_HASH="$(
+	sha256sum "${FIXTURE_ROOT}/clusters/local/secrets/knowledge-ingestion.sops.yaml" | awk '{print $1}'
+)"
 GEN_SLACK_HASH="$(sha256sum "${FIXTURE_ROOT}/clusters/local/secrets/mautrix-slack.sops.yaml" | awk '{print $1}')"
 GEN_TELEGRAM_HASH="$(sha256sum "${FIXTURE_ROOT}/clusters/local/secrets/mautrix-telegram.sops.yaml" | awk '{print $1}')"
 "${GENERATOR}" fixture.localhost local --force >/dev/null
 assert_equal "${GEN_BOOTSTRAP_HASH}" \
 	"$(sha256sum "${FIXTURE_ROOT}/clusters/local/secrets/keycloak-bootstrap.sops.yaml" | awk '{print $1}')" \
 	"gen-secrets.sh --force changed bootstrap-only identities"
+assert_equal "${GEN_KNOWLEDGE_INGESTION_HASH}" \
+	"$(sha256sum "${FIXTURE_ROOT}/clusters/local/secrets/knowledge-ingestion.sops.yaml" | awk '{print $1}')" \
+	"gen-secrets.sh --force changed the optional knowledge ingestion set"
 assert_equal "${GEN_SLACK_HASH}" \
 	"$(sha256sum "${FIXTURE_ROOT}/clusters/local/secrets/mautrix-slack.sops.yaml" | awk '{print $1}')" \
 	"gen-secrets.sh --force changed the optional Slack set"

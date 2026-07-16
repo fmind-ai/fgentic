@@ -1,0 +1,409 @@
+# Suspended by default: an operator provisions the knowledge-source-bundle PVC, keeps its reviewed
+# manifest and sole source immutable for a run, and enables the #340-owned in-cluster embedding
+# runtime before selecting a schedule. This profile deliberately owns no storage provisioning.
+# The sequential trust phases keep Docling text-only: a fresh minimal-Python binder reconstructs
+# IDs, ACLs, provenance, and deletion scope before the least-privilege database role sees data.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: knowledge-ingestion
+  namespace: knowledge
+  labels:
+    app.kubernetes.io/name: knowledge-ingestion
+    app.kubernetes.io/component: ingestion
+    app.kubernetes.io/part-of: fgentic
+spec:
+  schedule: "0 3 * * *"
+  suspend: true
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 900
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 1800
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: knowledge-ingestion
+            app.kubernetes.io/component: ingestion
+            app.kubernetes.io/part-of: fgentic
+        spec:
+          serviceAccountName: knowledge-ingestion
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          restartPolicy: Never
+          securityContext:
+            fsGroup: 2000
+            fsGroupChangePolicy: OnRootMismatch
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          initContainers:
+            - name: snapshot
+              image: python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+              args:
+                - /runtime/ingestion.py
+                - snapshot
+                - --manifest
+                - /sources/manifest.json
+                - --source-root
+                - /sources
+                - --output-root
+                - /snapshot
+                - --raw-root
+                - /work/raw
+                - --tmp-root
+                - /parser-tmp
+              env: &python-env
+                - name: HOME
+                  value: /tmp
+                - name: TMPDIR
+                  value: /tmp
+                - name: PYTHONDONTWRITEBYTECODE
+                  value: "1"
+                - name: PYTHONUNBUFFERED
+                  value: "1"
+              resources: &python-resources
+                requests:
+                  cpu: 25m
+                  memory: 64Mi
+                  ephemeral-storage: 16Mi
+                limits:
+                  cpu: 250m
+                  memory: 256Mi
+                  ephemeral-storage: 128Mi
+              securityContext: &python-security
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+                runAsGroup: 65532
+                runAsNonRoot: true
+                runAsUser: 65532
+              volumeMounts:
+                - name: runtime
+                  mountPath: /runtime
+                  readOnly: true
+                - name: sources
+                  mountPath: /sources
+                  readOnly: true
+                - name: snapshot
+                  mountPath: /snapshot
+                - name: work
+                  mountPath: /work
+                - name: parser-tmp
+                  mountPath: /parser-tmp
+                - name: tmp
+                  mountPath: /tmp
+            # Mount boundaries are the enforcement boundary: Docling sees one source subPath, one
+            # result subPath, and one dedicated temporary volume, but no manifest or shared root.
+            - name: parse
+              image: quay.io/docling-project/docling-serve-cpu:v1.26.0@sha256:7e07522e0240c1db3ff5b837ffa969c2ecd5a71664c0e0369f5a69fc169e30ba
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+              args:
+                - /runtime/ingestion.py
+                - parse-isolated
+                - --source-root
+                - /input
+                - --output
+                - /output/chunks.jsonl
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: TMPDIR
+                  value: /tmp
+                - name: PYTHONDONTWRITEBYTECODE
+                  value: "1"
+                - name: PYTHONUNBUFFERED
+                  value: "1"
+                - name: HF_HUB_OFFLINE
+                  value: "1"
+                - name: TRANSFORMERS_OFFLINE
+                  value: "1"
+                - name: DOCLING_ARTIFACTS_PATH
+                  value: /opt/app-root/src/.cache/docling/models
+                - name: OMP_NUM_THREADS
+                  value: "2"
+                - name: DO_NOT_TRACK
+                  value: "1"
+              resources:
+                requests:
+                  cpu: 250m
+                  memory: 1Gi
+                  ephemeral-storage: 256Mi
+                limits:
+                  cpu: "2"
+                  memory: 3Gi
+                  ephemeral-storage: 1Gi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+                runAsGroup: 0
+                runAsNonRoot: true
+                runAsUser: 1001
+              volumeMounts:
+                - name: runtime
+                  mountPath: /runtime
+                  readOnly: true
+                - name: snapshot
+                  mountPath: /input
+                  readOnly: true
+                  subPath: parser
+                - name: work
+                  mountPath: /output
+                  subPath: raw
+                - name: parser-tmp
+                  mountPath: /tmp
+            - name: bind
+              image: python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+              args:
+                - /runtime/ingestion.py
+                - bind
+                - --manifest
+                - /snapshot/manifest.json
+                - --source-root
+                - /snapshot/sources
+                - --raw-root
+                - /work/raw
+                - --output
+                - /work/pending.jsonl
+              env: *python-env
+              resources: *python-resources
+              securityContext: *python-security
+              volumeMounts:
+                - name: runtime
+                  mountPath: /runtime
+                  readOnly: true
+                - name: snapshot
+                  mountPath: /snapshot
+                  readOnly: true
+                - name: work
+                  mountPath: /work
+                - name: tmp
+                  mountPath: /tmp
+            - name: plan
+              image: ghcr.io/cloudnative-pg/postgresql:17.10-202607130907-system-trixie@sha256:c141aec61cab8da3e215aebe0fa155e78442fbb41c982a86743915a967e12af9
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/bash
+                - -ceu
+                - --
+              args:
+                - exec psql --quiet --no-psqlrc --set=run_id="$POD_UID" --file=/runtime/plan.sql
+              env: &postgres-env
+                - name: PGHOST
+                  value: platform-pg-rw.postgres.svc.cluster.local
+                - name: PGPORT
+                  value: "5432"
+                - name: PGDATABASE
+                  value: knowledge
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: pg-knowledge-ingestion
+                      key: username
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: pg-knowledge-ingestion
+                      key: password
+                - name: PGSSLMODE
+                  value: require
+                - name: PGCONNECT_TIMEOUT
+                  value: "3"
+                - name: POD_UID
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.uid
+                - name: HOME
+                  value: /tmp
+              resources: &postgres-resources
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                  ephemeral-storage: 8Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+                  ephemeral-storage: 64Mi
+              securityContext: &restricted-container
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: runtime
+                  mountPath: /runtime
+                  readOnly: true
+                - name: work
+                  mountPath: /work
+                - name: tmp
+                  mountPath: /tmp
+            # Native sidecar init: later init containers start after this process is running, while
+            # Job completion ignores it. A committed batch can therefore be retried idempotently
+            # if the process exits before its single atomic ready -> acked rename.
+            - name: checkpoint
+              image: ghcr.io/cloudnative-pg/postgresql:17.10-202607130907-system-trixie@sha256:c141aec61cab8da3e215aebe0fa155e78442fbb41c982a86743915a967e12af9
+              imagePullPolicy: IfNotPresent
+              restartPolicy: Always
+              command:
+                - /bin/bash
+                - -ceu
+                - --
+              args:
+                - |
+                  while true; do
+                    if [[ -e /checkpoint/checkpoint.ready ]]; then
+                      [[ ! -e /checkpoint/checkpoint.acked ]]
+                      psql --quiet --no-psqlrc --set=run_id="$POD_UID" \
+                        --file=/runtime/checkpoint.sql </checkpoint/checkpoint.ready
+                      mv -- /checkpoint/checkpoint.ready /checkpoint/checkpoint.acked
+                    fi
+                    sleep 0.1
+                  done
+              env:
+                - name: PGHOST
+                  value: platform-pg-rw.postgres.svc.cluster.local
+                - name: PGPORT
+                  value: "5432"
+                - name: PGDATABASE
+                  value: knowledge
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: pg-knowledge-ingestion
+                      key: username
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: pg-knowledge-ingestion
+                      key: password
+                - name: PGSSLMODE
+                  value: require
+                - name: PGCONNECT_TIMEOUT
+                  value: "3"
+                - name: POD_UID
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.uid
+                - name: HOME
+                  value: /checkpoint
+              resources: *postgres-resources
+              securityContext: *restricted-container
+              volumeMounts:
+                - name: runtime
+                  mountPath: /runtime
+                  readOnly: true
+                - name: checkpoint
+                  mountPath: /checkpoint
+            - name: embed
+              image: python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+              args:
+                - /runtime/ingestion.py
+                - embed
+                - --plan
+                - /work/plan.jsonl
+                - --output
+                - /work/chunks.jsonl
+                - --url
+                - http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8082/v1/embeddings
+                - --model
+                - BAAI/bge-m3
+                - --authorization-file
+                - /credentials/authorization
+                - --checkpoint-root
+                - /checkpoint
+              env: *python-env
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 64Mi
+                  ephemeral-storage: 16Mi
+                limits:
+                  cpu: 500m
+                  memory: 256Mi
+                  ephemeral-storage: 128Mi
+              securityContext: *python-security
+              volumeMounts:
+                - name: runtime
+                  mountPath: /runtime
+                  readOnly: true
+                - name: work
+                  mountPath: /work
+                - name: credentials
+                  mountPath: /credentials
+                  readOnly: true
+                - name: checkpoint
+                  mountPath: /checkpoint
+                - name: tmp
+                  mountPath: /tmp
+          containers:
+            - name: write
+              image: ghcr.io/cloudnative-pg/postgresql:17.10-202607130907-system-trixie@sha256:c141aec61cab8da3e215aebe0fa155e78442fbb41c982a86743915a967e12af9
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/bash
+                - -ceu
+                - --
+              args:
+                - exec psql --quiet --no-psqlrc --set=run_id="$POD_UID" --file=/runtime/write.sql
+              env: *postgres-env
+              resources: *postgres-resources
+              securityContext: *restricted-container
+              volumeMounts:
+                - name: runtime
+                  mountPath: /runtime
+                  readOnly: true
+                - name: work
+                  mountPath: /work
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: runtime
+              configMap:
+                name: knowledge-ingestion-runtime
+                defaultMode: 0444
+            - name: sources
+              persistentVolumeClaim:
+                claimName: knowledge-source-bundle
+                readOnly: true
+            - name: snapshot
+              emptyDir:
+                sizeLimit: 128Mi
+            - name: work
+              emptyDir:
+                # Raw/pending are 64 MiB each; 512-vector plan/final stages are ~81 MiB each.
+                sizeLimit: 320Mi
+            - name: parser-tmp
+              emptyDir:
+                # Match Docling's explicit ephemeral-storage limit without sharing handoff capacity.
+                sizeLimit: 1Gi
+            - name: checkpoint
+              emptyDir:
+                sizeLimit: 2Mi
+            - name: credentials
+              secret:
+                secretName: knowledge-ingestion-credential
+                defaultMode: 0440
+            - name: tmp
+              emptyDir:
+                sizeLimit: 256Mi

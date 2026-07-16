@@ -45,6 +45,7 @@ case "${FORCE}" in
 esac
 case "${SECRET_SET}" in
 all | rotatable | appservice | a2a | mcp | db-core | keycloak-db | knowledge-db | \
+	knowledge-ingestion | \
 	provider | bootstrap | slack | telegram) ;;
 *)
 	echo "error: unsupported internal secret set: ${SECRET_SET}" >&2
@@ -59,9 +60,9 @@ fi
 
 want() {
 	local set="$1"
-	# Optional interop layers are generated only when explicitly selected. A normal production
-	# bootstrap must not create dormant external-bridge credentials or imply that the layer is on.
-	if [ "${set}" = "slack" ] || [ "${set}" = "telegram" ]; then
+	# Optional layers are generated only when explicitly selected. A normal production bootstrap
+	# must not create dormant workload credentials or imply that the layer is enabled.
+	if [ "${set}" = "slack" ] || [ "${set}" = "telegram" ] || [ "${set}" = "knowledge-ingestion" ]; then
 		[ "${SECRET_SET}" = "${set}" ]
 		return
 	fi
@@ -191,6 +192,7 @@ PG_BRIDGE="${PG_BRIDGE:-$(openssl rand -hex 24)}"
 PG_KAGENT="${PG_KAGENT:-$(openssl rand -hex 24)}"
 PG_KEYCLOAK="${PG_KEYCLOAK:-$(openssl rand -hex 24)}"
 PG_KNOWLEDGE_OWNER="${PG_KNOWLEDGE_OWNER:-$(openssl rand -hex 24)}"
+PG_KNOWLEDGE_INGESTION="${PG_KNOWLEDGE_INGESTION:-$(openssl rand -hex 24)}"
 PG_KNOWLEDGE_RETRIEVAL="${PG_KNOWLEDGE_RETRIEVAL:-$(openssl rand -hex 24)}"
 PG_SLACKBRIDGE="${PG_SLACKBRIDGE:-$(openssl rand -hex 24)}"
 PG_TELEGRAMBRIDGE="${PG_TELEGRAMBRIDGE:-$(openssl rand -hex 24)}"
@@ -206,6 +208,7 @@ TELEGRAM_HS_TOKEN="${TELEGRAM_HS_TOKEN:-$(openssl rand -hex 32)}"
 TELEGRAM_SENDER_LOCALPART="${TELEGRAM_SENDER_LOCALPART:-$(openssl rand -hex 16)}"
 A2A_WORKLOAD_KEY="${A2A_WORKLOAD_KEY:-$(openssl rand -hex 32)}"
 MCP_PLATFORM_HELPER_KEY="${MCP_PLATFORM_HELPER_KEY:-$(openssl rand -hex 32)}"
+KNOWLEDGE_INGESTION_KEY="${KNOWLEDGE_INGESTION_KEY:-$(openssl rand -hex 32)}"
 KEYCLOAK_ADMIN_PASSWORD="${KEYCLOAK_ADMIN_PASSWORD:-$(openssl rand -hex 24)}"
 FGENTIC_CLIENT_SECRET="${FGENTIC_CLIENT_SECRET:-$(openssl rand -hex 32)}"
 FGENTIC_ALICE_PASSWORD="${FGENTIC_ALICE_PASSWORD:-$(openssl rand -hex 24)}"
@@ -385,6 +388,60 @@ stringData:
 EOF
 	)"
 	emit knowledge-db.sops.yaml "${KNOWLEDGE_DB}"
+fi
+
+# The ingestion database login and agentgateway caller key are separate credentials but form one
+# workload boundary. Keep both namespace copies coherent without ever projecting the schema owner
+# or a model/provider key into the knowledge namespace.
+if want knowledge-ingestion; then
+	KNOWLEDGE_INGESTION="$(
+		cat <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg-knowledge-ingestion
+  namespace: postgres
+type: kubernetes.io/basic-auth
+stringData:
+  username: knowledge_ingestion
+  password: ${PG_KNOWLEDGE_INGESTION}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg-knowledge-ingestion
+  namespace: knowledge
+type: kubernetes.io/basic-auth
+stringData:
+  username: knowledge_ingestion
+  password: ${PG_KNOWLEDGE_INGESTION}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: knowledge-ingestion-callers
+  namespace: agentgateway-system
+type: Opaque
+stringData:
+  knowledge-ingestion: |
+    {
+      "key": "${KNOWLEDGE_INGESTION_KEY}",
+      "metadata": {
+        "workload": "knowledge-ingestion"
+      }
+    }
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: knowledge-ingestion-credential
+  namespace: knowledge
+type: Opaque
+stringData:
+  authorization: Bearer ${KNOWLEDGE_INGESTION_KEY}
+EOF
+	)"
+	emit knowledge-ingestion.sops.yaml "${KNOWLEDGE_INGESTION}"
 fi
 
 # Startup import is bootstrap-only: Keycloak skips an existing realm. Preserve this file even on
