@@ -9,9 +9,9 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"strings"
 	"time"
 
+	"github.com/a2aproject/a2a-go/v2/a2a"
 	"github.com/gowebpki/jcs"
 )
 
@@ -242,11 +242,14 @@ func (p *Processor) TransformResponse(request requestEvidence, raw []byte) ([]by
 	if responseID != request.JSONRPCID {
 		return nil, false, fmt.Errorf("A2A response id does not match request")
 	}
+	if err := validateA2AResult(request.Method, envelope.Result); err != nil {
+		return nil, false, err
+	}
 	result, err := decodeObject(envelope.Result)
 	if err != nil {
-		return raw, false, nil
+		return nil, false, fmt.Errorf("decode A2A response result: %w", err)
 	}
-	taskID, contextID, outcome, terminal := resultEvidence(result)
+	taskID, contextID, outcome, terminal := resultEvidence(request.Method, result)
 	if taskID == "" || contextID == "" {
 		return raw, false, nil
 	}
@@ -273,12 +276,16 @@ func (p *Processor) TransformResponse(request requestEvidence, raw []byte) ([]by
 		if err := p.validateArchived(archived, request, taskID, contextID, outcome); err != nil {
 			return nil, false, err
 		}
+		updated, attached, err := attachReceipt(request.Method, raw, result, archived)
+		if err != nil {
+			return nil, false, err
+		}
 		if request.Method == "GetTask" {
 			if err := p.deletePending(taskID, archived.Receipt); err != nil {
 				return nil, false, err
 			}
 		}
-		return attachReceipt(raw, result, archived)
+		return updated, attached, nil
 	}
 	if request.Method == "GetTask" {
 		evidence, found, err = p.Pending.Load(taskID)
@@ -303,6 +310,10 @@ func (p *Processor) TransformResponse(request requestEvidence, raw []byte) ([]by
 	if err != nil {
 		return nil, false, err
 	}
+	updated, attached, err := attachReceipt(request.Method, raw, result, proposed)
+	if err != nil {
+		return nil, false, err
+	}
 	signed, err := p.Archive.AppendUnique(proposed)
 	if err != nil {
 		return nil, false, err
@@ -310,12 +321,18 @@ func (p *Processor) TransformResponse(request requestEvidence, raw []byte) ([]by
 	if err := p.validateArchived(signed, request, taskID, contextID, outcome); err != nil {
 		return nil, false, err
 	}
+	if signed != proposed {
+		updated, attached, err = attachReceipt(request.Method, raw, result, signed)
+		if err != nil {
+			return nil, false, err
+		}
+	}
 	if request.Method == "GetTask" {
 		if err := p.deletePending(taskID, signed.Receipt); err != nil {
 			return nil, false, err
 		}
 	}
-	return attachReceipt(raw, result, signed)
+	return updated, attached, nil
 }
 
 func (p *Processor) validateArchived(
@@ -350,8 +367,13 @@ func (p *Processor) deletePending(taskID string, receipt Receipt) error {
 	return p.Pending.Delete(taskID)
 }
 
-func attachReceipt(raw []byte, result map[string]any, signed Signed) ([]byte, bool, error) {
-	carrier, message, err := receiptCarrier(result)
+func attachReceipt(
+	method string,
+	raw []byte,
+	result map[string]any,
+	signed Signed,
+) ([]byte, bool, error) {
+	carrier, message, err := receiptCarrier(method, result)
 	if err != nil {
 		return nil, false, err
 	}
@@ -390,21 +412,23 @@ func attachReceipt(raw []byte, result map[string]any, signed Signed) ([]byte, bo
 	return updated, true, nil
 }
 
-func receiptCarrier(result map[string]any) (map[string]any, bool, error) {
-	message, hasMessage := result["message"].(map[string]any)
-	task, hasTask := result["task"].(map[string]any)
-	if hasMessage && hasTask {
-		return nil, false, fmt.Errorf("A2A response contains both message and task results")
-	}
-	if hasMessage {
-		return message, true, nil
-	}
-	if hasTask {
+func receiptCarrier(method string, result map[string]any) (map[string]any, bool, error) {
+	switch method {
+	case "SendMessage":
+		message, hasMessage := result["message"].(map[string]any)
+		task, hasTask := result["task"].(map[string]any)
+		if hasMessage == hasTask {
+			return nil, false, fmt.Errorf("SendMessage response must contain exactly one message or task result")
+		}
+		if hasMessage {
+			return message, true, nil
+		}
 		return task, false, nil
+	case "GetTask":
+		return result, false, nil
+	default:
+		return nil, false, fmt.Errorf("unsupported A2A receipt method %q", method)
 	}
-	kind, _ := result["kind"].(string)
-	_, hasMessageID := result["messageId"].(string)
-	return result, strings.EqualFold(kind, "message") || hasMessageID, nil
 }
 
 func activateMessageExtension(message map[string]any) error {
@@ -453,29 +477,46 @@ func decodeObject(raw []byte) (map[string]any, error) {
 	return value, nil
 }
 
-func resultEvidence(result map[string]any) (taskID, contextID, outcome string, terminal bool) {
-	if task, ok := result["task"].(map[string]any); ok {
-		return taskEvidence(task)
-	}
-	if message, ok := result["message"].(map[string]any); ok {
-		return messageEvidence(message)
-	}
-
-	kind, _ := result["kind"].(string)
-	switch strings.ToLower(kind) {
-	case "message":
-		return messageEvidence(result)
-	case "task":
-		return taskEvidence(result)
+func validateA2AResult(method string, raw json.RawMessage) error {
+	switch method {
+	case "SendMessage":
+		var response a2a.StreamResponse
+		if err := json.Unmarshal(raw, &response); err != nil {
+			return fmt.Errorf("decode SendMessage result through a2a-go: %w", err)
+		}
+		switch response.Event.(type) {
+		case *a2a.Message, *a2a.Task:
+			return nil
+		default:
+			return fmt.Errorf("SendMessage result is not a Message or Task")
+		}
+	case "GetTask":
+		var task a2a.Task
+		if err := json.Unmarshal(raw, &task); err != nil {
+			return fmt.Errorf("decode GetTask result through a2a-go: %w", err)
+		}
+		return nil
 	default:
-		if _, ok := result["status"].(map[string]any); ok {
-			return taskEvidence(result)
-		}
-		if _, ok := result["messageId"].(string); ok {
-			return messageEvidence(result)
-		}
-		return "", "", "", false
+		return fmt.Errorf("unsupported A2A receipt method %q", method)
 	}
+}
+
+func resultEvidence(
+	method string,
+	result map[string]any,
+) (taskID, contextID, outcome string, terminal bool) {
+	switch method {
+	case "SendMessage":
+		if task, ok := result["task"].(map[string]any); ok {
+			return taskEvidence(task)
+		}
+		if message, ok := result["message"].(map[string]any); ok {
+			return messageEvidence(message)
+		}
+	case "GetTask":
+		return taskEvidence(result)
+	}
+	return "", "", "", false
 }
 
 func taskEvidence(task map[string]any) (taskID, contextID, outcome string, terminal bool) {

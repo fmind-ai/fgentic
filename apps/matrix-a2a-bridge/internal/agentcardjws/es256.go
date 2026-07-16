@@ -411,6 +411,9 @@ func EncodePublicJWK(key *ecdsa.PublicKey, keyID string) ([]byte, error) {
 	if err := validatePublicKey(key); err != nil {
 		return nil, err
 	}
+	if err := validateKeyID(keyID); err != nil {
+		return nil, err
+	}
 	x := base64.RawURLEncoding.EncodeToString(key.X.FillBytes(make([]byte, p256CoordinateBytes)))
 	y := base64.RawURLEncoding.EncodeToString(key.Y.FillBytes(make([]byte, p256CoordinateBytes)))
 	encoded, err := json.Marshal(publicJWK{

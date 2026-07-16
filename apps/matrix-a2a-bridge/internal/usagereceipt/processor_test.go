@@ -1,6 +1,7 @@
 package usagereceipt
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -80,6 +81,93 @@ func TestProcessorInjectsAndArchivesTerminalReceipt(t *testing.T) {
 	}
 	if !reflect.DeepEqual(archived.Receipt, signed.Receipt) {
 		t.Fatalf("archived receipt differs from delivered receipt: %+v != %+v", archived, signed)
+	}
+}
+
+func TestProcessorConcurrentCompletionReturnsArchivedReceipt(t *testing.T) {
+	processor, archivePath := testProcessor(t)
+	ready := make(chan struct{}, 2)
+	release := make(chan struct{})
+	completionTimes := make(chan time.Time, 2)
+	completionTimes <- time.Date(2026, 7, 16, 9, 0, 1, 0, time.UTC)
+	completionTimes <- time.Date(2026, 7, 16, 9, 0, 2, 0, time.UTC)
+	processor.Now = func() time.Time {
+		ready <- struct{}{}
+		<-release
+		return <-completionTimes
+	}
+	request, err := ParseRequest([]byte(`{
+	  "jsonrpc":"2.0","id":"request-concurrent","method":"SendMessage","params":{"message":{
+	    "messageId":"message-concurrent","role":"ROLE_USER","parts":[{"text":"untrusted prompt"}],
+	    "metadata":{"https://fgentic.fmind.ai/a2a/extensions/token-budget/v1":{"maxTokens":3000}}
+	  }}
+	}`))
+	if err != nil {
+		t.Fatalf("ParseRequest: %v", err)
+	}
+	response := []byte(`{
+	  "jsonrpc":"2.0","id":"request-concurrent","result":{"message":{
+	    "messageId":"reply-concurrent","taskId":"task-concurrent",
+	    "contextId":"context-concurrent","role":"ROLE_AGENT","parts":[{"text":"reply"}]
+	  }}
+	}`)
+	type transformResult struct {
+		updated  []byte
+		attached bool
+		err      error
+	}
+	results := make(chan transformResult, 2)
+	for range 2 {
+		go func() {
+			updated, attached, err := processor.TransformResponse(request, response)
+			results <- transformResult{updated: updated, attached: attached, err: err}
+		}()
+	}
+	arrived := true
+	for range 2 {
+		select {
+		case <-ready:
+		case <-time.After(5 * time.Second):
+			arrived = false
+		}
+	}
+	close(release)
+	if !arrived {
+		t.Fatal("concurrent completions did not both reach the pre-archive barrier")
+	}
+	var returned [2]Signed
+	for index := range returned {
+		select {
+		case result := <-results:
+			if result.err != nil || !result.attached {
+				t.Fatalf(
+					"concurrent completion = attached %v, err %v, body %s",
+					result.attached,
+					result.err,
+					result.updated,
+				)
+			}
+			returned[index] = receiptFromResponse(t, result.updated)
+		case <-time.After(5 * time.Second):
+			t.Fatal("concurrent completion did not return")
+		}
+	}
+	if !reflect.DeepEqual(returned[0], returned[1]) {
+		t.Fatalf("concurrent completions returned different receipts: %+v != %+v", returned[0], returned[1])
+	}
+	archive, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatalf("ReadFile archive: %v", err)
+	}
+	if strings.Count(string(archive), "\n") != 1 {
+		t.Fatalf("concurrent completions appended multiple receipts: %q", archive)
+	}
+	archived, err := Parse([]byte(strings.TrimSpace(string(archive))))
+	if err != nil {
+		t.Fatalf("Parse archived receipt: %v", err)
+	}
+	if !reflect.DeepEqual(archived, returned[0]) {
+		t.Fatalf("returned receipt differs from archive: %+v != %+v", returned[0], archived)
 	}
 }
 
@@ -244,8 +332,8 @@ func TestProcessorDoesNotPersistInvalidJSONRPCResponseEvidence(t *testing.T) {
 		name string
 		body string
 	}{
-		{name: "working", body: `{"id":"task-invalid","contextId":"context-invalid","status":{"state":"TASK_STATE_WORKING"}}`},
-		{name: "terminal", body: `{"id":"task-invalid","contextId":"context-invalid","status":{"state":"TASK_STATE_COMPLETED"}}`},
+		{name: "working", body: `{"task":{"id":"task-invalid","contextId":"context-invalid","status":{"state":"TASK_STATE_WORKING"}}}`},
+		{name: "terminal", body: `{"task":{"id":"task-invalid","contextId":"context-invalid","status":{"state":"TASK_STATE_COMPLETED"}}}`},
 	}
 	for _, envelope := range envelopes {
 		for _, result := range results {
@@ -303,8 +391,10 @@ func TestProcessorAcceptsEquivalentJSONRPCResponseIDs(t *testing.T) {
 			}
 			response := []byte(strings.Replace(
 				`{"jsonrpc":"2.0","id":$ID,"result":{
-				  "id":"task-equivalent","contextId":"context-equivalent",
-				  "status":{"state":"TASK_STATE_COMPLETED"}
+				  "task":{
+				    "id":"task-equivalent","contextId":"context-equivalent",
+				    "status":{"state":"TASK_STATE_COMPLETED"}
+				  }
 				}}`,
 				"$ID",
 				ids.response,
@@ -351,7 +441,7 @@ func TestProcessorRetainsPendingEvidenceForMismatchedGetTaskResponse(t *testing.
 }
 
 func TestProcessorRejectsNonObjectResultMetadata(t *testing.T) {
-	processor, _ := testProcessor(t)
+	processor, archivePath := testProcessor(t)
 	request, err := ParseRequest([]byte(`{
   "jsonrpc":"2.0",
   "id":"request-1",
@@ -378,10 +468,16 @@ func TestProcessorRejectsNonObjectResultMetadata(t *testing.T) {
 	if _, _, err := processor.TransformResponse(request, response); err == nil {
 		t.Fatal("TransformResponse replaced non-object A2A metadata")
 	}
+	if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
+		t.Fatalf("malformed metadata created an archive: %v", err)
+	}
+	if _, found, err := processor.Pending.Load("task-1"); err != nil || found {
+		t.Fatalf("malformed metadata persisted pending evidence: found %v, err %v", found, err)
+	}
 }
 
 func TestProcessorRejectsNonArrayMessageExtensions(t *testing.T) {
-	processor, _ := testProcessor(t)
+	processor, archivePath := testProcessor(t)
 	request, err := ParseRequest([]byte(`{
   "jsonrpc":"2.0",
   "id":"request-1",
@@ -407,6 +503,151 @@ func TestProcessorRejectsNonArrayMessageExtensions(t *testing.T) {
 }`)
 	if _, _, err := processor.TransformResponse(request, response); err == nil {
 		t.Fatal("TransformResponse replaced non-array A2A message extensions")
+	}
+	if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
+		t.Fatalf("malformed extensions created an archive: %v", err)
+	}
+	if _, found, err := processor.Pending.Load("task-1"); err != nil || found {
+		t.Fatalf("malformed extensions persisted pending evidence: found %v, err %v", found, err)
+	}
+}
+
+func TestProcessorDoesNotPersistInvalidSendMessageResult(t *testing.T) {
+	tests := []struct {
+		name     string
+		response string
+	}{
+		{
+			name: "direct working task",
+			response: `{
+			  "jsonrpc":"2.0","id":"request-1","result":{
+			    "id":"task-invalid","contextId":"context-invalid",
+			    "status":{"state":"TASK_STATE_WORKING"}
+			  }
+			}`,
+		},
+		{
+			name: "malformed wrapped working task",
+			response: `{
+			  "jsonrpc":"2.0","id":"request-1","result":{"task":{
+			    "id":"task-invalid","contextId":"context-invalid",
+			    "status":{"state":"TASK_STATE_WORKING"},"metadata":"invalid"
+			  }}
+			}`,
+		},
+		{
+			name: "ambiguous terminal wrappers",
+			response: `{
+			  "jsonrpc":"2.0","id":"request-1","result":{
+			    "message":{
+			      "messageId":"reply-invalid","taskId":"task-invalid",
+			      "contextId":"context-invalid","role":"ROLE_AGENT","parts":[]
+			    },
+			    "task":{
+			      "id":"task-invalid","contextId":"context-invalid",
+			      "status":{"state":"TASK_STATE_COMPLETED"}
+			    }
+			  }
+			}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			processor, archivePath := testProcessor(t)
+			request, err := ParseRequest([]byte(`{
+			  "jsonrpc":"2.0","id":"request-1","method":"SendMessage","params":{"message":{"metadata":{
+			    "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1":{"maxTokens":1000}
+			  }}}
+			}`))
+			if err != nil {
+				t.Fatalf("ParseRequest: %v", err)
+			}
+			updated, attached, err := processor.TransformResponse(request, []byte(test.response))
+			if err == nil || attached || updated != nil {
+				t.Fatalf(
+					"invalid SendMessage result = attached %v, err %v, body %s",
+					attached,
+					err,
+					updated,
+				)
+			}
+			if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
+				t.Fatalf("invalid SendMessage result created an archive: %v", err)
+			}
+			if _, found, err := processor.Pending.Load("task-invalid"); err != nil || found {
+				t.Fatalf(
+					"invalid SendMessage result persisted pending evidence: found %v, err %v",
+					found,
+					err,
+				)
+			}
+		})
+	}
+}
+
+func TestProcessorRetainsPendingWhenArchivedReceiptCannotAttach(t *testing.T) {
+	processor, archivePath := testProcessor(t)
+	evidence := pendingEvidence{
+		RequestHash: "sha256:" + strings.Repeat("a", 64), TokensReserved: 1000,
+	}
+	if err := processor.Pending.Save("task-archived", evidence); err != nil {
+		t.Fatalf("Save pending evidence: %v", err)
+	}
+	receipt, err := New(
+		processor.AZP,
+		"task-archived",
+		"context-archived",
+		evidence.RequestHash,
+		evidence.TokensReserved,
+		processor.Now(),
+		"TASK_STATE_COMPLETED",
+		processor.KeyID,
+	)
+	if err != nil {
+		t.Fatalf("New receipt: %v", err)
+	}
+	signed, err := Sign(receipt, processor.Key)
+	if err != nil {
+		t.Fatalf("Sign receipt: %v", err)
+	}
+	if _, err := processor.Archive.AppendUnique(signed); err != nil {
+		t.Fatalf("AppendUnique receipt: %v", err)
+	}
+	archiveBefore, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatalf("ReadFile archive before response: %v", err)
+	}
+	request, err := ParseRequest([]byte(
+		`{"jsonrpc":"2.0","id":"request-1","method":"GetTask","params":{"id":"task-archived"}}`,
+	))
+	if err != nil {
+		t.Fatalf("ParseRequest: %v", err)
+	}
+	response := []byte(`{
+	  "jsonrpc":"2.0","id":"request-1","result":{
+	    "id":"task-archived","contextId":"context-archived",
+	    "status":{"state":"TASK_STATE_COMPLETED"},"metadata":"invalid"
+	  }
+	}`)
+	updated, attached, err := processor.TransformResponse(request, response)
+	if err == nil || attached || updated != nil {
+		t.Fatalf(
+			"malformed archived response = attached %v, err %v, body %s",
+			attached,
+			err,
+			updated,
+		)
+	}
+	retained, found, err := processor.Pending.Load("task-archived")
+	if err != nil || !found || !reflect.DeepEqual(retained, evidence) {
+		t.Fatalf("pending evidence = %+v, found %v, err %v", retained, found, err)
+	}
+	archiveAfter, err := os.ReadFile(archivePath)
+	if err != nil {
+		t.Fatalf("ReadFile archive after response: %v", err)
+	}
+	if !bytes.Equal(archiveAfter, archiveBefore) {
+		t.Fatal("malformed archived response changed the receipt archive")
 	}
 }
 
