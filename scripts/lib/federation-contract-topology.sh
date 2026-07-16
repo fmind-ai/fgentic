@@ -287,7 +287,8 @@ for contract in \
 	'jwt.azp == "org-b-a2a"' \
 	'request.path == "/api/a2a/kagent/docs-qa"' \
 	'"content-type" in request.headers' \
-	'request.headers["content-type"].lowerAscii().split(";")[0].trim()' \
+	'size(request.headers.raw()["content-type"]) == 1' \
+	'request.headers.raw()["content-type"][0].lowerAscii().split(";")[0].trim()' \
 	'== "application/json"' \
 	'"a2a-version" in request.headers' \
 	'request.headers["a2a-version"] == "1.0"' \

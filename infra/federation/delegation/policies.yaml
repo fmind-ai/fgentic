@@ -75,15 +75,17 @@ spec:
       policy:
         # Agentgateway's json() returns dynamic numeric values. An exact int round-trip rejects
         # fractions and non-numeric JSON types without accepting numeric strings. Parse only the
-        # media type so a standard optional charset remains valid while duplicate headers fail
-        # closed as a non-string CEL value.
+        # media type so a standard optional charset remains valid. Use raw() because agentgateway
+        # optimizes a static header lookup to the first value; requiring one raw value makes
+        # duplicate fields fail closed before the media type is inspected.
         matchExpressions:
           - >-
             jwt.azp == "org-b-a2a" &&
             request.method == "POST" &&
             request.path == "/api/a2a/kagent/docs-qa" &&
             "content-type" in request.headers &&
-            request.headers["content-type"].lowerAscii().split(";")[0].trim()
+            size(request.headers.raw()["content-type"]) == 1 &&
+            request.headers.raw()["content-type"][0].lowerAscii().split(";")[0].trim()
               == "application/json" &&
             "a2a-version" in request.headers &&
             request.headers["a2a-version"] == "1.0" &&
