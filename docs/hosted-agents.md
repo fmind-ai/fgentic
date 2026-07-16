@@ -19,7 +19,7 @@ Hosted (web) sessions differ from local CLI worktrees in three ways: no local cl
 
 1. Install the Claude GitHub App on the repository (one-time). Sessions read and comment on issues and PRs through a scoped GitHub proxy, push their branch, and open PRs; sessions can also be started and monitored from the mobile app.
 1. Create an environment for the repository: network access **Custom** — keep the default allowlist and add `mise.jdx.dev` (installer domain) — with the setup script `curl https://mise.jdx.dev/install.sh | sh` (cached between sessions).
-1. Nothing else is needed: the tracked [.claude/settings.json](../.claude/settings.json) SessionStart hook runs [scripts/agent-setup.sh](../scripts/agent-setup.sh) in every session, and that script already resolves `mise` from `~/.local/bin`.
+1. Nothing else is needed: the tracked [.claude/settings.json](../.claude/settings.json) SessionStart hook runs [scripts/agent-setup.sh](../scripts/agent-setup.sh) in every new session, and that script already resolves `mise` from `~/.local/bin`.
 
 ## Codex Cloud (chatgpt.com/codex)
 
@@ -35,5 +35,5 @@ Every hosted session prompt names exactly one issue and includes:
 
 1. The claim statement (who reserved the issue and where — normally the issue itself carries the lease per [CONTRIBUTING.md](../CONTRIBUTING.md)), and the instruction to stop and report if the session can see a competing active claim.
 1. The issue's Tasks + Acceptance criteria verbatim for providers without GitHub issue access.
-1. The shipping rules: branch `<type>/<slug>` off `main`, Conventional Commits with DCO sign-off (`git commit -s`), the What / Why / How / Test-plan PR template, `Fixes #N`, lane label `by/hosted`.
+1. The shipping rules: branch `<type>/<slug>` off `main`, Conventional Commits with DCO sign-off (`git commit -s`), the What / Why / How / Test plan PR template, `Fixes #N`, lane label `by/hosted`.
 1. The offline-only rule and the prepare-then-list fallback from the contract above.
