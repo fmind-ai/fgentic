@@ -58,6 +58,9 @@ data:
   quota_compute_limits_memory: 12Gi
   # Local development keeps MAS password login as a recovery/demo path alongside Keycloak SSO.
   mas_local_login_enabled: "true"
+  # Optional Ketesa administrator UI. Use only `enabled` or `disabled`; Flux uses this value as a
+  # reviewed profile path so disabling prunes the namespace, route, and shared-Gateway listener.
+  admin_console: disabled
   # Finite reference policy for normal Matrix rooms. Room-level overrides remain bounded by the
   # min/max values; legal hold and export are explicit operator workflows, never implicit here.
   matrix_message_retention_default: 90d

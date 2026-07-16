@@ -1,0 +1,8 @@
+# Shared Gateway core. Profile overlays add optional listeners without making them permanent
+# certificate SANs when their owning application is disabled.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - cluster-issuer.yaml
+  - gateway.yaml
+  - redirect.yaml

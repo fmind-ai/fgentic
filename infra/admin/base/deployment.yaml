@@ -1,0 +1,74 @@
+# Ketesa v1.3.0, published 2026-06-19. The index digest covers the official amd64 and arm64 images.
+# The SPA holds no server credential: the administrator authenticates interactively through MAS.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: ketesa
+  namespace: admin
+  labels:
+    app.kubernetes.io/name: ketesa
+    app.kubernetes.io/version: 1.3.0
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: ketesa
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: ketesa
+        app.kubernetes.io/version: 1.3.0
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        # The image declares USER sws:sws. Pin its published numeric identity so kubelet can
+        # enforce runAsNonRoot instead of rejecting a non-numeric image user as unverifiable.
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: ketesa
+          image: ghcr.io/etkecc/ketesa:v1.3.0@sha256:609ad2e5b68e7250344929ea2c54a894a5a6be26d6b97b5578e30a935abf46e9
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            failureThreshold: 3
+            periodSeconds: 30
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            # The generated ConfigMap name is hash-suffixed, so a configuration change rolls the
+            # Deployment instead of leaving a stale subPath mount in a running Pod.
+            - name: config
+              mountPath: /var/public/config.json
+              subPath: config.json
+              readOnly: true
+      volumes:
+        - name: config
+          configMap:
+            name: ketesa-config
