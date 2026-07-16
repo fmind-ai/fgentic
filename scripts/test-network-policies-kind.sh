@@ -4,7 +4,8 @@
 # Calico for both networking and full ingress/egress Kubernetes NetworkPolicy enforcement.
 set -euo pipefail
 
-readonly ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly ROOT_DIR
 readonly CLUSTER_NAME="${KIND_CLUSTER_NAME:-fgentic-network-policy}"
 readonly KIND_CONFIG="${KIND_CONFIG:-${ROOT_DIR}/scripts/testdata/network-policy-kind.yaml}"
 readonly KIND_NODE_IMAGE="kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a"
@@ -34,6 +35,45 @@ sha256_file() {
 		echo "error: required command not found: sha256sum or shasum" >&2
 		return 2
 	fi
+}
+
+assert_dns_reachable() {
+	local namespace="$1"
+	local pod="$2"
+	local host="$3"
+	if ! kubectl --namespace "${namespace}" exec "${pod}" -- nslookup "${host}" >/dev/null; then
+		echo "error: ${namespace}/${pod}: expected DNS lookup for ${host} to be reachable" >&2
+		return 1
+	fi
+	echo "pass: ${namespace}/${pod}: DNS lookup for ${host} is reachable"
+}
+
+assert_connection() {
+	local namespace="$1"
+	local pod="$2"
+	local host="$3"
+	local port="$4"
+	local expectation="$5"
+	local observed
+
+	case "${expectation}" in
+	reachable | denied) ;;
+	*)
+		echo "error: invalid connection expectation: ${expectation}" >&2
+		return 2
+		;;
+	esac
+
+	observed="$(
+		kubectl --namespace "${namespace}" exec "${pod}" -- \
+			sh -ec "if nc -z -w 5 \"\$1\" \"\$2\"; then printf reachable; else printf denied; fi" \
+			-- "${host}" "${port}"
+	)"
+	if [[ "${observed}" != "${expectation}" ]]; then
+		echo "error: ${namespace}/${pod}: expected ${host}:${port} to be ${expectation}, got ${observed}" >&2
+		return 1
+	fi
+	echo "pass: ${namespace}/${pod}: ${host}:${port} is ${expectation}"
 }
 
 mkdir -p "${DIAGNOSTICS_DIR}"
@@ -113,11 +153,18 @@ kubectl apply --filename "${ROOT_DIR}/infra/agentgateway/base/networkpolicy.yaml
 kubectl apply --filename "${ROOT_DIR}/infra/models/vllm/networkpolicy.yaml"
 kubectl apply --filename \
   "${ROOT_DIR}/infra/agentgateway/providers/egress/vllm/networkpolicy.yaml"
+kubectl apply --filename "${ROOT_DIR}/infra/knowledge/base/networkpolicy.yaml"
 kubectl wait \
   --for=condition=Ready \
   pods \
   --all-namespaces \
   --selector=fgentic.dev/network-policy-fixture=server \
+  --timeout=90s
+kubectl wait \
+  --for=condition=Ready \
+  pods \
+  --all-namespaces \
+  --selector=fgentic.dev/network-policy-fixture=client \
   --timeout=90s
 
 # NetworkPolicy has no status condition. Once Calico is ready, allow one reconciliation interval
@@ -131,6 +178,23 @@ NETWORK_POLICY_EGRESS_TARGET_HOST="${EGRESS_TARGET_HOST}" \
   NETWORK_POLICY_REQUIRE_TEST_FIXTURES=true \
   bash "${CONFORMANCE_SCRIPT}" --require-vllm \
   2>&1 | tee "${DIAGNOSTICS_DIR}/baseline.log"
+
+echo "==> Running knowledge-ingestion NetworkPolicy conformance"
+assert_dns_reachable knowledge knowledge-ingestion kubernetes.default.svc.cluster.local
+assert_connection knowledge knowledge-ingestion \
+	platform-pg-rw.postgres.svc.cluster.local 5432 reachable
+assert_connection knowledge knowledge-ingestion \
+	agentgateway-proxy.agentgateway-system.svc.cluster.local 8082 reachable
+assert_connection knowledge knowledge-ingestion \
+	agentgateway-proxy.agentgateway-system.svc.cluster.local 8080 denied
+assert_connection knowledge knowledge-ingestion \
+	knowledge-embeddings.models.svc.cluster.local 8000 denied
+assert_connection knowledge knowledge-ingestion \
+	unrelated-db.postgres.svc.cluster.local 5432 denied
+assert_connection knowledge knowledge-ingestion \
+	"${EGRESS_TARGET_HOST}" "${EGRESS_TARGET_PORT}" denied
+assert_connection bridge knowledge-unrelated-caller \
+	agentgateway-proxy.agentgateway-system.svc.cluster.local 8082 denied
 
 echo "==> Proving deletion of kagent-allow-platform turns conformance red"
 kubectl --namespace kagent delete networkpolicy kagent-allow-platform

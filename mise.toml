@@ -83,7 +83,15 @@ run = "bash scripts/new-agent.sh"
 [tasks.format]
 alias = "f"
 description = "Format everything (config/markup, Terraform, and applications)"
-depends = ["format:dprint", "format:terraform", "format:a2a-tck", "format:app", "format:gateway", "format:policy"]
+depends = [
+  "format:dprint",
+  "format:terraform",
+  "format:a2a-tck",
+  "format:knowledge-ingestion",
+  "format:app",
+  "format:gateway",
+  "format:policy",
+]
 
 [tasks."format:dprint"]
 description = "Format JSON, Markdown, TOML, YAML at the repo root + infra/docs (dprint)"
@@ -99,6 +107,14 @@ dir = "apps/synapse-federation-policy"
 run = [
   "uv run ruff check --config pyproject.toml --select I --fix ../../scripts/a2a_tck_plugin.py",
   "uv run ruff format --config pyproject.toml ../../scripts/a2a_tck_plugin.py",
+]
+
+[tasks."format:knowledge-ingestion"]
+description = "Format the standalone sovereign-ingestion Python boundary"
+dir = "apps/synapse-federation-policy"
+run = [
+  "uv run ruff check --config ../../infra/knowledge/pyproject.toml --select I --fix ../../infra/knowledge/base/ingestion.py ../../infra/knowledge/tests/test_ingestion.py",
+  "uv run ruff format --config ../../infra/knowledge/pyproject.toml ../../infra/knowledge/base/ingestion.py ../../infra/knowledge/tests/test_ingestion.py",
 ]
 
 [tasks."format:app"]
@@ -144,6 +160,7 @@ depends = [
   "check:kubernetes-audit",
   "check:postgres-audit",
   "check:knowledge-store",
+  "check:knowledge-ingestion",
   "check:trivy-operator",
   "check:secret-rotation",
   "check:supply-chain",
@@ -296,6 +313,15 @@ run = "bash scripts/test-postgres-audit.sh"
 description = "Validate the pgvector image, scoped roles, ACL schema, indexes, and migration Job"
 run = "bash scripts/test-knowledge-store.sh"
 
+[tasks."check:knowledge-ingestion"]
+description = "Validate the bounded Docling, ACL binder, embeddings route, and opt-in Flux contract"
+run = [
+  "bash scripts/test-knowledge-ingestion.sh",
+  "mise --cd apps/synapse-federation-policy exec -- uv run ruff format --check --config ../../infra/knowledge/pyproject.toml ../../infra/knowledge/base/ingestion.py ../../infra/knowledge/tests/test_ingestion.py",
+  "mise --cd apps/synapse-federation-policy exec -- uv run ruff check --config ../../infra/knowledge/pyproject.toml ../../infra/knowledge/base/ingestion.py ../../infra/knowledge/tests/test_ingestion.py",
+  "mise --cd apps/synapse-federation-policy exec -- env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=../../infra/knowledge/base uv run ty check ../../infra/knowledge/base/ingestion.py ../../infra/knowledge/tests/test_ingestion.py",
+]
+
 [tasks."check:trivy-operator"]
 description = "Validate the pinned, least-privilege, structurally optional CVE drift scanner"
 run = "bash scripts/test-trivy-operator.sh"
@@ -376,6 +402,11 @@ run = "bash scripts/test-postgres-audit.sh --runtime"
 description = "Exercise the pgvector ACL schema and plans in an isolated disposable kind cluster"
 run = "bash scripts/test-knowledge-store.sh --runtime"
 
+[tasks."test:knowledge-ingestion"]
+description = "Run the deterministic sovereign-ingestion unit and boundary suite"
+dir = "apps/synapse-federation-policy"
+run = "env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=../../infra/knowledge/base uv run pytest -q ../../infra/knowledge/tests/test_ingestion.py"
+
 [tasks."test:mautrix-bridges"]
 description = "Validate exact pinned mautrix images without contacting external networks"
 run = "bash scripts/test-mautrix-bridges.sh --runtime"
@@ -422,6 +453,7 @@ depends = [
   "test:app",
   "test:gateway",
   "test:policy",
+  "test:knowledge-ingestion",
   "test:mautrix-bridges",
   "test:kagent-trace-privacy",
   "test:agents-golden",
