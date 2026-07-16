@@ -1,6 +1,6 @@
 # ESS Community can safely replicate its stateless edge, authentication, and web components.
-# Synapse main remains a single fast-restart StatefulSet until the media-store decision (#62);
-# it intentionally has no PDB that could block a voluntary node drain.
+# Synapse main remains a single fast-restart StatefulSet because its retained RWO media PVC is not
+# a concurrently shared store (ADR 0019); it has no PDB that could block a voluntary node drain.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 resources:
