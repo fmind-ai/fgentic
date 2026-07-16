@@ -261,6 +261,10 @@ verify_cross_org_delegation() {
 	response="${WORK_DIR}/a2a-valid.json"
 	status="$(a2a_status "${response}" "${ORG_B_A2A_TOKEN}" "${document}")"
 	[ "${status}" = "200" ] || die "authorized org B delegation returned HTTP ${status}"
+	# The limiter reserves the caller-declared maximum, not provider-reported usage. Exercise the
+	# second reservation before local Go verifier invocations can outlive the minute window on a
+	# loaded host. The later exact archive delta proves this denied request did not mint a receipt.
+	expect_a2a_status exhausted-reservation-quota 429 "${ORG_B_A2A_TOKEN}" "${document}"
 	jq -e '
       .jsonrpc == "2.0" and .error == null and
       .result.task.status.state == "TASK_STATE_COMPLETED"
@@ -309,11 +313,5 @@ verify_cross_org_delegation() {
 	fi
 	after_receipt="$(usage_receipt_archive_count)"
 	[ "${after_receipt}" -eq "$((after_denials + 1))" ] ||
-		die "authorized terminal delegation did not append exactly one archived receipt"
-
-	# The limiter reserves the caller-declared maximum, not provider-reported usage. With the
-	# 5,000-token window, the first 3,000-token reservation passes and the second must be denied.
-	expect_a2a_status exhausted-reservation-quota 429 "${ORG_B_A2A_TOKEN}" "${document}"
-	[ "$(usage_receipt_archive_count)" = "${after_receipt}" ] ||
-		die "quota-denied delegation triggered a seller receipt"
+		die "authorized terminal delegation or quota denial changed the receipt archive unexpectedly"
 }

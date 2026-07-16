@@ -1,6 +1,8 @@
 #!/usr/bin/env bash
 # Definition-only federation acceptance contracts sourced by scripts/test-federation.sh.
 check_federation_acceptance() {
+local a2a_seed="${ROOT_DIR}/scripts/lib/federation-a2a.sh"
+local quota_line receipt_verify_line
 # The up path proves both boundaries: the hardened v12 room still exchanges A/B messages and
 # rejects C, while a final custom event in a throwaway room is retained by B but dropped by A with
 # a content-free, event-addressable policy record. The explicit allow mode is used only by the
@@ -97,6 +99,14 @@ for contract in \
 	rg --fixed-strings "${contract}" "${LIFECYCLE}" "${SEED_SOURCES[@]}" >/dev/null ||
 		fail "federation acceptance proof omits ${contract}"
 done
+quota_line="$(rg --line-number --fixed-strings \
+	'expect_a2a_status exhausted-reservation-quota 429' "${a2a_seed}" | cut -d: -f1)"
+receipt_verify_line="$(rg --line-number --fixed-strings \
+	'"${ROOT_DIR}/scripts/usage-receipt.sh" verify --input "${receipt}"' \
+	"${a2a_seed}" | cut -d: -f1)"
+[[ "${quota_line}" =~ ^[1-9][0-9]*$ && "${receipt_verify_line}" =~ ^[1-9][0-9]*$ ]] &&
+	((quota_line < receipt_verify_line)) ||
+	fail 'quota denial must run before local receipt verification can outlive the minute window'
 if rg --fixed-strings '403 | 404' "${SEED_SOURCES[@]}" >/dev/null; then
 	fail 'federation acceptance treats a local missing-room response as a denied federation send'
 fi
