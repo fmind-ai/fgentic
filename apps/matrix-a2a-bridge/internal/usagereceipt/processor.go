@@ -275,21 +275,42 @@ func decodeObject(raw []byte) (map[string]any, error) {
 }
 
 func resultEvidence(result map[string]any) (taskID, contextID, outcome string, terminal bool) {
+	if task, ok := result["task"].(map[string]any); ok {
+		return taskEvidence(task)
+	}
+	if message, ok := result["message"].(map[string]any); ok {
+		return messageEvidence(message)
+	}
+
 	kind, _ := result["kind"].(string)
 	switch strings.ToLower(kind) {
 	case "message":
-		taskID, _ = result["taskId"].(string)
-		contextID, _ = result["contextId"].(string)
-		return taskID, contextID, "TASK_STATE_COMPLETED", taskID != "" && contextID != ""
+		return messageEvidence(result)
 	case "task":
-		taskID, _ = result["id"].(string)
-		contextID, _ = result["contextId"].(string)
-		status, _ := result["status"].(map[string]any)
-		outcome, _ = status["state"].(string)
-		return taskID, contextID, outcome, terminalTaskStates[outcome]
+		return taskEvidence(result)
 	default:
+		if _, ok := result["status"].(map[string]any); ok {
+			return taskEvidence(result)
+		}
+		if _, ok := result["messageId"].(string); ok {
+			return messageEvidence(result)
+		}
 		return "", "", "", false
 	}
+}
+
+func taskEvidence(task map[string]any) (taskID, contextID, outcome string, terminal bool) {
+	taskID, _ = task["id"].(string)
+	contextID, _ = task["contextId"].(string)
+	status, _ := task["status"].(map[string]any)
+	outcome, _ = status["state"].(string)
+	return taskID, contextID, outcome, terminalTaskStates[outcome]
+}
+
+func messageEvidence(message map[string]any) (taskID, contextID, outcome string, terminal bool) {
+	taskID, _ = message["taskId"].(string)
+	contextID, _ = message["contextId"].(string)
+	return taskID, contextID, "TASK_STATE_COMPLETED", taskID != "" && contextID != ""
 }
 
 func expectEOF(decoder *json.Decoder) error {

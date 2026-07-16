@@ -24,7 +24,7 @@ func TestProcessorInjectsAndArchivesTerminalReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseRequest: %v", err)
 	}
-	response := []byte(`{"jsonrpc":"2.0","id":9007199254740993,"result":{"kind":"message","messageId":"reply-1","taskId":"task-1","contextId":"context-1","role":"ROLE_AGENT","parts":[{"text":"reply"}]}}`)
+	response := []byte(`{"jsonrpc":"2.0","id":9007199254740993,"result":{"message":{"messageId":"reply-1","taskId":"task-1","contextId":"context-1","role":"ROLE_AGENT","parts":[{"text":"reply"}]}}}`)
 	updated, attached, err := processor.TransformResponse(request, response)
 	if err != nil {
 		t.Fatalf("TransformResponse: %v", err)
@@ -72,7 +72,7 @@ func TestProcessorCorrelatesWorkingTaskToGetTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseRequest: %v", err)
 	}
-	working := []byte(`{"jsonrpc":"2.0","id":"request-1","result":{"kind":"task","id":"task-2","contextId":"context-2","status":{"state":"TASK_STATE_WORKING"}}}`)
+	working := []byte(`{"jsonrpc":"2.0","id":"request-1","result":{"task":{"id":"task-2","contextId":"context-2","status":{"state":"TASK_STATE_WORKING"}}}}`)
 	if updated, attached, err := processor.TransformResponse(request, working); err != nil || attached || string(updated) != string(working) {
 		t.Fatalf("working response = attached %v, err %v, body %s", attached, err, updated)
 	}
@@ -80,7 +80,7 @@ func TestProcessorCorrelatesWorkingTaskToGetTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseRequest GetTask: %v", err)
 	}
-	completed := []byte(`{"jsonrpc":"2.0","id":"request-2","result":{"kind":"task","id":"task-2","contextId":"context-2","status":{"state":"TASK_STATE_COMPLETED"}}}`)
+	completed := []byte(`{"jsonrpc":"2.0","id":"request-2","result":{"id":"task-2","contextId":"context-2","status":{"state":"TASK_STATE_COMPLETED"}}}`)
 	updated, attached, err := processor.TransformResponse(getTask, completed)
 	if err != nil || !attached {
 		t.Fatalf("completed response = attached %v, err %v", attached, err)
