@@ -396,7 +396,7 @@ assert_static_contract() {
     select(.requests.memory != null) |
     select(.limits.cpu != null) |
     select(.limits.memory != null)
-  ' "${ROOT_DIR}/infra/agentgateway/helmrelease.yaml" >/dev/null ||
+  ' "${ROOT_DIR}/infra/agentgateway/base/helmrelease.yaml" >/dev/null ||
     fail "agentgateway control-plane resources are incomplete"
 
   echo "ResourceQuota static contract passed"

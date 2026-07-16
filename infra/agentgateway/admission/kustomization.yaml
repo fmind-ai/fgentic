@@ -1,0 +1,7 @@
+# A2A route and fail-closed bridge authorization move together under one ordered admission owner.
+# Their prune guards remain until both old and new Flux inventories are verified.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - a2a-route.yaml
+  - a2a-authorization.yaml

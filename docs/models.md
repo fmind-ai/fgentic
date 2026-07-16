@@ -26,6 +26,8 @@ Every API-key Secret is namespace-local to `agentgateway-system` and stores the 
 
 `demo` is a deterministic OpenAI-compatible response stub used only by `clusters/demo` and `mise run demo:up`. It proves protocol wiring without a model account, prompt egress, or token charge; it cannot reason and is not a D16 production model profile. The `local` and `gcp` overlays cannot select it accidentally through their tracked defaults.
 
+Flux reconciles model-sensitive ownership in one fixed order: the stable [`base`](../infra/agentgateway/base/) (proxy, provider-independent A2A/MCP backends, MCP authorization/audit/quotas, tracing, and ingress NetworkPolicies), the selected [`provider`](../infra/agentgateway/providers/profiles/), the [`admission`](../infra/agentgateway/admission/) inventory (currently only the A2A route and bridge workload authorization), the matching [`provider-egress`](../infra/agentgateway/providers/egress/) inventory, then kagent. Matching provider labels and observed-generation readiness serialize profile transitions. This split changes Flux ownership only: the current admission policy remains workload authentication, and the governed classification ceiling below is not yet enforced on model requests.
+
 ## Governed model catalog
 
 [`infra/agentgateway/providers/model-catalog.yaml`](../infra/agentgateway/providers/model-catalog.yaml) is the single declarative inventory for each approved exact `(gen_ai_system, model)` identity. Its [JSON Schema](../infra/agentgateway/providers/model-catalog.schema.json) and typed `check:model-catalog` validator require:

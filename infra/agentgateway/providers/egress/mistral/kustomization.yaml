@@ -1,0 +1,15 @@
+# The staged Mistral egress inventory intentionally renders no objects.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - placeholder.yaml
+patches:
+  - target:
+      kind: ConfigMap
+      name: agentgateway-mistral-egress-placeholder
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: agentgateway-mistral-egress-placeholder

@@ -739,7 +739,8 @@ matrix-c|matrix-b
 keycloak|matrix-c
 agentgateway|keycloak
 agentgateway-provider|agentgateway
-kagent|agentgateway-provider
+agentgateway-provider-egress|agentgateway-provider
+kagent|agentgateway-provider-egress
 EOF
 }
 

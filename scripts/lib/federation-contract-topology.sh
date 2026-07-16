@@ -120,9 +120,32 @@ done
 assert_yq \
 	'select(.kind == "Kustomization" and .metadata.name == "agentgateway") |
     .spec.components | select(length == 1) | .[] |
-    select(. == "../federation/delegation")' \
+    select(. == "../../federation/delegation")' \
 	"${WORK_DIR}/recursive.yaml" 'delegation gateway component composition is not exact'
-for dependency in agentgateway-provider postgres; do
+assert_yq \
+	'[select(.kind == "Kustomization" and
+      .metadata.name == "agentgateway-admission")] | length == 0' \
+	"${WORK_DIR}/recursive.yaml" \
+	'federation profile retained the local Matrix-to-A2A admission owner'
+assert_yq \
+	'select(.kind == "Kustomization" and
+      .metadata.name == "agentgateway-provider-egress") |
+    .spec.path == "./infra/agentgateway/providers/egress/demo" and
+    .metadata.labels."fgentic.dev/llm-provider" == "demo" and
+    (.spec.dependsOn | length) == 1 and
+    ([.spec.dependsOn[] | select(
+      .name == "agentgateway-provider" and
+      (.readyExpr | contains("fgentic.dev/llm-provider")) and
+      (.readyExpr | contains("self.metadata.labels")) and
+      (.readyExpr | contains("dep.status.observedGeneration == dep.metadata.generation")) and
+      (.readyExpr | contains("e.type ==")) and
+      (.readyExpr | contains("Ready")) and
+      (.readyExpr | contains("e.status ==")) and
+      (.readyExpr | contains("True"))
+    )] | length) == 1' \
+	"${WORK_DIR}/recursive.yaml" \
+	'federation provider egress is not generation-gated directly on its selected backend'
+for dependency in agentgateway-provider-egress postgres; do
 	assert_yq \
 		'select(.kind == "Kustomization" and .metadata.name == "kagent") |
       .spec.dependsOn[] | select(.name == "'"${dependency}"'")' \
@@ -137,7 +160,8 @@ assert_yq \
 assert_yq \
 	'[select(.kind == "Kustomization" and
       (.metadata.name == "bridge" or .metadata.name == "observability" or
-       .metadata.name == "observability-monitors"))] | length == 0' \
+       .metadata.name == "observability-monitors" or
+       .metadata.name == "agentgateway-admission"))] | length == 0' \
 	"${WORK_DIR}/recursive.yaml" 'federation profile retained an unrelated bridge or observability unit'
 yq --unwrapScalar '.patches[] | select(.target.kind == "Gateway") | .patch' \
 	"${GATEWAY_COMPONENT}" >"${WORK_DIR}/gateway-a-patch.yaml"

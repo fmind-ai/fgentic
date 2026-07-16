@@ -5,6 +5,5 @@ kind: Kustomization
 resources:
   - ../../../../models/demo
   - llm-backend.yaml
-  - networkpolicy.yaml
 components:
   - ../../base

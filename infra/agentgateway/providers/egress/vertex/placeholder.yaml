@@ -1,0 +1,6 @@
+# Kustomize build placeholder deleted by the sibling Kustomization. The resulting empty inventory
+# lets Flux prune a previous internal-only policy only after the ordered admission owner is ready.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: agentgateway-vertex-egress-placeholder

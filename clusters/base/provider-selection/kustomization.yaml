@@ -1,6 +1,6 @@
-# Replace only the selected profile segment of Flux paths before they reach the controller.
-# `check:model-catalog` validates each llm_provider/llm_model pair; `check:admin-console` validates
-# the enabled/disabled admin profiles. Keeping each path prefix makes unknown values fail closed.
+# Replace the selected provider segment of both model-sensitive Flux paths and stamp the same
+# provider identity on the backend, admission, and egress layers. Their ready expressions serialize
+# every provider transition; the later replacement keeps the independent admin profile selection.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 replacements:
@@ -21,6 +21,47 @@ replacements:
         options:
           delimiter: /
           index: 5
+      - select:
+          group: kustomize.toolkit.fluxcd.io
+          version: v1
+          kind: Kustomization
+          name: agentgateway-provider-egress
+          namespace: flux-system
+        fieldPaths:
+          - spec.path
+        options:
+          delimiter: /
+          index: 5
+  - source:
+      kind: ConfigMap
+      name: platform-settings
+      namespace: flux-system
+      fieldPath: data.llm_provider
+    targets:
+      - select:
+          group: kustomize.toolkit.fluxcd.io
+          version: v1
+          kind: Kustomization
+          name: agentgateway-admission
+          namespace: flux-system
+        fieldPaths:
+          - metadata.labels.[fgentic.dev/llm-provider]
+      - select:
+          group: kustomize.toolkit.fluxcd.io
+          version: v1
+          kind: Kustomization
+          name: agentgateway-provider
+          namespace: flux-system
+        fieldPaths:
+          - metadata.labels.[fgentic.dev/llm-provider]
+      - select:
+          group: kustomize.toolkit.fluxcd.io
+          version: v1
+          kind: Kustomization
+          name: agentgateway-provider-egress
+          namespace: flux-system
+        fieldPaths:
+          - metadata.labels.[fgentic.dev/llm-provider]
   - source:
       kind: ConfigMap
       name: platform-settings

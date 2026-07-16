@@ -109,10 +109,10 @@ kubectl wait --for=condition=Ready nodes --all --timeout=120s
 echo "==> Applying minimal endpoints and the repository's real policies"
 kubectl apply --filename "${FIXTURE_MANIFEST}"
 kubectl apply --filename "${ROOT_DIR}/infra/kagent/networkpolicy.yaml"
-kubectl apply --filename "${ROOT_DIR}/infra/agentgateway/networkpolicy.yaml"
+kubectl apply --filename "${ROOT_DIR}/infra/agentgateway/base/networkpolicy.yaml"
 kubectl apply --filename "${ROOT_DIR}/infra/models/vllm/networkpolicy.yaml"
 kubectl apply --filename \
-  "${ROOT_DIR}/infra/agentgateway/providers/profiles/vllm/networkpolicy.yaml"
+  "${ROOT_DIR}/infra/agentgateway/providers/egress/vllm/networkpolicy.yaml"
 kubectl wait \
   --for=condition=Ready \
   pods \

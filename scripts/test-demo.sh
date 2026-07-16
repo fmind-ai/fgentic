@@ -631,10 +631,64 @@ assert_yq \
     .data.llm_usage_budget_15m == "100000"' \
 	"${WORK_DIR}/cluster.yaml" 'demo platform settings are incomplete'
 assert_yq \
+	'select(.kind == "Kustomization" and .metadata.name == "agentgateway") |
+    .metadata.labels."fgentic.dev/agentgateway-layout" == "split-v1" and
+    .spec.path == "./infra/agentgateway/base" and
+    .spec.prune == true' \
+	"${WORK_DIR}/cluster.yaml" 'stable agentgateway base ownership is incomplete'
+assert_yq \
 	'select(.kind == "Kustomization" and .metadata.name == "agentgateway-provider") |
     .spec.path == "./infra/agentgateway/providers/profiles/demo" and
-    .spec.prune == true' \
-	"${WORK_DIR}/cluster.yaml" 'provider-selection did not select the demo inventory'
+    .metadata.labels."fgentic.dev/llm-provider" == "demo" and
+    .spec.prune == true and
+    ([.spec.dependsOn[] | select(
+      .name == "agentgateway" and
+      (.readyExpr | contains("fgentic.dev/agentgateway-layout")) and
+      (.readyExpr | contains("split-v1")) and
+      (.readyExpr | contains("dep.status.observedGeneration == dep.metadata.generation")) and
+      (.readyExpr | contains("e.type ==")) and
+      (.readyExpr | contains("Ready")) and
+      (.readyExpr | contains("e.status ==")) and
+      (.readyExpr | contains("True"))
+    )] | length) == 1 and
+    ([.spec.dependsOn[] | select(.name == "platform-secrets")] | length) == 1' \
+	"${WORK_DIR}/cluster.yaml" 'provider-selection did not order the demo backend after the stable base'
+assert_yq \
+	'select(.kind == "Kustomization" and .metadata.name == "agentgateway-admission") |
+    .spec.path == "./infra/agentgateway/admission" and
+    .metadata.labels."fgentic.dev/llm-provider" == "demo" and
+    .spec.prune == true and
+    ([.spec.dependsOn[] | select(
+      .name == "agentgateway-provider" and
+      (.readyExpr | contains("fgentic.dev/llm-provider")) and
+      (.readyExpr | contains("self.metadata.labels")) and
+      (.readyExpr | contains("dep.status.observedGeneration == dep.metadata.generation")) and
+      (.readyExpr | contains("e.type ==")) and
+      (.readyExpr | contains("Ready")) and
+      (.readyExpr | contains("e.status ==")) and
+      (.readyExpr | contains("True"))
+    )] | length) == 1' \
+	"${WORK_DIR}/cluster.yaml" 'A2A admission is not generation-gated on the selected demo backend'
+assert_yq \
+	'select(.kind == "Kustomization" and .metadata.name == "agentgateway-provider-egress") |
+    .spec.path == "./infra/agentgateway/providers/egress/demo" and
+    .metadata.labels."fgentic.dev/llm-provider" == "demo" and
+    .spec.prune == true and
+    ([.spec.dependsOn[] | select(
+      .name == "agentgateway-admission" and
+      (.readyExpr | contains("fgentic.dev/llm-provider")) and
+      (.readyExpr | contains("self.metadata.labels")) and
+      (.readyExpr | contains("dep.status.observedGeneration == dep.metadata.generation")) and
+      (.readyExpr | contains("e.type ==")) and
+      (.readyExpr | contains("Ready")) and
+      (.readyExpr | contains("e.status ==")) and
+      (.readyExpr | contains("True"))
+    )] | length) == 1' \
+	"${WORK_DIR}/cluster.yaml" 'demo egress is not generation-gated on matching admission'
+assert_yq \
+	'select(.kind == "Kustomization" and .metadata.name == "kagent") |
+    ([.spec.dependsOn[] | select(.name == "agentgateway-provider-egress")] | length) == 1' \
+	"${WORK_DIR}/cluster.yaml" 'kagent is not ordered after provider egress'
 assert_yq \
 	'select(.kind == "Kustomization" and .metadata.name == "admin") |
     .spec.path == "./infra/admin/profiles/disabled"' \
@@ -643,7 +697,7 @@ assert_yq \
 	'select(.kind == "Kustomization" and .metadata.name == "gateway") |
     .spec.path == "./infra/gateway/profiles/disabled"' \
 	"${WORK_DIR}/cluster.yaml" 'demo must select the gateway without an admin listener'
-expected_demo_layers=$'admin\nagentgateway\nagentgateway-provider\nbridge\ncontrollers\ngateway\nkagent\nmatrix\nnamespaces\nplatform-secrets\npolicies\npostgres'
+expected_demo_layers=$'admin\nagentgateway\nagentgateway-admission\nagentgateway-provider\nagentgateway-provider-egress\nbridge\ncontrollers\ngateway\nkagent\nmatrix\nnamespaces\nplatform-secrets\npolicies\npostgres'
 actual_demo_layers="$(
 	yq eval-all -N -r 'select(.kind == "Kustomization") | .metadata.name' \
 		"${WORK_DIR}/cluster.yaml" | sort
@@ -691,7 +745,7 @@ if yq eval-all -N -r \
 	exit 1
 fi
 
-render_demo_layer agentgateway "${ROOT_DIR}/infra/agentgateway"
+render_demo_layer agentgateway "${ROOT_DIR}/infra/agentgateway/base"
 if yq eval-all -N -r \
 	'select(.kind == "AgentgatewayPolicy" and .metadata.name == "tracing") |
     .metadata.name' "${WORK_DIR}/demo-agentgateway.yaml" | rg --quiet '.'; then
@@ -756,7 +810,25 @@ assert_yq \
 	"${WORK_DIR}/demo-bridge-chart.yaml" \
 	'demo bridge must retain exactly the three local kagent mappings'
 
-kubectl kustomize "${ROOT_DIR}/infra/agentgateway" >"${WORK_DIR}/agentgateway.yaml"
+assert_yq \
+	'(.resources | contains(["a2a-route.yaml", "a2a-authorization.yaml"]) | not)' \
+	"${ROOT_DIR}/infra/agentgateway/base/kustomization.yaml" \
+	'stable agentgateway base still owns the A2A admission boundary'
+assert_yq \
+	'(.resources | sort | join("|")) ==
+    "a2a-authorization.yaml|a2a-route.yaml"' \
+	"${ROOT_DIR}/infra/agentgateway/admission/kustomization.yaml" \
+	'A2A admission owner inventory is not exact'
+assert_yq \
+	'(.resources | contains(["networkpolicy.yaml"]) | not)' \
+	"${ROOT_DIR}/infra/agentgateway/providers/profiles/demo/kustomization.yaml" \
+	'demo provider core still owns its egress policy'
+assert_yq \
+	'(.resources | join("|")) == "networkpolicy.yaml"' \
+	"${ROOT_DIR}/infra/agentgateway/providers/egress/demo/kustomization.yaml" \
+	'demo provider egress owner inventory is not exact'
+
+kubectl kustomize "${ROOT_DIR}/infra/agentgateway/base" >"${WORK_DIR}/agentgateway.yaml"
 assert_yq \
 	'select(.kind == "NetworkPolicy" and .metadata.name == "agentgateway-default-deny-ingress") |
     (((.spec.podSelector | tag) == "!!map") and
@@ -811,10 +883,36 @@ assert_yq \
     .spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem == true and
     (.spec.template.spec.containers[0].image | contains("python:3.14-slim@sha256:"))' \
 	"${WORK_DIR}/provider.yaml" 'demo model workload is not pinned and hardened'
+provider_policy_count="$(
+	yq eval-all -N -r '
+      [select(.kind == "NetworkPolicy" and
+        .metadata.name == "agentgateway-demo-egress")] | length
+    ' \
+		"${WORK_DIR}/provider.yaml"
+)"
+[[ "${provider_policy_count}" == "0" ]] || {
+	echo 'error: demo provider core retained the agentgateway egress policy after the ownership split' >&2
+	exit 1
+}
+
+kubectl kustomize "${ROOT_DIR}/infra/agentgateway/admission" \
+	>"${WORK_DIR}/admission.yaml"
+assert_yq \
+	'select(.kind == "HTTPRoute" and .metadata.name == "kagent-a2a") |
+    .metadata.annotations."kustomize.toolkit.fluxcd.io/prune" == "disabled"' \
+	"${WORK_DIR}/admission.yaml" 'A2A route lost its ownership-handoff prune guard'
+assert_yq \
+	'select(.kind == "AgentgatewayPolicy" and
+      .metadata.name == "a2a-bridge-authorization") |
+    .metadata.annotations."kustomize.toolkit.fluxcd.io/prune" == "disabled"' \
+	"${WORK_DIR}/admission.yaml" 'A2A authorization lost its ownership-handoff prune guard'
+
+kubectl kustomize "${ROOT_DIR}/infra/agentgateway/providers/egress/demo" \
+	>"${WORK_DIR}/provider-egress.yaml"
 assert_yq \
 	'select(.kind == "NetworkPolicy" and .metadata.name == "agentgateway-demo-egress") |
     .metadata.annotations."kustomize.toolkit.fluxcd.io/prune" == "disabled"' \
-	"${WORK_DIR}/provider.yaml" \
+	"${WORK_DIR}/provider-egress.yaml" \
 	'demo provider egress policy is not protected for the Flux ownership handoff'
 
 yq --unwrapScalar \

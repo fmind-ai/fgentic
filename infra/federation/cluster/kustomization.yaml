@@ -130,12 +130,48 @@ patches:
       - op: add
         path: /spec/components
         value:
-          - ../federation/delegation
+          - ../../federation/delegation
       - op: replace
         path: /spec/dependsOn
         value:
           - name: controllers
           - name: keycloak
+  # The federation lab has no local Matrix bridge. Remove the whole local A2A admission owner
+  # instead of retaining an unused authenticated route and policy.
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: agentgateway-admission
+      namespace: flux-system
+    patch: |
+      $patch: delete
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: agentgateway-admission
+        namespace: flux-system
+  # Without the local admission layer, egress still waits for the exact selected provider
+  # generation before it can remove or install a provider-specific policy.
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: agentgateway-provider-egress
+      namespace: flux-system
+    patch: |
+      - op: replace
+        path: /spec/dependsOn
+        value:
+          - name: agentgateway-provider
+            readyExpr: >-
+              dep.metadata.labels['fgentic.dev/llm-provider'] ==
+              self.metadata.labels['fgentic.dev/llm-provider'] &&
+              dep.status.observedGeneration == dep.metadata.generation &&
+              dep.status.conditions.exists(
+              e,
+              e.type == 'Ready' && e.status == 'True'
+              )
   - target:
       group: kustomize.toolkit.fluxcd.io
       version: v1

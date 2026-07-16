@@ -2,9 +2,9 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-policy_file="${repo_root}/infra/agentgateway/a2a-authorization.yaml"
-route_file="${repo_root}/infra/agentgateway/a2a-route.yaml"
-owner_file="${repo_root}/infra/agentgateway/kustomization.yaml"
+policy_file="${repo_root}/infra/agentgateway/admission/a2a-authorization.yaml"
+route_file="${repo_root}/infra/agentgateway/admission/a2a-route.yaml"
+owner_file="${repo_root}/infra/agentgateway/admission/kustomization.yaml"
 secret_example="${repo_root}/infra/secrets/a2a-authorization.sops.yaml.example"
 runtime=false
 

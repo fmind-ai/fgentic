@@ -29,8 +29,9 @@ patches:
           allowedRoutes:
             namespaces:
               from: Same
-  # The federation profile has no local bridge or MCP tool caller. Remove those broad base
-  # routes and their Secret-backed policies instead of manufacturing unused credentials.
+  # The federation profile has no local bridge or MCP tool caller. The cluster overlay removes
+  # the whole local A2A admission owner; this base component removes its unused backend and MCP
+  # surface instead of manufacturing credentials.
   - target:
       group: agentgateway.dev
       version: v1alpha1
@@ -43,32 +44,6 @@ patches:
       kind: AgentgatewayBackend
       metadata:
         name: kagent-a2a
-        namespace: agentgateway-system
-  - target:
-      group: gateway.networking.k8s.io
-      version: v1
-      kind: HTTPRoute
-      name: kagent-a2a
-      namespace: agentgateway-system
-    patch: |
-      $patch: delete
-      apiVersion: gateway.networking.k8s.io/v1
-      kind: HTTPRoute
-      metadata:
-        name: kagent-a2a
-        namespace: agentgateway-system
-  - target:
-      group: agentgateway.dev
-      version: v1alpha1
-      kind: AgentgatewayPolicy
-      name: a2a-bridge-authorization
-      namespace: agentgateway-system
-    patch: |
-      $patch: delete
-      apiVersion: agentgateway.dev/v1alpha1
-      kind: AgentgatewayPolicy
-      metadata:
-        name: a2a-bridge-authorization
         namespace: agentgateway-system
   - target:
       group: agentgateway.dev

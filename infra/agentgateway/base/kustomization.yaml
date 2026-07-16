@@ -1,0 +1,16 @@
+# Stable agentgateway control plane, secured data plane, and provider-independent MCP/A2A
+# backends. This inventory remains present while ordered admission and egress owners transition.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - helmrelease.yaml
+  - parameters.yaml
+  - gateway.yaml
+  - a2a-backend.yaml
+  - mcp-backend.yaml
+  - mcp-route.yaml
+  - mcp-authorization.yaml
+  - mcp-audit.yaml
+  - mcp-rate-limit.yaml
+  - tracing-policy.yaml
+  - networkpolicy.yaml

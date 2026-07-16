@@ -53,7 +53,7 @@ patches:
     patch: |
       - op: add
         path: /spec/components/-
-        value: ../production-ha/agentgateway
+        value: ../../production-ha/agentgateway
   - target:
       group: kustomize.toolkit.fluxcd.io
       version: v1

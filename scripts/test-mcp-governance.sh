@@ -165,7 +165,7 @@ echo "==> Validating governed MCP manifests"
 		-count=1
 )
 flux build kustomization cluster-overlay-validation \
-	--path "${REPO_ROOT}/infra/agentgateway" \
+	--path "${REPO_ROOT}/infra/agentgateway/base" \
 	--kustomization-file "${REPO_ROOT}/scripts/testdata/flux-build-kustomization.yaml" \
 	--dry-run \
 	--in-memory-build \
@@ -190,7 +190,7 @@ assert_equal "$(jq -r '.servers | length' "${pin_path}")" "1" "MCP pin server co
 
 for resource in mcp-backend.yaml mcp-route.yaml mcp-authorization.yaml mcp-audit.yaml mcp-rate-limit.yaml; do
 	yq -e ".resources | contains([\"${resource}\"])" \
-		"${REPO_ROOT}/infra/agentgateway/kustomization.yaml" >/dev/null \
+		"${REPO_ROOT}/infra/agentgateway/base/kustomization.yaml" >/dev/null \
 		|| fail "agentgateway kustomization omits ${resource}"
 done
 
@@ -298,7 +298,7 @@ assert_equal "$({
 assert_equal "$({
 	yq eval-all -N -r '
       [select(.kind == "ConfigMap" and .metadata.name == "mcp-tool-rate-limit")] | length
-    ' "${REPO_ROOT}/infra/agentgateway/parameters.yaml"
+    ' "${REPO_ROOT}/infra/agentgateway/base/parameters.yaml"
 })" "1" "MCP quota parameters source"
 expected_tools="$(jq -r '
   .["_meta"]["io.modelcontextprotocol.registry/publisher-provided"].fgentic.allowedTools[]
@@ -383,7 +383,7 @@ assert_equal "$({
     ' "${tmp_dir}/agentgateway.yaml"
 })" "agentgateway-proxy|mcp-tool-rate-limit-redis|6379" "MCP-quota-to-Redis boundary"
 for profile in demo vllm; do
-	profile_root="${REPO_ROOT}/infra/agentgateway/providers/profiles/${profile}"
+	profile_root="${REPO_ROOT}/infra/agentgateway/providers/egress/${profile}"
 	assert_equal "$({
 		yq eval-all -N -r '
         select(.kind == "NetworkPolicy" and
@@ -415,7 +415,7 @@ for profile in demo vllm; do
 	})" "1" "${profile} effective egress-policy handoff guard"
 done
 for profile in vertex openai anthropic mistral azure-openai; do
-	[[ ! -e "${REPO_ROOT}/infra/agentgateway/providers/profiles/${profile}/networkpolicy.yaml" ]] ||
+	[[ ! -e "${REPO_ROOT}/infra/agentgateway/providers/egress/${profile}/networkpolicy.yaml" ]] ||
 		fail "${profile} unexpectedly gained a proxy-isolating NetworkPolicy"
 done
 
@@ -512,7 +512,7 @@ assert_equal "$({
               ([.ports[]? | select(.protocol == "TCP" and .port == 8084)] | length) == 1
             )]
       | length
-    ' "${REPO_ROOT}/infra/agentgateway/providers/profiles/vllm/networkpolicy.yaml"
+    ' "${REPO_ROOT}/infra/agentgateway/providers/egress/vllm/networkpolicy.yaml"
 })" "1" "vLLM-profile gateway-to-tool egress"
 
 kagent_repository="$({
