@@ -1,0 +1,101 @@
+# #340 owns the reusable embeddings runtime and governed model-catalog entry. This M25 consumer
+# contract deliberately uses a static in-cluster backend so ingestion can be built and tested
+# without duplicating GREEN's provider profile or generic classification/residency policy.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: knowledge-embeddings
+  namespace: agentgateway-system
+spec:
+  ai:
+    provider:
+      custom:
+        model: BAAI/bge-m3
+        formats:
+          - type: Embeddings
+            path: /v1/embeddings
+      host: knowledge-embeddings.models.svc.cluster.local
+      port: 8000
+  policies:
+    ai:
+      routes:
+        /v1/embeddings: Embeddings
+    http:
+      requestTimeout: 30s
+---
+# vLLM owns the exact BGE-M3 tokenizer. A raw backend keeps its model-local `/tokenize` contract
+# behind the same authenticated listener without pretending it is an OpenAI embeddings operation.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: knowledge-tokenizer
+  namespace: agentgateway-system
+spec:
+  static:
+    host: knowledge-embeddings.models.svc.cluster.local
+    port: 8000
+---
+# This route attaches only to the dedicated listener, so malformed variants cannot fall through to
+# the selected chat profile on :8080. The client independently accepts only these two exact paths.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: knowledge-embeddings
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+    - name: agentgateway-proxy
+      sectionName: embeddings
+  rules:
+    - matches:
+        - path:
+            type: Exact
+            value: /v1/embeddings
+      backendRefs:
+        - name: knowledge-embeddings
+          group: agentgateway.dev
+          kind: AgentgatewayBackend
+    - matches:
+        - path:
+            type: Exact
+            value: /tokenize
+      backendRefs:
+        - name: knowledge-tokenizer
+          group: agentgateway.dev
+          kind: AgentgatewayBackend
+---
+# Authenticate the batch workload before tokenization or embedding reaches the #340-owned runtime.
+# The credential is distinct from provider/model secrets, mounted only into the embed container,
+# removed before proxying, and bounded close to the maximum legitimate one-shot workload.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: knowledge-ingestion-authorization
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: knowledge-embeddings
+  traffic:
+    buffer:
+      request:
+        maxBytes: 128Ki
+    apiKeyAuthentication:
+      mode: Strict
+      secretRef:
+        name: knowledge-ingestion-callers
+    authorization:
+      action: Require
+      policy:
+        matchExpressions:
+          - >-
+            apiKey.workload == "knowledge-ingestion" &&
+            request.method == "POST" &&
+            (request.path == "/tokenize" ||
+            request.path == "/v1/embeddings")
+    rateLimit:
+      local:
+        # Token preflight plus a worst-case one-input embedding request for every bounded chunk.
+        - requests: 1024
+          unit: Hours

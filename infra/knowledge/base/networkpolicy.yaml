@@ -1,0 +1,75 @@
+# The Pod network is bounded to DNS, its database, and the dedicated authenticated embeddings
+# listener. Port 8080 is deliberately absent, so Docling cannot reach the generic chat/A2A/MCP
+# surface even though Kubernetes NetworkPolicy is Pod-scoped rather than container-scoped.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: knowledge-ingestion
+  namespace: knowledge
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: knowledge-ingestion
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: postgres
+          podSelector:
+            matchLabels:
+              cnpg.io/cluster: platform-pg
+      ports:
+        - protocol: TCP
+          port: 5432
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentgateway-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agentgateway-proxy
+      ports:
+        - protocol: TCP
+          port: 8082
+---
+# The common agentgateway policy admits bridge/kagent only on :8080. This additive policy exposes
+# only the dedicated :8082 listener to the ingestion Pod; API-key policy still rejects every
+# container except the embed phase, which alone mounts the credential.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentgateway-allow-knowledge-ingestion
+  namespace: agentgateway-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agentgateway-proxy
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: knowledge
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: knowledge-ingestion
+      ports:
+        - protocol: TCP
+          port: 8082

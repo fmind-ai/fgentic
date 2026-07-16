@@ -46,6 +46,8 @@ override.tf.json
 # --- Build artifacts & caches ---
 **/bin/
 **/tmp/
+**/__pycache__/
+*.py[cod]
 coverage.out
 *.coverprofile
 .task/
