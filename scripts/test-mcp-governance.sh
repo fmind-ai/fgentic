@@ -249,6 +249,8 @@ assert_equal "$({
 assert_contains "${traffic_expression}" 'apiKey.agent == "platform-helper"' "per-agent authentication"
 assert_contains "${traffic_expression}" 'request.path == "/mcp"' "MCP path authorization"
 assert_contains "${traffic_expression}" 'request.method in ["POST", "GET", "DELETE"]' "MCP method authorization"
+assert_contains "${traffic_expression}" '!string(request.body).trim().startsWith("[")' \
+	"MCP JSON-RPC batch rejection"
 assert_equal "$({
 	yq eval-all -N -r '
       select(.kind == "AgentgatewayPolicy" and .metadata.name == "platform-helper-mcp-authorization")
@@ -311,22 +313,37 @@ done
 policy_tools="$(printf '%s' "${mcp_expression}" | rg -o '"k8s_[a-z_]+"' | tr -d '"' | sort -u)"
 assert_equal "${policy_tools}" "${expected_tools}" "exact MCP policy tool set"
 
-assert_equal "$({
+assert_equal "$(
 	yq eval-all -N -r '
       select(.kind == "AgentgatewayPolicy" and .metadata.name == "mcp-tool-audit")
       | [.spec.frontend.accessLog.filter,
          (.spec.frontend.accessLog.attributes.add | map(.name) | join(","))] | join("|")
-    ' "${tmp_dir}/agentgateway.yaml"
-	})" \
-		'request.method == "POST" && request.path == "/mcp" && json(request.body).method == "tools/call"|audit.kind,fgentic.agent,mcp.method,mcp.tool.name,mcp.tool.target,mcp.quota.policy' \
+		' "${tmp_dir}/agentgateway.yaml" \
+		| tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
+)" \
+		'request.method == "POST" && request.path == "/mcp" && ( string(request.body).trim().startsWith("[") || json(request.body).method == "tools/call" )|audit.kind,fgentic.agent,mcp.method,mcp.tool.name,mcp.tool.target,mcp.quota.policy' \
 		"content-free MCP audit contract"
-assert_equal "$({
+assert_equal "$(
 	yq eval-all -N -r '
       select(.kind == "AgentgatewayPolicy" and .metadata.name == "mcp-tool-audit")
       | .spec.frontend.accessLog.attributes.add[]
       | select(.name == "mcp.quota.policy") | .expression
-    ' "${tmp_dir}/agentgateway.yaml"
-})" '"per_agent_and_tool_admission"' "MCP quota audit classification"
+	    ' "${tmp_dir}/agentgateway.yaml" \
+		| tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
+)" \
+	'string(request.body).trim().startsWith("[") ? "batch_rejected" : "per_agent_and_tool_admission"' \
+	"MCP quota audit classification"
+assert_equal "$(
+	yq eval-all -N -r '
+      select(.kind == "AgentgatewayPolicy" and .metadata.name == "mcp-tool-audit")
+      | [.spec.frontend.accessLog.attributes.add[]
+         | select(.name == "mcp.method" or .name == "mcp.tool.name")
+         | .expression] | join("|")
+	    ' "${tmp_dir}/agentgateway.yaml" \
+		| tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
+)" \
+	'string(request.body).trim().startsWith("[") ? "batch" : json(request.body).method|string(request.body).trim().startsWith("[") ? "batch_rejected" : json(request.body).params.name' \
+	"content-free MCP batch audit fields"
 
 for workload in mcp-tool-rate-limit mcp-tool-rate-limit-redis; do
 	assert_equal "$({
@@ -742,14 +759,14 @@ config:
     format: json
 frontendPolicies:
   accessLog:
-    filter: 'request.method == "POST" && request.path == "/mcp" && json(request.body).method == "tools/call"'
+    filter: 'request.method == "POST" && request.path == "/mcp" && (string(request.body).trim().startsWith("[") || json(request.body).method == "tools/call")'
     add:
       audit.kind: '"fgentic.mcp_tool_call.v1"'
       fgentic.agent: apiKey.agent
-      mcp.method: json(request.body).method
-      mcp.tool.name: json(request.body).params.name
+      mcp.method: 'string(request.body).trim().startsWith("[") ? "batch" : json(request.body).method'
+      mcp.tool.name: 'string(request.body).trim().startsWith("[") ? "batch_rejected" : json(request.body).params.name'
       mcp.tool.target: '"kagent-tools"'
-      mcp.quota.policy: '"per_agent_and_tool_admission"'
+      mcp.quota.policy: 'string(request.body).trim().startsWith("[") ? "batch_rejected" : "per_agent_and_tool_admission"'
 binds:
   - port: 3000
     listeners:
@@ -951,6 +968,25 @@ assert_equal "${unsupported_protocol_status}" "400" "unsupported MCP protocol ve
 list_response="$(mcp_request '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}' | sed -n 's/^data: //p')"
 actual_tools="$(jq -r '.result.tools[].name' <<<"${list_response}" | sort)"
 assert_equal "${actual_tools}" "${expected_tools}" "gateway-filtered MCP tools"
+
+batch_status="$(mcp_request '[{"jsonrpc":"2.0","id":30,"method":"tools/call","params":{"name":"k8s_get_resources","arguments":{}}}]' \
+	--output /dev/null --write-out '%{http_code}')"
+assert_equal "${batch_status}" "403" "MCP JSON-RPC batch rejection"
+
+batch_audit=""
+for _ in {1..20}; do
+	batch_audit="$(docker logs "${gateway_container}" 2>&1 \
+		| jq -Rrc 'fromjson? | select(.["audit.kind"] == "fgentic.mcp_tool_call.v1" and .["mcp.method"] == "batch")' \
+		| tail -1)"
+	[ -n "${batch_audit}" ] && break
+	sleep 0.1
+done
+[ -n "${batch_audit}" ] || fail "no content-free MCP batch-rejection audit record was emitted"
+assert_equal "$(jq -r '.["mcp.tool.name"]' <<<"${batch_audit}")" "batch_rejected" \
+	"MCP batch audit classification"
+assert_equal "$(jq -r '.["http.status"]' <<<"${batch_audit}")" "403" "MCP batch audit status"
+[[ "${batch_audit}" != *'k8s_get_resources'* ]] || fail "MCP batch audit leaked a batched tool name"
+[[ "${batch_audit}" != *'arguments'* ]] || fail "MCP batch audit leaked batched arguments"
 
 denied_response="$(mcp_request '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"k8s_apply_manifest","arguments":{"manifest":"MCP_ARGUMENT_SENTINEL"}}}')"
 assert_contains "${denied_response}" "Unknown tool: k8s_apply_manifest" "disallowed MCP tool"
