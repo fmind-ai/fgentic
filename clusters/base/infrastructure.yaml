@@ -407,8 +407,9 @@ spec:
         optional: true
 ---
 # Provider egress reconciles only after the matching admission generation. API profiles render an
-# empty inventory that prunes a previous internal-only policy; demo/vLLM retain their exact
-# internal allowlist. The Stage A object guards remain until live ownership is proven.
+# empty inventory; after the final guard-removal revision it prunes a previous internal-only
+# policy. Provider selection stays frozen during this live ownership handoff. Demo/vLLM retain
+# their exact internal allowlist, and the Stage A object guards remain until ownership is proven.
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
