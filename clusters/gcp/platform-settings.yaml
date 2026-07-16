@@ -26,6 +26,10 @@ data:
   azure_openai_resource: not-configured
   # Alert when aggregate model-token consumption exceeds this count over 15 minutes.
   llm_usage_budget_15m: "100000"
+  # Long-task dead-man notices are held for five minutes and may be restarted for at most the
+  # homeserver's ten-minute ceiling. The bridge still fails closed if Synapse omits MSC4140.
+  bridge_dead_man_switch_delay: 5m
+  synapse_max_event_delay_duration: 10m
   # Initial namespace-compute profiles for the two-node reference. These are admission ceilings,
   # not reservations; tune them only from observed usage and alongside node-pool capacity.
   quota_default_request_cpu: 25m

@@ -31,6 +31,8 @@ var (
 	ErrAdmissionConflict = errors.New("delegation admission conflict")
 	// ErrMatrixEventConflict reports an attempt to replace immutable Matrix send evidence.
 	ErrMatrixEventConflict = errors.New("delegation Matrix event conflict")
+	// ErrDeadManConflict reports an attempt to replace a persisted delayed-event identity.
+	ErrDeadManConflict = errors.New("delegation dead-man delayed event conflict")
 
 	errorCodePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,127}$`)
 )
@@ -310,6 +312,7 @@ type Job struct {
 	MatrixReplyEventID       string
 	MatrixPlaceholderEventID string
 	MatrixEditEventID        string
+	MatrixDeadManDelayID     string
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
 	TerminalAt               time.Time
@@ -385,6 +388,15 @@ type MatrixEventRequest struct {
 	At      time.Time
 	Stage   MatrixEventStage
 	EventID string
+}
+
+// DeadManRequest persists the homeserver-owned delayed-event identity for one long task. The
+// stable Matrix transaction ID makes scheduling retry-safe; replacing its delay ID is conflicting
+// evidence because the old timer would otherwise remain armed and unmanageable.
+type DeadManRequest struct {
+	Lease   LeaseToken
+	At      time.Time
+	DelayID string
 }
 
 // CleanupResult reports ordinary terminal cleanup. Ambiguous and dead jobs are never deleted.
@@ -579,6 +591,19 @@ func validateMatrixEventRequest(request MatrixEventRequest) error {
 	}
 	if request.EventID == "" {
 		return fmt.Errorf("matrix event ID must not be empty")
+	}
+	return nil
+}
+
+func validateDeadManRequest(request DeadManRequest) error {
+	if err := validateLease(request.Lease); err != nil {
+		return err
+	}
+	if request.At.IsZero() {
+		return fmt.Errorf("dead-man record time must not be zero")
+	}
+	if request.DelayID == "" {
+		return fmt.Errorf("dead-man delay ID must not be empty")
 	}
 	return nil
 }

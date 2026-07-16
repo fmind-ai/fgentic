@@ -18,6 +18,9 @@ config:
   ghostPrefix: agent-
   requestTimeout: 60s # transport deadline for one A2A SendMessage
   taskTimeout: 10m # overall deadline when polling a long-running task (GetTask)
+  # Optional Synapse delayed-event guard for long tasks. Keep disabled unless the homeserver's
+  # max_event_delay_duration is configured to a greater duration and MSC4140 is advertised.
+  deadManSwitchDelay: 0s
   inputWaitTimeout: 10m # how long a paused (input-required) task waits for a threaded reply (#116)
   shutdownTimeout: 25s # dispatcher drain before cancellation; pod grace also covers intake/telemetry
   concurrency: 16 # max in-flight delegations across all rooms (per-room FIFO regardless)

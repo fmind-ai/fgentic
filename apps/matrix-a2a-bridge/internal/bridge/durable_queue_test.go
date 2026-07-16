@@ -871,6 +871,8 @@ func (*fakeQueueLedger) RecordMatrixEvent(context.Context, state.MatrixEventRequ
 	return nil
 }
 
+func (*fakeQueueLedger) RecordDeadMan(context.Context, state.DeadManRequest) error { return nil }
+
 func (f *fakeQueueLedger) ScheduleRetry(_ context.Context, request state.RetryRequest) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

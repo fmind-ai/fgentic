@@ -673,6 +673,30 @@ func TestMemoryRecordsMatrixEventsWithoutStateTransition(t *testing.T) {
 	}
 }
 
+func TestMemoryRecordsDeadManDelayWithoutStateTransition(t *testing.T) {
+	store, job, at := memoryJobAtState(t, StateAwaitingTask)
+	request := DeadManRequest{
+		Lease:   job.LeaseToken(),
+		At:      at.Add(time.Second),
+		DelayID: "delay-1",
+	}
+	if err := store.RecordDeadMan(t.Context(), request); err != nil {
+		t.Fatalf("RecordDeadMan: %v", err)
+	}
+	request.At = request.At.Add(time.Second)
+	if err := store.RecordDeadMan(t.Context(), request); err != nil {
+		t.Fatalf("idempotent RecordDeadMan: %v", err)
+	}
+	request.DelayID = "delay-2"
+	if err := store.RecordDeadMan(t.Context(), request); !errors.Is(err, ErrDeadManConflict) {
+		t.Fatalf("changed delayed-event ID error = %v, want ErrDeadManConflict", err)
+	}
+	stored, _, _ := store.Job(t.Context(), job.JobID)
+	if stored.State != StateAwaitingTask || stored.MatrixDeadManDelayID != "delay-1" {
+		t.Fatalf("recorded dead-man = state %s delay %q", stored.State, stored.MatrixDeadManDelayID)
+	}
+}
+
 func TestMemoryTransitionCannotReplaceMatrixEventEvidence(t *testing.T) {
 	store, job, at := memoryJobAtState(t, StateReplyPending)
 	request := MatrixEventRequest{

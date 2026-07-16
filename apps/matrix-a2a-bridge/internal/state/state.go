@@ -21,6 +21,7 @@ type Ledger interface {
 	Heartbeat(context.Context, LeaseToken, time.Time, time.Duration) error
 	RecordAdmission(context.Context, AdmissionRequest) error
 	RecordMatrixEvent(context.Context, MatrixEventRequest) error
+	RecordDeadMan(context.Context, DeadManRequest) error
 	Transition(context.Context, TransitionRequest) error
 	ScheduleRetry(context.Context, RetryRequest) error
 	Job(context.Context, string) (Job, bool, error)

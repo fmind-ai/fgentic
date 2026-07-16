@@ -12,6 +12,7 @@ data:
   databaseURL: postgres://postgres@postgres:5432/bridge?sslmode=disable
   delegationClaimInterval: 1s
   delegationLeaseDuration: 30s
+  deadManSwitchDelay: 0s
   homeserverURL: http://synapse:8008
   # The fixture has no LLM or paid boundary. Raise both token buckets so the test reaches the
   # dispatcher instead of testing D7's admission policy.

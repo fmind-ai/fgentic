@@ -20,8 +20,8 @@ var (
 )
 
 func TestDurableLedgerMigrationContract(t *testing.T) {
-	if len(UpgradeTable) != 2 {
-		t.Fatalf("upgrade table length = %d, want 2", len(UpgradeTable))
+	if len(UpgradeTable) != 3 {
+		t.Fatalf("upgrade table length = %d, want 3", len(UpgradeTable))
 	}
 	recorder := &databaseRecorder{}
 	db := recorder.database(t)
@@ -57,6 +57,25 @@ func TestDurableLedgerMigrationContract(t *testing.T) {
 	}
 	if strings.Contains(migration, "-- only: postgres") || strings.Contains(migration, "-- end only postgres") {
 		t.Fatal("dbutil dialect markers leaked into executed migration")
+	}
+}
+
+func TestDeadManDelayedEventMigrationContract(t *testing.T) {
+	recorder := &databaseRecorder{}
+	db := recorder.database(t)
+	t.Cleanup(func() { _ = db.Close() })
+	to, compat, err := UpgradeTable[2].DangerouslyRun(t.Context(), db)
+	if err != nil {
+		t.Fatalf("execute dead-man migration through dbutil: %v", err)
+	}
+	if to != 3 || compat != 3 {
+		t.Fatalf("migration version = (%d, %d), want (3, 3)", to, compat)
+	}
+	queries := recorder.executedQueries()
+	if len(queries) != 1 ||
+		!strings.Contains(queries[0], "ADD COLUMN matrix_dead_man_delay_id") ||
+		!strings.Contains(queries[0], "TEXT NOT NULL DEFAULT ''") {
+		t.Fatalf("dead-man migration = %#v", queries)
 	}
 }
 

@@ -73,6 +73,18 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].env[?(@.name == "DELEGATION_MAX_ATTEMPTS")].value
           value: "5"
+  - it: keeps the delayed-event dead-man switch opt-in
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "DEAD_MAN_SWITCH_DELAY")].value
+          value: 0s
+  - it: renders an explicitly enabled delayed-event dead-man switch
+    set:
+      config.deadManSwitchDelay: 5m
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "DEAD_MAN_SWITCH_DELAY")].value
+          value: 5m
   - it: renders default media byte caps as exact decimal strings
     asserts:
       - equal:

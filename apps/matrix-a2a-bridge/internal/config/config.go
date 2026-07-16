@@ -15,7 +15,8 @@ const (
 	// LogFormatJSON selects slog's structured JSON handler.
 	LogFormatJSON = "json"
 	// LogFormatText selects slog's human-readable text handler.
-	LogFormatText = "text"
+	LogFormatText             = "text"
+	minimumDeadManSwitchDelay = 2 * time.Minute
 )
 
 // Config is the fully-resolved bridge configuration.
@@ -73,6 +74,10 @@ type Config struct {
 	// polls via GetTask (SPEC §6).
 	RequestTimeout time.Duration `env:"REQUEST_TIMEOUT" envDefault:"60s"`
 	TaskTimeout    time.Duration `env:"TASK_TIMEOUT" envDefault:"10m"`
+	// DeadManSwitchDelay asks Synapse to hold a delayed stale-task notice while a long task is
+	// healthy. The bridge restarts it coarsely and cancels it on every terminal path; zero disables
+	// the optional MSC4140 enhancement without probing the homeserver.
+	DeadManSwitchDelay time.Duration `env:"DEAD_MAN_SWITCH_DELAY" envDefault:"0s"`
 	// InputWaitTimeout bounds how long a task paused in TASK_STATE_INPUT_REQUIRED waits for the
 	// original sender's threaded reply before the bridge drops it (#116). Separate from TaskTimeout:
 	// the poll clock does not burn while a human is thinking, so this is its own budget.
@@ -190,6 +195,9 @@ func (c Config) validate() error {
 	}
 	if c.TaskTimeout < c.RequestTimeout {
 		return fmt.Errorf("TASK_TIMEOUT (%s) must be >= REQUEST_TIMEOUT (%s)", c.TaskTimeout, c.RequestTimeout)
+	}
+	if c.DeadManSwitchDelay < 0 || (c.DeadManSwitchDelay > 0 && c.DeadManSwitchDelay < minimumDeadManSwitchDelay) {
+		return fmt.Errorf("DEAD_MAN_SWITCH_DELAY must be 0 or at least %s", minimumDeadManSwitchDelay)
 	}
 	if c.ShutdownTimeout <= 0 {
 		return fmt.Errorf("SHUTDOWN_TIMEOUT must be positive")

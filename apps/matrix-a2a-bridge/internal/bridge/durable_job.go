@@ -316,6 +316,9 @@ func (b *Bridge) acceptDurableA2AResult(
 		if err := b.ensureDurablePlaceholder(ctx, job, evt); err != nil {
 			return b.retryOrDead(ctx, job, errorMatrixDelivery, err)
 		}
+		if err := b.ensureDurableDeadMan(ctx, job, evt); err != nil {
+			return err
+		}
 		return b.scheduleTaskPoll(ctx, *job)
 	}
 	if result.Failed {
@@ -361,6 +364,10 @@ func (b *Bridge) resumeKnownTask(ctx context.Context, job *state.Job) error {
 	if err := b.ensureDurablePlaceholder(ctx, job, evt); err != nil {
 		return b.retryOrDead(ctx, job, errorMatrixDelivery, err)
 	}
+	if err := b.ensureDurableDeadMan(ctx, job, evt); err != nil {
+		return err
+	}
+	b.restartDurableDeadManOnPoll(ctx, job)
 	client, ok := b.client.(durableA2AClient)
 	if !ok {
 		return b.finishDurableWithoutReply(ctx, job, state.StateDead, "durable_a2a_unsupported",
@@ -617,6 +624,11 @@ func (b *Bridge) deliverPendingReply(ctx context.Context, job *state.Job) error 
 		eventID, err = b.sendDurableNotice(ctx, intent, evt, payload.Notice, job.MatrixReplyTxnID)
 	}
 	if err != nil {
+		return b.retryOrDead(ctx, job, errorMatrixDelivery, err)
+	}
+	// Keep the stale-task guard armed until Matrix has accepted the terminal replacement. If the
+	// send fails, recovery must retain the honest fallback rather than canceling it prematurely.
+	if err := b.cancelDurableDeadMan(ctx, job); err != nil {
 		return b.retryOrDead(ctx, job, errorMatrixDelivery, err)
 	}
 	patch := state.TransitionPatch{}

@@ -372,13 +372,23 @@ func TestDurableKnownTaskResumesWithGetAndReusesPlaceholder(t *testing.T) {
 	}
 	b, _, _, _, recorder := pollingHarness(t, client)
 	configureDurableTestBridge(b)
+	deadMan := &fakeDeadManClient{supported: true}
+	b.deadMan = deadMan
+	b.deadManEnabled = true
+	b.cfg.DeadManSwitchDelay = 2 * time.Minute
+	b.pollMax = time.Minute
 	job := admitAndClaimDurableJob(t, b, "$durable-task")
 
 	b.executeDurableJob(t.Context(), job)
 	waiting := loadDurableJob(t, b, job.JobID)
 	if waiting.State != state.StateAwaitingTask || waiting.A2ATaskID != "task-known" ||
-		waiting.MatrixPlaceholderEventID == "" || waiting.LeaseOwner != "" || waiting.AttemptCount != 0 {
+		waiting.MatrixPlaceholderEventID == "" || waiting.MatrixDeadManDelayID == "" ||
+		waiting.LeaseOwner != "" || waiting.AttemptCount != 0 {
 		t.Fatalf("awaiting task evidence = %+v", waiting)
+	}
+	if len(deadMan.schedules) != 1 || len(deadMan.restarts) != 0 || len(deadMan.cancels) != 0 {
+		t.Fatalf("initial durable dead-man calls = schedules %+v restarts %v cancels %v",
+			deadMan.schedules, deadMan.restarts, deadMan.cancels)
 	}
 	placeholder := id.EventID(waiting.MatrixPlaceholderEventID)
 	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
@@ -396,12 +406,63 @@ func TestDurableKnownTaskResumesWithGetAndReusesPlaceholder(t *testing.T) {
 	if client.callCount != 1 || client.resumeCount != 1 {
 		t.Fatalf("SendMessage calls=%d GetTask calls=%d, want 1/1", client.callCount, client.resumeCount)
 	}
+	if len(deadMan.restarts) != 1 || len(deadMan.cancels) != 1 ||
+		deadMan.restarts[0] != id.DelayID(waiting.MatrixDeadManDelayID) ||
+		deadMan.cancels[0] != id.DelayID(waiting.MatrixDeadManDelayID) {
+		t.Fatalf("terminal durable dead-man calls = restarts %v cancels %v", deadMan.restarts, deadMan.cancels)
+	}
 	events := recorder.snapshot()
 	if len(events) != 2 || events[0].Body != workingText || events[1].Body != "* finished" {
 		t.Fatalf("task Matrix events = %+v", events)
 	}
 	if got := events[1].RelatesTo.GetReplaceID(); got != placeholder {
 		t.Fatalf("terminal edit target = %q, want placeholder %q", got, placeholder)
+	}
+}
+
+func TestDurableDeadManCancellationRetriesAfterTerminalProjection(t *testing.T) {
+	client := &scriptedA2AClient{
+		callResult: a2aclient.Result{TaskID: "task-cancel-retry", ContextID: "context-cancel-retry"},
+		polls: []scriptedPoll{{result: a2aclient.Result{
+			Text: "finished", TaskID: "task-cancel-retry", ContextID: "context-final", Terminal: true,
+		}}},
+	}
+	b, _, _, _, _ := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	deadMan := &fakeDeadManClient{supported: true, cancelErr: errors.New("homeserver unavailable")}
+	b.deadMan = deadMan
+	b.deadManEnabled = true
+	b.cfg.DeadManSwitchDelay = 2 * time.Minute
+	job := admitAndClaimDurableJob(t, b, "$durable-dead-man-cancel-retry")
+
+	b.executeDurableJob(t.Context(), job)
+	waiting := loadDurableJob(t, b, job.JobID)
+	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "terminal", Now: waiting.NextAttemptAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim known task = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+	retrying := loadDurableJob(t, b, job.JobID)
+	if retrying.State != state.StateReplyPending || retrying.AttemptCount != 1 || retrying.LeaseOwner != "" {
+		t.Fatalf("cancel retry evidence = %+v", retrying)
+	}
+
+	deadMan.cancelErr = nil
+	claimed, found, err = b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "replacement", Now: retrying.NextAttemptAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("reclaim terminal projection = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateDelivered || stored.AttemptCount != 0 {
+		t.Fatalf("recovered terminal state = %+v", stored)
+	}
+	if len(deadMan.cancels) != 2 || deadMan.cancels[0] != deadMan.cancels[1] {
+		t.Fatalf("dead-man cancellation attempts = %v, want two identical IDs", deadMan.cancels)
 	}
 }
 
