@@ -1,0 +1,42 @@
+# Offline public test fixture only. Never render or apply this ConfigMap, and never copy private,
+# regulated, or customer corpus bytes into Git. Production reads an operator-provisioned
+# knowledge-source-bundle PVC instead.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: knowledge-source-bundle-public-test-fixture
+  namespace: knowledge
+  annotations:
+    fgentic.fmind.ai/corpus-content: synthetic-public
+    fgentic.fmind.ai/test-fixture-only: "true"
+immutable: true
+data:
+  manifest.json: |
+    {
+      "schema_version": 1,
+      "corpus": "reference-docs",
+      "sources": [
+        {
+          "path": "matrix-principal.md",
+          "digest": "sha256:e5e216ab292a92ab36b5b61a42cf224f336a4a064be6c5b67f027001599e38a6",
+          "source": {
+            "id": "reference-docs/matrix-principal",
+            "title": "Matrix access example",
+            "locator": "git:docs/examples/matrix-principal.md",
+            "revision": "sha256:matrix-principal-v1"
+          },
+          "classification": "approved_non_public",
+          "allowed_principals": [
+            {
+              "kind": "matrix",
+              "principal": "@alice:org-a.example"
+            }
+          ],
+          "allowed_groups": []
+        }
+      ]
+    }
+  matrix-principal.md: |
+    # Matrix access example
+
+    This chunk is authorized only for the complete typed Matrix audience declared in the manifest.

@@ -1,0 +1,21 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: DatabaseRole
+metadata:
+  name: knowledge-ingestion
+  namespace: postgres
+spec:
+  cluster:
+    name: platform-pg
+  name: knowledge_ingestion
+  ensure: present
+  login: true
+  inherit: false
+  superuser: false
+  createdb: false
+  createrole: false
+  replication: false
+  bypassrls: false
+  connectionLimit: 4
+  passwordSecret:
+    name: pg-knowledge-ingestion
+  databaseRoleReclaimPolicy: retain

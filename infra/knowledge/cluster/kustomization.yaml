@@ -1,0 +1,36 @@
+# Select this Component from a cluster overlay only after generating that environment's optional
+# ingestion secret set and provisioning the #340 embedding runtime. The three Flux changes stay one
+# reviewed unit so the workload cannot be enabled without its DML-only database boundary.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: agentgateway
+      namespace: flux-system
+    patch: |
+      - op: add
+        path: /spec/components/-
+        value: components/knowledge-ingestion
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: postgres
+      namespace: flux-system
+    patch: |
+      - op: add
+        path: /spec/components/-
+        value: components/knowledge-ingestion
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: knowledge-ingestion
+      namespace: flux-system
+    patch: |
+      - op: replace
+        path: /spec/path
+        value: ./infra/knowledge/profiles/enabled

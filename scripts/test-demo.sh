@@ -651,7 +651,11 @@ assert_yq \
 	'select(.kind == "Kustomization" and .metadata.name == "gateway") |
     .spec.path == "./infra/gateway/profiles/disabled"' \
 	"${WORK_DIR}/cluster.yaml" 'demo must select the gateway without an admin listener'
-expected_demo_layers=$'admin\nagentgateway\nagentgateway-provider\nbridge\ncontrollers\ngateway\nkagent\nmatrix\nnamespaces\nplatform-secrets\npolicies\npostgres'
+assert_yq \
+	'select(.kind == "Kustomization" and .metadata.name == "knowledge-ingestion") |
+    .spec.path == "./infra/knowledge/profiles/disabled"' \
+	"${WORK_DIR}/cluster.yaml" 'demo must keep sovereign ingestion structurally disabled'
+expected_demo_layers=$'admin\nagentgateway\nagentgateway-provider\nbridge\ncontrollers\ngateway\nkagent\nknowledge-ingestion\nmatrix\nnamespaces\nplatform-secrets\npolicies\npostgres'
 actual_demo_layers="$(
 	yq eval-all -N -r 'select(.kind == "Kustomization") | .metadata.name' \
 		"${WORK_DIR}/cluster.yaml" | sort

@@ -1,0 +1,16 @@
+# Default profile: ingestion, its database writer, and its model route have zero footprint until an
+# operator supplies a reviewed source bundle and explicitly selects the enabled profile.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - placeholder.yaml
+patches:
+  - target:
+      kind: ConfigMap
+      name: knowledge-ingestion-disabled-placeholder
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: knowledge-ingestion-disabled-placeholder

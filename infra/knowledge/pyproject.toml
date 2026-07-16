@@ -1,0 +1,10 @@
+[tool.ruff]
+extend = "../../apps/synapse-federation-policy/pyproject.toml"
+target-version = "py312"
+
+[tool.ruff.lint.per-file-ignores]
+"test_*.py" = [
+  "A002",
+  "S101",
+  "SLF001",
+]

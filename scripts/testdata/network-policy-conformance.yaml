@@ -37,11 +37,217 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  name: knowledge
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: postgres
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
   name: network-policy-target
   labels:
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: knowledge-ingestion
+  namespace: knowledge
+  labels:
+    app.kubernetes.io/name: knowledge-ingestion
+    fgentic.dev/network-policy-fixture: client
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+      imagePullPolicy: IfNotPresent
+      command: [sh, -ec]
+      args:
+        - |
+          trap 'exit 0' TERM
+          while :; do
+            sleep 3600 &
+            wait $!
+          done
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 1m
+          memory: 2Mi
+        limits:
+          cpu: 20m
+          memory: 16Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: knowledge-unrelated-caller
+  namespace: bridge
+  labels:
+    app.kubernetes.io/name: knowledge-unrelated-caller
+    fgentic.dev/network-policy-fixture: client
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+      imagePullPolicy: IfNotPresent
+      command: [sh, -ec]
+      args:
+        - |
+          trap 'exit 0' TERM
+          while :; do
+            sleep 3600 &
+            wait $!
+          done
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 1m
+          memory: 2Mi
+        limits:
+          cpu: 20m
+          memory: 16Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: platform-pg
+  namespace: postgres
+  labels:
+    cnpg.io/cluster: platform-pg
+    fgentic.dev/network-policy-fixture: server
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: server
+      image: docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+      imagePullPolicy: IfNotPresent
+      command: [httpd, -f, -p, "5432"]
+      ports:
+        - name: postgres
+          containerPort: 5432
+          protocol: TCP
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 1m
+          memory: 2Mi
+        limits:
+          cpu: 20m
+          memory: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: platform-pg-rw
+  namespace: postgres
+spec:
+  selector:
+    cnpg.io/cluster: platform-pg
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: unrelated-db
+  namespace: postgres
+  labels:
+    app.kubernetes.io/name: unrelated-db
+    fgentic.dev/network-policy-fixture: server
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: server
+      image: docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+      imagePullPolicy: IfNotPresent
+      command: [httpd, -f, -p, "5432"]
+      ports:
+        - name: postgres
+          containerPort: 5432
+          protocol: TCP
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 1m
+          memory: 2Mi
+        limits:
+          cpu: 20m
+          memory: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: unrelated-db
+  namespace: postgres
+spec:
+  selector:
+    app.kubernetes.io/name: unrelated-db
+  ports:
+    - name: postgres
+      port: 5432
+      targetPort: postgres
 ---
 apiVersion: v1
 kind: Pod
@@ -243,6 +449,26 @@ spec:
         limits:
           cpu: 20m
           memory: 16Mi
+    - name: embeddings
+      image: docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+      imagePullPolicy: IfNotPresent
+      command: [httpd, -f, -p, "8082"]
+      ports:
+        - name: embeddings
+          containerPort: 8082
+          protocol: TCP
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 1m
+          memory: 2Mi
+        limits:
+          cpu: 20m
+          memory: 16Mi
 ---
 apiVersion: v1
 kind: Service
@@ -256,6 +482,9 @@ spec:
     - name: proxy
       port: 8080
       targetPort: proxy
+    - name: embeddings
+      port: 8082
+      targetPort: embeddings
 ---
 apiVersion: v1
 kind: Pod
@@ -363,6 +592,21 @@ spec:
   ports:
     - name: model
       port: 80
+      targetPort: model
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: knowledge-embeddings
+  namespace: models
+spec:
+  selector:
+    app.kubernetes.io/instance: vllm
+    app.kubernetes.io/component: serving-engine
+    app.kubernetes.io/part-of: vllm-stack
+  ports:
+    - name: model
+      port: 8000
       targetPort: model
 ---
 apiVersion: v1

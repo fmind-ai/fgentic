@@ -1,0 +1,22 @@
+# Optional dedicated listener for sovereign knowledge ingestion. Keeping it outside the shared
+# Gateway preserves a zero-resource/zero-rollout default when the ingestion cluster Component is
+# absent.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: gateway.networking.k8s.io
+      version: v1
+      kind: Gateway
+      name: agentgateway-proxy
+      namespace: agentgateway-system
+    patch: |
+      - op: add
+        path: /spec/listeners/-
+        value:
+          name: embeddings
+          protocol: HTTP
+          port: 8082
+          allowedRoutes:
+            namespaces:
+              from: Same

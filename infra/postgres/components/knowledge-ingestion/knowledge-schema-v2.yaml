@@ -1,0 +1,249 @@
+# Immutable opt-in v2 knowledge-store migration. This grants a dedicated DML-only ingestion role
+# without copying the schema-owner credential out of postgres or widening retrieval authority.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: knowledge-schema-v2
+  namespace: postgres
+immutable: true
+data:
+  schema.sql: |
+    BEGIN;
+
+    SELECT pg_advisory_xact_lock(hashtextextended('fgentic:knowledge-schema:v2', 0));
+
+    REVOKE ALL ON DATABASE knowledge FROM knowledge_ingestion;
+    GRANT CONNECT ON DATABASE knowledge TO knowledge_ingestion;
+
+    REVOKE ALL ON SCHEMA public FROM knowledge_ingestion;
+    GRANT USAGE ON SCHEMA public TO knowledge_ingestion;
+    GRANT USAGE ON TYPE public.vector TO knowledge_ingestion;
+    GRANT EXECUTE ON FUNCTION public.vector_norm(public.vector)
+      TO knowledge_ingestion;
+    REVOKE ALL ON SCHEMA knowledge FROM knowledge_ingestion;
+    GRANT USAGE ON SCHEMA knowledge TO knowledge_ingestion;
+
+    REVOKE ALL ON ALL TABLES IN SCHEMA knowledge FROM knowledge_ingestion;
+    REVOKE ALL ON ALL SEQUENCES IN SCHEMA knowledge FROM knowledge_ingestion;
+    REVOKE ALL ON ALL FUNCTIONS IN SCHEMA knowledge FROM knowledge_ingestion;
+
+    CREATE TABLE IF NOT EXISTS knowledge.ingestion_leases (
+      name text PRIMARY KEY,
+      holder uuid NOT NULL,
+      expires_at timestamptz NOT NULL,
+      CONSTRAINT ingestion_leases_single_writer CHECK (name = 'chunks-v1')
+    );
+    ALTER TABLE knowledge.ingestion_leases OWNER TO knowledge_owner;
+    REVOKE ALL ON knowledge.ingestion_leases FROM PUBLIC;
+
+    CREATE TABLE IF NOT EXISTS knowledge.ingestion_pending (
+      run_id uuid NOT NULL DEFAULT current_setting('fgentic.ingestion_run_id')::uuid,
+      payload jsonb NOT NULL
+    );
+    ALTER TABLE knowledge.ingestion_pending OWNER TO knowledge_owner;
+    REVOKE ALL ON knowledge.ingestion_pending FROM PUBLIC;
+    CREATE INDEX IF NOT EXISTS ingestion_pending_run_idx
+      ON knowledge.ingestion_pending (run_id);
+
+    CREATE TABLE IF NOT EXISTS knowledge.ingestion_final (
+      run_id uuid NOT NULL DEFAULT current_setting('fgentic.ingestion_run_id')::uuid,
+      payload jsonb NOT NULL
+    );
+    ALTER TABLE knowledge.ingestion_final OWNER TO knowledge_owner;
+    REVOKE ALL ON knowledge.ingestion_final FROM PUBLIC;
+    CREATE INDEX IF NOT EXISTS ingestion_final_run_idx
+      ON knowledge.ingestion_final (run_id);
+
+    CREATE TABLE IF NOT EXISTS knowledge.ingestion_embedding_cache (
+      profile text NOT NULL,
+      source_id text NOT NULL,
+      content_sha256 text NOT NULL,
+      content text NOT NULL,
+      embedding vector(1024) NOT NULL,
+      cached_at timestamptz NOT NULL,
+      expires_at timestamptz NOT NULL,
+      PRIMARY KEY (profile, source_id, content_sha256),
+      CONSTRAINT ingestion_embedding_cache_profile_fixed
+        CHECK (profile = 'bge-m3-1024-v1'),
+      CONSTRAINT ingestion_embedding_cache_source_bounded
+        CHECK (knowledge.is_bounded_clean_text(source_id, 512)),
+      CONSTRAINT ingestion_embedding_cache_content_bounded
+        CHECK (
+          octet_length(content) BETWEEN 1 AND 65536
+          AND content ~ '[^[:space:]]'
+        ),
+      CONSTRAINT ingestion_embedding_cache_sha256_exact
+        CHECK (
+          content_sha256 = encode(sha256(convert_to(content, 'UTF8')), 'hex')
+        ),
+      CONSTRAINT ingestion_embedding_cache_ttl_bounded
+        CHECK (
+          expires_at > cached_at
+          AND expires_at <= cached_at + interval '24 hours'
+        ),
+      CONSTRAINT ingestion_embedding_cache_nonzero
+        CHECK (vector_norm(embedding) > 0)
+    );
+    ALTER TABLE knowledge.ingestion_embedding_cache OWNER TO knowledge_owner;
+    REVOKE ALL ON knowledge.ingestion_embedding_cache FROM PUBLIC;
+
+    GRANT SELECT, INSERT, UPDATE, DELETE ON knowledge.chunks TO knowledge_ingestion;
+    -- PostgreSQL requires UPDATE privilege for SELECT ... FOR UPDATE; the writer uses that row
+    -- lock to keep lease reclamation from racing a checkpoint or canonical commit transaction.
+    GRANT SELECT, INSERT, UPDATE, DELETE ON knowledge.ingestion_leases
+      TO knowledge_ingestion;
+    GRANT SELECT, INSERT, DELETE ON knowledge.ingestion_pending
+      TO knowledge_ingestion;
+    GRANT SELECT, INSERT, DELETE ON knowledge.ingestion_final
+      TO knowledge_ingestion;
+    GRANT SELECT, INSERT, DELETE ON knowledge.ingestion_embedding_cache
+      TO knowledge_ingestion;
+    GRANT EXECUTE ON FUNCTION knowledge.is_dns1123_label(text)
+      TO knowledge_ingestion;
+    GRANT EXECUTE ON FUNCTION knowledge.is_bounded_clean_text(text, integer)
+      TO knowledge_ingestion;
+    GRANT EXECUTE ON FUNCTION knowledge.is_full_mxid(text)
+      TO knowledge_ingestion;
+    GRANT EXECUTE ON FUNCTION knowledge.is_valid_principal_array(jsonb, integer)
+      TO knowledge_ingestion;
+    GRANT EXECUTE ON FUNCTION knowledge.is_valid_group_array(jsonb, integer)
+      TO knowledge_ingestion;
+    GRANT EXECUTE ON FUNCTION knowledge.is_valid_metadata(jsonb)
+      TO knowledge_ingestion;
+
+    INSERT INTO knowledge.schema_migrations (version)
+    VALUES (2)
+    ON CONFLICT (version) DO NOTHING;
+
+    COMMIT;
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: knowledge-schema-v2
+  namespace: postgres
+  labels:
+    app.kubernetes.io/name: knowledge-schema
+    app.kubernetes.io/instance: v2
+    app.kubernetes.io/component: database-migration
+    app.kubernetes.io/part-of: fgentic
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: knowledge-schema
+        app.kubernetes.io/instance: v2
+        app.kubernetes.io/component: database-migration
+        app.kubernetes.io/part-of: fgentic
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: schema
+          # Keep the exact v2 client image immutable with this historical migration artifact.
+          image: ghcr.io/cloudnative-pg/postgresql:17.10-202607130907-system-trixie@sha256:c141aec61cab8da3e215aebe0fa155e78442fbb41c982a86743915a967e12af9
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              attempt=1
+              while true; do
+                if ready="$(
+                  psql --no-psqlrc --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+                    --command="SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'knowledge_ingestion') AND EXISTS (SELECT 1 FROM knowledge.schema_migrations WHERE version = 1)" \
+                    2>/dev/null
+                )" && [ "$${ready}" = "t" ]; then
+                  exec psql --no-psqlrc --set=ON_ERROR_STOP=1 --file=/schema/schema.sql
+                fi
+                echo "waiting for knowledge schema v1 and the ingestion role (attempt $${attempt})" >&2
+                attempt=$((attempt + 1))
+                sleep 5
+              done
+          env:
+            - name: PGHOST
+              value: platform-pg-rw.postgres.svc.cluster.local
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: knowledge
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: pg-knowledge-owner
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-knowledge-owner
+                  key: password
+            - name: PGSSLMODE
+              value: require
+            - name: PGCONNECT_TIMEOUT
+              value: "3"
+            - name: HOME
+              value: /tmp
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+              ephemeral-storage: 8Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+              ephemeral-storage: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: schema
+              mountPath: /schema
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: schema
+          configMap:
+            name: knowledge-schema-v2
+        - name: tmp
+          emptyDir:
+            sizeLimit: 8Mi
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: knowledge-schema-v2
+  namespace: postgres
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: knowledge-schema
+      app.kubernetes.io/instance: v2
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: platform-pg
+      ports:
+        - protocol: TCP
+          port: 5432

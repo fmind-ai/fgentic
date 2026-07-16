@@ -29,12 +29,14 @@ Supported secret sets:
   db-knowledge-retrieval
                     Knowledge retrieval role and its identical namespace-local copy
   knowledge-db     Both knowledge database roles and the retrieval namespace copy
+  knowledge-ingestion
+                    DML-only ingestion database copies + scoped gateway caller credential
   provider         Selected API provider key; unsupported for ambient Vertex/self-hosted vLLM
   keycloak-db      Keycloak database role and both namespace copies
   slack            Optional mautrix-slack DB password + appservice registration tokens
   telegram         Optional mautrix-telegram DB password + appservice tokens; preserves API pair
   keycloak-client  OIDC client secret only; requires the live Keycloak client to be changed first
-  all              Core automatable sets; excludes optional Slack/Telegram, keycloak-client, and bootstrap
+  all              Core automatable sets; excludes optional ingestion/bridges, keycloak-client, and bootstrap
 
 Provider rotation reads the selected profile's key from MISTRAL_API_KEY, ANTHROPIC_API_KEY,
 OPENAI_API_KEY, or AZURE_OPENAI_API_KEY. keycloak-client requires FGENTIC_CLIENT_SECRET and
@@ -156,6 +158,10 @@ knowledge-db)
 	GEN_SET="knowledge-db"
 	KNOWLEDGE_DB_MODE="all"
 	TARGET_FILES=(knowledge-db.sops.yaml)
+	;;
+knowledge-ingestion)
+	GEN_SET="knowledge-ingestion"
+	TARGET_FILES=(knowledge-ingestion.sops.yaml)
 	;;
 provider)
 	resolve_provider_target
@@ -543,6 +549,36 @@ validate_knowledge_db() {
 	esac
 }
 
+validate_knowledge_ingestion() {
+	local old_file="${SECRETS_DIR}/knowledge-ingestion.sops.yaml"
+	local new_file="${STAGE_DIR}/knowledge-ingestion.sops.yaml"
+	local old_db old_authorization postgres_db workload_db gateway_key workload_authorization
+	local postgres_user workload_user
+	old_db="$(secret_value "${old_file}" postgres pg-knowledge-ingestion '.stringData.password')"
+	old_authorization="$(
+		secret_value "${old_file}" knowledge knowledge-ingestion-credential '.stringData.authorization'
+	)"
+	postgres_db="$(secret_value "${new_file}" postgres pg-knowledge-ingestion '.stringData.password')"
+	workload_db="$(secret_value "${new_file}" knowledge pg-knowledge-ingestion '.stringData.password')"
+	postgres_user="$(secret_value "${new_file}" postgres pg-knowledge-ingestion '.stringData.username')"
+	workload_user="$(secret_value "${new_file}" knowledge pg-knowledge-ingestion '.stringData.username')"
+	gateway_key="$(
+		secret_value "${new_file}" agentgateway-system knowledge-ingestion-callers \
+			'.stringData."knowledge-ingestion" | from_json | .key'
+	)"
+	workload_authorization="$(
+		secret_value "${new_file}" knowledge knowledge-ingestion-credential '.stringData.authorization'
+	)"
+	assert_equal "${postgres_user}" "knowledge_ingestion" "knowledge ingestion username drifted"
+	assert_equal "${postgres_user}" "${workload_user}" "knowledge ingestion usernames differ"
+	assert_equal "${postgres_db}" "${workload_db}" "knowledge ingestion database copies differ"
+	assert_equal "Bearer ${gateway_key}" "${workload_authorization}" \
+		"knowledge ingestion gateway credentials differ"
+	assert_changed "${old_db}" "${postgres_db}" "knowledge ingestion database password"
+	assert_changed "${old_authorization}" "${workload_authorization}" \
+		"knowledge ingestion workload credential"
+}
+
 validate_slack() {
 	local old_file="${SECRETS_DIR}/mautrix-slack.sops.yaml"
 	local new_file="${STAGE_DIR}/mautrix-slack.sops.yaml"
@@ -665,6 +701,7 @@ appservice) validate_appservice ;;
 a2a) validate_a2a ;;
 mcp) validate_mcp ;;
 db-knowledge-* | knowledge-db) validate_knowledge_db ;;
+knowledge-ingestion) validate_knowledge_ingestion ;;
 db-synapse | db-mas | db-bridge | db-kagent | db-core) validate_databases ;;
 provider) validate_provider ;;
 keycloak-db) validate_keycloak_db ;;
@@ -723,6 +760,10 @@ db-synapse | db-mas | db-bridge | db-kagent | db-core | keycloak-db)
 db-knowledge-owner | db-knowledge-retrieval | knowledge-db)
 	echo "Restart order: wait for the affected CNPG DatabaseRole resource(s) to reconcile," \
 		"then restart the retrieval consumer when its credential changed."
+	;;
+knowledge-ingestion)
+	echo "Restart order: wait for the CNPG ingestion role and gateway policy to accept the new" \
+		"copies before starting another ingestion Job."
 	;;
 slack)
 	echo "Restart order: wait for the slackbridge CNPG role, restart Synapse, then restart mautrix-slack."
