@@ -468,7 +468,8 @@ func TestDurableDeadManRefreshFailureSchedulesPersistedShortRetry(t *testing.T) 
 	b.deadMan = deadMan
 	b.deadManEnabled = true
 	b.cfg.DeadManSwitchDelay = 2 * time.Minute
-	b.cfg.RequestTimeout = 5 * time.Second
+	b.cfg.DelegationRetryInitial = 5 * time.Second
+	b.cfg.DelegationRetryMax = 5 * time.Second
 	b.pollInitial = 30 * time.Second
 	b.pollMax = 30 * time.Second
 	job := admitAndClaimDurableJob(t, b, "$durable-dead-man-refresh-retry")
@@ -486,10 +487,11 @@ func TestDurableDeadManRefreshFailureSchedulesPersistedShortRetry(t *testing.T) 
 	}
 
 	retrying := loadDurableJob(t, b, job.JobID)
-	if retrying.ErrorCode != errorDeadManRefresh ||
+	if retrying.ErrorCode != errorDeadManRefresh || retrying.AttemptCount != 1 ||
 		retrying.NextAttemptAt.Sub(retrying.UpdatedAt) != 5*time.Second {
-		t.Fatalf("failed refresh retry = code %q delay %s, want %q/5s",
-			retrying.ErrorCode, retrying.NextAttemptAt.Sub(retrying.UpdatedAt), errorDeadManRefresh)
+		t.Fatalf("failed refresh retry = code %q attempts %d delay %s, want %q/1/5s",
+			retrying.ErrorCode, retrying.AttemptCount,
+			retrying.NextAttemptAt.Sub(retrying.UpdatedAt), errorDeadManRefresh)
 	}
 	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
 		Owner: "refresh-retry", Now: retrying.NextAttemptAt, LeaseDuration: time.Minute,
@@ -503,6 +505,39 @@ func TestDurableDeadManRefreshFailureSchedulesPersistedShortRetry(t *testing.T) 
 	if stored.State != state.StateDelivered || len(deadMan.restarts) != 3 || len(deadMan.cancels) != 1 {
 		t.Fatalf("refresh recovery = state %s restarts %v cancels %v, want delivered/3/1",
 			stored.State, deadMan.restarts, deadMan.cancels)
+	}
+}
+
+func TestDurableDeadManRefreshFailureHonorsRecoveryAttemptLimit(t *testing.T) {
+	client := &scriptedA2AClient{
+		callResult: a2aclient.Result{TaskID: "task-refresh-dead", ContextID: "context-refresh-dead"},
+		polls:      []scriptedPoll{{result: a2aclient.Result{TaskID: "task-refresh-dead"}}},
+	}
+	b, _, _, _, _ := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	deadMan := &fakeDeadManClient{supported: true, restartErr: errors.New("homeserver unavailable")}
+	b.deadMan = deadMan
+	b.deadManEnabled = true
+	b.cfg.DeadManSwitchDelay = 2 * time.Minute
+	b.cfg.DelegationMaxAttempts = 1
+	b.pollMax = time.Minute
+	job := admitAndClaimDurableJob(t, b, "$durable-dead-man-refresh-dead")
+
+	b.executeDurableJob(t.Context(), job)
+	waiting := loadDurableJob(t, b, job.JobID)
+	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "refresh-failure", Now: waiting.NextAttemptAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim refresh failure = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateDead || stored.ErrorCode != errorDeadManRefresh ||
+		len(deadMan.restarts) != 1 || len(deadMan.cancels) != 1 {
+		t.Fatalf("exhausted refresh = state %s code %q restarts %v cancels %v",
+			stored.State, stored.ErrorCode, deadMan.restarts, deadMan.cancels)
 	}
 }
 
@@ -606,6 +641,7 @@ func TestDurableDeadManCancellationSurvivesDisabledStartupProbe(t *testing.T) {
 	// A restart may fail its capability probe or disable new scheduling. Persisted Synapse timers
 	// remain cleanup obligations regardless of the current scheduling capability.
 	b.deadManEnabled = false
+	b.pollMax = time.Minute
 	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
 		Owner: "replacement", Now: waiting.NextAttemptAt, LeaseDuration: time.Minute,
 	})
@@ -618,8 +654,9 @@ func TestDurableDeadManCancellationSurvivesDisabledStartupProbe(t *testing.T) {
 	if stored.State != state.StateDelivered {
 		t.Fatalf("probe-disabled terminal state = %s", stored.State)
 	}
-	if len(deadMan.cancels) != 1 || deadMan.cancels[0] != id.DelayID(waiting.MatrixDeadManDelayID) {
-		t.Fatalf("probe-disabled cleanup cancels = %v", deadMan.cancels)
+	if len(deadMan.restarts) != 1 || deadMan.restarts[0] != id.DelayID(waiting.MatrixDeadManDelayID) ||
+		len(deadMan.cancels) != 1 || deadMan.cancels[0] != id.DelayID(waiting.MatrixDeadManDelayID) {
+		t.Fatalf("probe-disabled refresh/cleanup = restarts %v cancels %v", deadMan.restarts, deadMan.cancels)
 	}
 }
 
