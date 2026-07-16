@@ -11,8 +11,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-
-	"github.com/gowebpki/jcs"
 )
 
 const maxArchivedReceiptBytes = 128 << 10
@@ -246,7 +244,7 @@ func (s *PendingStore) Load(taskID string) (pendingEvidence, bool, error) {
 	if err := decoder.Decode(&evidence); err != nil || expectEOF(decoder) != nil {
 		return pendingEvidence{}, false, fmt.Errorf("pending usage receipt evidence is invalid")
 	}
-	if _, err := jcs.Transform(raw); err != nil ||
+	if _, err := canonicalizeIJSON(raw); err != nil ||
 		!hashRE.MatchString(evidence.RequestHash) ||
 		!validTokenReservation(evidence.TokensReserved) {
 		return pendingEvidence{}, false, fmt.Errorf("pending usage receipt evidence is invalid")

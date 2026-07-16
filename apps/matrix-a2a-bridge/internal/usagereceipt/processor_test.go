@@ -253,6 +253,54 @@ func TestRequestHashCanonicalizationRejectsUnsafeIntegers(t *testing.T) {
 	}
 }
 
+func TestRequestHashRejectsMalformedUnicode(t *testing.T) {
+	replacementLiteral := []byte("{\"value\":\"\xef\xbf\xbd\"}")
+	replacementEscaped := []byte(`{"value":"\uFFFD"}`)
+	literalHash, err := RequestHash(replacementLiteral)
+	if err != nil {
+		t.Fatalf("RequestHash replacement literal: %v", err)
+	}
+	escapedHash, err := RequestHash(replacementEscaped)
+	if err != nil {
+		t.Fatalf("RequestHash replacement escape: %v", err)
+	}
+	if literalHash != escapedHash {
+		t.Fatalf("equivalent replacement characters differ: %s != %s", literalHash, escapedHash)
+	}
+
+	emojiLiteral := []byte("{\"value\":\"\xf0\x9f\x98\x80\"}")
+	emojiEscaped := []byte(`{"value":"\uD83D\uDE00"}`)
+	literalHash, err = RequestHash(emojiLiteral)
+	if err != nil {
+		t.Fatalf("RequestHash emoji literal: %v", err)
+	}
+	escapedHash, err = RequestHash(emojiEscaped)
+	if err != nil {
+		t.Fatalf("RequestHash emoji escape: %v", err)
+	}
+	if literalHash != escapedHash {
+		t.Fatalf("equivalent surrogate pair differs: %s != %s", literalHash, escapedHash)
+	}
+
+	invalidUTF8 := append([]byte(`{"value":"`), 0xff)
+	invalidUTF8 = append(invalidUTF8, []byte(`"}`)...)
+	for _, test := range []struct {
+		name string
+		raw  []byte
+	}{
+		{name: "invalid UTF-8", raw: invalidUTF8},
+		{name: "high surrogate then scalar", raw: []byte(`{"value":"\uD800\u0041"}`)},
+		{name: "high surrogate alone", raw: []byte(`{"value":"\uD800"}`)},
+		{name: "low surrogate first", raw: []byte(`{"value":"\uDC00\uDC00"}`)},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := RequestHash(test.raw); err == nil {
+				t.Fatal("RequestHash accepted malformed Unicode")
+			}
+		})
+	}
+}
+
 func TestCanonicalJSONRPCIDPreservesTypeAndValue(t *testing.T) {
 	number, err := canonicalJSONRPCID(json.RawMessage(`1.0`))
 	if err != nil {
@@ -296,6 +344,59 @@ func TestParseRequestRejectsInvalidJSONRPCEnvelope(t *testing.T) {
 		t.Run(test.name, func(t *testing.T) {
 			if _, err := ParseRequest([]byte(test.raw)); err == nil {
 				t.Fatalf("ParseRequest accepted invalid JSON-RPC envelope: %s", test.raw)
+			}
+		})
+	}
+}
+
+func TestProcessorRejectsMalformedUnicodeResponseBeforeStateMutation(t *testing.T) {
+	requestBody := []byte(`{
+	  "jsonrpc":"2.0","id":"request-1","method":"SendMessage","params":{"message":{
+	    "messageId":"message-1","role":"ROLE_USER","parts":[{"text":"prompt"}],
+	    "metadata":{"https://fgentic.fmind.ai/a2a/extensions/token-budget/v1":{"maxTokens":3000}}
+	  }}
+	}`)
+	response := []byte(`{"jsonrpc":"2.0","id":"request-1","result":{"task":{
+	  "id":"task-unicode","contextId":"context-unicode",
+	  "status":{"state":"TASK_STATE_COMPLETED","message":{
+	    "messageId":"reply-1","role":"ROLE_AGENT","parts":[{"text":"reply"}]
+	  }}
+	}}}`)
+	invalidUTF8 := bytes.Replace(response, []byte(`"reply"`), []byte{'"', 0xff, '"'}, 1)
+	for _, test := range []struct {
+		name string
+		raw  []byte
+	}{
+		{name: "invalid UTF-8", raw: invalidUTF8},
+		{
+			name: "mispaired surrogate",
+			raw:  bytes.Replace(response, []byte(`reply`), []byte(`\uD800\u0041`), 1),
+		},
+		{
+			name: "leading low surrogate",
+			raw:  bytes.Replace(response, []byte(`reply`), []byte(`\uDC00\uDC00`), 1),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			processor, archivePath := testProcessor(t)
+			request, err := ParseRequest(requestBody)
+			if err != nil {
+				t.Fatalf("ParseRequest: %v", err)
+			}
+			updated, attached, err := processor.TransformResponse(request, test.raw)
+			if err == nil || attached || updated != nil {
+				t.Fatalf(
+					"malformed response = attached %v, err %v, body %q",
+					attached,
+					err,
+					updated,
+				)
+			}
+			if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
+				t.Fatalf("malformed response created an archive: %v", err)
+			}
+			if _, found, err := processor.Pending.Load("task-unicode"); err != nil || found {
+				t.Fatalf("malformed response left pending evidence: found %v, err %v", found, err)
 			}
 		})
 	}
@@ -1079,6 +1180,49 @@ func TestPendingStoreRejectsDuplicateJSONMembers(t *testing.T) {
 	}
 	if _, _, err := store.Load("task-duplicate"); err == nil {
 		t.Fatal("Load accepted duplicate pending evidence fields")
+	}
+}
+
+func TestPendingStoreRejectsMalformedUnicode(t *testing.T) {
+	store := &PendingStore{Dir: t.TempDir()}
+	path, err := store.path("task-unicode")
+	if err != nil {
+		t.Fatalf("pending path: %v", err)
+	}
+	invalidUTF8 := []byte(fmt.Sprintf(
+		`{"requestHash":"sha256:%s`,
+		strings.Repeat("a", 63),
+	))
+	invalidUTF8 = append(invalidUTF8, 0xff)
+	invalidUTF8 = append(invalidUTF8, []byte(`","tokensReserved":10}`)...)
+	for _, test := range []struct {
+		name string
+		raw  []byte
+	}{
+		{name: "invalid UTF-8", raw: invalidUTF8},
+		{
+			name: "mispaired surrogate",
+			raw: []byte(fmt.Sprintf(
+				`{"requestHash":"sha256:%s\uD800\u0041","tokensReserved":10}`,
+				strings.Repeat("a", 62),
+			)),
+		},
+		{
+			name: "leading low surrogate",
+			raw: []byte(fmt.Sprintf(
+				`{"requestHash":"sha256:%s\uDC00\uDC00","tokensReserved":10}`,
+				strings.Repeat("a", 62),
+			)),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if err := os.WriteFile(path, test.raw, 0o600); err != nil {
+				t.Fatalf("write malformed pending evidence: %v", err)
+			}
+			if _, _, err := store.Load("task-unicode"); err == nil {
+				t.Fatal("Load accepted malformed Unicode")
+			}
+		})
 	}
 }
 

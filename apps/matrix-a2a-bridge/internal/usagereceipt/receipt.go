@@ -129,6 +129,86 @@ func validIdentifier(value string) bool {
 	return true
 }
 
+// canonicalizeIJSON rejects malformed Unicode before JCS can normalize distinct wire inputs to
+// the same Unicode replacement character. RFC 8785 requires UTF-8 JSON made of Unicode scalar
+// values, so lone or mispaired UTF-16 escapes are never valid canonicalization inputs.
+func canonicalizeIJSON(raw []byte) ([]byte, error) {
+	if !utf8.Valid(raw) {
+		return nil, fmt.Errorf("JSON is not valid UTF-8")
+	}
+	if err := validateUnicodeEscapes(raw); err != nil {
+		return nil, err
+	}
+	return jcs.Transform(raw)
+}
+
+func validateUnicodeEscapes(raw []byte) error {
+	inString := false
+	for offset := 0; offset < len(raw); {
+		current := raw[offset]
+		if !inString {
+			if current == '"' {
+				inString = true
+			}
+			offset++
+			continue
+		}
+		switch current {
+		case '"':
+			inString = false
+			offset++
+		case '\\':
+			if offset+1 >= len(raw) {
+				return fmt.Errorf("JSON string has an incomplete escape")
+			}
+			if raw[offset+1] != 'u' {
+				offset += 2
+				continue
+			}
+			codeUnit, ok := parseUnicodeEscape(raw, offset)
+			if !ok {
+				return fmt.Errorf("JSON string has an invalid Unicode escape")
+			}
+			offset += 6
+			switch {
+			case codeUnit >= 0xD800 && codeUnit <= 0xDBFF:
+				low, ok := parseUnicodeEscape(raw, offset)
+				if !ok || low < 0xDC00 || low > 0xDFFF {
+					return fmt.Errorf("JSON string has an unpaired high surrogate")
+				}
+				offset += 6
+			case codeUnit >= 0xDC00 && codeUnit <= 0xDFFF:
+				return fmt.Errorf("JSON string has an unpaired low surrogate")
+			}
+		default:
+			_, size := utf8.DecodeRune(raw[offset:])
+			offset += size
+		}
+	}
+	return nil
+}
+
+func parseUnicodeEscape(raw []byte, offset int) (uint16, bool) {
+	if offset+6 > len(raw) || raw[offset] != '\\' || raw[offset+1] != 'u' {
+		return 0, false
+	}
+	var value uint16
+	for _, digit := range raw[offset+2 : offset+6] {
+		value <<= 4
+		switch {
+		case digit >= '0' && digit <= '9':
+			value |= uint16(digit - '0')
+		case digit >= 'a' && digit <= 'f':
+			value |= uint16(digit-'a') + 10
+		case digit >= 'A' && digit <= 'F':
+			value |= uint16(digit-'A') + 10
+		default:
+			return 0, false
+		}
+	}
+	return value, true
+}
+
 // Sign signs a validated receipt with ES256 over its RFC 8785 representation.
 func Sign(receipt Receipt, key *ecdsa.PrivateKey) (Signed, error) {
 	payload, err := canonicalReceipt(receipt)
@@ -177,7 +257,7 @@ func Parse(raw []byte) (Signed, error) {
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return Signed{}, fmt.Errorf("decode signed usage receipt: trailing data")
 	}
-	if _, err := jcs.Transform(raw); err != nil {
+	if _, err := canonicalizeIJSON(raw); err != nil {
 		return Signed{}, fmt.Errorf("signed usage receipt is not valid canonicalizable I-JSON")
 	}
 	if err := signed.Receipt.Validate(); err != nil {
@@ -209,7 +289,7 @@ func canonicalReceipt(receipt Receipt) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("encode usage receipt payload: %w", err)
 	}
-	canonical, err := jcs.Transform(encoded)
+	canonical, err := canonicalizeIJSON(encoded)
 	if err != nil {
 		return nil, fmt.Errorf("canonicalize usage receipt payload: %w", err)
 	}

@@ -111,6 +111,66 @@ func TestReceiptRejectsInventedConsumptionAndUnknownFields(t *testing.T) {
 	}
 }
 
+func TestParseRejectsMalformedUnicode(t *testing.T) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("generate key: %v", err)
+	}
+	receipt, err := New(
+		"org-b-a2a", "task-unicode", "context-unicode",
+		"sha256:"+strings.Repeat("a", 64), 3000,
+		time.Date(2026, 7, 16, 8, 30, 0, 0, time.UTC),
+		"TASK_STATE_COMPLETED", "receipt-key",
+	)
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	signed, err := Sign(receipt, key)
+	if err != nil {
+		t.Fatalf("Sign: %v", err)
+	}
+	encoded, err := Marshal(signed)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	invalidUTF8 := bytes.Replace(
+		encoded,
+		[]byte(`"TASK_STATE_COMPLETED"`),
+		[]byte{'"', 0xff, '"'},
+		1,
+	)
+	for _, test := range []struct {
+		name string
+		raw  []byte
+	}{
+		{name: "invalid UTF-8", raw: invalidUTF8},
+		{
+			name: "mispaired surrogate",
+			raw: bytes.Replace(
+				encoded,
+				[]byte(`TASK_STATE_COMPLETED`),
+				[]byte(`\uD800\u0041`),
+				1,
+			),
+		},
+		{
+			name: "leading low surrogate",
+			raw: bytes.Replace(
+				encoded,
+				[]byte(`TASK_STATE_COMPLETED`),
+				[]byte(`\uDC00\uDC00`),
+				1,
+			),
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := Parse(test.raw); err == nil {
+				t.Fatal("Parse accepted malformed Unicode")
+			}
+		})
+	}
+}
+
 func TestReceiptRejectsJCSUnsafeReservation(t *testing.T) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

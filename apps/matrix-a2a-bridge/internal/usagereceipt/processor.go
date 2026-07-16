@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
-	"github.com/gowebpki/jcs"
 )
 
 // ExtensionURI identifies the versioned receipt in A2A activation and metadata fields.
@@ -135,7 +134,7 @@ func RequestHash(raw []byte) (string, error) {
 	if err := validateJCSInput(raw); err != nil {
 		return "", err
 	}
-	canonical, err := jcs.Transform(raw)
+	canonical, err := canonicalizeIJSON(raw)
 	if err != nil {
 		return "", fmt.Errorf("A2A request is not valid canonicalizable I-JSON")
 	}
@@ -166,7 +165,7 @@ func validateJCSNumbers(value any) error {
 		if !ok {
 			return fmt.Errorf("invalid JSON number")
 		}
-		canonical, err := jcs.Transform([]byte(typed))
+		canonical, err := canonicalizeIJSON([]byte(typed))
 		if err != nil {
 			return fmt.Errorf("canonicalize JSON number: %w", err)
 		}
@@ -214,7 +213,7 @@ func canonicalJSONRPCID(raw json.RawMessage) (jsonRPCID, error) {
 	if err := validateJCSNumbers(value); err != nil {
 		return "", fmt.Errorf("validate JSON-RPC id: %w", err)
 	}
-	canonical, err := jcs.Transform(raw)
+	canonical, err := canonicalizeIJSON(raw)
 	if err != nil {
 		return "", fmt.Errorf("canonicalize JSON-RPC id: %w", err)
 	}
@@ -248,7 +247,7 @@ func (p *Processor) TransformResponse(request requestEvidence, raw []byte) ([]by
 		!bytes.Equal(trimmed, []byte("null")) {
 		return nil, false, fmt.Errorf("A2A response contains both result and error")
 	}
-	if _, err := jcs.Transform(raw); err != nil {
+	if _, err := canonicalizeIJSON(raw); err != nil {
 		return nil, false, fmt.Errorf("result-bearing A2A response is not valid canonicalizable I-JSON")
 	}
 	if envelope.JSONRPC != "2.0" {
