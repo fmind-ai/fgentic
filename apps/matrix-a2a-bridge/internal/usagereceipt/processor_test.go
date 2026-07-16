@@ -24,13 +24,22 @@ func TestProcessorInjectsAndArchivesTerminalReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseRequest: %v", err)
 	}
-	response := []byte(`{"jsonrpc":"2.0","id":"request-1","result":{"kind":"message","messageId":"reply-1","taskId":"task-1","contextId":"context-1","role":"ROLE_AGENT","parts":[{"text":"reply"}]}}`)
+	response := []byte(`{"jsonrpc":"2.0","id":9007199254740993,"result":{"kind":"message","messageId":"reply-1","taskId":"task-1","contextId":"context-1","role":"ROLE_AGENT","parts":[{"text":"reply"}]}}`)
 	updated, attached, err := processor.TransformResponse(request, response)
 	if err != nil {
 		t.Fatalf("TransformResponse: %v", err)
 	}
 	if !attached {
 		t.Fatal("TransformResponse did not attach a terminal receipt")
+	}
+	var envelope struct {
+		ID json.RawMessage `json:"id"`
+	}
+	if err := json.Unmarshal(updated, &envelope); err != nil {
+		t.Fatalf("decode updated response envelope: %v", err)
+	}
+	if string(envelope.ID) != "9007199254740993" {
+		t.Fatalf("numeric JSON-RPC id changed during receipt injection: %s", envelope.ID)
 	}
 	signed := receiptFromResponse(t, updated)
 	if err := Verify(signed, &processor.Key.PublicKey, processor.KeyID); err != nil {
