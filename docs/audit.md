@@ -51,7 +51,7 @@ The MCP record is likewise an independent capability-use record. Select it by `a
 
 ## Cross-organization usage receipt
 
-The federation lab's inbound public docs-qa route returns a seller-signed, content-free `fgentic.usage-receipt.v1` under `https://fgentic.fmind.ai/a2a/extensions/usage-receipt/v1` in the protocol-native result carrier: `result.message.metadata` for a terminal Message, `result.task.metadata` for a wrapped Task, or direct `result.metadata` for `GetTask`. A terminal Message also names the URI in its `extensions` array. It is a separate evidence chain from the Matrix bridge audit above: the authenticated subject is the org-B machine client `azp`, not a Matrix sender or natural person.
+The federation lab's inbound public docs-qa route returns a seller-signed, content-free `fgentic.usage-receipt.v1` under `https://fgentic.fmind.ai/a2a/extensions/usage-receipt/v1` in terminal Task metadata: `result.task.metadata` for a wrapped `SendMessage` Task, or direct `result.metadata` for `GetTask`. A direct A2A Message is not terminal-task evidence and fails closed instead of being relabeled as completed. It is a separate evidence chain from the Matrix bridge audit above: the authenticated subject is the org-B machine client `azp`, not a Matrix sender or natural person.
 
 | Field                                         | Evidence meaning                                                                                                                |
 | --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |

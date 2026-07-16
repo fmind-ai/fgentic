@@ -261,6 +261,11 @@ verify_cross_org_delegation() {
 	response="${WORK_DIR}/a2a-valid.json"
 	status="$(a2a_status "${response}" "${ORG_B_A2A_TOKEN}" "${document}")"
 	[ "${status}" = "200" ] || die "authorized org B delegation returned HTTP ${status}"
+	jq -e '
+      .jsonrpc == "2.0" and .error == null and
+      .result.task.status.state == "TASK_STATE_COMPLETED"
+    ' "${response}" >/dev/null ||
+		die "authorized org B delegation did not return a completed Task"
 	jq -e --arg reply "${EXPECTED_DEMO_REPLY}" '
       .jsonrpc == "2.0" and .error == null and
       ([.. | objects | .text? // empty] | any(. == $reply))
@@ -271,7 +276,7 @@ verify_cross_org_delegation() {
 		die "authorized delegation did not increase aggregate model-token metrics"
 	receipt="${WORK_DIR}/usage-receipt.json"
 	jq -e --arg extension "${USAGE_RECEIPT_EXTENSION}" \
-		'(.result.message // .result.task // .result).metadata[$extension]' \
+		'.result.task.metadata[$extension]' \
 		"${response}" >"${receipt}" ||
 		die "authorized org B delegation returned no signed usage receipt"
 	"${ROOT_DIR}/scripts/usage-receipt.sh" verify --input "${receipt}" \
@@ -289,16 +294,10 @@ verify_cross_org_delegation() {
       .receipt.requestHash == $request_hash
     ' "${receipt}" >/dev/null || die "signed usage receipt contract is incomplete"
 	jq -e --slurpfile receipt "${receipt}" '
-      (.result.message // .result.task // .result) as $result |
-      $receipt[0].receipt.taskId == ($result.taskId // $result.id) and
+      .result.task as $result |
+      $receipt[0].receipt.taskId == $result.id and
       $receipt[0].receipt.contextId == $result.contextId and
-      (
-        if .result.message != null then
-          $receipt[0].receipt.outcome == "TASK_STATE_COMPLETED"
-        else
-          $receipt[0].receipt.outcome == $result.status.state
-        end
-      )
+      $receipt[0].receipt.outcome == $result.status.state
     ' "${response}" >/dev/null ||
 		die "signed usage receipt does not match the authorized A2A result"
 	tampered="${WORK_DIR}/usage-receipt-tampered.json"

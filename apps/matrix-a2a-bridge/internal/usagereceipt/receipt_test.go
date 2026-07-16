@@ -1,6 +1,7 @@
 package usagereceipt
 
 import (
+	"bytes"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -45,6 +46,32 @@ func TestSignVerifyAndTamper(t *testing.T) {
 	}
 	if err := Verify(parsed, &key.PublicKey, receipt.KeyID); err != nil {
 		t.Fatalf("Verify parsed: %v", err)
+	}
+	for name, duplicated := range map[string][]byte{
+		"top-level": bytes.Replace(
+			encoded,
+			[]byte(`{"receipt":`),
+			[]byte(`{"protected":"shadow","receipt":`),
+			1,
+		),
+		"nested": bytes.Replace(
+			encoded,
+			[]byte(`"tokensReserved":3000`),
+			[]byte(`"tokensReserved":1,"tokensReserved":3000`),
+			1,
+		),
+		"escape-equivalent": bytes.Replace(
+			encoded,
+			[]byte(`"tokensReserved":3000`),
+			[]byte(`"\u0074okensReserved":1,"tokensReserved":3000`),
+			1,
+		),
+	} {
+		t.Run("duplicate "+name, func(t *testing.T) {
+			if _, err := Parse(duplicated); err == nil {
+				t.Fatal("Parse accepted duplicate JSON member names")
+			}
+		})
 	}
 
 	tampered := parsed

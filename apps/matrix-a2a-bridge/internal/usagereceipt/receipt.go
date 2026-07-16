@@ -177,6 +177,9 @@ func Parse(raw []byte) (Signed, error) {
 	if err := decoder.Decode(&struct{}{}); err != io.EOF {
 		return Signed{}, fmt.Errorf("decode signed usage receipt: trailing data")
 	}
+	if _, err := jcs.Transform(raw); err != nil {
+		return Signed{}, fmt.Errorf("signed usage receipt is not valid canonicalizable I-JSON")
+	}
 	if err := signed.Receipt.Validate(); err != nil {
 		return Signed{}, err
 	}

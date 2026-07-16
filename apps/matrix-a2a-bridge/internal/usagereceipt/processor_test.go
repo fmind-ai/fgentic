@@ -6,10 +6,10 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
-	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -28,7 +28,12 @@ func TestProcessorInjectsAndArchivesTerminalReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseRequest: %v", err)
 	}
-	response := []byte(`{"jsonrpc":"2.0","id":9007199254740992,"result":{"message":{"messageId":"reply-1","taskId":"task-1","contextId":"context-1","role":"ROLE_AGENT","parts":[{"text":"reply"}]}}}`)
+	response := []byte(`{"jsonrpc":"2.0","id":9007199254740992,"result":{"task":{
+	  "id":"task-1","contextId":"context-1",
+	  "status":{"state":"TASK_STATE_COMPLETED","message":{
+	    "messageId":"reply-1","role":"ROLE_AGENT","parts":[{"text":"reply"}]
+	  }}
+	}}}`)
 	updated, attached, err := processor.TransformResponse(request, response)
 	if err != nil {
 		t.Fatalf("TransformResponse: %v", err)
@@ -51,11 +56,10 @@ func TestProcessorInjectsAndArchivesTerminalReceipt(t *testing.T) {
 	if err := json.Unmarshal(updated, &sdkEnvelope); err != nil {
 		t.Fatalf("decode updated response through a2a-go: %v", err)
 	}
-	message, ok := sdkEnvelope.Result.Event.(*a2a.Message)
-	if !ok || message.Metadata[ExtensionURI] == nil ||
-		!slices.Contains(message.Extensions, ExtensionURI) {
+	task, ok := sdkEnvelope.Result.Event.(*a2a.Task)
+	if !ok || task.Metadata[ExtensionURI] == nil {
 		t.Fatalf(
-			"a2a-go message did not retain usage receipt metadata: %#v",
+			"a2a-go task did not retain usage receipt metadata: %#v",
 			sdkEnvelope.Result.Event,
 		)
 	}
@@ -106,9 +110,11 @@ func TestProcessorConcurrentCompletionReturnsArchivedReceipt(t *testing.T) {
 		t.Fatalf("ParseRequest: %v", err)
 	}
 	response := []byte(`{
-	  "jsonrpc":"2.0","id":"request-concurrent","result":{"message":{
-	    "messageId":"reply-concurrent","taskId":"task-concurrent",
-	    "contextId":"context-concurrent","role":"ROLE_AGENT","parts":[{"text":"reply"}]
+	  "jsonrpc":"2.0","id":"request-concurrent","result":{"task":{
+	    "id":"task-concurrent","contextId":"context-concurrent",
+	    "status":{"state":"TASK_STATE_COMPLETED","message":{
+	      "messageId":"reply-concurrent","role":"ROLE_AGENT","parts":[{"text":"reply"}]
+	    }}
 	  }}
 	}`)
 	type transformResult struct {
@@ -456,12 +462,10 @@ func TestProcessorRejectsNonObjectResultMetadata(t *testing.T) {
 	response := []byte(`{
   "jsonrpc":"2.0",
   "id":"request-1",
-  "result":{"message":{
-    "messageId":"reply-1",
-    "taskId":"task-1",
+  "result":{"task":{
+    "id":"task-1",
     "contextId":"context-1",
-    "role":"ROLE_AGENT",
-    "parts":[],
+    "status":{"state":"TASK_STATE_COMPLETED"},
     "metadata":"invalid"
   }}
 }`)
@@ -476,7 +480,7 @@ func TestProcessorRejectsNonObjectResultMetadata(t *testing.T) {
 	}
 }
 
-func TestProcessorRejectsNonArrayMessageExtensions(t *testing.T) {
+func TestProcessorRejectsDirectMessageWithoutTaskCompletionState(t *testing.T) {
 	processor, archivePath := testProcessor(t)
 	request, err := ParseRequest([]byte(`{
   "jsonrpc":"2.0",
@@ -494,21 +498,19 @@ func TestProcessorRejectsNonArrayMessageExtensions(t *testing.T) {
   "id":"request-1",
   "result":{"message":{
     "messageId":"reply-1",
-    "taskId":"task-1",
     "contextId":"context-1",
     "role":"ROLE_AGENT",
-    "parts":[],
-    "extensions":"invalid"
+    "parts":[{"text":"reply"}]
   }}
 }`)
 	if _, _, err := processor.TransformResponse(request, response); err == nil {
-		t.Fatal("TransformResponse replaced non-array A2A message extensions")
+		t.Fatal("TransformResponse treated a direct Message as terminal task evidence")
 	}
 	if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
-		t.Fatalf("malformed extensions created an archive: %v", err)
+		t.Fatalf("direct Message created an archive: %v", err)
 	}
 	if _, found, err := processor.Pending.Load("task-1"); err != nil || found {
-		t.Fatalf("malformed extensions persisted pending evidence: found %v, err %v", found, err)
+		t.Fatalf("direct Message persisted pending evidence: found %v, err %v", found, err)
 	}
 }
 
@@ -582,6 +584,374 @@ func TestProcessorDoesNotPersistInvalidSendMessageResult(t *testing.T) {
 				)
 			}
 		})
+	}
+}
+
+func TestProcessorRejectsSemanticallyInvalidA2AResults(t *testing.T) {
+	tests := []struct {
+		name   string
+		result string
+	}{
+		{
+			name: "message missing id",
+			result: `{"message":{
+			  "taskId":"task-invalid","contextId":"context-invalid",
+			  "role":"ROLE_AGENT","parts":[{"text":"reply"}]
+			}}`,
+		},
+		{
+			name: "message missing role",
+			result: `{"message":{
+			  "messageId":"reply-invalid","taskId":"task-invalid",
+			  "contextId":"context-invalid","parts":[{"text":"reply"}]
+			}}`,
+		},
+		{
+			name: "message unknown role",
+			result: `{"message":{
+			  "messageId":"reply-invalid","taskId":"task-invalid",
+			  "contextId":"context-invalid","role":"ROLE_OTHER","parts":[{"text":"reply"}]
+			}}`,
+		},
+		{
+			name: "message user role",
+			result: `{"message":{
+			  "messageId":"reply-invalid","taskId":"task-invalid",
+			  "contextId":"context-invalid","role":"ROLE_USER","parts":[{"text":"reply"}]
+			}}`,
+		},
+		{
+			name: "valid direct message has no terminal task state",
+			result: `{"message":{
+			  "messageId":"reply-invalid",
+			  "role":"ROLE_AGENT","parts":[{"text":"reply"}]
+			}}`,
+		},
+		{
+			name: "message empty parts",
+			result: `{"message":{
+			  "messageId":"reply-invalid","taskId":"task-invalid",
+			  "contextId":"context-invalid","role":"ROLE_AGENT","parts":[]
+			}}`,
+		},
+		{
+			name: "message null part",
+			result: `{"message":{
+			  "messageId":"reply-invalid","taskId":"task-invalid",
+			  "contextId":"context-invalid","role":"ROLE_AGENT","parts":[null]
+			}}`,
+		},
+		{
+			name: "task missing id",
+			result: `{"task":{
+			  "contextId":"context-invalid","status":{"state":"TASK_STATE_WORKING"}
+			}}`,
+		},
+		{
+			name: "task missing context",
+			result: `{"task":{
+			  "id":"task-invalid","status":{"state":"TASK_STATE_WORKING"}
+			}}`,
+		},
+		{
+			name: "task missing state",
+			result: `{"task":{
+			  "id":"task-invalid","contextId":"context-invalid","status":{}
+			}}`,
+		},
+		{
+			name: "task unspecified state",
+			result: `{"task":{
+			  "id":"task-invalid","contextId":"context-invalid",
+			  "status":{"state":"TASK_STATE_UNSPECIFIED"}
+			}}`,
+		},
+		{
+			name: "task unknown state",
+			result: `{"task":{
+			  "id":"task-invalid","contextId":"context-invalid",
+			  "status":{"state":"TASK_STATE_UNKNOWN"}
+			}}`,
+		},
+		{
+			name: "task duplicate state",
+			result: `{"task":{
+			  "id":"task-invalid","contextId":"context-invalid",
+			  "status":{"state":"TASK_STATE_WORKING","state":"TASK_STATE_COMPLETED"}
+			}}`,
+		},
+		{
+			name: "task null history message",
+			result: `{"task":{
+			  "id":"task-invalid","contextId":"context-invalid",
+			  "status":{"state":"TASK_STATE_WORKING"},"history":[null]
+			}}`,
+		},
+		{
+			name: "task null artifact",
+			result: `{"task":{
+			  "id":"task-invalid","contextId":"context-invalid",
+			  "status":{"state":"TASK_STATE_WORKING"},"artifacts":[null]
+			}}`,
+		},
+		{
+			name: "task artifact missing id",
+			result: `{"task":{
+			  "id":"task-invalid","contextId":"context-invalid",
+			  "status":{"state":"TASK_STATE_WORKING"},
+			  "artifacts":[{"parts":[{"text":"artifact"}]}]
+			}}`,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			processor, archivePath := testProcessor(t)
+			request, err := ParseRequest([]byte(`{
+			  "jsonrpc":"2.0","id":"request-1","method":"SendMessage","params":{"message":{"metadata":{
+			    "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1":{"maxTokens":1000}
+			  }}}
+			}`))
+			if err != nil {
+				t.Fatalf("ParseRequest: %v", err)
+			}
+			response := []byte(fmt.Sprintf(
+				`{"jsonrpc":"2.0","id":"request-1","result":%s}`,
+				test.result,
+			))
+			updated, attached, err := processor.TransformResponse(request, response)
+			if err == nil || attached || updated != nil {
+				t.Fatalf(
+					"invalid result = attached %v, err %v, body %s",
+					attached,
+					err,
+					updated,
+				)
+			}
+			assertNoReceiptState(t, processor, archivePath)
+		})
+	}
+}
+
+func TestProcessorRejectsResultAndErrorWithoutStateMutation(t *testing.T) {
+	processor, archivePath := testProcessor(t)
+	request, err := ParseRequest([]byte(`{
+	  "jsonrpc":"2.0","id":"request-1","method":"SendMessage","params":{"message":{"metadata":{
+	    "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1":{"maxTokens":1000}
+	  }}}
+	}`))
+	if err != nil {
+		t.Fatalf("ParseRequest: %v", err)
+	}
+	response := []byte(`{
+	  "jsonrpc":"2.0","id":"request-1",
+	  "result":{"task":{
+	    "id":"task-invalid","contextId":"context-invalid",
+	    "status":{"state":"TASK_STATE_COMPLETED"}
+	  }},
+	  "error":{"code":-32603,"message":"ambiguous"}
+	}`)
+	updated, attached, err := processor.TransformResponse(request, response)
+	if err == nil || attached || updated != nil {
+		t.Fatalf(
+			"result plus error = attached %v, err %v, body %s",
+			attached,
+			err,
+			updated,
+		)
+	}
+	assertNoReceiptState(t, processor, archivePath)
+}
+
+func TestValidateA2AResultRecognizesExactTaskStates(t *testing.T) {
+	for _, test := range []struct {
+		state    string
+		terminal bool
+	}{
+		{state: "TASK_STATE_SUBMITTED"},
+		{state: "TASK_STATE_WORKING"},
+		{state: "TASK_STATE_INPUT_REQUIRED"},
+		{state: "TASK_STATE_AUTH_REQUIRED"},
+		{state: "TASK_STATE_COMPLETED", terminal: true},
+		{state: "TASK_STATE_FAILED", terminal: true},
+		{state: "TASK_STATE_CANCELED", terminal: true},
+		{state: "TASK_STATE_REJECTED", terminal: true},
+	} {
+		t.Run(test.state, func(t *testing.T) {
+			raw := json.RawMessage(fmt.Sprintf(`{"task":{
+			  "id":"task-state","contextId":"context-state","status":{"state":%q}
+			}}`, test.state))
+			evidence, err := validateA2AResult("SendMessage", raw)
+			if err != nil {
+				t.Fatalf("validateA2AResult: %v", err)
+			}
+			if evidence.Terminal != test.terminal || evidence.Outcome != test.state {
+				t.Fatalf("evidence = %+v, want terminal %v", evidence, test.terminal)
+			}
+		})
+	}
+}
+
+func TestProcessorSerializesPendingAndTerminalState(t *testing.T) {
+	for _, order := range []string{"working-then-terminal", "terminal-then-working"} {
+		t.Run(order, func(t *testing.T) {
+			processor, archivePath := testProcessor(t)
+			request, err := ParseRequest([]byte(`{
+			  "jsonrpc":"2.0","id":"request-1","method":"SendMessage","params":{"message":{"metadata":{
+			    "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1":{"maxTokens":1000}
+			  }}}
+			}`))
+			if err != nil {
+				t.Fatalf("ParseRequest: %v", err)
+			}
+			working := []byte(`{"jsonrpc":"2.0","id":"request-1","result":{"task":{
+			  "id":"task-ordered","contextId":"context-ordered",
+			  "status":{"state":"TASK_STATE_WORKING"}
+			}}}`)
+			terminal := []byte(`{"jsonrpc":"2.0","id":"request-1","result":{"task":{
+			  "id":"task-ordered","contextId":"context-ordered",
+			  "status":{"state":"TASK_STATE_COMPLETED","message":{
+			    "messageId":"reply-ordered","role":"ROLE_AGENT","parts":[{"text":"reply"}]
+			  }}
+			}}}`)
+
+			runWorking := func(expectConflict bool) {
+				t.Helper()
+				updated, attached, err := processor.TransformResponse(request, working)
+				if expectConflict {
+					if err == nil || attached || updated != nil {
+						t.Fatalf(
+							"stale working response = attached %v, err %v, body %s",
+							attached,
+							err,
+							updated,
+						)
+					}
+					return
+				}
+				if err != nil || attached || string(updated) != string(working) {
+					t.Fatalf(
+						"working response = attached %v, err %v, body %s",
+						attached,
+						err,
+						updated,
+					)
+				}
+			}
+			runTerminal := func() {
+				t.Helper()
+				if _, attached, err := processor.TransformResponse(request, terminal); err != nil || !attached {
+					t.Fatalf("terminal response = attached %v, err %v", attached, err)
+				}
+			}
+
+			if order == "working-then-terminal" {
+				runWorking(false)
+				runTerminal()
+			} else {
+				runTerminal()
+				runWorking(true)
+			}
+			if _, found, err := processor.Pending.Load("task-ordered"); err != nil || found {
+				t.Fatalf("pending evidence survived terminal ordering: found %v, err %v", found, err)
+			}
+			archive, err := os.ReadFile(archivePath)
+			if err != nil || strings.Count(string(archive), "\n") != 1 {
+				t.Fatalf("archive after ordered responses = %q, err %v", archive, err)
+			}
+		})
+	}
+}
+
+func TestProcessorConcurrentPendingAndTerminalStateConverges(t *testing.T) {
+	type transformResult struct {
+		kind     string
+		updated  []byte
+		attached bool
+		err      error
+	}
+	for attempt := range 32 {
+		processor, archivePath := testProcessor(t)
+		request, err := ParseRequest([]byte(`{
+		  "jsonrpc":"2.0","id":"request-1","method":"SendMessage","params":{"message":{"metadata":{
+		    "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1":{"maxTokens":1000}
+		  }}}
+		}`))
+		if err != nil {
+			t.Fatalf("attempt %d ParseRequest: %v", attempt, err)
+		}
+		working := []byte(`{"jsonrpc":"2.0","id":"request-1","result":{"task":{
+		  "id":"task-concurrent-state","contextId":"context-concurrent-state",
+		  "status":{"state":"TASK_STATE_WORKING"}
+		}}}`)
+		terminal := []byte(`{"jsonrpc":"2.0","id":"request-1","result":{"task":{
+		  "id":"task-concurrent-state","contextId":"context-concurrent-state",
+		  "status":{"state":"TASK_STATE_COMPLETED"}
+		}}}`)
+
+		start := make(chan struct{})
+		results := make(chan transformResult, 2)
+		run := func(kind string, raw []byte) {
+			<-start
+			updated, attached, err := processor.TransformResponse(request, raw)
+			results <- transformResult{
+				kind: kind, updated: updated, attached: attached, err: err,
+			}
+		}
+		go run("working", working)
+		go run("terminal", terminal)
+		close(start)
+
+		var workingResult, terminalResult transformResult
+		for range 2 {
+			select {
+			case result := <-results:
+				if result.kind == "working" {
+					workingResult = result
+				} else {
+					terminalResult = result
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("attempt %d concurrent transitions did not return", attempt)
+			}
+		}
+		if terminalResult.err != nil || !terminalResult.attached {
+			t.Fatalf(
+				"attempt %d terminal response = attached %v, err %v",
+				attempt,
+				terminalResult.attached,
+				terminalResult.err,
+			)
+		}
+		if workingResult.attached {
+			t.Fatalf("attempt %d working response attached a receipt", attempt)
+		}
+		if workingResult.err == nil {
+			if !bytes.Equal(workingResult.updated, working) {
+				t.Fatalf(
+					"attempt %d working response changed: %s",
+					attempt,
+					workingResult.updated,
+				)
+			}
+		} else if workingResult.updated != nil {
+			t.Fatalf(
+				"attempt %d conflicting working response returned a body: %s",
+				attempt,
+				workingResult.updated,
+			)
+		}
+		if _, found, err := processor.Pending.Load("task-concurrent-state"); err != nil || found {
+			t.Fatalf(
+				"attempt %d pending evidence survived: found %v, err %v",
+				attempt,
+				found,
+				err,
+			)
+		}
+		archive, err := os.ReadFile(archivePath)
+		if err != nil || strings.Count(string(archive), "\n") != 1 {
+			t.Fatalf("attempt %d archive = %q, err %v", attempt, archive, err)
+		}
 	}
 }
 
@@ -693,6 +1063,25 @@ func TestPendingStoreRejectsConflictingTaskEvidence(t *testing.T) {
 	}
 }
 
+func TestPendingStoreRejectsDuplicateJSONMembers(t *testing.T) {
+	store := &PendingStore{Dir: t.TempDir()}
+	path, err := store.path("task-duplicate")
+	if err != nil {
+		t.Fatalf("pending path: %v", err)
+	}
+	raw := []byte(fmt.Sprintf(
+		`{"requestHash":"sha256:%s","requestHash":"sha256:%s","tokensReserved":10}`,
+		strings.Repeat("a", 64),
+		strings.Repeat("b", 64),
+	))
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("write duplicate pending evidence: %v", err)
+	}
+	if _, _, err := store.Load("task-duplicate"); err == nil {
+		t.Fatal("Load accepted duplicate pending evidence fields")
+	}
+}
+
 func TestProcessorDoesNotCreateReceiptForUnauthorizedOrErrorPath(t *testing.T) {
 	processor, archivePath := testProcessor(t)
 	request, err := ParseRequest([]byte(`{"jsonrpc":"2.0","id":"request-1","method":"ListTasks","params":{}}`))
@@ -706,6 +1095,20 @@ func TestProcessorDoesNotCreateReceiptForUnauthorizedOrErrorPath(t *testing.T) {
 	}
 	if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
 		t.Fatalf("unauthorized path created an archive: %v", err)
+	}
+}
+
+func assertNoReceiptState(t *testing.T, processor *Processor, archivePath string) {
+	t.Helper()
+	if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
+		t.Fatalf("invalid response created an archive: %v", err)
+	}
+	entries, err := os.ReadDir(processor.Pending.Dir)
+	if err != nil && !os.IsNotExist(err) {
+		t.Fatalf("read pending evidence directory: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("invalid response persisted %d pending evidence files", len(entries))
 	}
 }
 
@@ -732,17 +1135,14 @@ func receiptFromResponse(t *testing.T, raw []byte) Signed {
 	var envelope struct {
 		Result struct {
 			metadataCarrier
-			Message *metadataCarrier `json:"message"`
-			Task    *metadataCarrier `json:"task"`
+			Task *metadataCarrier `json:"task"`
 		} `json:"result"`
 	}
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		t.Fatalf("decode response: %v", err)
 	}
 	carrier := &envelope.Result.metadataCarrier
-	if envelope.Result.Message != nil {
-		carrier = envelope.Result.Message
-	} else if envelope.Result.Task != nil {
+	if envelope.Result.Task != nil {
 		carrier = envelope.Result.Task
 	}
 	receiptRaw := carrier.Metadata[ExtensionURI]

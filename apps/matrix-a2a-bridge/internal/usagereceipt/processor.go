@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"sync"
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
@@ -18,11 +19,15 @@ import (
 // ExtensionURI identifies the versioned receipt in A2A activation and metadata fields.
 const ExtensionURI = "https://fgentic.fmind.ai/a2a/extensions/usage-receipt/v1"
 
-var terminalTaskStates = map[string]bool{
-	"TASK_STATE_COMPLETED": true,
-	"TASK_STATE_FAILED":    true,
-	"TASK_STATE_CANCELED":  true,
-	"TASK_STATE_REJECTED":  true,
+var validTaskStates = map[a2a.TaskState]bool{
+	a2a.TaskStateAuthRequired:  true,
+	a2a.TaskStateCanceled:      true,
+	a2a.TaskStateCompleted:     true,
+	a2a.TaskStateFailed:        true,
+	a2a.TaskStateInputRequired: true,
+	a2a.TaskStateRejected:      true,
+	a2a.TaskStateSubmitted:     true,
+	a2a.TaskStateWorking:       true,
 }
 
 type jsonRPCID string
@@ -40,6 +45,13 @@ type pendingEvidence struct {
 	TokensReserved uint64 `json:"tokensReserved"`
 }
 
+type responseEvidence struct {
+	TaskID    string
+	ContextID string
+	Outcome   string
+	Terminal  bool
+}
+
 // Processor deterministically attaches receipts after the authenticated upstream returns a
 // terminal A2A result. It owns no authorization decision; agentgateway must run it only after the
 // exact exported-route JWT, authorization, and reservation policies have accepted the request.
@@ -50,6 +62,7 @@ type Processor struct {
 	Archive *Archive
 	Pending *PendingStore
 	Now     func() time.Time
+	stateMu sync.Mutex
 }
 
 // ParseRequest records only the content-free evidence needed for a later receipt.
@@ -124,7 +137,7 @@ func RequestHash(raw []byte) (string, error) {
 	}
 	canonical, err := jcs.Transform(raw)
 	if err != nil {
-		return "", fmt.Errorf("canonicalize A2A request: %w", err)
+		return "", fmt.Errorf("A2A request is not valid canonicalizable I-JSON")
 	}
 	digest := sha256.Sum256(canonical)
 	return "sha256:" + hex.EncodeToString(digest[:]), nil
@@ -228,9 +241,15 @@ func (p *Processor) TransformResponse(request requestEvidence, raw []byte) ([]by
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return raw, false, nil
 	}
-	if len(envelope.Result) == 0 ||
-		string(envelope.Error) != "" && string(envelope.Error) != "null" {
+	if len(envelope.Result) == 0 {
 		return raw, false, nil
+	}
+	if trimmed := bytes.TrimSpace(envelope.Error); len(trimmed) > 0 &&
+		!bytes.Equal(trimmed, []byte("null")) {
+		return nil, false, fmt.Errorf("A2A response contains both result and error")
+	}
+	if _, err := jcs.Transform(raw); err != nil {
+		return nil, false, fmt.Errorf("result-bearing A2A response is not valid canonicalizable I-JSON")
 	}
 	if envelope.JSONRPC != "2.0" {
 		return nil, false, fmt.Errorf("A2A response jsonrpc version is invalid")
@@ -242,53 +261,103 @@ func (p *Processor) TransformResponse(request requestEvidence, raw []byte) ([]by
 	if responseID != request.JSONRPCID {
 		return nil, false, fmt.Errorf("A2A response id does not match request")
 	}
-	if err := validateA2AResult(request.Method, envelope.Result); err != nil {
+	response, err := validateA2AResult(request.Method, envelope.Result)
+	if err != nil {
 		return nil, false, err
 	}
 	result, err := decodeObject(envelope.Result)
 	if err != nil {
 		return nil, false, fmt.Errorf("decode A2A response result: %w", err)
 	}
-	taskID, contextID, outcome, terminal := resultEvidence(request.Method, result)
-	if taskID == "" || contextID == "" {
-		return raw, false, nil
-	}
-
 	if request.Method == "GetTask" {
-		if request.TaskID != taskID {
+		if request.TaskID != response.TaskID {
 			return nil, false, fmt.Errorf("GetTask response task ID does not match request")
 		}
 	}
-	evidence := pendingEvidence{RequestHash: request.RequestHash, TokensReserved: request.TokensReserved}
-	if !terminal {
+
+	if !response.Terminal {
+		p.stateMu.Lock()
+		defer p.stateMu.Unlock()
+		archived, found, err := p.Archive.Find(response.TaskID)
+		if err != nil {
+			return nil, false, err
+		}
+		if found {
+			if err := p.validateArchivedTask(archived, response.TaskID); err != nil {
+				return nil, false, err
+			}
+			if err := p.validatePending(response.TaskID, archived.Receipt); err != nil {
+				return nil, false, err
+			}
+			if err := p.Pending.Delete(response.TaskID); err != nil {
+				return nil, false, err
+			}
+			return nil, false, fmt.Errorf("nonterminal A2A response conflicts with archived terminal task")
+		}
 		if request.Method == "SendMessage" {
-			if err := p.Pending.Save(taskID, evidence); err != nil {
+			evidence := pendingEvidence{
+				RequestHash: request.RequestHash, TokensReserved: request.TokensReserved,
+			}
+			if err := p.Pending.Save(response.TaskID, evidence); err != nil {
 				return nil, false, err
 			}
 		}
 		return raw, false, nil
 	}
-	archived, found, err := p.Archive.Find(taskID)
+
+	var proposed Signed
+	var updated []byte
+	var attached bool
+	completedAt := p.Now()
+	if request.Method == "SendMessage" {
+		proposed, updated, attached, err = p.prepareReceipt(
+			request,
+			response,
+			pendingEvidence{
+				RequestHash: request.RequestHash, TokensReserved: request.TokensReserved,
+			},
+			completedAt,
+			raw,
+			result,
+		)
+		if err != nil {
+			return nil, false, err
+		}
+	}
+
+	p.stateMu.Lock()
+	defer p.stateMu.Unlock()
+	archived, found, err := p.Archive.Find(response.TaskID)
 	if err != nil {
 		return nil, false, err
 	}
 	if found {
-		if err := p.validateArchived(archived, request, taskID, contextID, outcome); err != nil {
+		if err := p.validateArchived(
+			archived,
+			request,
+			response.TaskID,
+			response.ContextID,
+			response.Outcome,
+		); err != nil {
 			return nil, false, err
 		}
 		updated, attached, err := attachReceipt(request.Method, raw, result, archived)
 		if err != nil {
 			return nil, false, err
 		}
-		if request.Method == "GetTask" {
-			if err := p.deletePending(taskID, archived.Receipt); err != nil {
-				return nil, false, err
-			}
+		if err := p.validatePending(response.TaskID, archived.Receipt); err != nil {
+			return nil, false, err
+		}
+		if err := p.Pending.Delete(response.TaskID); err != nil {
+			return nil, false, err
 		}
 		return updated, attached, nil
 	}
+	evidence := pendingEvidence{
+		RequestHash: request.RequestHash, TokensReserved: request.TokensReserved,
+	}
 	if request.Method == "GetTask" {
-		evidence, found, err = p.Pending.Load(taskID)
+		evidence, found, err = p.Pending.Load(response.TaskID)
 		if err != nil {
 			return nil, false, err
 		}
@@ -299,26 +368,33 @@ func (p *Processor) TransformResponse(request requestEvidence, raw []byte) ([]by
 	if evidence.RequestHash == "" || evidence.TokensReserved == 0 {
 		return nil, false, fmt.Errorf("terminal A2A response has no reservation evidence")
 	}
-	receipt, err := New(
-		p.AZP, taskID, contextID, evidence.RequestHash, evidence.TokensReserved,
-		p.Now(), outcome, p.KeyID,
-	)
-	if err != nil {
-		return nil, false, err
+	if request.Method == "GetTask" {
+		proposed, updated, attached, err = p.prepareReceipt(
+			request,
+			response,
+			evidence,
+			completedAt,
+			raw,
+			result,
+		)
+		if err != nil {
+			return nil, false, err
+		}
 	}
-	proposed, err := Sign(receipt, p.Key)
-	if err != nil {
-		return nil, false, err
-	}
-	updated, attached, err := attachReceipt(request.Method, raw, result, proposed)
-	if err != nil {
+	if err := p.validatePending(response.TaskID, proposed.Receipt); err != nil {
 		return nil, false, err
 	}
 	signed, err := p.Archive.AppendUnique(proposed)
 	if err != nil {
 		return nil, false, err
 	}
-	if err := p.validateArchived(signed, request, taskID, contextID, outcome); err != nil {
+	if err := p.validateArchived(
+		signed,
+		request,
+		response.TaskID,
+		response.ContextID,
+		response.Outcome,
+	); err != nil {
 		return nil, false, err
 	}
 	if signed != proposed {
@@ -327,10 +403,8 @@ func (p *Processor) TransformResponse(request requestEvidence, raw []byte) ([]by
 			return nil, false, err
 		}
 	}
-	if request.Method == "GetTask" {
-		if err := p.deletePending(taskID, signed.Receipt); err != nil {
-			return nil, false, err
-		}
+	if err := p.Pending.Delete(response.TaskID); err != nil {
+		return nil, false, err
 	}
 	return updated, attached, nil
 }
@@ -355,7 +429,17 @@ func (p *Processor) validateArchived(
 	return nil
 }
 
-func (p *Processor) deletePending(taskID string, receipt Receipt) error {
+func (p *Processor) validateArchivedTask(signed Signed, taskID string) error {
+	if err := Verify(signed, &p.Key.PublicKey, p.KeyID); err != nil {
+		return fmt.Errorf("validate archived usage receipt: %w", err)
+	}
+	if signed.Receipt.AZP != p.AZP || signed.Receipt.TaskID != taskID {
+		return fmt.Errorf("archived usage receipt conflicts with task")
+	}
+	return nil
+}
+
+func (p *Processor) validatePending(taskID string, receipt Receipt) error {
 	evidence, found, err := p.Pending.Load(taskID)
 	if err != nil {
 		return err
@@ -364,7 +448,39 @@ func (p *Processor) deletePending(taskID string, receipt Receipt) error {
 		evidence.TokensReserved != receipt.TokensReserved) {
 		return fmt.Errorf("pending usage receipt evidence conflicts with archive")
 	}
-	return p.Pending.Delete(taskID)
+	return nil
+}
+
+func (p *Processor) prepareReceipt(
+	request requestEvidence,
+	response responseEvidence,
+	evidence pendingEvidence,
+	completedAt time.Time,
+	raw []byte,
+	result map[string]any,
+) (Signed, []byte, bool, error) {
+	receipt, err := New(
+		p.AZP,
+		response.TaskID,
+		response.ContextID,
+		evidence.RequestHash,
+		evidence.TokensReserved,
+		completedAt,
+		response.Outcome,
+		p.KeyID,
+	)
+	if err != nil {
+		return Signed{}, nil, false, err
+	}
+	proposed, err := Sign(receipt, p.Key)
+	if err != nil {
+		return Signed{}, nil, false, err
+	}
+	updated, attached, err := attachReceipt(request.Method, raw, result, proposed)
+	if err != nil {
+		return Signed{}, nil, false, err
+	}
+	return proposed, updated, attached, nil
 }
 
 func attachReceipt(
@@ -373,14 +489,9 @@ func attachReceipt(
 	result map[string]any,
 	signed Signed,
 ) ([]byte, bool, error) {
-	carrier, message, err := receiptCarrier(method, result)
+	carrier, err := receiptCarrier(method, result)
 	if err != nil {
 		return nil, false, err
-	}
-	if message {
-		if err := activateMessageExtension(carrier); err != nil {
-			return nil, false, err
-		}
 	}
 	metadata, ok := carrier["metadata"].(map[string]any)
 	if !ok {
@@ -412,46 +523,19 @@ func attachReceipt(
 	return updated, true, nil
 }
 
-func receiptCarrier(method string, result map[string]any) (map[string]any, bool, error) {
+func receiptCarrier(method string, result map[string]any) (map[string]any, error) {
 	switch method {
 	case "SendMessage":
-		message, hasMessage := result["message"].(map[string]any)
-		task, hasTask := result["task"].(map[string]any)
-		if hasMessage == hasTask {
-			return nil, false, fmt.Errorf("SendMessage response must contain exactly one message or task result")
-		}
-		if hasMessage {
-			return message, true, nil
-		}
-		return task, false, nil
-	case "GetTask":
-		return result, false, nil
-	default:
-		return nil, false, fmt.Errorf("unsupported A2A receipt method %q", method)
-	}
-}
-
-func activateMessageExtension(message map[string]any) error {
-	raw, exists := message["extensions"]
-	if !exists {
-		message["extensions"] = []any{ExtensionURI}
-		return nil
-	}
-	extensions, ok := raw.([]any)
-	if !ok {
-		return fmt.Errorf("A2A message extensions is not an array")
-	}
-	for _, extension := range extensions {
-		uri, ok := extension.(string)
+		task, ok := result["task"].(map[string]any)
 		if !ok {
-			return fmt.Errorf("A2A message extension URI is not a string")
+			return nil, fmt.Errorf("SendMessage receipt requires a Task result")
 		}
-		if uri == ExtensionURI {
-			return nil
-		}
+		return task, nil
+	case "GetTask":
+		return result, nil
+	default:
+		return nil, fmt.Errorf("unsupported A2A receipt method %q", method)
 	}
-	message["extensions"] = append(extensions, ExtensionURI)
-	return nil
 }
 
 func (p *Processor) validate() error {
@@ -477,60 +561,121 @@ func decodeObject(raw []byte) (map[string]any, error) {
 	return value, nil
 }
 
-func validateA2AResult(method string, raw json.RawMessage) error {
+func validateA2AResult(method string, raw json.RawMessage) (responseEvidence, error) {
 	switch method {
 	case "SendMessage":
 		var response a2a.StreamResponse
 		if err := json.Unmarshal(raw, &response); err != nil {
-			return fmt.Errorf("decode SendMessage result through a2a-go: %w", err)
+			return responseEvidence{}, fmt.Errorf("decode SendMessage result through a2a-go: %w", err)
 		}
-		switch response.Event.(type) {
-		case *a2a.Message, *a2a.Task:
-			return nil
+		switch event := response.Event.(type) {
+		case *a2a.Message:
+			if err := validateMessage(event); err != nil {
+				return responseEvidence{}, fmt.Errorf("validate SendMessage Message result: %w", err)
+			}
+			if event.Role != a2a.MessageRoleAgent {
+				return responseEvidence{}, fmt.Errorf("SendMessage Message result role must be ROLE_AGENT")
+			}
+			return responseEvidence{}, fmt.Errorf(
+				"SendMessage Message result cannot prove terminal task state",
+			)
+		case *a2a.Task:
+			if err := validateTask(event); err != nil {
+				return responseEvidence{}, fmt.Errorf("validate SendMessage Task result: %w", err)
+			}
+			return taskResponseEvidence(event), nil
 		default:
-			return fmt.Errorf("SendMessage result is not a Message or Task")
+			return responseEvidence{}, fmt.Errorf("SendMessage result is not a Message or Task")
 		}
 	case "GetTask":
 		var task a2a.Task
 		if err := json.Unmarshal(raw, &task); err != nil {
-			return fmt.Errorf("decode GetTask result through a2a-go: %w", err)
+			return responseEvidence{}, fmt.Errorf("decode GetTask result through a2a-go: %w", err)
 		}
-		return nil
+		if err := validateTask(&task); err != nil {
+			return responseEvidence{}, fmt.Errorf("validate GetTask Task result: %w", err)
+		}
+		return taskResponseEvidence(&task), nil
 	default:
-		return fmt.Errorf("unsupported A2A receipt method %q", method)
+		return responseEvidence{}, fmt.Errorf("unsupported A2A receipt method %q", method)
 	}
 }
 
-func resultEvidence(
-	method string,
-	result map[string]any,
-) (taskID, contextID, outcome string, terminal bool) {
-	switch method {
-	case "SendMessage":
-		if task, ok := result["task"].(map[string]any); ok {
-			return taskEvidence(task)
-		}
-		if message, ok := result["message"].(map[string]any); ok {
-			return messageEvidence(message)
-		}
-	case "GetTask":
-		return taskEvidence(result)
+func validateMessage(message *a2a.Message) error {
+	if message == nil {
+		return fmt.Errorf("message is null")
 	}
-	return "", "", "", false
+	if !validIdentifier(message.ID) {
+		return fmt.Errorf("messageId is invalid")
+	}
+	if message.Role != a2a.MessageRoleAgent && message.Role != a2a.MessageRoleUser {
+		return fmt.Errorf("role is invalid")
+	}
+	if len(message.Parts) == 0 {
+		return fmt.Errorf("parts are missing")
+	}
+	for _, part := range message.Parts {
+		if part == nil || part.Content == nil {
+			return fmt.Errorf("part content is invalid")
+		}
+	}
+	if message.ContextID != "" && !validIdentifier(message.ContextID) {
+		return fmt.Errorf("contextId is invalid")
+	}
+	if message.TaskID != "" && !validIdentifier(string(message.TaskID)) {
+		return fmt.Errorf("taskId is invalid")
+	}
+	for _, taskID := range message.ReferenceTasks {
+		if !validIdentifier(string(taskID)) {
+			return fmt.Errorf("referenceTaskIds contains an invalid task ID")
+		}
+	}
+	return nil
 }
 
-func taskEvidence(task map[string]any) (taskID, contextID, outcome string, terminal bool) {
-	taskID, _ = task["id"].(string)
-	contextID, _ = task["contextId"].(string)
-	status, _ := task["status"].(map[string]any)
-	outcome, _ = status["state"].(string)
-	return taskID, contextID, outcome, terminalTaskStates[outcome]
+func validateTask(task *a2a.Task) error {
+	if task == nil {
+		return fmt.Errorf("task is null")
+	}
+	if !validIdentifier(string(task.ID)) {
+		return fmt.Errorf("id is invalid")
+	}
+	if !validIdentifier(task.ContextID) {
+		return fmt.Errorf("contextId is invalid")
+	}
+	if !validTaskStates[task.Status.State] {
+		return fmt.Errorf("status.state is invalid")
+	}
+	if task.Status.Message != nil {
+		if err := validateMessage(task.Status.Message); err != nil {
+			return fmt.Errorf("status.message is invalid: %w", err)
+		}
+	}
+	for _, message := range task.History {
+		if err := validateMessage(message); err != nil {
+			return fmt.Errorf("history message is invalid: %w", err)
+		}
+	}
+	for _, artifact := range task.Artifacts {
+		if artifact == nil || !validIdentifier(string(artifact.ID)) || len(artifact.Parts) == 0 {
+			return fmt.Errorf("artifact is invalid")
+		}
+		for _, part := range artifact.Parts {
+			if part == nil || part.Content == nil {
+				return fmt.Errorf("artifact part content is invalid")
+			}
+		}
+	}
+	return nil
 }
 
-func messageEvidence(message map[string]any) (taskID, contextID, outcome string, terminal bool) {
-	taskID, _ = message["taskId"].(string)
-	contextID, _ = message["contextId"].(string)
-	return taskID, contextID, "TASK_STATE_COMPLETED", taskID != "" && contextID != ""
+func taskResponseEvidence(task *a2a.Task) responseEvidence {
+	return responseEvidence{
+		TaskID:    string(task.ID),
+		ContextID: task.ContextID,
+		Outcome:   string(task.Status.State),
+		Terminal:  task.Status.State.Terminal(),
+	}
 }
 
 func expectEOF(decoder *json.Decoder) error {

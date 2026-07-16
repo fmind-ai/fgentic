@@ -42,7 +42,7 @@ func (s *ExternalProcessor) Process(stream extprocv3.ExternalProcessor_ProcessSe
 			}
 			evidence, err = ParseRequest(body.GetBody())
 			if err != nil {
-				return status.Errorf(codes.InvalidArgument, "invalid A2A request: %v", err)
+				return status.Error(codes.InvalidArgument, "invalid A2A request")
 			}
 			if err := stream.Send(bodyContinue(true, nil)); err != nil {
 				return fmt.Errorf("continue request body: %w", err)
@@ -58,7 +58,7 @@ func (s *ExternalProcessor) Process(stream extprocv3.ExternalProcessor_ProcessSe
 			}
 			updated, attached, err := s.Processor.TransformResponse(evidence, body.GetBody())
 			if err != nil {
-				return status.Errorf(codes.Internal, "produce usage receipt: %v", err)
+				return status.Error(codes.Internal, "produce usage receipt")
 			}
 			if !attached {
 				updated = nil
