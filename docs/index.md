@@ -32,14 +32,17 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 
 - [Production Installation](production.md) - Flux-reconciled production path with SOPS secrets and acceptance gates
 - [Day-2 Operations Handbook](operations-handbook.md) - evidence-bound monitoring, scaling, recovery, incident, and upgrade procedures
+- [Reading the Cost Dashboards](cost-dashboards.md) - interpreting aggregate tokens, delegation pressure, partner reservations, and unavailable attribution
 - [Partner Federation Onboarding](federation-onboarding.md) - bilateral checklist to federate with a partner org
 - [Partner Federation Offboarding](federation-offboarding.md) - bilateral checklist to revoke a partner across every plane
 - [Delegation Attribution Audit](audit.md) - proving who invoked which agent, when, over which model path
+- [Retention and Data-Subject Erasure](retention.md) - finite Matrix policy, store-by-store limits, and the honest MAS-to-Synapse workflow
 - [Slack Interop Walkthrough](interop-slack.md) - enabling the opt-in mautrix-slack unit
 - [Bridge Performance Evidence](performance.md) - dated load-sanity evidence for §12.5
 
 # Security deep dives
 
+- [Security and Auditor Dossier](security-whitepaper.md) - evidence-bound OWASP Agentic and LLM Top 10 control mapping
 - [security/](security/) - threat model, prompt-injection controls, supply-chain verification
 
 # Architecture Decision Records
