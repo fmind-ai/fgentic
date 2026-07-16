@@ -15,7 +15,7 @@ fail() {
   exit 1
 }
 
-for command in flux jq kubeconform kubectl yq; do
+for command in flux helm jq kubeconform kubectl yq; do
   command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
 done
 
@@ -94,6 +94,21 @@ enabled_gateway_path="$(yq -r 'select((.kind == "Kustomization") and (.metadata.
 admin_render="$(render_profile local "${ADMIN_DIR}/enabled")"
 gateway_enabled="$(render_profile local "${GATEWAY_DIR}/enabled")"
 gateway_disabled="$(render_profile local "${GATEWAY_DIR}/disabled")"
+ess_repository="$(yq -er 'select(.kind == "OCIRepository" and
+  .metadata.name == "ess-matrix-stack") | .spec.url' "${ROOT_DIR}/infra/flux/sources.yaml")" ||
+  fail "could not read the ESS chart repository"
+ess_version="$(yq -er 'select(.kind == "OCIRepository" and
+  .metadata.name == "ess-matrix-stack") | .spec.ref.tag' "${ROOT_DIR}/infra/flux/sources.yaml")" ||
+  fail "could not read the ESS chart version"
+ess_render="$({
+  load_settings local
+  yq -e '.spec.values' "${ROOT_DIR}/infra/matrix/helmrelease.yaml" |
+    flux envsubst --strict |
+    helm template ess "${ess_repository}" \
+      --version "${ess_version}" \
+      --namespace matrix \
+      --values -
+})" || fail "could not render the pinned ESS chart"
 admin_json="$(yq eval-all -o=json '[.]' <<<"${admin_render}")"
 gateway_enabled_json="$(yq eval-all -o=json '[.]' <<<"${gateway_enabled}")"
 gateway_disabled_json="$(yq eval-all -o=json '[.]' <<<"${gateway_disabled}")"
@@ -130,6 +145,37 @@ yq -e '
   (.policy.data | has("admin_clients") | not)
 ' <<<"${mas_login_policy}" >/dev/null ||
   fail "Ketesa must use user-authorized dynamic registration, not an admin client credential"
+
+# The ESS chart owns MAS listener composition. Prove the exact pinned render exposes the admin API
+# on the same public listener reached by infra/matrix/httproutes.yaml; do not duplicate that config.
+mas_chart_overrides="$(yq -er 'select(.kind == "ConfigMap" and
+  .metadata.name == "ess-matrix-authentication-service") |
+  .data."mas-config-overrides.yaml"' <<<"${ess_render}")" ||
+  fail "pinned ESS render omitted MAS overrides"
+mas_chart_underrides="$(yq -er 'select(.kind == "ConfigMap" and
+  .metadata.name == "ess-matrix-authentication-service") |
+  .data."mas-config-underrides.yaml"' <<<"${ess_render}")" ||
+  fail "pinned ESS render omitted MAS underrides"
+jq -e '
+  [.http.listeners[] | select(.name == "web" and
+    (.binds | any(.port == 8080))) |
+    .resources[] | select(.name == "adminapi")] | length == 1
+' < <(yq -o=json '.' <<<"${mas_chart_overrides}") >/dev/null ||
+  fail "pinned ESS public MAS listener omitted adminapi"
+yq -e '
+  .policy.data.client_registration.allow_host_mismatch == false and
+  .policy.data.client_registration.allow_insecure_uris == false
+' <<<"${mas_chart_underrides}" >/dev/null ||
+  fail "pinned ESS dynamic-registration safeguards drifted"
+yq -e 'select(.kind == "Service" and
+  .metadata.name == "ess-matrix-authentication-service") |
+  [.spec.ports[] | select(.name == "http" and .port == 8080)] | length == 1' \
+  <<<"${ess_render}" >/dev/null || fail "pinned ESS MAS Service omitted public port 8080"
+yq -e 'select(.kind == "HTTPRoute" and
+  .metadata.name == "matrix-authentication-service") |
+  [.spec.rules[].backendRefs[] | select(.name == "ess-matrix-authentication-service" and
+    .port == 8080)] | length == 1' "${ROOT_DIR}/infra/matrix/httproutes.yaml" >/dev/null ||
+  fail "Gateway route does not expose the public MAS listener"
 
 jq -e '.[] | select(.kind == "Deployment" and .metadata.name == "ketesa") |
   .spec.replicas == 1 and
