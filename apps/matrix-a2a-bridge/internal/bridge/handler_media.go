@@ -165,10 +165,10 @@ func (b *Bridge) deliverReply(
 
 	if placeholder == "" {
 		replyID = b.postReply(ctx, intent, evt, text)
-	} else {
-		b.editReply(ctx, intent, evt.RoomID, placeholder, text)
+	} else if b.editReply(ctx, intent, evt.RoomID, placeholder, text) {
 		replyID = placeholder
 	}
+	b.replies.record(agentReplyRef{room: evt.RoomID, event: replyID, ghost: localpart})
 	for _, u := range uploads {
 		b.postMediaFile(ctx, intent, evt, u)
 	}

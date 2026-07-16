@@ -68,7 +68,7 @@ D18 narrows that gateway-projection pattern to permission-aware retrieval withou
 
 ### D12 — Data durability (was: zero backups)
 
-A single PVC loss would have destroyed Synapse history, MAS identities, kagent sessions, and bridge state simultaneously. **Now:** CNPG WAL archiving + nightly `ScheduledBackup` to a Terraform-provisioned GCS bucket via a keyless Workload-Identity binding; `instances: 3` documented as the production profile. Still open: the Synapse **media store** decision (S3/GCS media provider vs snapshot-backed PVC) — tracked as issue #62 (M9).
+A single PVC loss would have destroyed Synapse history, MAS identities, kagent sessions, and bridge state simultaneously. **Now:** CNPG WAL archiving + nightly `ScheduledBackup` to a Terraform-provisioned GCS bucket via a keyless Workload-Identity binding; `instances: 3` documented as the production profile. [ADR 0019](adr/0019-synapse-media-store.md) keeps Synapse media on an explicit retained PVC: local development uses `local-path`, while the GKE reference enables the PD CSI driver, binds `standard-rwo`, and declares a retained snapshot class. Snapshot creation and the coordinated database+media restore remain an observed drill gate, not a claim made from manifests.
 
 ### D13 — Supply chain: digest-pinned, signed images (was: mutable `latest`)
 

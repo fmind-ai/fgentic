@@ -67,6 +67,9 @@ func TestDurableJobDeliversTerminalResultAndClearsContent(t *testing.T) {
 	if stored.MatrixReplyEventID == "" || stored.TerminalAt.IsZero() {
 		t.Fatalf("terminal Matrix evidence missing: %+v", stored)
 	}
+	if reply, ok := b.replies.lookup(id.EventID(stored.MatrixReplyEventID), id.RoomID(job.RoomID)); !ok || reply.ghost != job.GhostLocalpart {
+		t.Fatalf("durable quality-reaction reply = (%+v, %v), want %s", reply, ok, job.GhostLocalpart)
+	}
 	if client.callCount != 1 || len(client.callMessageIDs) != 1 || client.callMessageIDs[0] != job.A2AMessageID {
 		t.Fatalf("A2A calls/IDs = %d/%v, want one %q", client.callCount, client.callMessageIDs, job.A2AMessageID)
 	}

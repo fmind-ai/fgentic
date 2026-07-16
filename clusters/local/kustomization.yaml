@@ -11,6 +11,18 @@ resources:
 components:
   - ../base/provider-selection
 patches:
+  # Production-shaped profiles opt into the finite Synapse retention fragment. Its durations
+  # come from this cluster's platform-settings; demo/federation do not compose the component.
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: matrix
+      namespace: flux-system
+    patch: |
+      - op: add
+        path: /spec/components/-
+        value: retention
   # No object store locally: strip the CNPG GCS backup config (WAL archiving + ScheduledBackup +
   # the Workload Identity service-account binding). Postgres itself is unchanged.
   - patch: |
@@ -39,6 +51,28 @@ patches:
                 name: platform-pg-nightly
                 namespace: postgres
               $patch: delete
+  # Keep local Synapse media explicit and retained. local-path cannot provide VolumeSnapshots;
+  # this overlay is persistent across Pod restarts but is not production recovery evidence.
+  - patch: |
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: matrix
+        namespace: flux-system
+      spec:
+        patches:
+          - target:
+              kind: HelmRelease
+              name: matrix-stack
+              namespace: matrix
+            patch: |
+              - op: add
+                path: /spec/values/synapse/media
+                value:
+                  storage:
+                    size: 10Gi
+                    storageClassName: local-path
+                    resourcePolicy: keep
   # The bridge image is side-loaded into k3d (`mise run bridge:load`), never pulled from GHCR
   # (the repo/package is private and local runs should not depend on registry state).
   - patch: |

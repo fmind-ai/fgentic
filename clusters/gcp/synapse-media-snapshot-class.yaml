@@ -1,0 +1,9 @@
+# Snapshot requests are created deliberately by the isolated restore drill, not on an unbounded
+# schedule. Retaining their backing contents prevents deletion of a request object from silently
+# deleting the recovery point before its evidence and retention decision are recorded (ADR 0019).
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: fgentic-synapse-media
+driver: pd.csi.storage.gke.io
+deletionPolicy: Retain

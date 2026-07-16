@@ -10,6 +10,39 @@ resources:
   - ../base
   - platform-settings.yaml
   - secrets.yaml
+  - synapse-media-snapshot-class.yaml
 components:
   - ../base/provider-selection
   - ../../infra/production-ha/cluster
+patches:
+  # Keep policy durations deployment-configurable while making the production reference finite.
+  # The component is relative to the Matrix Kustomization's ./infra/matrix source path.
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: matrix
+      namespace: flux-system
+    patch: |
+      - op: add
+        path: /spec/components/-
+        value: retention
+  # Bind Synapse media to the CSI-backed class whose snapshots are retained independently of
+  # their request objects. The restore drill owns snapshot creation and recovery-point evidence.
+  - patch: |
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: matrix
+        namespace: flux-system
+      spec:
+        patches:
+          - target:
+              kind: HelmRelease
+              name: matrix-stack
+              namespace: matrix
+            patch: |
+              - op: add
+                path: /spec/values/synapse/media
+                value:
+                  storage: {size: 10Gi, storageClassName: standard-rwo, resourcePolicy: keep}
