@@ -19,6 +19,24 @@ type lostAdmissionAcknowledgementStore struct {
 	state.Store
 }
 
+type deadManRecordErrorStore struct {
+	state.Store
+	err error
+}
+
+type deadManRetryErrorStore struct {
+	state.Store
+	err error
+}
+
+func (s *deadManRecordErrorStore) RecordDeadMan(context.Context, state.DeadManRequest) error {
+	return s.err
+}
+
+func (s *deadManRetryErrorStore) ScheduleRetry(context.Context, state.RetryRequest) error {
+	return s.err
+}
+
 func (s *lostAdmissionAcknowledgementStore) RecordAdmission(
 	ctx context.Context,
 	request state.AdmissionRequest,
@@ -382,13 +400,23 @@ func TestDurableKnownTaskResumesWithGetAndReusesPlaceholder(t *testing.T) {
 	}
 	b, _, _, _, recorder := pollingHarness(t, client)
 	configureDurableTestBridge(b)
+	deadMan := &fakeDeadManClient{supported: true}
+	b.deadMan = deadMan
+	b.deadManEnabled = true
+	b.cfg.DeadManSwitchDelay = 2 * time.Minute
+	b.pollMax = time.Minute
 	job := admitAndClaimDurableJob(t, b, "$durable-task")
 
 	b.executeDurableJob(t.Context(), job)
 	waiting := loadDurableJob(t, b, job.JobID)
 	if waiting.State != state.StateAwaitingTask || waiting.A2ATaskID != "task-known" ||
-		waiting.MatrixPlaceholderEventID == "" || waiting.LeaseOwner != "" || waiting.AttemptCount != 0 {
+		waiting.MatrixPlaceholderEventID == "" || waiting.MatrixDeadManDelayID == "" ||
+		waiting.LeaseOwner != "" || waiting.AttemptCount != 0 {
 		t.Fatalf("awaiting task evidence = %+v", waiting)
+	}
+	if len(deadMan.schedules) != 1 || len(deadMan.restarts) != 0 || len(deadMan.cancels) != 0 {
+		t.Fatalf("initial durable dead-man calls = schedules %+v restarts %v cancels %v",
+			deadMan.schedules, deadMan.restarts, deadMan.cancels)
 	}
 	placeholder := id.EventID(waiting.MatrixPlaceholderEventID)
 	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
@@ -406,12 +434,318 @@ func TestDurableKnownTaskResumesWithGetAndReusesPlaceholder(t *testing.T) {
 	if client.callCount != 1 || client.resumeCount != 1 {
 		t.Fatalf("SendMessage calls=%d GetTask calls=%d, want 1/1", client.callCount, client.resumeCount)
 	}
+	if len(deadMan.restarts) != 1 || len(deadMan.cancels) != 1 ||
+		deadMan.restarts[0] != id.DelayID(waiting.MatrixDeadManDelayID) ||
+		deadMan.cancels[0] != id.DelayID(waiting.MatrixDeadManDelayID) {
+		t.Fatalf("terminal durable dead-man calls = restarts %v cancels %v", deadMan.restarts, deadMan.cancels)
+	}
 	events := recorder.snapshot()
 	if len(events) != 2 || events[0].Body != workingText || events[1].Body != "* finished" {
 		t.Fatalf("task Matrix events = %+v", events)
 	}
 	if got := events[1].RelatesTo.GetReplaceID(); got != placeholder {
 		t.Fatalf("terminal edit target = %q, want placeholder %q", got, placeholder)
+	}
+}
+
+func TestDurableDeadManRefreshFailureSchedulesPersistedShortRetry(t *testing.T) {
+	client := &scriptedA2AClient{
+		callResult: a2aclient.Result{TaskID: "task-refresh-retry", ContextID: "context-refresh-retry"},
+		polls: []scriptedPoll{
+			{result: a2aclient.Result{TaskID: "task-refresh-retry"}},
+			{result: a2aclient.Result{TaskID: "task-refresh-retry"}},
+			{result: a2aclient.Result{TaskID: "task-refresh-retry"}},
+			{result: a2aclient.Result{TaskID: "task-refresh-retry"}},
+			{result: a2aclient.Result{TaskID: "task-refresh-retry", Text: "finished", Terminal: true}},
+		},
+	}
+	b, _, _, _, _ := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	deadMan := &fakeDeadManClient{
+		supported:   true,
+		restartErrs: []error{nil, errors.New("homeserver unavailable"), nil},
+	}
+	b.deadMan = deadMan
+	b.deadManEnabled = true
+	b.cfg.DeadManSwitchDelay = 2 * time.Minute
+	b.cfg.DelegationRetryInitial = 5 * time.Second
+	b.cfg.DelegationRetryMax = 5 * time.Second
+	b.pollInitial = 30 * time.Second
+	b.pollMax = 30 * time.Second
+	job := admitAndClaimDurableJob(t, b, "$durable-dead-man-refresh-retry")
+
+	b.executeDurableJob(t.Context(), job)
+	for poll := 0; poll < 4; poll++ {
+		waiting := loadDurableJob(t, b, job.JobID)
+		claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+			Owner: "poll-worker", Now: waiting.NextAttemptAt, LeaseDuration: time.Minute,
+		})
+		if err != nil || !found {
+			t.Fatalf("claim poll %d = (%v, %v)", poll, found, err)
+		}
+		b.executeDurableJob(t.Context(), claimed)
+	}
+
+	retrying := loadDurableJob(t, b, job.JobID)
+	if retrying.ErrorCode != errorDeadManRefresh || retrying.AttemptCount != 1 ||
+		retrying.NextAttemptAt.Sub(retrying.UpdatedAt) != 5*time.Second {
+		t.Fatalf("failed refresh retry = code %q attempts %d delay %s, want %q/1/5s",
+			retrying.ErrorCode, retrying.AttemptCount,
+			retrying.NextAttemptAt.Sub(retrying.UpdatedAt), errorDeadManRefresh)
+	}
+	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "refresh-retry", Now: retrying.NextAttemptAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim refresh retry = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateDelivered || len(deadMan.restarts) != 3 || len(deadMan.cancels) != 1 {
+		t.Fatalf("refresh recovery = state %s restarts %v cancels %v, want delivered/3/1",
+			stored.State, deadMan.restarts, deadMan.cancels)
+	}
+}
+
+func TestDurableDeadManRefreshFailureHonorsRecoveryAttemptLimit(t *testing.T) {
+	client := &scriptedA2AClient{
+		callResult: a2aclient.Result{TaskID: "task-refresh-dead", ContextID: "context-refresh-dead"},
+		polls:      []scriptedPoll{{result: a2aclient.Result{TaskID: "task-refresh-dead"}}},
+	}
+	b, _, _, _, _ := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	deadMan := &fakeDeadManClient{supported: true, restartErr: errors.New("homeserver unavailable")}
+	b.deadMan = deadMan
+	b.deadManEnabled = true
+	b.cfg.DeadManSwitchDelay = 2 * time.Minute
+	b.cfg.DelegationMaxAttempts = 1
+	b.pollMax = time.Minute
+	job := admitAndClaimDurableJob(t, b, "$durable-dead-man-refresh-dead")
+
+	b.executeDurableJob(t.Context(), job)
+	waiting := loadDurableJob(t, b, job.JobID)
+	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "refresh-failure", Now: waiting.NextAttemptAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim refresh failure = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateDead || stored.ErrorCode != errorDeadManRefresh ||
+		len(deadMan.restarts) != 1 || len(deadMan.cancels) != 1 {
+		t.Fatalf("exhausted refresh = state %s code %q restarts %v cancels %v",
+			stored.State, stored.ErrorCode, deadMan.restarts, deadMan.cancels)
+	}
+}
+
+func TestDurableDeadManPersistenceFailureCancelsScheduledEvent(t *testing.T) {
+	client := &scriptedA2AClient{callResult: a2aclient.Result{
+		TaskID: "task-record-failure", ContextID: "context-record-failure",
+	}}
+	b, _, _, _, _ := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	b.store = &deadManRecordErrorStore{Store: b.store, err: errors.New("database unavailable")}
+	deadMan := &fakeDeadManClient{supported: true}
+	b.deadMan = deadMan
+	b.deadManEnabled = true
+	b.cfg.DeadManSwitchDelay = 2 * time.Minute
+	job := admitAndClaimDurableJob(t, b, "$durable-dead-man-record-failure")
+
+	b.executeDurableJob(t.Context(), job)
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.MatrixDeadManDelayID != "" {
+		t.Fatalf("failed persistence retained delay ID %q", stored.MatrixDeadManDelayID)
+	}
+	if len(deadMan.schedules) != 1 || len(deadMan.cancels) != 1 ||
+		deadMan.cancels[0] != id.DelayID("delay-"+deadMan.schedules[0].txnID) {
+		t.Fatalf("dead-man rollback calls = schedules %+v cancels %v", deadMan.schedules, deadMan.cancels)
+	}
+}
+
+func TestDurableDeadManCancellationRetriesAfterTerminalProjection(t *testing.T) {
+	client := &scriptedA2AClient{
+		callResult: a2aclient.Result{TaskID: "task-cancel-retry", ContextID: "context-cancel-retry"},
+		polls: []scriptedPoll{{result: a2aclient.Result{
+			Text: "finished", TaskID: "task-cancel-retry", ContextID: "context-final", Terminal: true,
+		}}},
+	}
+	b, _, _, _, recorder := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	deadMan := &fakeDeadManClient{supported: true, cancelErr: errors.New("homeserver unavailable")}
+	b.deadMan = deadMan
+	b.deadManEnabled = true
+	b.cfg.DeadManSwitchDelay = 2 * time.Minute
+	job := admitAndClaimDurableJob(t, b, "$durable-dead-man-cancel-retry")
+
+	b.executeDurableJob(t.Context(), job)
+	waiting := loadDurableJob(t, b, job.JobID)
+	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "terminal", Now: waiting.NextAttemptAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim known task = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+	retrying := loadDurableJob(t, b, job.JobID)
+	if retrying.State != state.StateReplyPending || retrying.AttemptCount != 1 || retrying.LeaseOwner != "" ||
+		retrying.MatrixEditEventID == "" {
+		t.Fatalf("cancel retry evidence = %+v", retrying)
+	}
+	if events := recorder.snapshot(); len(events) != 2 {
+		t.Fatalf("events after accepted terminal projection = %+v", events)
+	}
+
+	deadMan.cancelErr = nil
+	claimed, found, err = b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "replacement", Now: retrying.NextAttemptAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("reclaim terminal projection = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateDelivered || stored.AttemptCount != 0 {
+		t.Fatalf("recovered terminal state = %+v", stored)
+	}
+	if len(deadMan.cancels) != 2 || deadMan.cancels[0] != deadMan.cancels[1] {
+		t.Fatalf("dead-man cancellation attempts = %v, want two identical IDs", deadMan.cancels)
+	}
+	if events := recorder.snapshot(); len(events) != 2 {
+		t.Fatalf("cancellation retry re-projected terminal event: %+v", events)
+	}
+}
+
+func TestDurableDeadManCancellationSurvivesDisabledStartupProbe(t *testing.T) {
+	client := &scriptedA2AClient{
+		callResult: a2aclient.Result{TaskID: "task-probe-disabled", ContextID: "context-probe-disabled"},
+		polls: []scriptedPoll{{result: a2aclient.Result{
+			Text: "finished", TaskID: "task-probe-disabled", ContextID: "context-final", Terminal: true,
+		}}},
+	}
+	b, _, _, _, _ := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	deadMan := &fakeDeadManClient{supported: true}
+	b.deadMan = deadMan
+	b.deadManEnabled = true
+	b.cfg.DeadManSwitchDelay = 2 * time.Minute
+	job := admitAndClaimDurableJob(t, b, "$durable-dead-man-probe-disabled")
+	b.executeDurableJob(t.Context(), job)
+	waiting := loadDurableJob(t, b, job.JobID)
+	if waiting.MatrixDeadManDelayID == "" {
+		t.Fatal("awaiting task has no persisted delayed-event ID")
+	}
+
+	// A restart may fail its capability probe or disable new scheduling. Persisted Synapse timers
+	// remain cleanup obligations regardless of the current scheduling capability.
+	b.deadManEnabled = false
+	b.pollMax = time.Minute
+	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "replacement", Now: waiting.NextAttemptAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim known task = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateDelivered {
+		t.Fatalf("probe-disabled terminal state = %s", stored.State)
+	}
+	if len(deadMan.restarts) != 1 || deadMan.restarts[0] != id.DelayID(waiting.MatrixDeadManDelayID) ||
+		len(deadMan.cancels) != 1 || deadMan.cancels[0] != id.DelayID(waiting.MatrixDeadManDelayID) {
+		t.Fatalf("probe-disabled refresh/cleanup = restarts %v cancels %v", deadMan.restarts, deadMan.cancels)
+	}
+}
+
+func TestDurableDeadManCancellationIgnoresDeliveryAttemptLimit(t *testing.T) {
+	client := &scriptedA2AClient{
+		callResult: a2aclient.Result{TaskID: "task-cancel-exhausted", ContextID: "context-cancel-exhausted"},
+		polls: []scriptedPoll{{result: a2aclient.Result{
+			Text: "finished", TaskID: "task-cancel-exhausted", ContextID: "context-final", Terminal: true,
+		}}},
+	}
+	b, _, _, _, recorder := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	deadMan := &fakeDeadManClient{supported: true, cancelErr: errors.New("homeserver unavailable")}
+	b.deadMan = deadMan
+	b.deadManEnabled = true
+	b.cfg.DeadManSwitchDelay = 2 * time.Minute
+	job := admitAndClaimDurableJob(t, b, "$durable-dead-man-cancel-exhausted")
+	b.executeDurableJob(t.Context(), job)
+	waiting := loadDurableJob(t, b, job.JobID)
+	b.cfg.DelegationMaxAttempts = 1
+	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "terminal", Now: waiting.NextAttemptAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim known task = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+
+	retrying := loadDurableJob(t, b, job.JobID)
+	if retrying.State != state.StateReplyPending || retrying.AttemptCount != 1 ||
+		retrying.MatrixEditEventID == "" || retrying.MatrixDeadManDelayID == "" {
+		t.Fatalf("cleanup retry after delivery-attempt exhaustion = %+v", retrying)
+	}
+	if events := recorder.snapshot(); len(events) != 2 {
+		t.Fatalf("terminal events = %+v", events)
+	}
+
+	deadMan.cancelErr = nil
+	claimed, found, err = b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "cleanup", Now: retrying.NextAttemptAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim cleanup retry = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateDelivered || stored.MatrixEditEventID == "" ||
+		stored.MatrixDeadManDelayID == "" {
+		t.Fatalf("terminal Matrix evidence after cleanup = %+v", stored)
+	}
+	if len(deadMan.cancels) != 2 || deadMan.cancels[0] != deadMan.cancels[1] {
+		t.Fatalf("dead-man cleanup attempts = %v, want two identical IDs", deadMan.cancels)
+	}
+}
+
+func TestDurableDeadManCancellationRetryPersistenceFailureStaysNonTerminal(t *testing.T) {
+	client := &scriptedA2AClient{
+		callResult: a2aclient.Result{TaskID: "task-cleanup-store", ContextID: "context-cleanup-store"},
+		polls: []scriptedPoll{{result: a2aclient.Result{
+			Text: "finished", TaskID: "task-cleanup-store", ContextID: "context-final", Terminal: true,
+		}}},
+	}
+	b, _, _, _, recorder := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	deadMan := &fakeDeadManClient{supported: true, cancelErr: errors.New("homeserver unavailable")}
+	b.deadMan = deadMan
+	b.deadManEnabled = true
+	b.cfg.DeadManSwitchDelay = 2 * time.Minute
+	job := admitAndClaimDurableJob(t, b, "$durable-dead-man-cleanup-store")
+	b.executeDurableJob(t.Context(), job)
+	waiting := loadDurableJob(t, b, job.JobID)
+	b.cfg.DelegationMaxAttempts = 1
+	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "terminal", Now: waiting.NextAttemptAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim known task = (%v, %v)", found, err)
+	}
+	b.store = &deadManRetryErrorStore{Store: b.store, err: errors.New("database unavailable")}
+	b.executeDurableJob(t.Context(), claimed)
+
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateReplyPending || !stored.TerminalAt.IsZero() ||
+		stored.MatrixEditEventID == "" || stored.MatrixDeadManDelayID == "" ||
+		stored.LeaseOwner != "terminal" {
+		t.Fatalf("cleanup retry persistence failure = %+v", stored)
+	}
+	if events := recorder.snapshot(); len(events) != 2 {
+		t.Fatalf("terminal events = %+v", events)
 	}
 }
 

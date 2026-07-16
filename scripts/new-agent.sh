@@ -241,6 +241,9 @@ AGENT_CONTRACT_SHA256="${contract_sha256}" yq -i \
 kubectl kustomize "${repo_root}/apps/matrix-a2a-bridge/deploy" >"${tmp_dir}/effective-bridge-release.yaml" \
   || fail "scaffolded bridge resources do not render"
 export server_name=scaffold.fgentic.example
+# The authoring render is environment-neutral: it validates the generated mapping, not an
+# environment's optional delayed-event capability. Keep that deployment-only feature disabled.
+export bridge_dead_man_switch_delay=0s
 yq eval-all -o=yaml \
   'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") | .spec.values' \
   "${tmp_dir}/effective-bridge-release.yaml" \

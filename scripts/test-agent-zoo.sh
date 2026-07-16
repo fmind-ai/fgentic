@@ -161,6 +161,7 @@ write_verbs="$(yq eval-all -N -r 'select(.kind == "Role" and .metadata.name == "
 
 echo "==> Rendering the bridge agent map and startup profiles"
 export server_name=ci.fgentic.example
+export bridge_dead_man_switch_delay=0s
 kubectl kustomize apps/matrix-a2a-bridge/deploy >"${tmp_dir}/bridge-release.yaml"
 yq eval-all -o=yaml \
   'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") | .spec.values' \

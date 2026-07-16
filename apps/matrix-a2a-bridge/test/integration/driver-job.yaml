@@ -4,7 +4,7 @@ metadata:
   name: integration-driver
   namespace: bridge-integration
 spec:
-  activeDeadlineSeconds: 90
+  activeDeadlineSeconds: 240
   backoffLimit: 0
   template:
     metadata:
@@ -33,6 +33,8 @@ spec:
               value: integration.test
             - name: BRIDGE_HS_TOKEN
               value: integration-homeserver-token
+            - name: DRIVER_TIMEOUT
+              value: 210s
           resources:
             requests:
               cpu: 10m

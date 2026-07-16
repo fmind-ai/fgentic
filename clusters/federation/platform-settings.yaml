@@ -18,6 +18,9 @@ data:
   ingress_ip_name: unused-federation
   llm_provider: demo
   llm_model: fgentic-demo
+  # This lab has no Matrix appservice bridge; keep the shared substitutions explicit and disabled.
+  bridge_dead_man_switch_delay: 0s
+  synapse_max_event_delay_duration: "null"
   # Base substitution remains complete even though this profile removes the local MCP surface.
   mcp_tool_burst_per_second: "2"
   mcp_agent_calls_per_hour: "300"

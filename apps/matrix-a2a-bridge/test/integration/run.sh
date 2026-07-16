@@ -11,7 +11,7 @@ readonly SCENARIO="${INTEGRATION_SCENARIO:-integration}"
 readonly FIXTURE_SETTINGS="${FIXTURE_SETTINGS:-}"
 readonly DRIVER_MANIFEST="${DRIVER_MANIFEST:-driver-job.yaml}"
 readonly DRIVER_JOB_NAME="${DRIVER_JOB_NAME:-integration-driver}"
-readonly DRIVER_WAIT_TIMEOUT="${DRIVER_WAIT_TIMEOUT:-90s}"
+readonly DRIVER_WAIT_TIMEOUT="${DRIVER_WAIT_TIMEOUT:-240s}"
 # Kubernetes 1.34 is the newest line that supports both cgroup v1 developer hosts and the
 # cgroup v2 GitHub runner. Kubernetes 1.35 intentionally refuses to start on cgroup v1.
 readonly KIND_NODE_IMAGE="kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a"
@@ -46,6 +46,7 @@ availability_shutdown_watcher_pid=""
 crash_log_file=""
 crash_runtime_node=""
 crash_bridge_container=""
+dead_man_log_file=""
 
 print_driver_logs() {
   echo "==> Driver logs"
@@ -193,6 +194,58 @@ wait_for_availability_active() {
   done
   echo "Error: availability driver did not reach an active A2A call within 60s" >&2
   return 1
+}
+
+wait_for_dead_man_armed() {
+  local deadline=$((SECONDS + 60))
+  local armed_jobs=""
+  while ((SECONDS < deadline)); do
+    if kubectl --request-timeout=5s --namespace "${NAMESPACE}" logs "job/${DRIVER_JOB_NAME}" 2>/dev/null |
+      jq -R -e 'fromjson? | select(.dead_man_phase == "armed")' >/dev/null; then
+      armed_jobs="$(
+        kubectl --request-timeout=5s --namespace "${NAMESPACE}" exec deployment/postgres -- \
+          psql -U postgres -d bridge -Atc \
+          "SELECT count(*) FROM bridge_delegations WHERE state = 'awaiting_task' AND matrix_dead_man_delay_id <> '';" \
+          2>/dev/null || true
+      )"
+      if [[ "${armed_jobs}" == "1" ]]; then
+        return 0
+      fi
+    fi
+    sleep 0.2
+  done
+  echo "Error: integration driver did not durably arm exactly one delayed-event dead-man switch within 60s (jobs=${armed_jobs:-unknown})" >&2
+  print_driver_logs
+  return 1
+}
+
+hard_kill_dead_man_bridge() {
+  local runtime_node="${kind_nodes%%$'\n'*}"
+  local container=""
+  local pid=""
+  container="$(
+    docker exec "${runtime_node}" crictl ps \
+      --quiet \
+      --label io.kubernetes.container.name=bridge \
+      --label "io.kubernetes.pod.namespace=${NAMESPACE}"
+  )"
+  if [[ -z "${container}" || "${container}" == *$'\n'* ]]; then
+    echo "Error: expected exactly one running bridge container for the dead-man proof" >&2
+    return 1
+  fi
+  pid="$(
+    docker exec "${runtime_node}" crictl inspect "${container}" |
+      jq -er '.info.pid | tonumber | select(. > 0)'
+  )"
+  dead_man_log_file="$(mktemp -t fgentic-bridge-dead-man-logs.XXXXXX)"
+  docker exec "${runtime_node}" crictl logs "${container}" >"${dead_man_log_file}" 2>&1 || true
+  echo "==> SIGKILL bridge process ${pid} with its delayed stale-task notice armed"
+  docker exec "${runtime_node}" kill -KILL "${pid}"
+  # Stop the Deployment after the hard process boundary so no replacement can refresh or cancel
+  # the server-owned timer. Synapse must materialize the notice without any bridge process.
+  kubectl --request-timeout=5s --namespace "${NAMESPACE}" scale deployment/bridge --replicas=0
+  kubectl --request-timeout=65s --namespace "${NAMESPACE}" wait \
+    --for=delete pod --selector app.kubernetes.io/name=bridge --timeout=60s
 }
 
 capture_original_bridge() {
@@ -484,6 +537,9 @@ cleanup() {
   if [[ -n "${crash_log_file}" ]]; then
     rm -f "${crash_log_file}"
   fi
+  if [[ -n "${dead_man_log_file}" ]]; then
+    rm -f "${dead_man_log_file}"
+  fi
   if ((result != 0)); then
     diagnose
   fi
@@ -579,6 +635,11 @@ fi
 
 echo "==> Running ${SCENARIO} scenario"
 kubectl apply --filename "${SCRIPT_DIR}/${DRIVER_MANIFEST}"
+if [[ "${SCENARIO}" == "integration" ]]; then
+  echo "==> Waiting for the server-owned delayed-event timer"
+  wait_for_dead_man_armed
+  hard_kill_dead_man_bridge
+fi
 if [[ "${SCENARIO}" == "availability" ]]; then
   echo "==> Interrupting the active delegation with a graceful bridge pod deletion"
   disrupt_active_availability_call
@@ -640,7 +701,7 @@ fi
 if [[ "${SCENARIO}" == "integration" ]]; then
   echo "==> Verifying fail-closed remote AgentCard audit"
   untrusted_audits="$(
-    kubectl --namespace "${NAMESPACE}" logs deployment/bridge --all-containers | jq -Rsc '
+    jq -Rsc '
     [
       split("\n")[]
       | fromjson?
@@ -656,7 +717,7 @@ if [[ "${SCENARIO}" == "integration" ]]; then
         )
     ]
     | length
-    '
+    ' <"${dead_man_log_file}"
   )"
   readonly untrusted_audits
   if [[ "${untrusted_audits}" != "1" ]]; then

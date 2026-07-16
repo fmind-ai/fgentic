@@ -22,6 +22,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.RequestTimeout != 60*time.Second {
 		t.Errorf("RequestTimeout = %s, want 60s", cfg.RequestTimeout)
 	}
+	if cfg.DeadManSwitchDelay != 0 {
+		t.Errorf("DeadManSwitchDelay = %s, want disabled", cfg.DeadManSwitchDelay)
+	}
 	if cfg.ShutdownTimeout != 25*time.Second {
 		t.Errorf("ShutdownTimeout = %s, want 25s", cfg.ShutdownTimeout)
 	}
@@ -65,6 +68,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("A2A_API_KEY", "test-workload-key")
 	t.Setenv("LISTEN_PORT", "9999")
 	t.Setenv("REQUEST_TIMEOUT", "5s")
+	t.Setenv("DEAD_MAN_SWITCH_DELAY", "5m")
 	t.Setenv("SHUTDOWN_TIMEOUT", "15s")
 	t.Setenv("GHOST_PREFIX", "bot-")
 	t.Setenv("AGENTS_RELOAD_INTERVAL", "2s")
@@ -92,6 +96,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.RequestTimeout != 5*time.Second {
 		t.Errorf("RequestTimeout = %s, want 5s", cfg.RequestTimeout)
+	}
+	if cfg.DeadManSwitchDelay != 5*time.Minute {
+		t.Errorf("DeadManSwitchDelay = %s, want 5m", cfg.DeadManSwitchDelay)
 	}
 	if cfg.ShutdownTimeout != 15*time.Second {
 		t.Errorf("ShutdownTimeout = %s, want 15s", cfg.ShutdownTimeout)
@@ -249,6 +256,17 @@ func TestValidateRejectsTaskTimeoutBelowRequestTimeout(t *testing.T) {
 	t.Setenv("TASK_TIMEOUT", "30s")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error for TASK_TIMEOUT < REQUEST_TIMEOUT, got nil")
+	}
+}
+
+func TestValidateRejectsUnsafeDeadManSwitchDelay(t *testing.T) {
+	for _, delay := range []string{"-1s", "119s"} {
+		t.Run(delay, func(t *testing.T) {
+			t.Setenv("DEAD_MAN_SWITCH_DELAY", delay)
+			if _, err := Load(); err == nil {
+				t.Fatalf("expected error for DEAD_MAN_SWITCH_DELAY=%s, got nil", delay)
+			}
+		})
 	}
 }
 

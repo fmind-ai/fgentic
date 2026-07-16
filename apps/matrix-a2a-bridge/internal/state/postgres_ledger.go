@@ -47,6 +47,7 @@ var jobColumnNames = []string{
 	"matrix_reply_event_id",
 	"matrix_placeholder_event_id",
 	"matrix_edit_event_id",
+	"matrix_dead_man_delay_id",
 	"created_at",
 	"updated_at",
 	"terminal_at",
@@ -572,6 +573,73 @@ func (p *Postgres) RecordMatrixEvent(ctx context.Context, request MatrixEventReq
 	})
 }
 
+// RecordDeadMan implements Ledger without advancing the workflow state. Scheduling uses a stable
+// Matrix transaction ID, so an exact replay is safe while a changed delay ID is conflicting
+// evidence that could otherwise strand an armed timer.
+func (p *Postgres) RecordDeadMan(ctx context.Context, request DeadManRequest) error {
+	if err := validateDeadManRequest(request); err != nil {
+		return err
+	}
+	return p.db.DoTxn(ctx, nil, func(txCtx context.Context) error {
+		result, err := p.db.Exec(
+			txCtx,
+			`UPDATE bridge_delegations
+			 SET matrix_dead_man_delay_id = $4, updated_at = $5
+			 WHERE job_id = $1
+			   AND lease_owner = $2
+			   AND lease_generation = $3
+			   AND terminal_at IS NULL
+			   AND lease_expires_at > $5
+			   AND (matrix_dead_man_delay_id = '' OR matrix_dead_man_delay_id = $4)`,
+			request.Lease.JobID,
+			request.Lease.Owner,
+			int64(request.Lease.Generation),
+			request.DelayID,
+			request.At,
+		)
+		if err != nil {
+			return fmt.Errorf("record dead-man delayed event: %w", err)
+		}
+		rows, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read dead-man update count: %w", err)
+		}
+		if rows == 1 {
+			return nil
+		}
+
+		var (
+			stored         string
+			owner          sql.NullString
+			generation     int64
+			leaseExpiresAt sql.NullTime
+			terminalAt     sql.NullTime
+		)
+		if err := p.db.QueryRow(
+			txCtx,
+			`SELECT matrix_dead_man_delay_id, lease_owner, lease_generation, lease_expires_at, terminal_at
+			 FROM bridge_delegations
+			 WHERE job_id = $1`,
+			request.Lease.JobID,
+		).Scan(&stored, &owner, &generation, &leaseExpiresAt, &terminalAt); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return &LeaseLostError{JobID: request.Lease.JobID}
+			}
+			return fmt.Errorf("load persisted dead-man delayed event: %w", err)
+		}
+		current := owner.Valid && owner.String == request.Lease.Owner && generation >= 0 &&
+			uint64(generation) == request.Lease.Generation && leaseExpiresAt.Valid &&
+			leaseExpiresAt.Time.After(request.At) && !terminalAt.Valid
+		if !current {
+			return &LeaseLostError{JobID: request.Lease.JobID}
+		}
+		if stored == request.DelayID {
+			return nil
+		}
+		return fmt.Errorf("%w: job_id=%q", ErrDeadManConflict, request.Lease.JobID)
+	})
+}
+
 // Transition implements Ledger.
 func (p *Postgres) Transition(ctx context.Context, request TransitionRequest) error {
 	if err := validateTransition(request); err != nil {
@@ -885,6 +953,7 @@ func scanJob(row rowScanner) (Job, error) {
 		&job.MatrixReplyEventID,
 		&job.MatrixPlaceholderEventID,
 		&job.MatrixEditEventID,
+		&job.MatrixDeadManDelayID,
 		&job.CreatedAt,
 		&job.UpdatedAt,
 		&terminalAt,

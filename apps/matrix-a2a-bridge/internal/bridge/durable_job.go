@@ -34,12 +34,15 @@ const (
 	errorRateLimit           = "rate_limit_rejected"
 	errorSenderPolicy        = "sender_policy_rejected"
 	errorStagePolicy         = "stage_policy_rejected"
+	errorDeadManRefresh      = "dead_man_refresh_failed"
 	errorTaskFailed          = "task_failed"
 	errorTaskInvalid         = "task_result_invalid"
 	errorTaskPoll            = "task_poll_failed"
 	errorTaskTimeout         = "task_timeout"
 	errorStateContext        = "context_load_failed"
 )
+
+var errDeadManCleanupPending = errors.New("dead-man cleanup remains pending")
 
 // durablePayload is the bounded recovery envelope retained until a Matrix projection reaches a
 // durable terminal state. Event is the original Matrix event; Result or Notice is populated only
@@ -99,6 +102,19 @@ func (b *Bridge) executeDurableJob(ctx context.Context, claimed state.Job) {
 		err = fmt.Errorf("claimed unexpected state %q", job.State)
 	}
 	if err == nil || errors.Is(err, state.ErrLeaseLost) || ctx.Err() != nil {
+		return
+	}
+	if errors.Is(err, errDeadManCleanupPending) {
+		// The retry could not be persisted. Leave the reply_pending job fenced until its lease expires;
+		// the next owner must retry cleanup instead of exhausting into a terminal state with an armed
+		// homeserver timer.
+		b.log.Error(
+			"durable dead-man cleanup remains pending",
+			"job_id", job.JobID,
+			"state", job.State,
+			"reason", "cleanup_retry_persistence_failed",
+			"error_type", fmt.Sprintf("%T", err),
+		)
 		return
 	}
 	b.log.Error(
@@ -324,6 +340,9 @@ func (b *Bridge) acceptDurableA2AResult(
 		if err := b.ensureDurablePlaceholder(ctx, job, evt); err != nil {
 			return b.retryOrDead(ctx, job, errorMatrixDelivery, err)
 		}
+		if err := b.ensureDurableDeadMan(ctx, job, evt); err != nil {
+			return err
+		}
 		return b.scheduleTaskPoll(ctx, *job)
 	}
 	if result.Failed {
@@ -369,6 +388,10 @@ func (b *Bridge) resumeKnownTask(ctx context.Context, job *state.Job) error {
 	if err := b.ensureDurablePlaceholder(ctx, job, evt); err != nil {
 		return b.retryOrDead(ctx, job, errorMatrixDelivery, err)
 	}
+	if err := b.ensureDurableDeadMan(ctx, job, evt); err != nil {
+		return err
+	}
+	deadManRefreshErr := b.restartDurableDeadManOnPoll(ctx, job)
 	client, ok := b.client.(durableA2AClient)
 	if !ok {
 		return b.finishDurableWithoutReply(ctx, job, state.StateDead, "durable_a2a_unsupported",
@@ -407,6 +430,9 @@ func (b *Bridge) resumeKnownTask(ctx context.Context, job *state.Job) error {
 				ctx, job, payload, evt, ref, sender, state.StateDelivered,
 				outcomeFailed, "task_input", errorInputRequired, 0,
 			)
+		}
+		if deadManRefreshErr != nil {
+			return b.retryOrDead(ctx, job, errorDeadManRefresh, deadManRefreshErr)
 		}
 		return b.scheduleTaskPoll(ctx, *job)
 	}
@@ -594,6 +620,12 @@ func (b *Bridge) deliverPendingReply(ctx context.Context, job *state.Job) error 
 	var stage state.MatrixEventStage
 	var mediaOut, mediaRejected int
 	switch {
+	case job.MatrixEditEventID != "":
+		stage = state.MatrixEventEdit
+		eventID = id.EventID(job.MatrixEditEventID)
+	case job.MatrixReplyEventID != "":
+		stage = state.MatrixEventReply
+		eventID = id.EventID(job.MatrixReplyEventID)
 	case payload.Result != nil:
 		result := *payload.Result
 		mappingRejected := 0
@@ -633,6 +665,29 @@ func (b *Bridge) deliverPendingReply(ctx context.Context, job *state.Job) error 
 		patch.MatrixReplyEventID = stringPointer(eventID.String())
 	case state.MatrixEventEdit:
 		patch.MatrixEditEventID = stringPointer(eventID.String())
+	}
+	// Persist accepted Matrix evidence before cancellation. Recovery can then skip re-projecting the
+	// terminal event and keep retrying cleanup without losing the user-visible result at dead-letter.
+	if err := b.store.RecordMatrixEvent(ctx, state.MatrixEventRequest{
+		Lease: job.LeaseToken(), At: time.Now().UTC(), Stage: stage, EventID: eventID.String(),
+	}); err != nil {
+		return b.retryOrDead(ctx, job, errorMatrixDelivery, fmt.Errorf("record terminal Matrix event: %w", err))
+	}
+	applyDurablePatch(job, patch)
+	// Keep the stale-task guard armed until Matrix has accepted and durably recorded the terminal
+	// replacement. If either boundary fails, recovery retains the honest fallback.
+	if err := b.cancelDurableDeadMan(ctx, job); err != nil {
+		// Cleanup is the one recovery boundary that must outlive DELEGATION_MAX_ATTEMPTS: marking the
+		// job terminal while Synapse still owns the timer would allow a stale warning after success.
+		// The accepted Matrix event is already durable, so retries only repeat the idempotent cancel.
+		if retryErr := b.scheduleDurableRetryWithCode(ctx, *job, errorMatrixDelivery, err); retryErr != nil {
+			return errors.Join(
+				errDeadManCleanupPending,
+				fmt.Errorf("cancel durable dead-man event: %w", err),
+				retryErr,
+			)
+		}
+		return nil
 	}
 	terminalState := payload.TerminalState
 	if !terminalState.Terminal() {
@@ -831,17 +886,30 @@ func (b *Bridge) finishDurableWithoutReplyWithEvidence(
 	if err := b.transitionDurable(ctx, job, terminal, patch); err != nil {
 		return err
 	}
-	b.recordDurableTerminal(*job, evt, ref, sender, payload, "", 0, 0)
+	eventID := durableTerminalMatrixEventID(*job)
+	b.recordDurableTerminal(*job, evt, ref, sender, payload, eventID, 0, 0)
 	if cause != nil {
+		message := "durable delegation reached terminal state without Matrix projection"
+		if eventID != "" {
+			message = "durable delegation reached terminal state after Matrix projection cleanup failed"
+		}
 		b.log.Error(
-			"durable delegation reached terminal state without Matrix projection",
+			message,
 			"job_id", job.JobID,
 			"state", terminal,
 			"error_code", errorCode,
+			"matrix_event_id", eventID,
 			"error_type", fmt.Sprintf("%T", cause),
 		)
 	}
 	return nil
+}
+
+func durableTerminalMatrixEventID(job state.Job) id.EventID {
+	if job.MatrixEditEventID != "" {
+		return id.EventID(job.MatrixEditEventID)
+	}
+	return id.EventID(job.MatrixReplyEventID)
 }
 
 func durableTerminalOutcome(terminal state.DelegationState) string {
@@ -910,6 +978,12 @@ func (b *Bridge) deadLetterDurableJob(
 				terminal = payload.TerminalState
 				if job.ErrorCode != "" {
 					terminalCode = job.ErrorCode
+				}
+			case state.StateDelivered:
+				// Cancellation cleanup cannot erase an accepted Matrix result. The persisted event
+				// remains the delivery proof even if the homeserver timer could not be cancelled.
+				if durableTerminalMatrixEventID(*job) != "" {
+					terminal = state.StateDelivered
 				}
 			}
 		}

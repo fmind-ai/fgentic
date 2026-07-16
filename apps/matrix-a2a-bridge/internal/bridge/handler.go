@@ -145,6 +145,9 @@ type Bridge struct {
 	profiles            *profileStore
 	profileWriter       ghostProfileWriter
 	inflight            *inflightRegistry
+	deadMan             deadManClient
+	deadManEnabled      bool
+	deadManNow          func() time.Time
 	replies             *agentReplyRegistry // bounded terminal m.notice IDs for quality reactions (#357)
 	openTasks           *openTaskRegistry   // input-required delegations awaiting a reply (#116)
 	media               mediaPolicy         // MIME/size gate for files in both directions (#115)
@@ -189,6 +192,8 @@ func New(cfg config.Config, as *appservice.AppService, agents *AgentMap, client 
 		pollMax:             pollMax,
 		pollWait:            waitForPoll,
 		inflight:            newInflightRegistry(),
+		deadMan:             &matrixDeadManClient{as: as},
+		deadManNow:          time.Now,
 		replies:             newAgentReplyRegistry(qualityReplyRegistryCapacity),
 		openTasks:           newOpenTaskRegistry(),
 		media:               newMediaPolicy(cfg),
@@ -239,6 +244,7 @@ func waitForPoll(ctx context.Context, delay time.Duration) error {
 // targets are verified synchronously so readiness can never expose an untrusted destination.
 func (b *Bridge) Start(ctx context.Context) error {
 	b.runCtx = ctx
+	b.probeDeadMan(ctx)
 	watchCtx, watchCancel := context.WithCancel(ctx)
 	if b.profileWriter != nil {
 		prepareCtx, cancel := context.WithTimeout(ctx, b.cfg.RequestTimeout)
@@ -1343,8 +1349,11 @@ func (b *Bridge) awaitTask(
 	// Register the running task so a room member can cancel it by reacting to the placeholder (#98).
 	// A missing placeholder (its post failed) leaves nothing to react to, so there is nothing to track.
 	var task *inflightTask
+	var deadMan *armedDeadMan
 	progress := taskProgress{max: b.cfg.MaxTaskProgressPosts}
 	if placeholder != "" {
+		deadMan = b.armDeadMan(ctx, intent, evt.RoomID, placeholder, res.TaskID)
+		defer b.cancelDeadMan(ctx, intent, deadMan, res.TaskID)
 		task = &inflightTask{
 			room:           evt.RoomID,
 			placeholder:    placeholder,
@@ -1388,6 +1397,7 @@ func (b *Bridge) awaitTask(
 		if delay *= 2; delay > b.pollMax {
 			delay = b.pollMax
 		}
+		b.restartDeadManOnPoll(ctx, intent, deadMan, res.TaskID)
 
 		trace.SpanFromContext(ctx).AddEvent("a2a.task.poll")
 		polled, err := b.client.PollTask(pollCtx, ref.Target(), res.TaskID)

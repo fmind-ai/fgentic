@@ -91,6 +91,7 @@ yq eval-all -e '
 ' "${tmp_dir}/kagent.yaml" >/dev/null || fail "generated Agent is absent from the effective kagent render"
 
 export server_name=ci.fgentic.example
+export bridge_dead_man_switch_delay=0s
 yq eval-all -o=yaml \
   'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") | .spec.values' \
   "${tmp_dir}/bridge-release.yaml" \
