@@ -41,6 +41,8 @@ const (
 	errorStateContext        = "context_load_failed"
 )
 
+var errDeadManCleanupPending = errors.New("dead-man cleanup remains pending")
+
 // durablePayload is the bounded recovery envelope retained until a Matrix projection reaches a
 // durable terminal state. Event is the original Matrix event; Result or Notice is populated only
 // after A2A becomes terminal. TerminalState tells a replayed outbox which checked state to commit.
@@ -96,6 +98,19 @@ func (b *Bridge) executeDurableJob(ctx context.Context, claimed state.Job) {
 		err = fmt.Errorf("claimed unexpected state %q", job.State)
 	}
 	if err == nil || errors.Is(err, state.ErrLeaseLost) || ctx.Err() != nil {
+		return
+	}
+	if errors.Is(err, errDeadManCleanupPending) {
+		// The retry could not be persisted. Leave the reply_pending job fenced until its lease expires;
+		// the next owner must retry cleanup instead of exhausting into a terminal state with an armed
+		// homeserver timer.
+		b.log.Error(
+			"durable dead-man cleanup remains pending",
+			"job_id", job.JobID,
+			"state", job.State,
+			"reason", "cleanup_retry_persistence_failed",
+			"error_type", fmt.Sprintf("%T", err),
+		)
 		return
 	}
 	b.log.Error(
@@ -650,7 +665,17 @@ func (b *Bridge) deliverPendingReply(ctx context.Context, job *state.Job) error 
 	// Keep the stale-task guard armed until Matrix has accepted and durably recorded the terminal
 	// replacement. If either boundary fails, recovery retains the honest fallback.
 	if err := b.cancelDurableDeadMan(ctx, job); err != nil {
-		return b.retryOrDead(ctx, job, errorMatrixDelivery, err)
+		// Cleanup is the one recovery boundary that must outlive DELEGATION_MAX_ATTEMPTS: marking the
+		// job terminal while Synapse still owns the timer would allow a stale warning after success.
+		// The accepted Matrix event is already durable, so retries only repeat the idempotent cancel.
+		if retryErr := b.scheduleDurableRetryWithCode(ctx, *job, errorMatrixDelivery, err); retryErr != nil {
+			return errors.Join(
+				errDeadManCleanupPending,
+				fmt.Errorf("cancel durable dead-man event: %w", err),
+				retryErr,
+			)
+		}
+		return nil
 	}
 	terminalState := payload.TerminalState
 	if !terminalState.Terminal() {

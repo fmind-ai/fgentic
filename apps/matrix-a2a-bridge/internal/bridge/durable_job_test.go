@@ -24,7 +24,16 @@ type deadManRecordErrorStore struct {
 	err error
 }
 
+type deadManRetryErrorStore struct {
+	state.Store
+	err error
+}
+
 func (s *deadManRecordErrorStore) RecordDeadMan(context.Context, state.DeadManRequest) error {
+	return s.err
+}
+
+func (s *deadManRetryErrorStore) ScheduleRetry(context.Context, state.RetryRequest) error {
 	return s.err
 }
 
@@ -506,7 +515,7 @@ func TestDurableDeadManCancellationRetriesAfterTerminalProjection(t *testing.T) 
 	}
 }
 
-func TestDurableDeadManCancellationExhaustionRetainsTerminalMatrixEvidence(t *testing.T) {
+func TestDurableDeadManCancellationIgnoresDeliveryAttemptLimit(t *testing.T) {
 	client := &scriptedA2AClient{
 		callResult: a2aclient.Result{TaskID: "task-cancel-exhausted", ContextID: "context-cancel-exhausted"},
 		polls: []scriptedPoll{{result: a2aclient.Result{
@@ -523,8 +532,6 @@ func TestDurableDeadManCancellationExhaustionRetainsTerminalMatrixEvidence(t *te
 	b.executeDurableJob(t.Context(), job)
 	waiting := loadDurableJob(t, b, job.JobID)
 	b.cfg.DelegationMaxAttempts = 1
-	var output strings.Builder
-	setBridgeLogOutput(b, &output)
 	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
 		Owner: "terminal", Now: waiting.NextAttemptAt, LeaseDuration: time.Minute,
 	})
@@ -533,16 +540,67 @@ func TestDurableDeadManCancellationExhaustionRetainsTerminalMatrixEvidence(t *te
 	}
 	b.executeDurableJob(t.Context(), claimed)
 
-	stored := loadDurableJob(t, b, job.JobID)
-	if stored.State != state.StateDelivered || stored.MatrixEditEventID == "" {
-		t.Fatalf("terminal Matrix evidence after cancellation exhaustion = %+v", stored)
+	retrying := loadDurableJob(t, b, job.JobID)
+	if retrying.State != state.StateReplyPending || retrying.AttemptCount != 1 ||
+		retrying.MatrixEditEventID == "" || retrying.MatrixDeadManDelayID == "" {
+		t.Fatalf("cleanup retry after delivery-attempt exhaustion = %+v", retrying)
 	}
 	if events := recorder.snapshot(); len(events) != 2 {
 		t.Fatalf("terminal events = %+v", events)
 	}
-	audits := auditRecords(t, output.String())
-	if len(audits) != 1 || audits[0]["reply_event_id"] != stored.MatrixEditEventID {
-		t.Fatalf("terminal audit evidence = %#v, want reply %q", audits, stored.MatrixEditEventID)
+
+	deadMan.cancelErr = nil
+	claimed, found, err = b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "cleanup", Now: retrying.NextAttemptAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim cleanup retry = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateDelivered || stored.MatrixEditEventID == "" ||
+		stored.MatrixDeadManDelayID == "" {
+		t.Fatalf("terminal Matrix evidence after cleanup = %+v", stored)
+	}
+	if len(deadMan.cancels) != 2 || deadMan.cancels[0] != deadMan.cancels[1] {
+		t.Fatalf("dead-man cleanup attempts = %v, want two identical IDs", deadMan.cancels)
+	}
+}
+
+func TestDurableDeadManCancellationRetryPersistenceFailureStaysNonTerminal(t *testing.T) {
+	client := &scriptedA2AClient{
+		callResult: a2aclient.Result{TaskID: "task-cleanup-store", ContextID: "context-cleanup-store"},
+		polls: []scriptedPoll{{result: a2aclient.Result{
+			Text: "finished", TaskID: "task-cleanup-store", ContextID: "context-final", Terminal: true,
+		}}},
+	}
+	b, _, _, _, recorder := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	deadMan := &fakeDeadManClient{supported: true, cancelErr: errors.New("homeserver unavailable")}
+	b.deadMan = deadMan
+	b.deadManEnabled = true
+	b.cfg.DeadManSwitchDelay = 2 * time.Minute
+	job := admitAndClaimDurableJob(t, b, "$durable-dead-man-cleanup-store")
+	b.executeDurableJob(t.Context(), job)
+	waiting := loadDurableJob(t, b, job.JobID)
+	b.cfg.DelegationMaxAttempts = 1
+	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "terminal", Now: waiting.NextAttemptAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim known task = (%v, %v)", found, err)
+	}
+	b.store = &deadManRetryErrorStore{Store: b.store, err: errors.New("database unavailable")}
+	b.executeDurableJob(t.Context(), claimed)
+
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateReplyPending || !stored.TerminalAt.IsZero() ||
+		stored.MatrixEditEventID == "" || stored.MatrixDeadManDelayID == "" ||
+		stored.LeaseOwner != "terminal" {
+		t.Fatalf("cleanup retry persistence failure = %+v", stored)
+	}
+	if events := recorder.snapshot(); len(events) != 2 {
+		t.Fatalf("terminal events = %+v", events)
 	}
 }
 
