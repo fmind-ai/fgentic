@@ -57,12 +57,15 @@ yq eval-all -o=json '[.]' "${tmp_dir}/local.yaml" >"${tmp_dir}/local.json"
 jq -e '
   def ks($name): first(.[] | select(.apiVersion == "kustomize.toolkit.fluxcd.io/v1" and .metadata.name == $name));
   (ks("agentgateway-provider").metadata.labels."fgentic.dev/llm-provider" == "vertex") and
-  (ks("agentgateway").metadata.labels."fgentic.dev/llm-provider" == "vertex") and
+  (ks("agentgateway-admission").metadata.labels."fgentic.dev/llm-provider" == "vertex") and
   (ks("agentgateway-provider-egress").metadata.labels."fgentic.dev/llm-provider" == "vertex") and
-  (ks("agentgateway-provider").spec.dependsOn | any(.name == "agentgateway-base")) and
-  (ks("agentgateway").spec.dependsOn[0].name == "agentgateway-provider") and
-  (ks("agentgateway").spec.dependsOn[0].readyExpr | contains("dep.metadata.generation == dep.status.observedGeneration")) and
-  (ks("agentgateway-provider-egress").spec.dependsOn[0].name == "agentgateway") and
+  (ks("agentgateway").metadata.labels."fgentic.dev/agentgateway-layout" == "split-v1") and
+  (ks("agentgateway-provider").spec.dependsOn[0].name == "agentgateway") and
+  (ks("agentgateway-provider").spec.dependsOn[0].readyExpr | contains("fgentic.dev/agentgateway-layout")) and
+  (ks("agentgateway-provider").spec.dependsOn[0].readyExpr | contains("dep.metadata.generation == dep.status.observedGeneration")) and
+  (ks("agentgateway-admission").spec.dependsOn[0].name == "agentgateway-provider") and
+  (ks("agentgateway-admission").spec.dependsOn[0].readyExpr | contains("dep.metadata.generation == dep.status.observedGeneration")) and
+  (ks("agentgateway-provider-egress").spec.dependsOn[0].name == "agentgateway-admission") and
   (ks("agentgateway-provider-egress").spec.dependsOn[0].readyExpr | contains("dep.metadata.generation == dep.status.observedGeneration")) and
   (ks("kagent").spec.dependsOn | any(.name == "agentgateway-provider-egress"))
 ' "${tmp_dir}/local.json" >/dev/null || fail "provider transition DAG is not identity- and generation-locked"

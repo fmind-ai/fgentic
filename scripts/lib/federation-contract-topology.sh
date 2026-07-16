@@ -112,13 +112,13 @@ assert_yq \
 	"${WORK_DIR}/recursive.yaml" 'org-B Keycloak component composition is not exact'
 for dependency in controllers keycloak; do
 	assert_yq \
-		'select(.kind == "Kustomization" and .metadata.name == "agentgateway-base") |
+		'select(.kind == "Kustomization" and .metadata.name == "agentgateway") |
       .spec.dependsOn[] | select(.name == "'"${dependency}"'")' \
 		"${WORK_DIR}/recursive.yaml" \
 		"delegation gateway is not ordered after ${dependency}"
 done
 assert_yq \
-	'select(.kind == "Kustomization" and .metadata.name == "agentgateway-base") |
+	'select(.kind == "Kustomization" and .metadata.name == "agentgateway") |
     .spec.components | select(length == 1) | .[] |
     select(. == "../../federation/delegation")' \
 	"${WORK_DIR}/recursive.yaml" 'delegation gateway component composition is not exact'

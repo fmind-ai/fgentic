@@ -637,7 +637,7 @@ assert_yq \
 	'select(.kind == "Kustomization" and .metadata.name == "agentgateway-provider-egress") |
     .spec.path == "./infra/agentgateway/providers/egress/demo"' \
 	"${WORK_DIR}/cluster.yaml" 'provider-selection did not select the demo egress inventory'
-expected_demo_layers=$'agentgateway\nagentgateway-base\nagentgateway-provider\nagentgateway-provider-egress\nbridge\ncontrollers\ngateway\nkagent\nmatrix\nnamespaces\nplatform-secrets\npolicies\npostgres'
+expected_demo_layers=$'agentgateway\nagentgateway-admission\nagentgateway-provider\nagentgateway-provider-egress\nbridge\ncontrollers\ngateway\nkagent\nmatrix\nnamespaces\nplatform-secrets\npolicies\npostgres'
 actual_demo_layers="$(
 	yq eval-all -N -r 'select(.kind == "Kustomization") | .metadata.name' \
 		"${WORK_DIR}/cluster.yaml" | sort
@@ -685,10 +685,10 @@ if yq eval-all -N -r \
 	exit 1
 fi
 
-render_demo_layer agentgateway-base "${ROOT_DIR}/infra/agentgateway/base"
+render_demo_layer agentgateway "${ROOT_DIR}/infra/agentgateway/base"
 if yq eval-all -N -r \
 	'select(.kind == "AgentgatewayPolicy" and .metadata.name == "tracing") |
-    .metadata.name' "${WORK_DIR}/demo-agentgateway-base.yaml" | rg --quiet '.'; then
+    .metadata.name' "${WORK_DIR}/demo-agentgateway.yaml" | rg --quiet '.'; then
 	echo 'error: demo agentgateway still references the tracing backend' >&2
 	exit 1
 fi

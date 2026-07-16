@@ -42,7 +42,7 @@ replacements:
           group: kustomize.toolkit.fluxcd.io
           version: v1
           kind: Kustomization
-          name: agentgateway
+          name: agentgateway-admission
           namespace: flux-system
         fieldPaths:
           - metadata.labels.[fgentic.dev/llm-provider]
