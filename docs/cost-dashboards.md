@@ -34,6 +34,14 @@ The federation border verifies the client credential and reserves the request's 
 
 The current federation rate-limit component keeps reservation state in Redis with StatsD disabled and provisions no per-client Prometheus series. Consequently no committed dashboard can show per-`azp` reservation posture today. Even after such telemetry exists, its panel must say **reserved, not consumed** and remain separate from the agentgateway token panels.
 
+## MCP admissions are not consumption
+
+The governed MCP route checks a per-authenticated-Agent/tool burst ceiling and a broader per-authenticated-Agent hourly ceiling. These fixed-window counters record admitted call attempts before tool execution; they do not prove that a tool succeeded, measure tool work, reserve model tokens, or represent currency spend. A future human-approval control is independent: approval cannot bypass the ceilings, and an admitted approved attempt still advances them.
+
+JSON-RPC batches are rejected before quota admission because one HTTP-level descriptor cannot account each batched tool call independently. Their fixed `batch_rejected` audit classification is a policy denial, not consumption and not evidence that any tool ran.
+
+The MCP rate-limit service also keeps StatsD disabled, so no committed dashboard exposes per-Agent or per-tool counters. Use the restricted content-free audit record to investigate HTTP 429 outcomes, and do not turn its authenticated Agent or tool names into unbounded Prometheus labels without a separate observability and privacy decision.
+
 ## Why there is no room or identity series
 
 MXIDs and Matrix room IDs are linkable personal/operational data with unbounded churn. Hashing preserves both linkability and cardinality; allowlisting raw room IDs still accumulates series over Prometheus retention. Fgentic therefore keeps exact room/sender attribution in the access-controlled audit path and keeps Prometheus bounded to ghost/outcome plus provider/model/route/token-type dimensions.

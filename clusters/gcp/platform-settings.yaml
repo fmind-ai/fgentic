@@ -26,6 +26,9 @@ data:
   azure_openai_resource: not-configured
   # Alert when aggregate model-token consumption exceeds this count over 15 minutes.
   llm_usage_budget_15m: "100000"
+  # MCP admission ceilings: per authenticated agent+tool burst and per authenticated agent hour.
+  mcp_tool_burst_per_second: "2"
+  mcp_agent_calls_per_hour: "300"
   # Initial namespace-compute profiles for the two-node reference. These are admission ceilings,
   # not reservations; tune them only from observed usage and alongside node-pool capacity.
   quota_default_request_cpu: 25m

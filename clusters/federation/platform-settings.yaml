@@ -18,6 +18,9 @@ data:
   ingress_ip_name: unused-federation
   llm_provider: demo
   llm_model: fgentic-demo
+  # Base substitution remains complete even though this profile removes the local MCP surface.
+  mcp_tool_burst_per_second: "2"
+  mcp_agent_calls_per_hour: "300"
   # This disposable local lab shares the single-node namespace admission ceilings.
   quota_default_request_cpu: 25m
   quota_default_request_memory: 64Mi

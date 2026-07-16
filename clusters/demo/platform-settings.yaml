@@ -19,6 +19,8 @@ data:
   openai_host: api.openai.com
   azure_openai_resource: not-configured
   llm_usage_budget_15m: "100000"
+  mcp_tool_burst_per_second: "2"
+  mcp_agent_calls_per_hour: "300"
   # Keep the disposable profile aligned with the single-node local admission ceilings.
   quota_default_request_cpu: 25m
   quota_default_request_memory: 64Mi
