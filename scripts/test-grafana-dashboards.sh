@@ -8,6 +8,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dashboard_dir="${repo_root}/infra/observability/dashboards"
 bridge_dashboard="${dashboard_dir}/fgentic-bridge.json"
 llm_dashboard="${dashboard_dir}/fgentic-llm-token-cost.json"
+identity_label_pattern='(^|[^[:alnum:]_])((matrix_)?(room|sender|user)(_(id|mxid))?|mxid)(_[[:alnum:]_]+)*([^[:alnum:]_]|$)'
 
 fail() {
 	echo "Error: $*" >&2
@@ -59,11 +60,34 @@ assert_text() {
 assert_no_identity_labels() {
 	local file="$1"
 
-	jq -e '
+	jq -e --arg identity_label_pattern "${identity_label_pattern}" '
     all(.panels[].targets[]?.expr // "";
-      test("(^|[^[:alnum:]_])(matrix_room_id|room_id|room|matrix_sender_id|matrix_sender|sender_id|sender|matrix_user_id|user_id|user|mxid)([^[:alnum:]_]|$)") | not)
+			test($identity_label_pattern) | not)
 	' "${file}" >/dev/null || fail "${file}: dashboard query exposes a raw room, sender, or MXID label"
 }
+
+assert_identity_label_pattern() {
+	local unsafe_query
+	local safe_query
+
+	for unsafe_query in \
+		'sum by (sender_mxid) (metric)' \
+		'sum by (sender_mxid_hash) (metric)' \
+		'sum by (room_id_hash) (metric)' \
+		'sum by (matrix_user_id) (metric)'; do
+		jq -en --arg pattern "${identity_label_pattern}" --arg query "${unsafe_query}" \
+			'$query | test($pattern)' >/dev/null || fail "identity-label guard missed: ${unsafe_query}"
+	done
+
+	for safe_query in \
+		'sum by (route, ghost, outcome) (metric)' \
+		'rate(agentgateway_gen_ai_client_token_usage_sum[5m])'; do
+		jq -en --arg pattern "${identity_label_pattern}" --arg query "${safe_query}" \
+			'$query | test($pattern) | not' >/dev/null || fail "identity-label guard rejected: ${safe_query}"
+	done
+}
+
+assert_identity_label_pattern
 
 assert_dashboard "${bridge_dashboard}" "Fgentic — Bridge" "fgentic-bridge"
 assert_query "${bridge_dashboard}" "Delegations by agent and outcome" "fgentic_delegations_total"
