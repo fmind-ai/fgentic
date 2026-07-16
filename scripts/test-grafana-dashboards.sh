@@ -61,8 +61,8 @@ assert_no_identity_labels() {
 
 	jq -e '
     all(.panels[].targets[]?.expr // "";
-      test("(^|[^[:alnum:]_])(room|room_id|matrix_room_id|mxid)([^[:alnum:]_]|$)") | not)
-  ' "${file}" >/dev/null || fail "${file}: dashboard query exposes a raw room or MXID label"
+      test("(^|[^[:alnum:]_])(matrix_room_id|room_id|room|matrix_sender_id|matrix_sender|sender_id|sender|matrix_user_id|user_id|user|mxid)([^[:alnum:]_]|$)") | not)
+	' "${file}" >/dev/null || fail "${file}: dashboard query exposes a raw room, sender, or MXID label"
 }
 
 assert_dashboard "${bridge_dashboard}" "Fgentic — Bridge" "fgentic-bridge"
