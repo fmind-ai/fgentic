@@ -220,27 +220,6 @@ spec:
         - name: tmp
           emptyDir: {}
 ---
-# Provider profiles already restrict proxy egress, so add only the quota-service hop.
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: agentgateway-allow-mcp-rate-limit-egress
-  namespace: agentgateway-system
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: agentgateway-proxy
-  policyTypes:
-    - Egress
-  egress:
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: mcp-tool-rate-limit
-      ports:
-        - protocol: TCP
-          port: 8081
----
 # Default-deny ingress already selects both quota pods; restrict their egress to the one required
 # service hop as well, with DNS allowed only for the rate-limit service's Redis lookup.
 apiVersion: networking.k8s.io/v1

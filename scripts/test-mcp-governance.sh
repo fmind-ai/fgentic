@@ -353,20 +353,10 @@ assert_equal "$({
 assert_equal "$({
 	yq eval-all -N -r '
       [select(.kind == "NetworkPolicy" and
-        (.metadata.name == "agentgateway-allow-mcp-rate-limit-egress" or
-         .metadata.name == "mcp-tool-rate-limit" or
+        (.metadata.name == "mcp-tool-rate-limit" or
          .metadata.name == "mcp-tool-rate-limit-redis"))] | length
     ' "${tmp_dir}/agentgateway.yaml"
-})" "3" "MCP quota NetworkPolicy inventory"
-assert_equal "$({
-	yq eval-all -N -r '
-      select(.kind == "NetworkPolicy" and
-        .metadata.name == "agentgateway-allow-mcp-rate-limit-egress")
-      | [.spec.podSelector.matchLabels."app.kubernetes.io/name",
-         .spec.egress[0].to[0].podSelector.matchLabels."app.kubernetes.io/name",
-         (.spec.egress[0].ports[0].port | tostring)] | join("|")
-    ' "${tmp_dir}/agentgateway.yaml"
-})" "agentgateway-proxy|mcp-tool-rate-limit|8081" "proxy-to-MCP-quota egress"
+})" "2" "MCP quota NetworkPolicy inventory"
 assert_equal "$({
 	yq eval-all -N -r '
       select(.kind == "NetworkPolicy" and .metadata.name == "mcp-tool-rate-limit")
@@ -375,6 +365,23 @@ assert_equal "$({
          (.spec.egress[1].ports[0].port | tostring)] | join("|")
     ' "${tmp_dir}/agentgateway.yaml"
 })" "agentgateway-proxy|mcp-tool-rate-limit-redis|6379" "MCP-quota-to-Redis boundary"
+for profile in demo vllm; do
+	assert_equal "$({
+		yq eval-all -N -r '
+        select(.kind == "NetworkPolicy" and
+          .spec.podSelector.matchLabels."app.kubernetes.io/name" == "agentgateway-proxy")
+        | [.spec.egress[] | select(
+            .to[0].podSelector.matchLabels."app.kubernetes.io/name" ==
+              "mcp-tool-rate-limit" and
+            .ports[0].port == 8081
+          )] | length
+      ' "${REPO_ROOT}/infra/agentgateway/providers/profiles/${profile}/networkpolicy.yaml"
+	})" "1" "${profile} proxy-to-MCP-quota egress"
+done
+for profile in vertex openai anthropic mistral azure-openai; do
+	[[ ! -e "${REPO_ROOT}/infra/agentgateway/providers/profiles/${profile}/networkpolicy.yaml" ]] ||
+		fail "${profile} unexpectedly gained a proxy-isolating NetworkPolicy"
+done
 
 gateway_version="$({
 	yq eval-all -N -r '
@@ -569,8 +576,7 @@ assert_equal "$({
 	yq eval-all -N -r '
       [select(
         .metadata.namespace == "agentgateway-system" and
-        (.metadata.name == "agentgateway-allow-mcp-rate-limit-egress" or
-         .metadata.name == "mcp-tool-rate-limit" or
+        (.metadata.name == "mcp-tool-rate-limit" or
          .metadata.name == "mcp-tool-rate-limit-redis")
       )] | length
     ' "${tmp_dir}/federation.yaml"

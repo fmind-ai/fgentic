@@ -201,19 +201,6 @@ patches:
       group: networking.k8s.io
       version: v1
       kind: NetworkPolicy
-      name: agentgateway-allow-mcp-rate-limit-egress
-      namespace: agentgateway-system
-    patch: |
-      $patch: delete
-      apiVersion: networking.k8s.io/v1
-      kind: NetworkPolicy
-      metadata:
-        name: agentgateway-allow-mcp-rate-limit-egress
-        namespace: agentgateway-system
-  - target:
-      group: networking.k8s.io
-      version: v1
-      kind: NetworkPolicy
       name: mcp-tool-rate-limit
       namespace: agentgateway-system
     patch: |
