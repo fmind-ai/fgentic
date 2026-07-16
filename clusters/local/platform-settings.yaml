@@ -58,3 +58,13 @@ data:
   quota_compute_limits_memory: 12Gi
   # Local development keeps MAS password login as a recovery/demo path alongside Keycloak SSO.
   mas_local_login_enabled: "true"
+  # Finite reference policy for normal Matrix rooms. Room-level overrides remain bounded by the
+  # min/max values; legal hold and export are explicit operator workflows, never implicit here.
+  matrix_message_retention_default: 90d
+  matrix_message_retention_min: 1d
+  matrix_message_retention_max: 365d
+  matrix_message_purge_interval: 1d
+  matrix_local_media_retention: 180d
+  matrix_remote_media_retention: 30d
+  matrix_redaction_retention: 7d
+  matrix_forgotten_room_retention: 30d
