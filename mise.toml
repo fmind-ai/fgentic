@@ -125,6 +125,7 @@ depends = [
   "check:manifests",
   "check:charts",
   "check:overlays",
+  "check:retention-policy",
   "check:production-ha",
   "check:scan",
   "check:leaks",
@@ -203,6 +204,10 @@ run = "helm-unittest apps/matrix-a2a-bridge/chart"
 [tasks."check:overlays"]
 description = "Flux-build and schema-validate the local and GCP cluster overlays"
 run = "bash scripts/check-flux-overlays.sh"
+
+[tasks."check:retention-policy"]
+description = "Prove finite Matrix retention in local/GCP without changing disposable profiles"
+run = "bash scripts/test-retention-policy.sh"
 
 [tasks."check:production-ha"]
 description = "Prove the opt-in production replica, PDB, and resource contract"

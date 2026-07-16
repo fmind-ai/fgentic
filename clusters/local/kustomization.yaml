@@ -11,6 +11,18 @@ resources:
 components:
   - ../base/provider-selection
 patches:
+  # Production-shaped profiles opt into the finite Synapse retention fragment. Its durations
+  # come from this cluster's platform-settings; demo/federation do not compose the component.
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: matrix
+      namespace: flux-system
+    patch: |
+      - op: add
+        path: /spec/components/-
+        value: retention
   # No object store locally: strip the CNPG GCS backup config (WAL archiving + ScheduledBackup +
   # the Workload Identity service-account binding). Postgres itself is unchanged.
   - patch: |
