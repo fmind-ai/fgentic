@@ -12,6 +12,7 @@ data:
   databaseURL: postgres://postgres@postgres:5432/bridge?sslmode=disable
   delegationClaimInterval: 1s
   delegationLeaseDuration: 30s
+  deadManSwitchDelay: 0s
   homeserverURL: http://synapse:8008
   # Keep admission policy out of the resilience assertion: the disposable stub has no LLM or
   # paid boundary, and this scenario isolates graceful drain plus persistent deduplication.

@@ -1,6 +1,8 @@
-# Emit one content-free JSON access record for each parsed MCP tool call. apiKey.agent is metadata
-# bound to the successfully validated bearer key, not a caller-provided identity header. Arguments,
-# results, prompts, Matrix content, and the Authorization header are deliberately not added.
+# Emit one content-free JSON access record for each MCP tool-call request, including calls denied
+# by the traffic-layer quota before backend MCP authorization. Rejected JSON-RPC batches get a
+# fixed classification without parsing or logging their items. apiKey.agent is metadata bound to
+# the validated bearer key. The exact route resolves one target; only the requested tool name is
+# extracted from a single request, never arguments, results, prompts, Matrix content, or credential.
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayPolicy
 metadata:
@@ -13,7 +15,13 @@ spec:
       name: agentgateway-proxy
   frontend:
     accessLog:
-      filter: 'request.path == "/mcp" && mcp.methodName == "tools/call"'
+      filter: >-
+        request.method == "POST" &&
+        request.path == "/mcp" &&
+        (
+          string(request.body).trim().startsWith("[") ||
+          json(request.body).method == "tools/call"
+        )
       attributes:
         add:
           - name: audit.kind
@@ -21,8 +29,19 @@ spec:
           - name: fgentic.agent
             expression: apiKey.agent
           - name: mcp.method
-            expression: mcp.methodName
+            expression: >-
+              string(request.body).trim().startsWith("[")
+                ? "batch"
+                : json(request.body).method
           - name: mcp.tool.name
-            expression: mcp.tool.name
+            expression: >-
+              string(request.body).trim().startsWith("[")
+                ? "batch_rejected"
+                : json(request.body).params.name
           - name: mcp.tool.target
-            expression: mcp.tool.target
+            expression: '"kagent-tools"'
+          - name: mcp.quota.policy
+            expression: >-
+              string(request.body).trim().startsWith("[")
+                ? "batch_rejected"
+                : "per_agent_and_tool_admission"

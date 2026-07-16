@@ -635,13 +635,22 @@ assert_yq \
     .data.llm_model == "fgentic-demo" and
     .data.demo_bridge_tag == "local" and
     .data.mas_local_login_enabled == "true" and
+    .data.admin_console == "disabled" and
     .data.llm_usage_budget_15m == "100000"' \
 	"${WORK_DIR}/cluster.yaml" 'demo platform settings are incomplete'
 assert_yq \
 	'select(.kind == "Kustomization" and .metadata.name == "agentgateway-provider") |
     .spec.path == "./infra/agentgateway/providers/profiles/demo"' \
 	"${WORK_DIR}/cluster.yaml" 'provider-selection did not select the demo inventory'
-expected_demo_layers=$'agentgateway\nagentgateway-provider\nbridge\ncontrollers\ngateway\nkagent\nmatrix\nnamespaces\nplatform-secrets\npolicies\npostgres'
+assert_yq \
+	'select(.kind == "Kustomization" and .metadata.name == "admin") |
+    .spec.path == "./infra/admin/profiles/disabled"' \
+	"${WORK_DIR}/cluster.yaml" 'demo must select the zero-footprint admin profile'
+assert_yq \
+	'select(.kind == "Kustomization" and .metadata.name == "gateway") |
+    .spec.path == "./infra/gateway/profiles/disabled"' \
+	"${WORK_DIR}/cluster.yaml" 'demo must select the gateway without an admin listener'
+expected_demo_layers=$'admin\nagentgateway\nagentgateway-provider\nbridge\ncontrollers\ngateway\nkagent\nmatrix\nnamespaces\nplatform-secrets\npolicies\npostgres'
 actual_demo_layers="$(
 	yq eval-all -N -r 'select(.kind == "Kustomization") | .metadata.name' \
 		"${WORK_DIR}/cluster.yaml" | sort

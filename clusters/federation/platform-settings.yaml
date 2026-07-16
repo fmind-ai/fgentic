@@ -7,6 +7,8 @@ metadata:
   namespace: flux-system
 data:
   server_name: org-a.fgentic.localhost
+  # The federation lab proves cross-org protocols, not operator administration.
+  admin_console: disabled
   federation_partner_server_name: org-b.fgentic.localhost
   federation_denied_server_name: org-c.fgentic.localhost
   # RFC 5737 placeholder: valid for offline rendering, deliberately unreachable at runtime.
@@ -18,6 +20,12 @@ data:
   llm_model: fgentic-demo
   # The lifecycle replaces this stable offline fixture with its per-run source image tag.
   demo_bridge_tag: local
+  # This lab has no Matrix appservice bridge; keep the shared substitutions explicit and disabled.
+  bridge_dead_man_switch_delay: 0s
+  synapse_max_event_delay_duration: "null"
+  # Base substitution remains complete even though this profile removes the local MCP surface.
+  mcp_tool_burst_per_second: "2"
+  mcp_agent_calls_per_hour: "300"
   # This disposable local lab shares the single-node namespace admission ceilings.
   quota_default_request_cpu: 25m
   quota_default_request_memory: 64Mi

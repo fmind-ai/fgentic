@@ -1,0 +1,17 @@
+# The rate-limit service is stateless and shares one persistent counter store, so two separated
+# replicas preserve the policy hop during a voluntary disruption. The RWO store intentionally has
+# no PDB: blocking its eviction would turn a documented fast-restart boundary into a stuck drain.
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: mcp-tool-rate-limit
+  namespace: agentgateway-system
+  labels:
+    app.kubernetes.io/name: mcp-tool-rate-limit
+    app.kubernetes.io/component: rate-limit
+    app.kubernetes.io/part-of: fgentic
+spec:
+  maxUnavailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: mcp-tool-rate-limit

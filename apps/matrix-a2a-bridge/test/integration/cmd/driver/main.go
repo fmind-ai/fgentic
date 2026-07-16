@@ -40,6 +40,8 @@ const (
 	replyText            = "integration reply"
 	plainReplyText       = "plain A2A reply"
 	rateLimitedReplyText = "⚠️ This agent has reached a request limit. Please wait a moment before trying again."
+	deadManWorkingText   = "⏳ working on it…"
+	deadManNoticeText    = "⚠️ this task's bridge stopped responding; treat the placeholder as stale."
 )
 
 type fixture struct {
@@ -71,6 +73,7 @@ type messageContent struct {
 	Body      string   `json:"body"`
 	Mentions  mentions `json:"m.mentions,omitempty"`
 	MsgType   string   `json:"msgtype"`
+	Automated bool     `json:"org.matrix.msc1767.automated,omitempty"`
 	RelatesTo struct {
 		InReplyTo struct {
 			EventID string `json:"event_id"`
@@ -303,6 +306,56 @@ func (f fixture) runBasic(ctx context.Context) error {
 		return fmt.Errorf("tampered remote AgentCard: %w", err)
 	}
 
+	deadManSession, err := f.registerCredentials(ctx, "deadman-user", "deadman-password")
+	if err != nil {
+		return fmt.Errorf("register dead-man user: %w", err)
+	}
+	deadManRoom, err := f.createRoom(ctx, deadManSession.AccessToken)
+	if err != nil {
+		return fmt.Errorf("create dead-man room: %w", err)
+	}
+	if err := f.invite(ctx, deadManSession.AccessToken, deadManRoom, ghost); err != nil {
+		return err
+	}
+	if err := f.waitForJoin(ctx, deadManSession.AccessToken, deadManRoom, ghost); err != nil {
+		return err
+	}
+	deadManEventID, err := f.sendMessageTxn(
+		ctx,
+		deadManSession.AccessToken,
+		deadManRoom,
+		"integration-dead-man",
+		messageContent{
+			Body: ghost + " long room=99 seq=01",
+			Mentions: mentions{
+				UserIDs: []string{ghost},
+			},
+			MsgType: "m.text",
+		},
+	)
+	if err != nil {
+		return err
+	}
+	deadManPlaceholderID, err := f.waitForReplyEvent(
+		ctx, deadManSession.AccessToken, deadManRoom, ghost, deadManEventID, deadManWorkingText,
+	)
+	if err != nil {
+		return fmt.Errorf("wait for dead-man placeholder: %w", err)
+	}
+	slog.Info(
+		"dead-man switch armed",
+		"dead_man_phase", "armed",
+		"room_id", deadManRoom,
+		"mention_event_id", deadManEventID,
+		"placeholder_event_id", deadManPlaceholderID,
+	)
+	if err := f.waitForDeadManNotice(
+		ctx, deadManSession.AccessToken, deadManRoom, ghost, deadManPlaceholderID,
+	); err != nil {
+		return err
+	}
+	slog.Info("dead-man switch materialized", "dead_man_phase", "passed")
+
 	slog.Info(
 		"bridge integration passed",
 		"room_id", roomID,
@@ -321,10 +374,14 @@ func (f fixture) runBasic(ctx context.Context) error {
 }
 
 func (f fixture) register(ctx context.Context) (session, error) {
+	return f.registerCredentials(ctx, username, password)
+}
+
+func (f fixture) registerCredentials(ctx context.Context, user, pass string) (session, error) {
 	payload := map[string]any{
 		"device_id": "integration",
-		"password":  password,
-		"username":  username,
+		"password":  pass,
+		"username":  user,
 	}
 	status, body, err := f.request(ctx, http.MethodPost, f.matrixURL+"/_matrix/client/v3/register", "", payload)
 	if err != nil {
@@ -583,6 +640,68 @@ func (f fixture) waitForReply(
 				)
 			}
 			return fmt.Errorf("wait for Matrix reply: %w", waitErr)
+		}
+	}
+}
+
+func (f fixture) waitForDeadManNotice(ctx context.Context, token, roomID, ghost, eventID string) error {
+	for {
+		events, err := f.roomMessages(ctx, token, roomID)
+		if err == nil {
+			for _, evt := range events {
+				if evt.Type != "m.room.message" || evt.Sender != ghost {
+					continue
+				}
+				var content messageContent
+				if json.Unmarshal(evt.Content, &content) != nil ||
+					content.MsgType != "m.notice" || content.Body != deadManNoticeText ||
+					content.RelatesTo.InReplyTo.EventID != eventID {
+					continue
+				}
+				if !content.Automated {
+					return fmt.Errorf("dead-man notice %s is missing the automation marker", evt.EventID)
+				}
+				return nil
+			}
+		}
+		if waitErr := wait(ctx, 250*time.Millisecond); waitErr != nil {
+			if err != nil {
+				return errors.Join(
+					fmt.Errorf("last dead-man Matrix query: %w", err),
+					fmt.Errorf("wait for dead-man notice: %w", waitErr),
+				)
+			}
+			return fmt.Errorf("wait for dead-man notice: %w", waitErr)
+		}
+	}
+}
+
+func (f fixture) waitForReplyEvent(
+	ctx context.Context,
+	token, roomID, ghost, eventID, body string,
+) (string, error) {
+	for {
+		events, err := f.roomMessages(ctx, token, roomID)
+		if err == nil {
+			for _, evt := range events {
+				if evt.Type != "m.room.message" || evt.Sender != ghost {
+					continue
+				}
+				var content messageContent
+				if json.Unmarshal(evt.Content, &content) == nil && content.MsgType == "m.notice" &&
+					content.Body == body && content.RelatesTo.InReplyTo.EventID == eventID {
+					return evt.EventID, nil
+				}
+			}
+		}
+		if waitErr := wait(ctx, 250*time.Millisecond); waitErr != nil {
+			if err != nil {
+				return "", errors.Join(
+					fmt.Errorf("last Matrix reply query: %w", err),
+					fmt.Errorf("wait for Matrix reply event: %w", waitErr),
+				)
+			}
+			return "", fmt.Errorf("wait for Matrix reply event: %w", waitErr)
 		}
 	}
 }

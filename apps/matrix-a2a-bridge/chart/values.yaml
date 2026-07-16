@@ -18,6 +18,9 @@ config:
   ghostPrefix: agent-
   requestTimeout: 60s # transport deadline for one A2A SendMessage
   taskTimeout: 10m # overall deadline when polling a long-running task (GetTask)
+  # Optional Synapse delayed-event guard for long tasks. Keep disabled unless the homeserver's
+  # max_event_delay_duration is configured to a greater duration and MSC4140 is advertised.
+  deadManSwitchDelay: 0s
   inputWaitTimeout: 10m # how long a paused (input-required) task waits for a threaded reply (#116)
   shutdownTimeout: 25s # dispatcher drain before cancellation; pod grace also covers intake/telemetry
   concurrency: 16 # max in-flight delegations across all rooms (per-room FIFO regardless)
@@ -98,6 +101,7 @@ agents:
     namespace: kagent
     name: platform-helper
     dataClassification: public
+    agentContractSHA256: 239cd0991f26cda8bb80bb40d1d29de5ffa64f868fb780af49d356a936cb4359
     description: Read-only diagnostics for the evaluation profile's Kubernetes namespaces.
     # avatarURL: mxc://fgentic.fmind.ai/media-id
     allowedSenders:
@@ -106,6 +110,7 @@ agents:
     namespace: kagent
     name: docs-qa
     dataClassification: public
+    agentContractSHA256: 81fe04d0099b150e2ec15d431940228ab63daf1076715d9cc119ad91fff4fa87
     description: Answers architecture and operations questions from local Fgentic documentation.
     allowedSenders:
       - "@alice:fgentic.fmind.ai"
@@ -113,6 +118,7 @@ agents:
     namespace: kagent
     name: scribe
     dataClassification: public
+    agentContractSHA256: d6a4e2405cb96d9735cb3b03199ef3f89e662ad052281968bae248a69520f924
     description: Summarizes pasted or quoted room discussion without tools.
     allowedSenders:
       - "@alice:fgentic.fmind.ai"

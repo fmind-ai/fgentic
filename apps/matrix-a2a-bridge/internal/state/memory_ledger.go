@@ -230,6 +230,27 @@ func (m *Memory) RecordMatrixEvent(_ context.Context, request MatrixEventRequest
 	return nil
 }
 
+// RecordDeadMan implements Ledger. Exact repeats are idempotent; a different delayed-event ID
+// would leave the previously scheduled stale-task notice armed without a durable cancellation key.
+func (m *Memory) RecordDeadMan(_ context.Context, request DeadManRequest) error {
+	if err := validateDeadManRequest(request); err != nil {
+		return err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	job, ok := m.jobs[request.Lease.JobID]
+	if !ok || !leaseCurrent(job, request.Lease, request.At) {
+		return &LeaseLostError{JobID: request.Lease.JobID}
+	}
+	if job.MatrixDeadManDelayID != "" && job.MatrixDeadManDelayID != request.DelayID {
+		return fmt.Errorf("%w: job_id=%q", ErrDeadManConflict, request.Lease.JobID)
+	}
+	job.MatrixDeadManDelayID = request.DelayID
+	job.UpdatedAt = request.At
+	m.jobs[job.JobID] = job
+	return nil
+}
+
 // Transition implements Ledger.
 func (m *Memory) Transition(_ context.Context, request TransitionRequest) error {
 	if err := validateTransition(request); err != nil {

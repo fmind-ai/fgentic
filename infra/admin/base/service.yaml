@@ -1,0 +1,16 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: ketesa
+  namespace: admin
+  labels:
+    app.kubernetes.io/name: ketesa
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: ketesa
+  ports:
+    - name: http
+      port: 8080
+      targetPort: http
+      protocol: TCP

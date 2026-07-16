@@ -19,6 +19,11 @@ data:
   openai_host: api.openai.com
   azure_openai_resource: not-configured
   llm_usage_budget_15m: "100000"
+  # The disposable profile keeps delayed events off until its runtime proof is explicitly added.
+  bridge_dead_man_switch_delay: 0s
+  synapse_max_event_delay_duration: "null"
+  mcp_tool_burst_per_second: "2"
+  mcp_agent_calls_per_hour: "300"
   # Keep the disposable profile aligned with the single-node local admission ceilings.
   quota_default_request_cpu: 25m
   quota_default_request_memory: 64Mi
@@ -40,3 +45,5 @@ data:
   quota_compute_limits_cpu: "8"
   quota_compute_limits_memory: 12Gi
   mas_local_login_enabled: "true"
+  # Evaluation stays minimal and never exposes the administrator client.
+  admin_console: disabled

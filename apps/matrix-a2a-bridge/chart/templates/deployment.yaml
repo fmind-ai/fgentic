@@ -66,6 +66,8 @@ spec:
               value: {{ .Values.config.requestTimeout | quote }}
             - name: TASK_TIMEOUT
               value: {{ .Values.config.taskTimeout | quote }}
+            - name: DEAD_MAN_SWITCH_DELAY
+              value: {{ .Values.config.deadManSwitchDelay | quote }}
             - name: INPUT_WAIT_TIMEOUT
               value: {{ .Values.config.inputWaitTimeout | quote }}
             - name: SHUTDOWN_TIMEOUT

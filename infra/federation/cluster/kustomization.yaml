@@ -53,7 +53,9 @@ patches:
       - op: add
         path: /spec/components
         value:
-          - ../federation/gateway
+          # Gateway reconciliation now starts in infra/gateway/profiles/<admin_console> so the
+          # federation component needs to walk back to infra before selecting its unchanged patch.
+          - ../../../federation/gateway
   - target:
       group: kustomize.toolkit.fluxcd.io
       version: v1

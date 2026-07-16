@@ -230,6 +230,41 @@ jq --arg digest "${contract_sha256}" \
   '.agent_contract_sha256 = $digest' \
   "${eval_dir}/golden.json" >"${tmp_dir}/golden.json"
 cp "${tmp_dir}/golden.json" "${eval_dir}/golden.json"
+
+# Bind the bridge mapping to the same effective Agent contract, then prove the composed live
+# mapping derives a valid version-in-effect. The final version is calculated after Flux substitutes
+# environment-specific mapping values, so it is not stored as a stale pre-substitution constant.
+AGENT_CONTRACT_SHA256="${contract_sha256}" yq -i \
+  '.patches[0].patch |= (from_yaml |
+    .[0].value.agentContractSHA256 = strenv(AGENT_CONTRACT_SHA256) | to_yaml)' \
+  "${mapping_dir}/kustomization.yaml"
+kubectl kustomize "${repo_root}/apps/matrix-a2a-bridge/deploy" >"${tmp_dir}/effective-bridge-release.yaml" \
+  || fail "scaffolded bridge resources do not render"
+export server_name=scaffold.fgentic.example
+# The authoring render is environment-neutral: it validates the generated mapping, not an
+# environment's optional delayed-event capability. Keep that deployment-only feature disabled.
+export bridge_dead_man_switch_delay=0s
+yq eval-all -o=yaml \
+  'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") | .spec.values' \
+  "${tmp_dir}/effective-bridge-release.yaml" \
+  | flux envsubst --strict \
+  | helm template matrix-a2a-bridge "${repo_root}/apps/matrix-a2a-bridge/chart" --values - \
+    >"${tmp_dir}/effective-bridge.yaml"
+yq eval-all -er \
+  'select(.kind == "ConfigMap" and .metadata.name == "matrix-a2a-bridge-agents") | .data."agents.yaml"' \
+  "${tmp_dir}/effective-bridge.yaml" >"${tmp_dir}/effective-agents.yaml"
+mise --cd "${source_root}/apps/matrix-a2a-bridge" exec -- \
+  go run ./cmd/validate-agents \
+  --schema agents.schema.json \
+  --config "${tmp_dir}/effective-agents.yaml"
+agent_version="$(
+  mise --cd "${source_root}/apps/matrix-a2a-bridge" exec -- \
+    go run ./cmd/agent-version \
+    --config "${tmp_dir}/effective-agents.yaml" \
+    --ghost "agent-${name}"
+)" || fail "could not derive the scaffolded Agent version-in-effect"
+[[ "${agent_version}" =~ ^sha256:[0-9a-f]{64}$ ]] \
+  || fail "scaffolded Agent version-in-effect is invalid"
 committed=true
 
 printf '%s\n' \

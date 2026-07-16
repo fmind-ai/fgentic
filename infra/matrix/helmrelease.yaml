@@ -53,6 +53,12 @@ spec:
       appservices:
         - secret: matrix-a2a-bridge-registration
           secretKey: registration.yaml
+      # Synapse 1.155.0 advertises org.matrix.msc4140 only when this ceiling is non-null. The
+      # bridge independently probes that capability and stays disabled when it is absent.
+      additional:
+        00-delayed-events:
+          config: |
+            max_event_delay_duration: ${synapse_max_event_delay_duration}
 
     matrixAuthenticationService:
       ingress:

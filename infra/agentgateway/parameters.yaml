@@ -24,3 +24,28 @@ spec:
     limits:
       cpu: 500m
       memory: 256Mi
+---
+# Conservative admission ceilings for authenticated MCP tool calls. The rate-limit service
+# records fixed-window request admissions only; these values are neither tool execution results
+# nor model-token consumption. Both dimensions are evaluated for every parsed tools/call.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mcp-tool-rate-limit
+  namespace: agentgateway-system
+  labels:
+    app.kubernetes.io/name: mcp-tool-rate-limit
+    app.kubernetes.io/component: rate-limit
+    app.kubernetes.io/part-of: fgentic
+data:
+  config.yaml: |
+    domain: fgentic-mcp-tools
+    descriptors:
+      - key: agent_tool
+        rate_limit:
+          unit: second
+          requests_per_unit: ${mcp_tool_burst_per_second}
+      - key: agent
+        rate_limit:
+          unit: hour
+          requests_per_unit: ${mcp_agent_calls_per_hour}

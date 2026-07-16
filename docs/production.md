@@ -113,6 +113,7 @@ The default Terraform reference has two nodes in one zone. It therefore demonstr
 | Synapse main                             | 1 replica, no PDB; retained RWO media PVC; GKE CSI snapshot class               | Fast restart only; [ADR 0019](adr/0019-synapse-media-store.md) requires a coordinated restore drill before recovery claims |
 | Keycloak                                 | 2 replicas, JDBC discovery, required host anti-affinity, one-pod PDB            | Active/active application processes against shared Postgres                                                                |
 | agentgateway controller and proxy        | 2 replicas each, required host anti-affinity, zero-surge rollouts, one-pod PDBs | Controller and data-plane pod redundancy                                                                                   |
+| MCP quota service and persistent store   | 2 service replicas with host anti-affinity and one-pod PDB; 1 RWO store, no PDB | The policy hop survives one voluntary disruption; MCP tool calls fail closed while the store restarts or reattaches        |
 | kagent controller, KMCP, tools, and UI   | 2 replicas each, hostname spread, one-pod PDBs                                  | Platform workloads only; generated Agent workloads remain one replica                                                      |
 | Matrix-to-A2A bridge                     | 1 ready intake replica, no PDB, zero-surge rollout                              | Postgres-backed work recovery and cross-restart room ordering; intake is unavailable while the single replica restarts     |
 | Other operators and observability stores | Existing chart defaults                                                         | Fast restart; Jaeger's in-memory trace store is explicitly ephemeral                                                       |
@@ -212,7 +213,7 @@ scripts/bootstrap-admin.sh --server-name <server_name>
 
 Open the one-time URL and authenticate as the IdP user whose immutable `matrix_localpart` is `alice`. The device grant provisions the exact Matrix ID, grants Synapse administrator access, and idempotently creates `#fgentic-demo:<server_name>` without storing a token or entering a pod. In Element at `https://chat.<server_name>`, send `!agents`, invite an allowed ghost, and mention it. Grafana is at `https://grafana.<server_name>`.
 
-The complete identity contract is in [identity.md](identity.md); model runtime checks are in [models.md](models.md); attribution verification is in [audit.md](audit.md); secret rotation and mention-to-reply diagnostics are in the [matrix-agents runbook](../.agents/skills/matrix-agents/SKILL.md).
+The complete identity contract is in [identity.md](identity.md); model runtime checks are in [models.md](models.md); attribution verification is in [audit.md](audit.md); secret rotation and mention-to-reply diagnostics are in the [matrix-agents runbook](../.agents/skills/matrix-agents/SKILL.md). The optional Ketesa administrator UI remains disabled until its [admin-console runbook](admin-console.md) and live admin/non-admin acceptance are completed.
 
 Slack and Telegram are optional external identity/data boundaries, not production prerequisites. Enable them only through the composable cluster components and provider gates in [external-network interop](interop.md); the default local and GCP overlays reconcile neither bridge. Their standard NetworkPolicy permits arbitrary non-private IPv4 TCP/443 for provider transports, so deployments requiring provider-FQDN enforcement must add a governed egress proxy or FQDN-aware CNI before acceptance.
 
@@ -225,7 +226,7 @@ Slack and Telegram are optional external identity/data boundaries, not productio
 1. Inspect every PDB and perform a controlled target-cluster drain; a rendered PDB is not evidence that eviction, rescheduling, storage attachment, and application recovery succeed together.
 1. Run `mise run test:availability` and `mise run test:crash-recovery` on the candidate revision; retain the graceful-drain timings and six-boundary SIGKILL result separately. Keep node loss and every process-recovery timing outside a claimed RTO until the corresponding target-environment drill passes.
 1. Confirm selected-provider retention, residency, billing cap, and low-token runtime acceptance. Static rendering is not runtime evidence.
-1. Configure DNS and valid TLS for the apex plus `chat.`, `matrix.`, `auth.`, `id.`, and `grafana.` hosts. The GKE Terraform output provides the reserved ingress address.
+1. Configure DNS and valid TLS for the apex plus `chat.`, `matrix.`, `auth.`, `id.`, and `grafana.` hosts. Add `admin.` only when the Ketesa profile is enabled. The GKE Terraform output provides the reserved ingress address.
 1. Review CNPG backups and complete a restore drill. The local overlay intentionally strips GCS backup configuration.
 1. Verify signed, digest-pinned bridge artifacts and collect one end-to-end attribution bundle before declaring the deployment ready.
 

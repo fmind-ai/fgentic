@@ -35,6 +35,13 @@ data:
   azure_openai_resource: not-configured
   # Alert when aggregate model-token consumption exceeds this count over 15 minutes.
   llm_usage_budget_15m: "100000"
+  # Long-task dead-man notices are held for five minutes and may be restarted for at most the
+  # homeserver's ten-minute ceiling. The bridge still fails closed if Synapse omits MSC4140.
+  bridge_dead_man_switch_delay: 5m
+  synapse_max_event_delay_duration: 10m
+  # MCP admission ceilings: per authenticated agent+tool burst and per authenticated agent hour.
+  mcp_tool_burst_per_second: "2"
+  mcp_agent_calls_per_hour: "300"
   # Initial namespace-compute profiles. These are admission ceilings, not reservations; tighten
   # only after observing ResourceQuota usage through representative rollouts and peak traffic.
   quota_default_request_cpu: 25m
@@ -58,6 +65,9 @@ data:
   quota_compute_limits_memory: 12Gi
   # Local development keeps MAS password login as a recovery/demo path alongside Keycloak SSO.
   mas_local_login_enabled: "true"
+  # Optional Ketesa administrator UI. Use only `enabled` or `disabled`; Flux uses this value as a
+  # reviewed profile path so disabling prunes the namespace, route, and shared-Gateway listener.
+  admin_console: disabled
   # Finite reference policy for normal Matrix rooms. Room-level overrides remain bounded by the
   # min/max values; legal hold and export are explicit operator workflows, never implicit here.
   matrix_message_retention_default: 90d

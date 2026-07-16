@@ -193,6 +193,11 @@ spec:
               value: 30s
             - name: TASK_TIMEOUT
               value: 35s
+            - name: DEAD_MAN_SWITCH_DELAY
+              valueFrom:
+                configMapKeyRef:
+                  name: fixture-settings
+                  key: deadManSwitchDelay
             - name: SHUTDOWN_TIMEOUT
               value: 25s
             - name: CONCURRENCY

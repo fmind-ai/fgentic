@@ -30,9 +30,13 @@ cp -R \
   "${repo_root}/apps/matrix-a2a-bridge/cmd/validate-agents" \
   "${tmp_dir}/apps/matrix-a2a-bridge/cmd/validate-agents"
 cp -R \
-  "${repo_root}/apps/matrix-a2a-bridge/internal/agentschema" \
-  "${tmp_dir}/apps/matrix-a2a-bridge/internal/agentschema"
+  "${repo_root}/apps/matrix-a2a-bridge/cmd/agent-version" \
+  "${tmp_dir}/apps/matrix-a2a-bridge/cmd/agent-version"
+cp -R \
+  "${repo_root}/apps/matrix-a2a-bridge/internal/." \
+  "${tmp_dir}/apps/matrix-a2a-bridge/internal/"
 cp -R "${repo_root}/scripts/testdata" "${tmp_dir}/scripts/testdata"
+cp -R "${repo_root}/evals/." "${tmp_dir}/evals/"
 
 FGENTIC_REPO_ROOT="${tmp_dir}" mise run agent:new demo-helper >/dev/null
 
@@ -57,12 +61,17 @@ yq -e '
     ($mapping.name == "demo-helper") and
     ($mapping.stage == "dev") and
     ($mapping.dataClassification == "public") and
+    ($mapping.agentContractSHA256 | test("^[0-9a-f]{64}$")) and
     (($mapping.allowedSenders | length) == 1)
   )
 ' "${mapping_component}" >/dev/null || fail "generated bridge mapping is invalid"
 mapping_sender="$(yq -er '.patches[0].patch | from_yaml | .[0].value.allowedSenders[0]' "${mapping_component}")"
 [[ "${mapping_sender}" == '@alice:${server_name}' ]] \
   || fail "generated bridge mapping does not use the server-name substitution"
+mapping_contract="$(yq -er '.patches[0].patch | from_yaml | .[0].value.agentContractSHA256' "${mapping_component}")"
+fixture_contract="$(jq -er '.agent_contract_sha256' "${golden_fixture}")"
+[[ "${mapping_contract}" == "${fixture_contract}" ]] \
+  || fail "generated bridge mapping and Agent fixture pin different contracts"
 
 jq -e '
   .schema_version == "fgentic.agent.eval.v1" and
@@ -82,6 +91,7 @@ yq eval-all -e '
 ' "${tmp_dir}/kagent.yaml" >/dev/null || fail "generated Agent is absent from the effective kagent render"
 
 export server_name=ci.fgentic.example
+export bridge_dead_man_switch_delay=0s
 yq eval-all -o=yaml \
   'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") | .spec.values' \
   "${tmp_dir}/bridge-release.yaml" \
@@ -96,6 +106,7 @@ yq eval-all -e '
     ($mapping.name == "demo-helper") and
     ($mapping.stage == "dev") and
     ($mapping.dataClassification == "public") and
+    ($mapping.agentContractSHA256 | test("^[0-9a-f]{64}$")) and
     (($mapping.allowedSenders | length) == 1) and
     ($mapping.allowedSenders[0] == "@alice:ci.fgentic.example")
   )

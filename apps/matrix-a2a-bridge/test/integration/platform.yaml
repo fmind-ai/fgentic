@@ -67,6 +67,7 @@ data:
   databaseURL: postgres://postgres@postgres:5432/bridge?sslmode=disable
   delegationClaimInterval: 1s
   delegationLeaseDuration: 30s
+  deadManSwitchDelay: 2m
   homeserverURL: http://synapse:8008
   senderRatePerMinute: "0.01"
   senderRateBurst: "1"
@@ -81,7 +82,8 @@ metadata:
 data:
   a2aStubDelay: 0s
   a2aStubHold: "false"
-  a2aStubLongHold: "false"
+  # The basic scenario's final request remains non-terminal until the bridge is hard-killed.
+  a2aStubLongHold: "true"
 ---
 apiVersion: v1
 kind: Secret
@@ -119,6 +121,9 @@ stringData:
     signing_key_path: /data/integration.test.signing.key
     trusted_key_servers: []
     suppress_key_server_warning: true
+    # Enables Synapse's pinned MSC4140 implementation for the hard-kill dead-man proof. The bridge
+    # schedules two-minute notices, leaving one minute of homeserver ceiling headroom.
+    max_event_delay_duration: 3m
     enable_registration: true
     enable_registration_without_verification: true
     rc_message:

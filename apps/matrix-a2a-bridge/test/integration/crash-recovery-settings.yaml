@@ -13,6 +13,7 @@ data:
   # Keep lease expiry short enough for six real process replacements on a constrained laptop.
   delegationClaimInterval: 100ms
   delegationLeaseDuration: 3s
+  deadManSwitchDelay: 0s
   homeserverURL: http://fault-proxy:8008
   senderRatePerMinute: "6000"
   senderRateBurst: "20"
