@@ -207,7 +207,11 @@ func (b *Bridge) ensureDurableDeadMan(
 	if err := b.store.RecordDeadMan(ctx, state.DeadManRequest{
 		Lease: job.LeaseToken(), At: now, DelayID: string(delayID),
 	}); err != nil {
-		return fmt.Errorf("record durable task dead-man switch: %w", err)
+		recordErr := fmt.Errorf("record durable task dead-man switch: %w", err)
+		if cancelErr := b.cancelDurableDeadManID(ctx, job, delayID); cancelErr != nil {
+			return errors.Join(recordErr, fmt.Errorf("cancel unpersisted task dead-man switch: %w", cancelErr))
+		}
+		return recordErr
 	}
 	job.MatrixDeadManDelayID = string(delayID)
 	return nil
@@ -236,10 +240,14 @@ func (b *Bridge) cancelDurableDeadMan(ctx context.Context, job *state.Job) error
 	if !b.deadManEnabled || job.MatrixDeadManDelayID == "" {
 		return nil
 	}
+	return b.cancelDurableDeadManID(ctx, job, id.DelayID(job.MatrixDeadManDelayID))
+}
+
+func (b *Bridge) cancelDurableDeadManID(ctx context.Context, job *state.Job, delayID id.DelayID) error {
 	cancelCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), b.cfg.RequestTimeout)
 	defer cancel()
 	intent := b.as.Intent(id.UserID(job.GhostMXID))
-	if err := b.deadMan.Cancel(cancelCtx, intent, id.DelayID(job.MatrixDeadManDelayID)); err != nil {
+	if err := b.deadMan.Cancel(cancelCtx, intent, delayID); err != nil {
 		return fmt.Errorf("cancel durable task dead-man switch: %w", err)
 	}
 	return nil
