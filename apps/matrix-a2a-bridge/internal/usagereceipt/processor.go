@@ -25,11 +25,14 @@ var terminalTaskStates = map[string]bool{
 	"TASK_STATE_REJECTED":  true,
 }
 
+type jsonRPCID string
+
 type requestEvidence struct {
-	Method         string `json:"method"`
-	TaskID         string `json:"taskId,omitempty"`
-	RequestHash    string `json:"requestHash,omitempty"`
-	TokensReserved uint64 `json:"tokensReserved,omitempty"`
+	Method         string    `json:"method"`
+	TaskID         string    `json:"taskId,omitempty"`
+	RequestHash    string    `json:"requestHash,omitempty"`
+	TokensReserved uint64    `json:"tokensReserved,omitempty"`
+	JSONRPCID      jsonRPCID `json:"-"`
 }
 
 type pendingEvidence struct {
@@ -56,8 +59,10 @@ func ParseRequest(raw []byte) (requestEvidence, error) {
 		return requestEvidence{}, err
 	}
 	var request struct {
-		Method string `json:"method"`
-		Params struct {
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Method  string          `json:"method"`
+		Params  struct {
 			ID      string `json:"id"`
 			Message struct {
 				Metadata map[string]json.RawMessage `json:"metadata"`
@@ -70,6 +75,13 @@ func ParseRequest(raw []byte) (requestEvidence, error) {
 	}
 	if err := expectEOF(decoder); err != nil {
 		return requestEvidence{}, fmt.Errorf("decode A2A request: %w", err)
+	}
+	if request.JSONRPC != "2.0" {
+		return requestEvidence{}, fmt.Errorf("A2A request jsonrpc version is invalid")
+	}
+	jsonRPCID, err := canonicalJSONRPCID(request.ID)
+	if err != nil {
+		return requestEvidence{}, fmt.Errorf("A2A request id is invalid: %w", err)
 	}
 	switch request.Method {
 	case "SendMessage":
@@ -89,13 +101,15 @@ func ParseRequest(raw []byte) (requestEvidence, error) {
 		}
 		return requestEvidence{
 			Method: request.Method, RequestHash: requestHash,
-			TokensReserved: budget.MaxTokens,
+			TokensReserved: budget.MaxTokens, JSONRPCID: jsonRPCID,
 		}, nil
 	case "GetTask":
 		if !validIdentifier(request.Params.ID) {
 			return requestEvidence{}, fmt.Errorf("GetTask id is invalid")
 		}
-		return requestEvidence{Method: request.Method, TaskID: request.Params.ID}, nil
+		return requestEvidence{
+			Method: request.Method, TaskID: request.Params.ID, JSONRPCID: jsonRPCID,
+		}, nil
 	default:
 		return requestEvidence{}, nil
 	}
@@ -166,8 +180,38 @@ func validateJCSNumbers(value any) error {
 	return nil
 }
 
+func canonicalJSONRPCID(raw json.RawMessage) (jsonRPCID, error) {
+	if len(raw) == 0 {
+		return "", fmt.Errorf("missing JSON-RPC id")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	decoder.UseNumber()
+	var value any
+	if err := decoder.Decode(&value); err != nil {
+		return "", fmt.Errorf("decode JSON-RPC id: %w", err)
+	}
+	if err := expectEOF(decoder); err != nil {
+		return "", fmt.Errorf("decode JSON-RPC id: %w", err)
+	}
+	switch value.(type) {
+	case nil, string, json.Number:
+	default:
+		return "", fmt.Errorf("JSON-RPC id must be a string, number, or null")
+	}
+	if err := validateJCSNumbers(value); err != nil {
+		return "", fmt.Errorf("validate JSON-RPC id: %w", err)
+	}
+	canonical, err := jcs.Transform(raw)
+	if err != nil {
+		return "", fmt.Errorf("canonicalize JSON-RPC id: %w", err)
+	}
+	return jsonRPCID(canonical), nil
+}
+
 // TransformResponse signs and injects a receipt when raw contains a terminal result. Nonterminal,
-// JSON-RPC error, and unrelated-method responses pass through byte-for-byte.
+// JSON-RPC error, and unrelated-method responses pass through byte-for-byte. A result-bearing
+// response with an invalid envelope fails closed so the caller cannot accept success without the
+// required evidence.
 func (p *Processor) TransformResponse(request requestEvidence, raw []byte) ([]byte, bool, error) {
 	if request.Method != "SendMessage" && request.Method != "GetTask" {
 		return raw, false, nil
@@ -176,11 +220,27 @@ func (p *Processor) TransformResponse(request requestEvidence, raw []byte) ([]by
 		return nil, false, err
 	}
 	var envelope struct {
-		Error  json.RawMessage `json:"error"`
-		Result json.RawMessage `json:"result"`
+		JSONRPC string          `json:"jsonrpc"`
+		ID      json.RawMessage `json:"id"`
+		Error   json.RawMessage `json:"error"`
+		Result  json.RawMessage `json:"result"`
 	}
-	if err := json.Unmarshal(raw, &envelope); err != nil || len(envelope.Result) == 0 || string(envelope.Error) != "" && string(envelope.Error) != "null" {
+	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return raw, false, nil
+	}
+	if len(envelope.Result) == 0 ||
+		string(envelope.Error) != "" && string(envelope.Error) != "null" {
+		return raw, false, nil
+	}
+	if envelope.JSONRPC != "2.0" {
+		return nil, false, fmt.Errorf("A2A response jsonrpc version is invalid")
+	}
+	responseID, err := canonicalJSONRPCID(envelope.ID)
+	if err != nil {
+		return nil, false, fmt.Errorf("A2A response id is invalid: %w", err)
+	}
+	if responseID != request.JSONRPCID {
+		return nil, false, fmt.Errorf("A2A response id does not match request")
 	}
 	result, err := decodeObject(envelope.Result)
 	if err != nil {

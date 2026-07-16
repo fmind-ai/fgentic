@@ -19,7 +19,7 @@ import (
 func TestProcessorInjectsAndArchivesTerminalReceipt(t *testing.T) {
 	processor, archivePath := testProcessor(t)
 	request, err := ParseRequest([]byte(`{
-  "jsonrpc":"2.0","id":"request-1","method":"SendMessage","params":{"message":{
+  "jsonrpc":"2.0","id":9007199254740992,"method":"SendMessage","params":{"message":{
     "messageId":"message-1","role":"ROLE_USER","parts":[{"text":"untrusted prompt"}],
     "metadata":{"https://fgentic.fmind.ai/a2a/extensions/token-budget/v1":{"maxTokens":3000}}
   }}}
@@ -27,7 +27,7 @@ func TestProcessorInjectsAndArchivesTerminalReceipt(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ParseRequest: %v", err)
 	}
-	response := []byte(`{"jsonrpc":"2.0","id":9007199254740993,"result":{"message":{"messageId":"reply-1","taskId":"task-1","contextId":"context-1","role":"ROLE_AGENT","parts":[{"text":"reply"}]}}}`)
+	response := []byte(`{"jsonrpc":"2.0","id":9007199254740992,"result":{"message":{"messageId":"reply-1","taskId":"task-1","contextId":"context-1","role":"ROLE_AGENT","parts":[{"text":"reply"}]}}}`)
 	updated, attached, err := processor.TransformResponse(request, response)
 	if err != nil {
 		t.Fatalf("TransformResponse: %v", err)
@@ -41,7 +41,7 @@ func TestProcessorInjectsAndArchivesTerminalReceipt(t *testing.T) {
 	if err := json.Unmarshal(updated, &envelope); err != nil {
 		t.Fatalf("decode updated response envelope: %v", err)
 	}
-	if string(envelope.ID) != "9007199254740993" {
+	if string(envelope.ID) != "9007199254740992" {
 		t.Fatalf("numeric JSON-RPC id changed during receipt injection: %s", envelope.ID)
 	}
 	var sdkEnvelope struct {
@@ -156,6 +156,197 @@ func TestRequestHashCanonicalizationRejectsUnsafeIntegers(t *testing.T) {
 		if _, err := RequestHash([]byte(raw)); err == nil {
 			t.Fatalf("RequestHash accepted unsafe integer: %s", raw)
 		}
+	}
+}
+
+func TestCanonicalJSONRPCIDPreservesTypeAndValue(t *testing.T) {
+	number, err := canonicalJSONRPCID(json.RawMessage(`1.0`))
+	if err != nil {
+		t.Fatalf("canonicalJSONRPCID number: %v", err)
+	}
+	equivalent, err := canonicalJSONRPCID(json.RawMessage(`1`))
+	if err != nil {
+		t.Fatalf("canonicalJSONRPCID equivalent number: %v", err)
+	}
+	if number != equivalent {
+		t.Fatalf("equivalent numeric ids differ: %s != %s", number, equivalent)
+	}
+	stringID, err := canonicalJSONRPCID(json.RawMessage(`"1"`))
+	if err != nil {
+		t.Fatalf("canonicalJSONRPCID string: %v", err)
+	}
+	if stringID == number {
+		t.Fatalf("string and numeric ids collapsed to %s", stringID)
+	}
+	if nullID, err := canonicalJSONRPCID(json.RawMessage(`null`)); err != nil || nullID != "null" {
+		t.Fatalf("canonicalJSONRPCID null = %q, err %v", nullID, err)
+	}
+	for _, raw := range []string{"", "true", "[]", "{}", "9007199254740993"} {
+		if _, err := canonicalJSONRPCID(json.RawMessage(raw)); err == nil {
+			t.Fatalf("canonicalJSONRPCID accepted invalid id: %s", raw)
+		}
+	}
+}
+
+func TestParseRequestRejectsInvalidJSONRPCEnvelope(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		raw  string
+	}{
+		{name: "missing version", raw: `{"id":"request-1","method":"GetTask","params":{"id":"task-1"}}`},
+		{name: "wrong version", raw: `{"jsonrpc":"1.0","id":"request-1","method":"GetTask","params":{"id":"task-1"}}`},
+		{name: "missing id", raw: `{"jsonrpc":"2.0","method":"GetTask","params":{"id":"task-1"}}`},
+		{name: "boolean id", raw: `{"jsonrpc":"2.0","id":true,"method":"GetTask","params":{"id":"task-1"}}`},
+		{name: "object id", raw: `{"jsonrpc":"2.0","id":{},"method":"GetTask","params":{"id":"task-1"}}`},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := ParseRequest([]byte(test.raw)); err == nil {
+				t.Fatalf("ParseRequest accepted invalid JSON-RPC envelope: %s", test.raw)
+			}
+		})
+	}
+}
+
+func TestProcessorDoesNotPersistInvalidJSONRPCResponseEvidence(t *testing.T) {
+	envelopes := []struct {
+		name      string
+		requestID string
+		response  string
+	}{
+		{name: "missing version", requestID: `"1"`, response: `{"id":"1","result":$RESULT}`},
+		{
+			name:      "wrong version",
+			requestID: `"1"`,
+			response:  `{"jsonrpc":"1.0","id":"1","result":$RESULT}`,
+		},
+		{
+			name:      "missing id",
+			requestID: `"1"`,
+			response:  `{"jsonrpc":"2.0","result":$RESULT}`,
+		},
+		{
+			name:      "mismatched id",
+			requestID: `"1"`,
+			response:  `{"jsonrpc":"2.0","id":"2","result":$RESULT}`,
+		},
+		{
+			name:      "mismatched type",
+			requestID: `"1"`,
+			response:  `{"jsonrpc":"2.0","id":1,"result":$RESULT}`,
+		},
+		{
+			name:      "unsafe numeric id",
+			requestID: `9007199254740992`,
+			response:  `{"jsonrpc":"2.0","id":9007199254740993,"result":$RESULT}`,
+		},
+	}
+	results := []struct {
+		name string
+		body string
+	}{
+		{name: "working", body: `{"id":"task-invalid","contextId":"context-invalid","status":{"state":"TASK_STATE_WORKING"}}`},
+		{name: "terminal", body: `{"id":"task-invalid","contextId":"context-invalid","status":{"state":"TASK_STATE_COMPLETED"}}`},
+	}
+	for _, envelope := range envelopes {
+		for _, result := range results {
+			t.Run(envelope.name+"/"+result.name, func(t *testing.T) {
+				processor, archivePath := testProcessor(t)
+				requestRaw := strings.Replace(`{
+				  "jsonrpc":"2.0","id":$ID,"method":"SendMessage","params":{"message":{"metadata":{
+				    "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1":{"maxTokens":1000}
+				  }}}
+				}`, "$ID", envelope.requestID, 1)
+				request, err := ParseRequest([]byte(requestRaw))
+				if err != nil {
+					t.Fatalf("ParseRequest: %v", err)
+				}
+				response := []byte(strings.Replace(envelope.response, "$RESULT", result.body, 1))
+				updated, attached, err := processor.TransformResponse(request, response)
+				if err == nil || attached || updated != nil {
+					t.Fatalf(
+						"invalid response = attached %v, err %v, body %s",
+						attached,
+						err,
+						updated,
+					)
+				}
+				if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
+					t.Fatalf("invalid response created an archive: %v", err)
+				}
+				if _, found, err := processor.Pending.Load("task-invalid"); err != nil || found {
+					t.Fatalf("invalid response persisted pending evidence: found %v, err %v", found, err)
+				}
+			})
+		}
+	}
+}
+
+func TestProcessorAcceptsEquivalentJSONRPCResponseIDs(t *testing.T) {
+	for _, ids := range []struct {
+		name     string
+		request  string
+		response string
+	}{
+		{name: "null", request: "null", response: "null"},
+		{name: "equivalent numbers", request: "1.0", response: "1"},
+	} {
+		t.Run(ids.name, func(t *testing.T) {
+			processor, _ := testProcessor(t)
+			requestRaw := strings.Replace(`{
+			  "jsonrpc":"2.0","id":$ID,"method":"SendMessage","params":{"message":{"metadata":{
+			    "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1":{"maxTokens":1000}
+			  }}}
+			}`, "$ID", ids.request, 1)
+			request, err := ParseRequest([]byte(requestRaw))
+			if err != nil {
+				t.Fatalf("ParseRequest: %v", err)
+			}
+			response := []byte(strings.Replace(
+				`{"jsonrpc":"2.0","id":$ID,"result":{
+				  "id":"task-equivalent","contextId":"context-equivalent",
+				  "status":{"state":"TASK_STATE_COMPLETED"}
+				}}`,
+				"$ID",
+				ids.response,
+				1,
+			))
+			if _, attached, err := processor.TransformResponse(request, response); err != nil || !attached {
+				t.Fatalf("equivalent response = attached %v, err %v", attached, err)
+			}
+		})
+	}
+}
+
+func TestProcessorRetainsPendingEvidenceForMismatchedGetTaskResponse(t *testing.T) {
+	processor, archivePath := testProcessor(t)
+	evidence := pendingEvidence{
+		RequestHash: "sha256:" + strings.Repeat("a", 64), TokensReserved: 1000,
+	}
+	if err := processor.Pending.Save("task-pending", evidence); err != nil {
+		t.Fatalf("Save pending evidence: %v", err)
+	}
+	request, err := ParseRequest([]byte(
+		`{"jsonrpc":"2.0","id":"request-1","method":"GetTask","params":{"id":"task-pending"}}`,
+	))
+	if err != nil {
+		t.Fatalf("ParseRequest: %v", err)
+	}
+	response := []byte(`{
+	  "jsonrpc":"2.0","id":"different-request","result":{
+	    "id":"task-pending","contextId":"context-pending",
+	    "status":{"state":"TASK_STATE_COMPLETED"}
+	  }
+	}`)
+	updated, attached, err := processor.TransformResponse(request, response)
+	if err == nil || attached || updated != nil {
+		t.Fatalf("mismatched GetTask response = attached %v, err %v, body %s", attached, err, updated)
+	}
+	retained, found, err := processor.Pending.Load("task-pending")
+	if err != nil || !found || !reflect.DeepEqual(retained, evidence) {
+		t.Fatalf("pending evidence = %+v, found %v, err %v", retained, found, err)
+	}
+	if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
+		t.Fatalf("mismatched GetTask response created an archive: %v", err)
 	}
 }
 
