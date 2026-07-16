@@ -21,6 +21,16 @@
         "required": true
       },
       {
+        "uri": "https://fgentic.fmind.ai/a2a/extensions/usage-receipt/v1",
+        "description": "Org-A ES256/JCS seller assertion for completed authenticated tasks; reserved tokens remain distinct from nullable actual consumption.",
+        "required": true,
+        "params": {
+          "schema": "fgentic.usage-receipt.v1",
+          "keyId": "__FGENTIC_USAGE_RECEIPT_KEY_ID__",
+          "publicJwk": "__FGENTIC_USAGE_RECEIPT_PUBLIC_JWK__"
+        }
+      },
+      {
         "uri": "https://fgentic.fmind.ai/a2a/extensions/skill-quote/v1",
         "description": "Per-skill price quotes in bilateral credit-units (fgentic-specific data-only extension, not a standard A2A field; credit-units are not currency).",
         "params": {

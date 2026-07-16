@@ -46,6 +46,13 @@ type publicJWK struct {
 	KeyOps    []string `json:"key_ops"`
 }
 
+// Signature is the protected ES256 JWS material shared by Signed AgentCards and other
+// repository-owned, JCS-canonical evidence artifacts.
+type Signature struct {
+	Protected string `json:"protected"`
+	Signature string `json:"signature"`
+}
+
 // PublicJWKMetadataPolicy controls whether JOSE metadata is mandatory (published signing
 // artifacts) or may be omitted (operator-pinned coordinates). Present metadata is always
 // validated and private or unknown fields are always rejected.
@@ -195,33 +202,19 @@ func Sign(raw []byte, key *ecdsa.PrivateKey, keyID string) (Bundle, error) {
 		return Bundle{}, err
 	}
 
-	protectedJSON, err := json.Marshal(protectedHeader{
-		Algorithm: "ES256",
-		KeyID:     keyID,
-		Type:      "JOSE",
-	})
-	if err != nil {
-		return Bundle{}, fmt.Errorf("encode JWS protected header: %w", err)
-	}
-	protected := base64.RawURLEncoding.EncodeToString(protectedJSON)
-	encodedPayload := base64.RawURLEncoding.EncodeToString(document.payload)
-	digest := sha256.Sum256([]byte(protected + "." + encodedPayload))
-	r, s, err := ecdsa.Sign(rand.Reader, key, digest[:])
+	signature, err := SignCanonicalPayload(document.payload, key, keyID)
 	if err != nil {
 		return Bundle{}, fmt.Errorf("sign AgentCard: %w", err)
 	}
-	signature := make([]byte, p256CoordinateBytes*2)
-	r.FillBytes(signature[:p256CoordinateBytes])
-	s.FillBytes(signature[p256CoordinateBytes:])
 
 	signedCard, err := document.marshalWithSignatures([]a2a.AgentCardSignature{{
-		Protected: protected,
-		Signature: base64.RawURLEncoding.EncodeToString(signature),
+		Protected: signature.Protected,
+		Signature: signature.Signature,
 	}})
 	if err != nil {
 		return Bundle{}, err
 	}
-	jwk, err := encodePublicJWK(&key.PublicKey, keyID)
+	jwk, err := EncodePublicJWK(&key.PublicKey, keyID)
 	if err != nil {
 		return Bundle{}, err
 	}
@@ -261,6 +254,21 @@ func Verify(document *Document, key *ecdsa.PublicKey, keyID string) error {
 }
 
 func verifySignature(
+	payload []byte,
+	signature a2a.AgentCardSignature,
+	expectedKeyID string,
+	publicKey *ecdsa.PublicKey,
+) (bool, error) {
+	if len(signature.Header) != 0 {
+		return verifySignatureWithHeader(payload, signature, expectedKeyID, publicKey)
+	}
+	return VerifyCanonicalPayload(payload, Signature{
+		Protected: signature.Protected,
+		Signature: signature.Signature,
+	}, publicKey, expectedKeyID)
+}
+
+func verifySignatureWithHeader(
 	payload []byte,
 	signature a2a.AgentCardSignature,
 	expectedKeyID string,
@@ -336,7 +344,70 @@ func verifySignature(
 	return true, nil
 }
 
-func encodePublicJWK(key *ecdsa.PublicKey, keyID string) ([]byte, error) {
+// SignCanonicalPayload signs already JCS-canonical JSON bytes with protected ES256 JWS metadata.
+func SignCanonicalPayload(payload []byte, key *ecdsa.PrivateKey, keyID string) (Signature, error) {
+	if err := validateKeyID(keyID); err != nil {
+		return Signature{}, err
+	}
+	if err := validatePrivateKey(key); err != nil {
+		return Signature{}, err
+	}
+	canonical, err := jcs.Transform(payload)
+	if err != nil {
+		return Signature{}, fmt.Errorf("payload is not valid canonicalizable I-JSON: %w", err)
+	}
+	if !bytes.Equal(payload, canonical) {
+		return Signature{}, fmt.Errorf("payload is not JCS-canonical")
+	}
+	protectedJSON, err := json.Marshal(protectedHeader{
+		Algorithm: "ES256",
+		KeyID:     keyID,
+		Type:      "JOSE",
+	})
+	if err != nil {
+		return Signature{}, fmt.Errorf("encode JWS protected header: %w", err)
+	}
+	protected := base64.RawURLEncoding.EncodeToString(protectedJSON)
+	encodedPayload := base64.RawURLEncoding.EncodeToString(payload)
+	digest := sha256.Sum256([]byte(protected + "." + encodedPayload))
+	r, s, err := ecdsa.Sign(rand.Reader, key, digest[:])
+	if err != nil {
+		return Signature{}, fmt.Errorf("sign canonical payload: %w", err)
+	}
+	rawSignature := make([]byte, p256CoordinateBytes*2)
+	r.FillBytes(rawSignature[:p256CoordinateBytes])
+	s.FillBytes(rawSignature[p256CoordinateBytes:])
+	return Signature{
+		Protected: protected,
+		Signature: base64.RawURLEncoding.EncodeToString(rawSignature),
+	}, nil
+}
+
+// VerifyCanonicalPayload validates protected ES256 JWS material over already JCS-canonical JSON.
+func VerifyCanonicalPayload(
+	payload []byte,
+	signature Signature,
+	publicKey *ecdsa.PublicKey,
+	expectedKeyID string,
+) (bool, error) {
+	if err := validatePublicKey(publicKey); err != nil {
+		return false, err
+	}
+	canonical, err := jcs.Transform(payload)
+	if err != nil {
+		return false, fmt.Errorf("payload is not valid canonicalizable I-JSON: %w", err)
+	}
+	if !bytes.Equal(payload, canonical) {
+		return false, fmt.Errorf("payload is not JCS-canonical")
+	}
+	return verifySignatureWithHeader(payload, a2a.AgentCardSignature{
+		Protected: signature.Protected,
+		Signature: signature.Signature,
+	}, expectedKeyID, publicKey)
+}
+
+// EncodePublicJWK encodes the public half of an ES256 signing key with strict verification metadata.
+func EncodePublicJWK(key *ecdsa.PublicKey, keyID string) ([]byte, error) {
 	if err := validatePublicKey(key); err != nil {
 		return nil, err
 	}

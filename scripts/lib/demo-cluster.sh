@@ -805,7 +805,7 @@ ENTRYPOINT ["httpd", "-f", "-v", "-p", "8080", "-h", "/www"]
 EOF
 
 	build_image "${SOURCE_IMAGE}" "${SOURCE_CONTEXT}/Dockerfile" "${SOURCE_CONTEXT}" source
-	if [ "${PROFILE}" = "demo" ]; then
+	if [ "${PROFILE}" = "demo" ] || [ "${PROFILE}" = "federation" ]; then
 		build_image "${BRIDGE_IMAGE}" "${ROOT_DIR}/apps/matrix-a2a-bridge/Dockerfile" \
 			"${ROOT_DIR}/apps/matrix-a2a-bridge" bridge
 	fi
@@ -820,15 +820,28 @@ EOF
 
 load_bridge_image_if_requested() {
 	local requested_image
-	[ "${PROFILE}" = "demo" ] || return 0
-	requested_image="$(
-		kubectl --namespace bridge get helmrelease matrix-a2a-bridge --output json 2>/dev/null |
-			jq --exit-status --raw-output \
-				'.spec.values.image | "\(.repository):\(.tag)"' 2>/dev/null
-	)" || return 1
+	case "${PROFILE}" in
+	demo)
+		requested_image="$(
+			kubectl --namespace bridge get helmrelease matrix-a2a-bridge --output json 2>/dev/null |
+				jq --exit-status --raw-output \
+					'.spec.values.image | "\(.repository):\(.tag)"' 2>/dev/null
+		)" || return 1
+		;;
+	federation)
+		requested_image="$(
+			kubectl --namespace agentgateway-system get deployment \
+				federation-usage-receipt --output json 2>/dev/null |
+				jq --exit-status --raw-output \
+					'.spec.template.spec.containers[] | select(.name == "usage-receipt") | .image' \
+					2>/dev/null
+		)" || return 1
+		;;
+	*) return 0 ;;
+	esac
 	[ "${requested_image}" = "${BRIDGE_IMAGE}" ] || return 1
 
-	# Loading only after Flux applies this exact HelmRelease tag leaves the long dependency wait
+	# Loading only after Flux applies the exact workload image leaves the long dependency wait
 	# behind us and can precede Pod creation, narrowing the unused pullPolicy=Never image window.
 	k3d image import --mode auto --cluster "${CLUSTER_NAME}" "${BRIDGE_IMAGE}" >/dev/null || return 2
 	resource_trace_require_volume_sample
@@ -1038,7 +1051,10 @@ wait_for_platform_fixed() {
 	expected_revision="main@sha1:${SOURCE_REVISION}"
 	deadline=$((SECONDS + $(timeout_seconds "${DEMO_TIMEOUT}")))
 	bridge_image_loaded=false
-	[ "${PROFILE}" = "demo" ] || bridge_image_loaded=true
+	case "${PROFILE}" in
+	demo | federation) ;;
+	*) bridge_image_loaded=true ;;
+	esac
 
 	while ((SECONDS < deadline)); do
 		if [ "${bridge_image_loaded}" = false ]; then
@@ -1047,7 +1063,7 @@ wait_for_platform_fixed() {
 			else
 				bridge_image_status=$?
 				if [ "${bridge_image_status}" -eq 2 ]; then
-					echo "Bridge HelmRelease requested ${BRIDGE_IMAGE}, but its image import failed." >&2
+					echo "The ${PROFILE} profile requested ${BRIDGE_IMAGE}, but its image import failed." >&2
 					flux get kustomizations >&2 || true
 					flux get helmreleases --all-namespaces >&2 || true
 					return 1
@@ -1070,7 +1086,7 @@ wait_for_platform_fixed() {
 	done
 
 	if [ "${bridge_image_loaded}" = false ]; then
-		echo "Bridge HelmRelease did not request the expected image ${BRIDGE_IMAGE}." >&2
+		echo "The ${PROFILE} profile did not request the expected image ${BRIDGE_IMAGE}." >&2
 	fi
 	print_platform_wait_diagnostics \
 		"Flux did not reconcile the evaluation revision within ${DEMO_TIMEOUT}"
@@ -1334,7 +1350,7 @@ demo_up() {
 	fi
 	wait_for_platform
 	prune_stale_node_images "${SOURCE_IMAGE}"
-	if [ "${PROFILE}" = demo ]; then
+	if [ "${PROFILE}" = demo ] || [ "${PROFILE}" = federation ]; then
 		prune_stale_node_images "${BRIDGE_IMAGE}"
 	fi
 	local admission_context

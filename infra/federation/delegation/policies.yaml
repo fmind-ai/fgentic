@@ -38,7 +38,22 @@ spec:
   traffic:
     buffer:
       request:
-        maxBytes: 64Ki
+        maxBytes: 8Ki
+      response:
+        maxBytes: 8Ki
+    extProc:
+      backendRef:
+        group: ""
+        kind: Service
+        name: federation-usage-receipt
+        port: 4444
+      processingOptions:
+        requestBodyMode: Buffered
+        responseBodyMode: Buffered
+        requestHeaderMode: Skip
+        responseHeaderMode: Skip
+        requestTrailerMode: Skip
+        responseTrailerMode: Skip
     jwtAuthentication:
       mode: Strict
       providers:
@@ -69,6 +84,8 @@ spec:
             request.headers["a2a-version"] == "1.0" &&
             "a2a-extensions" in request.headers &&
             "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1"
+              in request.headers.split()["a2a-extensions"] &&
+            "https://fgentic.fmind.ai/a2a/extensions/usage-receipt/v1"
               in request.headers.split()["a2a-extensions"] &&
             json(request.body).with(body,
               body.jsonrpc == "2.0" &&

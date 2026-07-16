@@ -15,7 +15,20 @@ if rg --regexp '\$\{[^}]+\}' "${WORK_DIR}/unsigned-agent-card.json" >/dev/null; 
 fi
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
 	-out "${WORK_DIR}/agent-card-private.pem" 2>/dev/null
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+	-out "${WORK_DIR}/usage-receipt-private.pem" 2>/dev/null
 chmod 600 "${WORK_DIR}/agent-card-private.pem"
+chmod 600 "${WORK_DIR}/usage-receipt-private.pem"
+"${USAGE_RECEIPT_TOOL}" public-jwk --private-key "${WORK_DIR}/usage-receipt-private.pem" \
+	--key-id fgentic-org-a-usage-receipt-v1 >"${WORK_DIR}/usage-receipt-public-jwk.json"
+RECEIPT_EXTENSION='https://fgentic.fmind.ai/a2a/extensions/usage-receipt/v1' \
+	RECEIPT_KEY_ID=fgentic-org-a-usage-receipt-v1 \
+	RECEIPT_JWK_FILE="${WORK_DIR}/usage-receipt-public-jwk.json" yq --inplace '
+  (.capabilities.extensions[] | select(.uri == strenv(RECEIPT_EXTENSION)).params.keyId) =
+    strenv(RECEIPT_KEY_ID) |
+  (.capabilities.extensions[] | select(.uri == strenv(RECEIPT_EXTENSION)).params.publicJwk) =
+    load(strenv(RECEIPT_JWK_FILE))
+' "${WORK_DIR}/unsigned-agent-card.json"
 "${AGENT_CARD_SIGNER}" sign --input "${WORK_DIR}/unsigned-agent-card.json" \
 	--private-key "${WORK_DIR}/agent-card-private.pem" \
 	--key-id fgentic-org-a-docs-qa-v1 --output "${WORK_DIR}/agent-card-bundle.json"
@@ -35,6 +48,14 @@ jq -e '
   .publicJwk.key_ops == ["verify"] and (.publicJwk | has("d") | not)
 ' "${WORK_DIR}/agent-card-bundle.json" >/dev/null ||
 	fail 'AgentCard signer did not emit the exact public ES256 contract'
+jq -e --slurpfile receipt_jwk "${WORK_DIR}/usage-receipt-public-jwk.json" '
+  any(.capabilities.extensions[]?;
+    .uri == "https://fgentic.fmind.ai/a2a/extensions/usage-receipt/v1" and
+    .required == true and .params.schema == "fgentic.usage-receipt.v1" and
+    .params.keyId == "fgentic-org-a-usage-receipt-v1" and
+    .params.publicJwk == $receipt_jwk[0])
+' "${WORK_DIR}/signed-agent-card.json" >/dev/null ||
+	fail 'signed AgentCard does not pin the independent usage-receipt verifier'
 # The verified card exposes the per-skill quote inside the signature (#142): a re-sign after a quote
 # change therefore yields a new signature atomically, and the price is tamper-evident for free.
 jq -e '
@@ -107,6 +128,9 @@ for contract in \
 		'agent-card-private-key=${AGENT_CARD_PRIVATE_KEY}' \
 		'agent-card.json=${AGENT_CARD_PUBLIC_FILE}' \
 		'public-jwk.json=${AGENT_CARD_JWK_FILE}' \
+		'usage-receipt-private-key=${USAGE_RECEIPT_PRIVATE_KEY}' \
+		'usage-receipt-public-jwk.json=${USAGE_RECEIPT_JWK_FILE}' \
+		'apply_secret agentgateway-system federated-usage-receipt-signing' \
 		'apply_secret postgres pg-synapse-c' \
 	'--from-literal=username=synapse_c' \
 	'apply_secret matrix-c pg-synapse-c'; do

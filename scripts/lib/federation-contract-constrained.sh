@@ -571,11 +571,13 @@ check_federation_constrained_failure_guards() {
 		export SOURCE_BASE_IMAGE=example.invalid/source:fixed
 		export SOURCE_GIT_PACKAGES='git=fixed'
 		export SOURCE_IMAGE=fgentic-demo-source-fgentic-fed:test
+		export BRIDGE_IMAGE=matrix-a2a-bridge:test
 		CLUSTER_NAME=fgentic-fed
 		PROFILE=federation
 		build_and_load_images
 	)
 	for event in \
+		'build matrix-a2a-bridge:test' \
 		'k3d image import --mode auto --cluster fgentic-fed fgentic-demo-source-fgentic-fed:test' \
 		'docker image rm fgentic-demo-source-fgentic-fed:test fgentic-demo-source-fgentic-fed:stale'; do
 		rg --fixed-strings --line-regexp "${event}" "${image_events}" >/dev/null ||
@@ -622,6 +624,31 @@ check_federation_constrained_failure_guards() {
 		'docker image rm matrix-a2a-bridge:test matrix-a2a-bridge:stale' \
 		"${image_events}" | cut -d: -f1)"
 	((import_line < remove_line)) || fail 'bridge host image is removed before its successful import'
+	(
+		# shellcheck disable=SC1090
+		source "${image_helpers}"
+		kubectl() {
+			jq --null-input '{spec: {template: {spec: {containers: [{
+          name: "usage-receipt", image: "matrix-a2a-bridge:test"
+        }]}}}}'
+		}
+		k3d() { printf 'k3d %s\n' "$*" >>"${image_events}"; }
+		docker() {
+			printf 'docker %s\n' "$*" >>"${image_events}"
+			if [ "${1:-}" = images ] && [[ "$*" == *'--format'* ]]; then
+				printf '%s\n' matrix-a2a-bridge:test matrix-a2a-bridge:stale
+			fi
+		}
+		resource_trace_require_volume_sample() { return 0; }
+		PROFILE=federation
+		export BRIDGE_IMAGE=matrix-a2a-bridge:test
+		CLUSTER_NAME=fgentic-fed
+		load_bridge_image_if_requested
+	)
+	rg --fixed-strings --line-regexp \
+		'k3d image import --mode auto --cluster fgentic-fed matrix-a2a-bridge:test' \
+		"${image_events}" >/dev/null ||
+		fail 'federation receipt image is not side-loaded after its Deployment requests it'
 
 	extract_demo_functions "${node_helpers}" prune_stale_node_images
 	printf 'stale\n' >"${node_state}"

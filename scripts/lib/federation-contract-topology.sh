@@ -17,9 +17,10 @@ check_federation_topology() {
 [ -f "${DELEGATION_COMPONENT}/kustomization.yaml" ] || fail 'delegation component is missing'
 [ -f "${AGENT_CARD_TEMPLATE}" ] || fail 'unsigned AgentCard template is missing'
 [ -x "${AGENT_CARD_SIGNER}" ] || fail 'AgentCard signer wrapper is missing or not executable'
+[ -x "${USAGE_RECEIPT_TOOL}" ] || fail 'usage-receipt wrapper is missing or not executable'
 
 bash -n "${LIFECYCLE}" "${SEED_SOURCES[@]}" "${RELOAD}" "${DEMO_SOURCES[@]}" \
-	"${AGENT_CARD_SIGNER}"
+	"${AGENT_CARD_SIGNER}" "${USAGE_RECEIPT_TOOL}"
 "${LIFECYCLE}" --help >"${WORK_DIR}/help.txt"
 for contract in \
 	'fgentic-fed' \
@@ -62,6 +63,7 @@ assert_yq \
     .data.federation_gateway_ip == "192.0.2.1" and
     .data.federation_a2a_max_budget_units == "4096" and
     .data.federation_a2a_quota_budget_units_per_minute == "5000" and
+    .data.demo_bridge_tag == "local" and
     .data.llm_provider == "demo" and .data.llm_model == "fgentic-demo" and
     .data.cluster_issuer == "local-ca"' \
 	"${WORK_DIR}/cluster.yaml" 'federation platform domains are not explicit and distinct'
@@ -244,7 +246,12 @@ assert_yq \
 	"${WORK_DIR}/recursive.yaml" 'AgentCard direct response is not snapshot-signing ready'
 assert_yq \
 	'select(.kind == "AgentgatewayPolicy" and .metadata.name == "federated-docs-qa") |
-    .spec.traffic.buffer.request.maxBytes == "64Ki" and
+    .spec.traffic.buffer.request.maxBytes == "8Ki" and
+    .spec.traffic.buffer.response.maxBytes == "8Ki" and
+    .spec.traffic.extProc.backendRef.name == "federation-usage-receipt" and
+    .spec.traffic.extProc.backendRef.port == 4444 and
+    .spec.traffic.extProc.processingOptions.requestBodyMode == "Buffered" and
+    .spec.traffic.extProc.processingOptions.responseBodyMode == "Buffered" and
     .spec.traffic.jwtAuthentication.mode == "Strict" and
     .spec.traffic.jwtAuthentication.providers[0].issuer ==
       "https://id.${federation_partner_server_name}/realms/fgentic-federation" and
@@ -290,6 +297,32 @@ for contract in \
 	rg --fixed-strings "${contract}" "${WORK_DIR}/delegation-authorization.cel" >/dev/null ||
 		fail "delegation authorization omits ${contract}"
 done
+
+assert_yq \
+	'select(.kind == "Deployment" and .metadata.name == "federation-usage-receipt") |
+    .spec.replicas == 1 and .spec.strategy.type == "Recreate" and
+    .spec.template.spec.automountServiceAccountToken == false and
+    .spec.template.spec.containers[0].name == "usage-receipt" and
+    .spec.template.spec.containers[0].image == "matrix-a2a-bridge:${demo_bridge_tag}" and
+    .spec.template.spec.containers[0].imagePullPolicy == "Never" and
+    .spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem == true and
+    .spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation == false' \
+	"${WORK_DIR}/recursive.yaml" 'usage-receipt signer is not single-writer, local, and hardened'
+assert_yq \
+	'select(.kind == "PersistentVolumeClaim" and .metadata.name == "federation-usage-receipts") |
+    (.spec.accessModes | length) == 1 and .spec.accessModes[0] == "ReadWriteOnce" and
+    .spec.resources.requests.storage == "64Mi"' \
+	"${WORK_DIR}/recursive.yaml" 'usage-receipt archive is not persistent single-writer storage'
+assert_yq \
+	'select(.kind == "Service" and .metadata.name == "federation-usage-receipt") |
+    (.spec.ports | length) == 1 and .spec.ports[0].appProtocol == "kubernetes.io/h2c" and
+    .spec.ports[0].name == "grpc" and .spec.ports[0].port == 4444 and
+    .spec.ports[0].targetPort == "grpc"' \
+	"${WORK_DIR}/recursive.yaml" 'usage-receipt Service is not gRPC h2c'
+assert_yq \
+	'select(.kind == "NetworkPolicy" and .metadata.name == "federation-usage-receipt") |
+    (.spec.ingress | length) == 1 and (.spec.egress | length) == 0' \
+	"${WORK_DIR}/recursive.yaml" 'usage-receipt signer is not isolated from untrusted workloads'
 if rg --fixed-strings '#' "${WORK_DIR}/delegation-authorization.cel" >/dev/null; then
 	fail 'delegation authorization embeds YAML comments in the CEL expression'
 fi

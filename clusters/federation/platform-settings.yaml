@@ -16,6 +16,8 @@ data:
   ingress_ip_name: unused-federation
   llm_provider: demo
   llm_model: fgentic-demo
+  # The lifecycle replaces this stable offline fixture with its per-run source image tag.
+  demo_bridge_tag: local
   # This disposable local lab shares the single-node namespace admission ceilings.
   quota_default_request_cpu: 25m
   quota_default_request_memory: 64Mi

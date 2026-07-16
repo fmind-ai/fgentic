@@ -14,6 +14,7 @@ readonly A2A_URL="https://a2a.${SERVER_A}"
 readonly A2A_AGENT_PATH="/api/a2a/kagent/docs-qa"
 readonly IDP_B_URL="https://id.${SERVER_B}"
 readonly TOKEN_BUDGET_EXTENSION="https://fgentic.fmind.ai/a2a/extensions/token-budget/v1"
+readonly USAGE_RECEIPT_EXTENSION="https://fgentic.fmind.ai/a2a/extensions/usage-receipt/v1"
 readonly AGENT_CARD_CONFIGMAP="federated-docs-qa-agent-card"
 readonly EXPECTED_DEMO_REPLY="Fgentic's deterministic evaluation model is working through agentgateway and kagent."
 readonly CA_CERT="${FGENTIC_CA_DIR:-${HOME}/.local/share/fgentic/local-ca}/ca.crt"
@@ -33,6 +34,8 @@ CHARLIE_TOKEN=""
 ORG_B_A2A_TOKEN=""
 UNTRUSTED_A2A_TOKEN=""
 WRONG_AUDIENCE_A2A_TOKEN=""
+USAGE_RECEIPT_KEY_ID=""
+USAGE_RECEIPT_PUBLIC_JWK=""
 
 cleanup() {
 	if [ -n "${ALICE_TOKEN}" ]; then
@@ -56,6 +59,8 @@ cleanup() {
 	ORG_B_A2A_TOKEN=""
 	UNTRUSTED_A2A_TOKEN=""
 	WRONG_AUDIENCE_A2A_TOKEN=""
+	USAGE_RECEIPT_KEY_ID=""
+	USAGE_RECEIPT_PUBLIC_JWK=""
 	rm -rf "${WORK_DIR}"
 }
 trap cleanup EXIT INT TERM
