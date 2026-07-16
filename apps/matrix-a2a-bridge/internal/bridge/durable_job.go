@@ -47,6 +47,8 @@ const (
 type durablePayload struct {
 	Version       int                       `json:"version"`
 	Event         json.RawMessage           `json:"event"`
+	AgentVersion  string                    `json:"agent_version,omitempty"`
+	AgentContract string                    `json:"agent_contract_sha256,omitempty"`
 	Result        *a2aclient.Result         `json:"result,omitempty"`
 	Notice        string                    `json:"notice,omitempty"`
 	TerminalState state.DelegationState     `json:"terminal_state,omitempty"`
@@ -122,6 +124,10 @@ func (b *Bridge) executePendingJob(ctx context.Context, job *state.Job) error {
 		return b.finishDurableWithoutReply(ctx, job, state.StateDead, errorInvalidPayload, err)
 	}
 	sender, ref, denial := b.revalidateDurableJob(*job, evt)
+	if ref != nil {
+		payload.AgentVersion = ref.AgentVersion()
+		payload.AgentContract = ref.AgentContractSHA256()
+	}
 	if denial != "" {
 		return b.denyDurableJob(ctx, job, payload, evt, ref, sender, denial)
 	}
@@ -1063,6 +1069,8 @@ func (b *Bridge) recordDurableTerminal(
 		mediaOut:          mediaOut,
 		mediaRejected:     payload.MediaRejected + mediaRejected,
 		targetFingerprint: job.TargetFingerprint,
+		agentVersion:      payload.AgentVersion,
+		agentContract:     payload.AgentContract,
 		duration:          time.Since(job.CreatedAt),
 	})
 }

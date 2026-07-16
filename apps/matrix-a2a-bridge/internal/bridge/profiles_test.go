@@ -187,6 +187,8 @@ func TestReloadAgentsRetainsLastKnownProfileAndConfig(t *testing.T) {
 	if profile.Status != profileStatusLive || profile.Description != "Live card purpose" {
 		t.Fatalf("initial profile = %+v", profile)
 	}
+	initialRef, _ := b.agents.Lookup("agent-k8s")
+	initialVersion := initialRef.AgentVersion()
 
 	writeAgentsFile(t, agentsPath, `agents:
   agent-k8s:
@@ -204,6 +206,10 @@ func TestReloadAgentsRetainsLastKnownProfileAndConfig(t *testing.T) {
 		t.Fatalf("cached profile = %+v, want retained live metadata", profile)
 	}
 	ref, _ := b.agents.Lookup("agent-k8s")
+	reloadedVersion := ref.AgentVersion()
+	if reloadedVersion == initialVersion {
+		t.Fatalf("mapping-only reload retained agent version %q", reloadedVersion)
+	}
 	if ref.AllowsSender(b.agents.IdentifySender(id.NewUserID("alice", ownServer)), ownServer) {
 		t.Fatal("reloaded sender policy did not take effect")
 	}
@@ -218,6 +224,9 @@ func TestReloadAgentsRetainsLastKnownProfileAndConfig(t *testing.T) {
 	ref, ok := b.agents.Lookup("agent-k8s")
 	if !ok || ref.AllowsSender(b.agents.IdentifySender(id.NewUserID("alice", ownServer)), ownServer) {
 		t.Fatal("invalid reload replaced the last-known routing policy")
+	}
+	if ref.AgentVersion() != reloadedVersion {
+		t.Fatal("invalid reload replaced the last-known agent version")
 	}
 
 	writeAgentsFile(t, agentsPath, `agents:

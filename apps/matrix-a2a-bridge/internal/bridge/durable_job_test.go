@@ -319,6 +319,12 @@ func TestDurableReplyWithholdsArtifactsAfterMappingChange(t *testing.T) {
 	if err := json.Unmarshal(job.Payload, &payload); err != nil {
 		t.Fatalf("decode admitted payload: %v", err)
 	}
+	originalRef, ok := b.agents.Lookup("agent-k8s")
+	if !ok {
+		t.Fatal("agent-k8s fixture missing")
+	}
+	payload.AgentVersion = originalRef.AgentVersion()
+	payload.AgentContract = originalRef.AgentContractSHA256()
 	payload.Result = &a2aclient.Result{
 		Text: "completed", Terminal: true,
 		Files: []a2aclient.ResultFile{{Name: "secret.csv", MIMEType: "text/csv", Bytes: []byte("secret")}},
@@ -358,7 +364,8 @@ agents:
 	}
 	audits := auditRecords(t, output.String())
 	if len(audits) != 1 || audits[0]["agent_path"] != "" ||
-		audits[0]["target_fingerprint"] != job.TargetFingerprint {
+		audits[0]["target_fingerprint"] != job.TargetFingerprint ||
+		audits[0]["agent_version"] != payload.AgentVersion {
 		t.Fatalf("mapping-changed immutable audit = %#v", audits)
 	}
 }

@@ -86,13 +86,13 @@ tests:
     asserts:
       - matchRegex:
           path: data["agents.yaml"]
-          pattern: "agent-platform-helper:\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+dataClassification: public\\n\\s+description: .*\\n\\s+name: platform-helper"
+          pattern: "agent-platform-helper:\\n\\s+agentContractSHA256: 239cd0991f26cda8bb80bb40d1d29de5ffa64f868fb780af49d356a936cb4359\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+dataClassification: public\\n\\s+description: .*\\n\\s+name: platform-helper"
       - matchRegex:
           path: data["agents.yaml"]
-          pattern: "agent-docs-qa:\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+dataClassification: public\\n\\s+description: .*\\n\\s+name: docs-qa"
+          pattern: "agent-docs-qa:\\n\\s+agentContractSHA256: 81fe04d0099b150e2ec15d431940228ab63daf1076715d9cc119ad91fff4fa87\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+dataClassification: public\\n\\s+description: .*\\n\\s+name: docs-qa"
       - matchRegex:
           path: data["agents.yaml"]
-          pattern: "agent-scribe:\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+dataClassification: public\\n\\s+description: .*\\n\\s+name: scribe"
+          pattern: "agent-scribe:\\n\\s+agentContractSHA256: d6a4e2405cb96d9735cb3b03199ef3f89e662ad052281968bae248a69520f924\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+dataClassification: public\\n\\s+description: .*\\n\\s+name: scribe"
   - it: keeps onboarding sender-filtered at runtime instead of rendering a static agent list
     asserts:
       - notExists:

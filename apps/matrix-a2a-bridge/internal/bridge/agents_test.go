@@ -69,6 +69,9 @@ func TestLoadAgents(t *testing.T) {
 	if ref.MappingID() == "" {
 		t.Error("MappingID() is empty")
 	}
+	if !strings.HasPrefix(ref.AgentVersion(), "sha256:") || len(ref.AgentVersion()) != len("sha256:")+64 {
+		t.Errorf("AgentVersion() = %q, want sha256 identifier", ref.AgentVersion())
+	}
 	if got := ref.Classification(); got != modelcatalog.ClassificationRegulated {
 		t.Errorf("Classification() = %q, want fail-closed regulated default", got)
 	}
@@ -160,6 +163,26 @@ func TestLoadAgentsRejectsInvalidConfig(t *testing.T) {
 			want: "only valid for a url target",
 		},
 		{
+			name: "invalid agent contract digest",
+			content: `agents:
+  agent-x:
+    namespace: kagent
+    name: x
+    agentContractSHA256: ABC
+`,
+			want: "agentContractSHA256 must be 64 lowercase hexadecimal characters",
+		},
+		{
+			name: "remote target with local agent contract",
+			content: strings.Replace(
+				validRemoteAgentsYAML,
+				"    timeout: 12s\n",
+				"    timeout: 12s\n    agentContractSHA256: 0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef\n",
+				1,
+			),
+			want: "agentContractSHA256 is only valid for a local target",
+		},
+		{
 			name:    "remote target without timeout",
 			content: strings.Replace(validRemoteAgentsYAML, "    timeout: 12s\n", "", 1),
 			want:    "timeout must be positive",
@@ -231,6 +254,62 @@ func TestLoadAgentsRejectsInvalidConfig(t *testing.T) {
 			_, err := LoadAgents(writeTemp(t, tt.content))
 			if err == nil || !strings.Contains(err.Error(), tt.want) {
 				t.Fatalf("LoadAgents() error = %v, want containing %q", err, tt.want)
+			}
+		})
+	}
+}
+
+func TestAgentVersionBindsContractAndNormalizedMapping(t *testing.T) {
+	const contract = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	base := `schemaVersion: 1
+agents:
+  agent-x:
+    namespace: kagent
+    name: x
+    description: Reviewed helper
+    dataClassification: public
+    agentContractSHA256: ` + contract + `
+    allowedServers: [z.example, a.example]
+    allowedSenders: ["@z:z.example", "@a:a.example"]
+`
+	agents, err := LoadAgents(writeTemp(t, base))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	ref, ok := agents.Lookup("agent-x")
+	if !ok {
+		t.Fatal("agent-x not found")
+	}
+	if got := ref.AgentContractSHA256(); got != contract {
+		t.Fatalf("AgentContractSHA256() = %q, want %q", got, contract)
+	}
+
+	reordered := strings.Replace(base,
+		"allowedServers: [z.example, a.example]\n    allowedSenders: [\"@z:z.example\", \"@a:a.example\"]",
+		"allowedServers: [a.example, z.example]\n    allowedSenders: [\"@a:a.example\", \"@z:z.example\"]", 1)
+	reorderedAgents, err := LoadAgents(writeTemp(t, reordered))
+	if err != nil {
+		t.Fatalf("LoadAgents reordered: %v", err)
+	}
+	reorderedRef, _ := reorderedAgents.Lookup("agent-x")
+	if reorderedRef.AgentVersion() != ref.AgentVersion() {
+		t.Errorf("ordered-set-only change altered version: %q != %q", reorderedRef.AgentVersion(), ref.AgentVersion())
+	}
+
+	for name, changed := range map[string]string{
+		"contract":        strings.Replace(base, contract, strings.Repeat("a", 64), 1),
+		"mapping":         strings.Replace(base, "name: x", "name: replacement", 1),
+		"policy":          strings.Replace(base, "@z:z.example", "@other:z.example", 1),
+		"origin boundary": strings.Replace(base, "agents:\n", "bridgedOrigins:\n  slack: [\"@slack_*:example.test\"]\nagents:\n", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			changedAgents, err := LoadAgents(writeTemp(t, changed))
+			if err != nil {
+				t.Fatalf("LoadAgents changed config: %v", err)
+			}
+			changedRef, _ := changedAgents.Lookup("agent-x")
+			if changedRef.AgentVersion() == ref.AgentVersion() {
+				t.Errorf("%s change did not alter agent version %q", name, ref.AgentVersion())
 			}
 		})
 	}
