@@ -1,6 +1,7 @@
 package usagereceipt
 
 import (
+	"bufio"
 	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
@@ -12,47 +13,137 @@ import (
 	"sync"
 )
 
+const maxArchivedReceiptBytes = 128 << 10
+
 // Archive appends signed receipts without rewriting prior evidence.
 type Archive struct {
 	Path string
 	mu   sync.Mutex
 }
 
-// Append durably writes one compact signed receipt as a JSONL record.
-func (a *Archive) Append(signed Signed) error {
+// Find returns the single archived receipt for a task when present.
+func (a *Archive) Find(taskID string) (Signed, bool, error) {
 	if a == nil || a.Path == "" {
-		return fmt.Errorf("usage receipt archive path is empty")
+		return Signed{}, false, fmt.Errorf("usage receipt archive path is empty")
+	}
+	if !validIdentifier(taskID) {
+		return Signed{}, false, fmt.Errorf("usage receipt archive task ID is invalid")
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.findLocked(taskID)
+}
+
+// AppendUnique durably writes at most one compact signed receipt per task. Concurrent or retried
+// terminal responses reuse the first assertion instead of minting a new timestamp and signature.
+func (a *Archive) AppendUnique(signed Signed) (Signed, error) {
+	if a == nil || a.Path == "" {
+		return Signed{}, fmt.Errorf("usage receipt archive path is empty")
 	}
 	encoded, err := Marshal(signed)
 	if err != nil {
-		return err
+		return Signed{}, err
 	}
 	encoded = append(encoded, '\n')
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if err := os.MkdirAll(filepath.Dir(a.Path), 0o700); err != nil {
-		return fmt.Errorf("create usage receipt archive directory: %w", err)
-	}
-	file, err := os.OpenFile(a.Path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
+	existing, found, err := a.findLocked(signed.Receipt.TaskID)
 	if err != nil {
-		return fmt.Errorf("open usage receipt archive: %w", err)
+		return Signed{}, err
+	}
+	if found {
+		if !sameAssertion(existing.Receipt, signed.Receipt) {
+			return Signed{}, fmt.Errorf("usage receipt archive conflicts with existing task ID")
+		}
+		return existing, nil
+	}
+	if err := os.MkdirAll(filepath.Dir(a.Path), 0o700); err != nil {
+		return Signed{}, fmt.Errorf("create usage receipt archive directory: %w", err)
+	}
+	file, created, err := openArchive(a.Path)
+	if err != nil {
+		return Signed{}, err
 	}
 	if _, err := file.Write(encoded); err != nil {
-		return errors.Join(
+		return Signed{}, errors.Join(
 			fmt.Errorf("append usage receipt archive: %w", err),
 			closeFile(file, "usage receipt archive"),
 		)
 	}
 	if err := file.Sync(); err != nil {
-		return errors.Join(
+		return Signed{}, errors.Join(
 			fmt.Errorf("sync usage receipt archive: %w", err),
 			closeFile(file, "usage receipt archive"),
 		)
 	}
 	if err := file.Close(); err != nil {
-		return fmt.Errorf("close usage receipt archive: %w", err)
+		return Signed{}, fmt.Errorf("close usage receipt archive: %w", err)
 	}
-	return nil
+	if created {
+		if err := syncDirectory(filepath.Dir(a.Path), "usage receipt archive"); err != nil {
+			return Signed{}, err
+		}
+	}
+	return signed, nil
+}
+
+func (a *Archive) findLocked(taskID string) (_ Signed, _ bool, returnErr error) {
+	file, err := os.Open(a.Path)
+	if errors.Is(err, os.ErrNotExist) {
+		return Signed{}, false, nil
+	}
+	if err != nil {
+		return Signed{}, false, fmt.Errorf("open usage receipt archive: %w", err)
+	}
+	defer func() {
+		returnErr = errors.Join(returnErr, closeFile(file, "usage receipt archive"))
+	}()
+
+	var found Signed
+	matched := false
+	scanner := bufio.NewScanner(file)
+	scanner.Buffer(make([]byte, 4096), maxArchivedReceiptBytes)
+	for scanner.Scan() {
+		signed, parseErr := Parse(scanner.Bytes())
+		if parseErr != nil {
+			return Signed{}, false, fmt.Errorf("parse usage receipt archive: %w", parseErr)
+		}
+		if signed.Receipt.TaskID != taskID {
+			continue
+		}
+		if matched {
+			return Signed{}, false, fmt.Errorf("usage receipt archive has duplicate task ID")
+		}
+		found = signed
+		matched = true
+	}
+	if err := scanner.Err(); err != nil {
+		return Signed{}, false, fmt.Errorf("scan usage receipt archive: %w", err)
+	}
+	return found, matched, nil
+}
+
+func openArchive(path string) (*os.File, bool, error) {
+	file, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o600)
+	if err == nil {
+		return file, false, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return nil, false, fmt.Errorf("open usage receipt archive: %w", err)
+	}
+	file, err = os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_EXCL|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, false, fmt.Errorf("create usage receipt archive: %w", err)
+	}
+	return file, true, nil
+}
+
+func sameAssertion(first, second Receipt) bool {
+	return first.Schema == second.Schema && first.AZP == second.AZP &&
+		first.TaskID == second.TaskID && first.ContextID == second.ContextID &&
+		first.RequestHash == second.RequestHash && first.TokensReserved == second.TokensReserved &&
+		first.TokensConsumed == nil && second.TokensConsumed == nil &&
+		first.Outcome == second.Outcome && first.KeyID == second.KeyID
 }
 
 // PendingStore persists the initial reservation evidence for terminal GetTask responses.
@@ -130,7 +221,7 @@ func (s *PendingStore) Save(taskID string, evidence pendingEvidence) (returnErr 
 		}
 		return nil
 	}
-	return syncDirectory(s.Dir)
+	return syncDirectory(s.Dir, "pending usage receipt")
 }
 
 // Load returns the persisted reservation evidence for a task ID when present.
@@ -163,18 +254,18 @@ func closeFile(file *os.File, label string) error {
 	return nil
 }
 
-func syncDirectory(path string) error {
+func syncDirectory(path, label string) error {
 	directory, err := os.Open(path)
 	if err != nil {
-		return fmt.Errorf("open pending usage receipt directory: %w", err)
+		return fmt.Errorf("open %s directory: %w", label, err)
 	}
 	if err := directory.Sync(); err != nil {
 		return errors.Join(
-			fmt.Errorf("sync pending usage receipt directory: %w", err),
-			closeFile(directory, "pending usage receipt directory"),
+			fmt.Errorf("sync %s directory: %w", label, err),
+			closeFile(directory, label+" directory"),
 		)
 	}
-	return closeFile(directory, "pending usage receipt directory")
+	return closeFile(directory, label+" directory")
 }
 
 // Delete removes reservation evidence after its terminal receipt has been archived.
@@ -183,10 +274,13 @@ func (s *PendingStore) Delete(taskID string) error {
 	if err != nil {
 		return err
 	}
-	if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+	if err := os.Remove(path); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
 		return fmt.Errorf("remove pending usage receipt evidence: %w", err)
 	}
-	return nil
+	return syncDirectory(s.Dir, "pending usage receipt")
 }
 
 func (s *PendingStore) path(taskID string) (string, error) {

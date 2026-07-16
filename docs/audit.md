@@ -62,7 +62,7 @@ The federation lab's inbound public docs-qa route returns a seller-signed, conte
 | `tokensConsumed`                              | Always `null` until the model boundary can attribute provider-reported actuals to this consumer and task.                       |
 | `keyId`, `protected`, `signature`             | The AgentCard-pinned key identity and flattened ES256/JCS proof. The receipt key is independent from the AgentCard signing key. |
 
-The processor appends the signed JSON object to its single-writer JSONL archive before adding it to the response. For a working Task, it persists only the request hash and reservation and correlates them with a later authenticated `GetTask`; it stores no request or response body. Verify a returned object with the separately authenticated public JWK published in `federated-docs-qa-agent-card`:
+The processor appends the signed JSON object to its single-writer JSONL archive before adding it to the response. For a working Task, it persists only the request hash and reservation and correlates them with a later authenticated `GetTask`; it stores no request or response body. Repeated terminal `GetTask` calls replay the exact archived signature, so a lost client response does not mint a duplicate assertion or make the receipt unrecoverable. Verify a returned object with the separately authenticated public JWK published in `federated-docs-qa-agent-card`:
 
 ```bash
 scripts/usage-receipt.sh verify \

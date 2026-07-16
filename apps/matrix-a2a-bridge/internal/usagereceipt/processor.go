@@ -124,20 +124,12 @@ func (p *Processor) TransformResponse(request requestEvidence, raw []byte) ([]by
 		return raw, false, nil
 	}
 
-	evidence := pendingEvidence{RequestHash: request.RequestHash, TokensReserved: request.TokensReserved}
 	if request.Method == "GetTask" {
 		if request.TaskID != taskID {
 			return nil, false, fmt.Errorf("GetTask response task ID does not match request")
 		}
-		var found bool
-		evidence, found, err = p.Pending.Load(taskID)
-		if err != nil {
-			return nil, false, err
-		}
-		if !found {
-			return raw, false, nil
-		}
 	}
+	evidence := pendingEvidence{RequestHash: request.RequestHash, TokensReserved: request.TokensReserved}
 	if !terminal {
 		if request.Method == "SendMessage" {
 			if err := p.Pending.Save(taskID, evidence); err != nil {
@@ -145,6 +137,30 @@ func (p *Processor) TransformResponse(request requestEvidence, raw []byte) ([]by
 			}
 		}
 		return raw, false, nil
+	}
+	archived, found, err := p.Archive.Find(taskID)
+	if err != nil {
+		return nil, false, err
+	}
+	if found {
+		if err := p.validateArchived(archived, request, taskID, contextID, outcome); err != nil {
+			return nil, false, err
+		}
+		if request.Method == "GetTask" {
+			if err := p.deletePending(taskID, archived.Receipt); err != nil {
+				return nil, false, err
+			}
+		}
+		return attachReceipt(raw, result, archived)
+	}
+	if request.Method == "GetTask" {
+		evidence, found, err = p.Pending.Load(taskID)
+		if err != nil {
+			return nil, false, err
+		}
+		if !found {
+			return raw, false, nil
+		}
 	}
 	if evidence.RequestHash == "" || evidence.TokensReserved == 0 {
 		return nil, false, fmt.Errorf("terminal A2A response has no reservation evidence")
@@ -156,18 +172,58 @@ func (p *Processor) TransformResponse(request requestEvidence, raw []byte) ([]by
 	if err != nil {
 		return nil, false, err
 	}
-	signed, err := Sign(receipt, p.Key)
+	proposed, err := Sign(receipt, p.Key)
 	if err != nil {
 		return nil, false, err
 	}
-	if err := p.Archive.Append(signed); err != nil {
+	signed, err := p.Archive.AppendUnique(proposed)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := p.validateArchived(signed, request, taskID, contextID, outcome); err != nil {
 		return nil, false, err
 	}
 	if request.Method == "GetTask" {
-		if err := p.Pending.Delete(taskID); err != nil {
+		if err := p.deletePending(taskID, signed.Receipt); err != nil {
 			return nil, false, err
 		}
 	}
+	return attachReceipt(raw, result, signed)
+}
+
+func (p *Processor) validateArchived(
+	signed Signed,
+	request requestEvidence,
+	taskID, contextID, outcome string,
+) error {
+	if err := Verify(signed, &p.Key.PublicKey, p.KeyID); err != nil {
+		return fmt.Errorf("validate archived usage receipt: %w", err)
+	}
+	receipt := signed.Receipt
+	if receipt.AZP != p.AZP || receipt.TaskID != taskID || receipt.ContextID != contextID ||
+		receipt.Outcome != outcome {
+		return fmt.Errorf("archived usage receipt conflicts with terminal task")
+	}
+	if request.Method == "SendMessage" &&
+		(receipt.RequestHash != request.RequestHash || receipt.TokensReserved != request.TokensReserved) {
+		return fmt.Errorf("archived usage receipt conflicts with SendMessage reservation")
+	}
+	return nil
+}
+
+func (p *Processor) deletePending(taskID string, receipt Receipt) error {
+	evidence, found, err := p.Pending.Load(taskID)
+	if err != nil {
+		return err
+	}
+	if found && (evidence.RequestHash != receipt.RequestHash ||
+		evidence.TokensReserved != receipt.TokensReserved) {
+		return fmt.Errorf("pending usage receipt evidence conflicts with archive")
+	}
+	return p.Pending.Delete(taskID)
+}
+
+func attachReceipt(raw []byte, result map[string]any, signed Signed) ([]byte, bool, error) {
 	metadata, ok := result["metadata"].(map[string]any)
 	if !ok {
 		metadata = make(map[string]any)

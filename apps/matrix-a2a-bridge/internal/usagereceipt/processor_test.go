@@ -86,6 +86,43 @@ func TestProcessorCorrelatesWorkingTaskToGetTask(t *testing.T) {
 	if archive, err := os.ReadFile(archivePath); err != nil || strings.Count(string(archive), "\n") != 1 {
 		t.Fatalf("archive after GetTask = %q, err %v", archive, err)
 	}
+	retried, attached, err := processor.TransformResponse(getTask, completed)
+	if err != nil || !attached {
+		t.Fatalf("retried completed response = attached %v, err %v", attached, err)
+	}
+	if retriedReceipt := receiptFromResponse(t, retried); !reflect.DeepEqual(retriedReceipt, signed) {
+		t.Fatalf("retried receipt differs from first delivery: %+v != %+v", retriedReceipt, signed)
+	}
+	if archive, err := os.ReadFile(archivePath); err != nil || strings.Count(string(archive), "\n") != 1 {
+		t.Fatalf("archive after retried GetTask = %q, err %v", archive, err)
+	}
+}
+
+func TestArchiveRejectsConflictingAssertionForTask(t *testing.T) {
+	processor, _ := testProcessor(t)
+	first, err := New(
+		processor.AZP, "task-3", "context-3", "sha256:"+strings.Repeat("a", 64),
+		10, processor.Now(), "TASK_STATE_COMPLETED", processor.KeyID,
+	)
+	if err != nil {
+		t.Fatalf("New first receipt: %v", err)
+	}
+	firstSigned, err := Sign(first, processor.Key)
+	if err != nil {
+		t.Fatalf("Sign first receipt: %v", err)
+	}
+	if _, err := processor.Archive.AppendUnique(firstSigned); err != nil {
+		t.Fatalf("AppendUnique first receipt: %v", err)
+	}
+	conflict := first
+	conflict.ContextID = "different-context"
+	conflictingSigned, err := Sign(conflict, processor.Key)
+	if err != nil {
+		t.Fatalf("Sign conflicting receipt: %v", err)
+	}
+	if _, err := processor.Archive.AppendUnique(conflictingSigned); err == nil {
+		t.Fatal("AppendUnique accepted a conflicting task assertion")
+	}
 }
 
 func TestPendingStoreRejectsConflictingTaskEvidence(t *testing.T) {
