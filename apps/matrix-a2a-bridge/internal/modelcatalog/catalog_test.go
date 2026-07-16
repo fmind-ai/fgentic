@@ -67,25 +67,6 @@ func TestDecodeRejectsMultipleDocuments(t *testing.T) {
 	}
 }
 
-func TestModelAdmitsClassificationCeiling(t *testing.T) {
-	model := Model{AllowedClassification: ClassificationRestricted}
-	for _, classification := range []Classification{
-		ClassificationPublic,
-		ClassificationApprovedNonPublic,
-		ClassificationRestricted,
-	} {
-		if !model.Admits(classification) {
-			t.Errorf("restricted model rejected %q", classification)
-		}
-	}
-	if model.Admits(ClassificationRegulated) {
-		t.Error("restricted model admitted regulated data")
-	}
-	if model.Admits(Classification("unknown")) {
-		t.Error("restricted model admitted an unknown classification")
-	}
-}
-
 func TestParseClassificationRejectsUnknown(t *testing.T) {
 	if _, err := ParseClassification("confidential"); err == nil {
 		t.Fatal("ParseClassification accepted an unknown value")

@@ -128,7 +128,7 @@ patches:
       - op: add
         path: /spec/components
         value:
-          - ../../federation/delegation
+          - ../federation/delegation
       - op: replace
         path: /spec/dependsOn
         value:

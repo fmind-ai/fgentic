@@ -178,10 +178,6 @@ description = "Validate governed model metadata and every tracked provider/model
 dir = "apps/matrix-a2a-bridge"
 run = "go run ./cmd/check-model-catalog --repo-root ../.."
 
-[tasks."test:model-residency"]
-description = "Prove classification-aware model admission and self-hosted egress offline"
-run = "bash scripts/test-model-residency.sh"
-
 [tasks."check:terraform"]
 alias = "ct"
 description = "Terraform fmt-check + validate + mocked contracts (no backend/creds needed)"
@@ -419,7 +415,6 @@ depends = [
   "test:mautrix-bridges",
   "test:kagent-trace-privacy",
   "test:agents-golden",
-  "test:model-residency",
 ]
 
 [tasks."test:integration"]

@@ -1,7 +1,18 @@
-# Offline composition of the common agentgateway base and A2A admission layers. Flux reconciles
-# these directories separately so provider changes can sequence backend -> admission -> egress.
+# Common agentgateway data plane: the secured (ClusterIP) proxy Gateway and A2A route/backend. A
+# selected profile under providers/ adds exactly one governed LLM backend + route. The control
+# plane is a HelmRelease (helmrelease.yaml).
 apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
-  - base
-  - admission
+  - helmrelease.yaml
+  - parameters.yaml
+  - gateway.yaml
+  - a2a-backend.yaml
+  - a2a-route.yaml
+  - a2a-authorization.yaml
+  - mcp-backend.yaml
+  - mcp-route.yaml
+  - mcp-authorization.yaml
+  - mcp-audit.yaml
+  - tracing-policy.yaml
+  - networkpolicy.yaml

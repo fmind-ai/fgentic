@@ -1,6 +1,6 @@
-# Replace the provider segment of the core and egress paths, then stamp the same identity on the
-# core, admission, and egress Kustomizations. Their ready expressions use that label plus observed
-# generation to serialize a fail-closed backend -> admission -> egress transition.
+# Replace only the provider segment of the agentgateway-provider Flux path. `check:model-catalog`
+# validates each tracked llm_provider/llm_model pair against the governed inventory before this
+# selection reaches Flux. Keeping the path prefix still makes an unknown profile fail at render time.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 replacements:
@@ -21,44 +21,3 @@ replacements:
         options:
           delimiter: /
           index: 5
-      - select:
-          group: kustomize.toolkit.fluxcd.io
-          version: v1
-          kind: Kustomization
-          name: agentgateway-provider-egress
-          namespace: flux-system
-        fieldPaths:
-          - spec.path
-        options:
-          delimiter: /
-          index: 5
-  - source:
-      kind: ConfigMap
-      name: platform-settings
-      namespace: flux-system
-      fieldPath: data.llm_provider
-    targets:
-      - select:
-          group: kustomize.toolkit.fluxcd.io
-          version: v1
-          kind: Kustomization
-          name: agentgateway-admission
-          namespace: flux-system
-        fieldPaths:
-          - metadata.labels.[fgentic.dev/llm-provider]
-      - select:
-          group: kustomize.toolkit.fluxcd.io
-          version: v1
-          kind: Kustomization
-          name: agentgateway-provider
-          namespace: flux-system
-        fieldPaths:
-          - metadata.labels.[fgentic.dev/llm-provider]
-      - select:
-          group: kustomize.toolkit.fluxcd.io
-          version: v1
-          kind: Kustomization
-          name: agentgateway-provider-egress
-          namespace: flux-system
-        fieldPaths:
-          - metadata.labels.[fgentic.dev/llm-provider]

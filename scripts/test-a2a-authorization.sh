@@ -2,7 +2,7 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-policy_file="${repo_root}/infra/agentgateway/admission/a2a-authorization.yaml"
+policy_file="${repo_root}/infra/agentgateway/a2a-authorization.yaml"
 secret_example="${repo_root}/infra/secrets/a2a-authorization.sops.yaml.example"
 runtime=false
 
@@ -32,32 +32,21 @@ assert_contains() {
 	[[ "${actual}" == *"${expected}"* ]] || fail "${label}: missing '${expected}'"
 }
 
-workload_expression="$(
+expression="$(
 	yq -r '
     select(.kind == "AgentgatewayPolicy" and .metadata.name == "a2a-bridge-authorization")
     | .spec.traffic.authorization.policy.matchExpressions[0]
   ' "${policy_file}"
 )"
-model_expression="$(
-	llm_provider=vertex llm_model=google/gemini-2.5-flash \
-		flux envsubst --strict <"${policy_file}" \
-		| yq -r '
-        select(.kind == "AgentgatewayPolicy" and .metadata.name == "a2a-bridge-authorization")
-        | .spec.traffic.authorization.policy.matchExpressions[1]
-      '
-)"
 
 assert_equal "$(yq -r '.spec.traffic.apiKeyAuthentication.mode' "${policy_file}")" "Strict" "API-key mode"
 assert_equal "$(yq -r '.spec.traffic.apiKeyAuthentication.secretRef.name' "${policy_file}")" "a2a-bridge-callers" "API-key Secret"
 assert_equal "$(yq -r '.spec.traffic.authorization.action' "${policy_file}")" "Require" "authorization action"
-assert_contains "${workload_expression}" 'apiKey.workload == "matrix-a2a-bridge"' "workload authorization"
-assert_contains "${workload_expression}" 'request.path.startsWith("/api/a2a/kagent/")' "kagent path boundary"
-assert_contains "${workload_expression}" 'request.method == "POST"' "A2A method boundary"
-assert_contains "${workload_expression}" 'request.method == "GET"' "AgentCard method boundary"
-assert_contains "${workload_expression}" 'request.path.endsWith("/.well-known/agent-card.json")' "AgentCard path boundary"
-assert_contains "${model_expression}" '"x-fgentic-data-classification" in request.headers' "classification requirement"
-assert_contains "${model_expression}" '"vertex" == "vertex"' "selected provider binding"
-assert_contains "${model_expression}" 'in ["public"]' "public-only model ceiling"
+assert_contains "${expression}" 'apiKey.workload == "matrix-a2a-bridge"' "workload authorization"
+assert_contains "${expression}" 'request.path.startsWith("/api/a2a/kagent/")' "kagent path boundary"
+assert_contains "${expression}" 'request.method == "POST"' "A2A method boundary"
+assert_contains "${expression}" 'request.method == "GET"' "AgentCard method boundary"
+assert_contains "${expression}" 'request.path.endsWith("/.well-known/agent-card.json")' "AgentCard path boundary"
 
 assert_equal "$({
 	yq -r '
@@ -115,10 +104,8 @@ binds:
               workload: unrelated-workload
         authorization:
           rules:
-          - require: >-
-              ${workload_expression}
-          - require: >-
-              ${model_expression}
+          - >-
+            ${expression}
         directResponse:
           body: authorized
           status: 200
@@ -143,13 +130,9 @@ request_status() {
 	local method="$1"
 	local path="$2"
 	local key="${3:-}"
-	local classification="${4:-}"
 	local args=(--silent --show-error --output "${workdir}/response" --write-out '%{http_code}' --request "${method}")
 	if [ -n "${key}" ]; then
 		args+=(--header "Authorization: Bearer ${key}")
-	fi
-	if [ -n "${classification}" ]; then
-		args+=(--header "X-Fgentic-Data-Classification: ${classification}")
 	fi
 	curl "${args[@]}" "http://127.0.0.1:${host_port}${path}"
 }
@@ -160,10 +143,7 @@ assert_equal "$(request_status POST /api/a2a/kagent/platform-helper fixture-othe
 assert_equal "$(request_status POST /api/a2a/other/platform-helper fixture-bridge-key)" "403" "wrong A2A namespace"
 assert_equal "$(request_status GET /api/a2a/kagent/platform-helper fixture-bridge-key)" "403" "non-AgentCard GET"
 assert_equal "$(request_status DELETE /api/a2a/kagent/platform-helper fixture-bridge-key)" "403" "unsupported method"
-assert_equal "$(request_status POST /api/a2a/kagent/platform-helper fixture-bridge-key)" "403" "missing classification"
-assert_equal "$(request_status POST /api/a2a/kagent/platform-helper fixture-bridge-key restricted)" "403" "classification above model ceiling"
-assert_equal "$(request_status POST /api/a2a/kagent/platform-helper fixture-bridge-key unknown)" "403" "unknown classification"
-assert_equal "$(request_status POST /api/a2a/kagent/platform-helper fixture-bridge-key public)" "200" "authorized public A2A request"
+assert_equal "$(request_status POST /api/a2a/kagent/platform-helper fixture-bridge-key)" "200" "authorized A2A request"
 assert_equal "$(request_status GET /api/a2a/kagent/platform-helper/.well-known/agent-card.json fixture-bridge-key)" "200" "authorized AgentCard request"
 
 echo "A2A authorization runtime contract passed (${agentgateway_image})"

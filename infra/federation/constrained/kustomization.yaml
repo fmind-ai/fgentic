@@ -92,7 +92,7 @@ patches:
     patch: |
       - op: add
         path: /spec/components/-
-        value: ../../federation/constrained/agentgateway
+        value: ../federation/constrained/agentgateway
   - target:
       group: kustomize.toolkit.fluxcd.io
       version: v1

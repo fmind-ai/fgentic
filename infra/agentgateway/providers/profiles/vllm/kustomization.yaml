@@ -5,5 +5,6 @@ kind: Kustomization
 resources:
   - ../../../../models/vllm
   - llm-backend.yaml
+  - networkpolicy.yaml
 components:
   - ../../base

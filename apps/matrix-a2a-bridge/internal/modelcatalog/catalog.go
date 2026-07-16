@@ -193,23 +193,3 @@ func ParseClassification(value string) (Classification, error) {
 		return "", fmt.Errorf("classification %q is not supported", value)
 	}
 }
-
-// Admits reports whether this model ceiling permits the requested data classification.
-func (m Model) Admits(classification Classification) bool {
-	return classificationRank(classification) <= classificationRank(m.AllowedClassification)
-}
-
-func classificationRank(classification Classification) int {
-	switch classification {
-	case ClassificationPublic:
-		return 0
-	case ClassificationApprovedNonPublic:
-		return 1
-	case ClassificationRestricted:
-		return 2
-	case ClassificationRegulated:
-		return 3
-	default:
-		return 4
-	}
-}

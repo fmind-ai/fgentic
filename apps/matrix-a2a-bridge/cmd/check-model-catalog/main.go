@@ -8,8 +8,6 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"strconv"
-	"strings"
 
 	"gopkg.in/yaml.v3"
 
@@ -60,9 +58,6 @@ func run(args []string) error {
 	if err := validateProfileDirectories(*repoRoot, catalog); err != nil {
 		return err
 	}
-	if err := validateModelAdmission(*repoRoot, catalog); err != nil {
-		return err
-	}
 	settings, err := filepath.Glob(filepath.Join(*repoRoot, "clusters", "*", "platform-settings.yaml"))
 	if err != nil {
 		return fmt.Errorf("glob platform settings: %w", err)
@@ -77,70 +72,6 @@ func run(args []string) error {
 	}
 	fmt.Printf("model catalog valid: %d models, %d active overlays\n", len(catalog.Models), len(settings))
 	return nil
-}
-
-func validateModelAdmission(repoRoot string, catalog *modelcatalog.Catalog) error {
-	path := filepath.Join(repoRoot, "infra", "agentgateway", "admission", "a2a-authorization.yaml")
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return fmt.Errorf("read model admission policy %s: %w", path, err)
-	}
-	var policy struct {
-		Spec struct {
-			Traffic struct {
-				Authorization struct {
-					Policy struct {
-						MatchExpressions []string `yaml:"matchExpressions"`
-					} `yaml:"policy"`
-				} `yaml:"authorization"`
-			} `yaml:"traffic"`
-		} `yaml:"spec"`
-	}
-	if err := yaml.Unmarshal(data, &policy); err != nil {
-		return fmt.Errorf("decode model admission policy %s: %w", path, err)
-	}
-	expressions := policy.Spec.Traffic.Authorization.Policy.MatchExpressions
-	if len(expressions) != 2 {
-		return fmt.Errorf("model admission policy has %d expressions, want 2", len(expressions))
-	}
-	want := modelAdmissionExpression(catalog.Models)
-	if expressions[1] != want {
-		return fmt.Errorf(
-			"model admission policy drifted from the governed catalog: got %q, want %q",
-			expressions[1],
-			want,
-		)
-	}
-	return nil
-}
-
-func modelAdmissionExpression(models []modelcatalog.Model) string {
-	if len(models) == 0 {
-		return `request.method == "GET"`
-	}
-	clauses := make([]string, 0, len(models))
-	for _, model := range models {
-		allowed := make([]string, 0, 4)
-		for _, classification := range []modelcatalog.Classification{
-			modelcatalog.ClassificationPublic,
-			modelcatalog.ClassificationApprovedNonPublic,
-			modelcatalog.ClassificationRestricted,
-			modelcatalog.ClassificationRegulated,
-		} {
-			if model.Admits(classification) {
-				allowed = append(allowed, strconv.Quote(string(classification)))
-			}
-		}
-		clauses = append(clauses, fmt.Sprintf(
-			`("${llm_provider}" == %s && "${llm_model}" == %s && request.headers["x-fgentic-data-classification"] in [%s])`,
-			strconv.Quote(model.Profile),
-			strconv.Quote(model.Name),
-			strings.Join(allowed, ", "),
-		))
-	}
-	return `request.method == "GET" || (request.method == "POST" && ` +
-		`"x-fgentic-data-classification" in request.headers && (` +
-		strings.Join(clauses, " || ") + `))`
 }
 
 func loadCatalog(path string) (*modelcatalog.Catalog, error) {

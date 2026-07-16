@@ -134,7 +134,7 @@ actual_kagent_version="$(yq -er 'select(.metadata.name == "kagent") | .spec.char
 echo "==> Checking producer and forwarding contracts"
 yq -o=json -I=0 \
   'select(.kind == "AgentgatewayPolicy" and .metadata.name == "tracing") | .spec.frontend.tracing' \
-  "${ROOT_DIR}/infra/agentgateway/base/tracing-policy.yaml" >"${tmp_dir}/gateway-tracing.json"
+  "${ROOT_DIR}/infra/agentgateway/tracing-policy.yaml" >"${tmp_dir}/gateway-tracing.json"
 jq -e '
   (keys | sort) == ["backendRef", "clientSampling", "protocol", "randomSampling", "resources"] and
   .clientSampling == "true" and .randomSampling == "true" and

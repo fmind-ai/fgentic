@@ -120,9 +120,9 @@ done
 assert_yq \
 	'select(.kind == "Kustomization" and .metadata.name == "agentgateway") |
     .spec.components | select(length == 1) | .[] |
-    select(. == "../../federation/delegation")' \
+    select(. == "../federation/delegation")' \
 	"${WORK_DIR}/recursive.yaml" 'delegation gateway component composition is not exact'
-for dependency in agentgateway-provider-egress postgres; do
+for dependency in agentgateway-provider postgres; do
 	assert_yq \
 		'select(.kind == "Kustomization" and .metadata.name == "kagent") |
       .spec.dependsOn[] | select(.name == "'"${dependency}"'")' \

@@ -2,9 +2,6 @@
 # kagent. The API key is resolved from SOPS and removed by agentgateway before proxying; Matrix
 # X-User-Id remains attribution only. Restrict the credential to kagent A2A GET/POST traffic so it
 # cannot authorize another namespace or an unrelated route if the HTTPRoute is widened by mistake.
-# The second expression is derived from model-catalog.yaml and checked byte-for-byte by
-# check:model-catalog. Keeping the combined policy beside the always-live A2A route prevents a
-# provider reconciliation failure or profile prune from exposing unauthenticated kagent access.
 # Require is fail-closed when CEL evaluation fails.
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayPolicy
@@ -31,5 +28,3 @@ spec:
             (request.method == "POST" ||
             (request.method == "GET" &&
             request.path.endsWith("/.well-known/agent-card.json")))
-          - >-
-            request.method == "GET" || (request.method == "POST" && "x-fgentic-data-classification" in request.headers && (("${llm_provider}" == "demo" && "${llm_model}" == "fgentic-demo" && request.headers["x-fgentic-data-classification"] in ["public"]) || ("${llm_provider}" == "vllm" && "${llm_model}" == "Qwen/Qwen2.5-0.5B-Instruct" && request.headers["x-fgentic-data-classification"] in ["public", "approved_non_public", "restricted", "regulated"]) || ("${llm_provider}" == "vertex" && "${llm_model}" == "google/gemini-2.5-flash" && request.headers["x-fgentic-data-classification"] in ["public"])))
