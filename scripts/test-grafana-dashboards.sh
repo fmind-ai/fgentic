@@ -53,7 +53,16 @@ assert_text() {
     any(.panels[];
       .title == $panel
       and ((.options.content // "") | contains($fragment)))
-  ' "${file}" >/dev/null || fail "${file}: panel '${panel}' lacks text fragment '${fragment}'"
+	' "${file}" >/dev/null || fail "${file}: panel '${panel}' lacks text fragment '${fragment}'"
+}
+
+assert_no_identity_labels() {
+	local file="$1"
+
+	jq -e '
+    all(.panels[].targets[]?.expr // "";
+      test("(^|[^[:alnum:]_])(room|room_id|matrix_room_id|mxid)([^[:alnum:]_]|$)") | not)
+  ' "${file}" >/dev/null || fail "${file}: dashboard query exposes a raw room or MXID label"
 }
 
 assert_dashboard "${bridge_dashboard}" "Fgentic — Bridge" "fgentic-bridge"
@@ -64,6 +73,7 @@ assert_query "${bridge_dashboard}" "Queue depth" "fgentic_queue_depth"
 assert_query "${bridge_dashboard}" "In-flight delegations" "fgentic_inflight_delegations"
 assert_query "${bridge_dashboard}" "Rate-limit rejections" 'outcome="rate_limited"'
 assert_query "${bridge_dashboard}" "Deduplicated events" "fgentic_dedup_skips_total"
+assert_no_identity_labels "${bridge_dashboard}"
 
 assert_dashboard "${llm_dashboard}" "Fgentic — LLM Token & Cost Guard" "fgentic-llm-token-cost"
 assert_query "${llm_dashboard}" "Token rate by provider, model, and route" "agentgateway_gen_ai_client_token_usage_sum"
@@ -74,6 +84,7 @@ assert_query "${llm_dashboard}" "Cost-catalog lookup coverage" "agentgateway_cos
 assert_query "${llm_dashboard}" "Token mix by provider and model" "agentgateway_gen_ai_client_token_usage_sum"
 assert_text "${llm_dashboard}" "Cost and agent-attribution boundary" "no Prometheus currency-cost value"
 assert_text "${llm_dashboard}" "Cost and agent-attribution boundary" "no stable Fgentic agent identity"
+assert_no_identity_labels "${llm_dashboard}"
 
 yq -e '
   .spec.values.grafana.sidecar.dashboards.enabled == true
