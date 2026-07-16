@@ -441,6 +441,64 @@ func TestDurableKnownTaskResumesWithGetAndReusesPlaceholder(t *testing.T) {
 	}
 }
 
+func TestDurableDeadManRefreshFailureSchedulesPersistedShortRetry(t *testing.T) {
+	client := &scriptedA2AClient{
+		callResult: a2aclient.Result{TaskID: "task-refresh-retry", ContextID: "context-refresh-retry"},
+		polls: []scriptedPoll{
+			{result: a2aclient.Result{TaskID: "task-refresh-retry"}},
+			{result: a2aclient.Result{TaskID: "task-refresh-retry"}},
+			{result: a2aclient.Result{TaskID: "task-refresh-retry"}},
+			{result: a2aclient.Result{TaskID: "task-refresh-retry"}},
+			{result: a2aclient.Result{TaskID: "task-refresh-retry", Text: "finished", Terminal: true}},
+		},
+	}
+	b, _, _, _, _ := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	deadMan := &fakeDeadManClient{
+		supported:   true,
+		restartErrs: []error{nil, errors.New("homeserver unavailable"), nil},
+	}
+	b.deadMan = deadMan
+	b.deadManEnabled = true
+	b.cfg.DeadManSwitchDelay = 2 * time.Minute
+	b.cfg.RequestTimeout = 5 * time.Second
+	b.pollInitial = 30 * time.Second
+	b.pollMax = 30 * time.Second
+	job := admitAndClaimDurableJob(t, b, "$durable-dead-man-refresh-retry")
+
+	b.executeDurableJob(t.Context(), job)
+	for poll := 0; poll < 4; poll++ {
+		waiting := loadDurableJob(t, b, job.JobID)
+		claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+			Owner: "poll-worker", Now: waiting.NextAttemptAt, LeaseDuration: time.Minute,
+		})
+		if err != nil || !found {
+			t.Fatalf("claim poll %d = (%v, %v)", poll, found, err)
+		}
+		b.executeDurableJob(t.Context(), claimed)
+	}
+
+	retrying := loadDurableJob(t, b, job.JobID)
+	if retrying.ErrorCode != errorDeadManRefresh ||
+		retrying.NextAttemptAt.Sub(retrying.UpdatedAt) != 5*time.Second {
+		t.Fatalf("failed refresh retry = code %q delay %s, want %q/5s",
+			retrying.ErrorCode, retrying.NextAttemptAt.Sub(retrying.UpdatedAt), errorDeadManRefresh)
+	}
+	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "refresh-retry", Now: retrying.NextAttemptAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim refresh retry = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateDelivered || len(deadMan.restarts) != 3 || len(deadMan.cancels) != 1 {
+		t.Fatalf("refresh recovery = state %s restarts %v cancels %v, want delivered/3/1",
+			stored.State, deadMan.restarts, deadMan.cancels)
+	}
+}
+
 func TestDurableDeadManPersistenceFailureCancelsScheduledEvent(t *testing.T) {
 	client := &scriptedA2AClient{callResult: a2aclient.Result{
 		TaskID: "task-record-failure", ContextID: "context-record-failure",

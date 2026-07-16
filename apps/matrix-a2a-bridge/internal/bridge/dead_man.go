@@ -217,23 +217,36 @@ func (b *Bridge) ensureDurableDeadMan(
 	return nil
 }
 
-func (b *Bridge) restartDurableDeadManOnPoll(ctx context.Context, job *state.Job) {
+func (b *Bridge) restartDurableDeadManOnPoll(ctx context.Context, job *state.Job) bool {
 	if !b.deadManEnabled || job.MatrixDeadManDelayID == "" || !b.durableDeadManRefreshDue(*job) {
-		return
+		return false
 	}
 	intent := b.as.Intent(id.UserID(job.GhostMXID))
 	if err := b.deadMan.Restart(ctx, intent, id.DelayID(job.MatrixDeadManDelayID)); err != nil {
 		b.log.Warn("restart durable task dead-man switch", "job_id", job.JobID, "reason", "matrix_delayed_event_failed")
+		return true
 	}
+	return false
 }
 
 func (b *Bridge) durableDeadManRefreshDue(job state.Job) bool {
 	if job.PollCount < 1 || b.pollMax <= 0 {
 		return false
 	}
+	if job.ErrorCode == errorDeadManRefresh || job.ErrorCode == errorTaskPoll {
+		return true
+	}
 	refresh := b.deadManRefreshInterval()
 	polls := max(1, int((refresh+b.pollMax-1)/b.pollMax))
 	return job.PollCount%polls == 0
+}
+
+func (b *Bridge) deadManRefreshRetryInterval() time.Duration {
+	retry := b.deadManRefreshInterval() / 4
+	if b.cfg.RequestTimeout > 0 {
+		retry = min(retry, b.cfg.RequestTimeout)
+	}
+	return max(time.Second, retry)
 }
 
 func (b *Bridge) cancelDurableDeadMan(ctx context.Context, job *state.Job) error {

@@ -34,6 +34,7 @@ const (
 	errorRateLimit           = "rate_limit_rejected"
 	errorSenderPolicy        = "sender_policy_rejected"
 	errorStagePolicy         = "stage_policy_rejected"
+	errorDeadManRefresh      = "dead_man_refresh_failed"
 	errorTaskFailed          = "task_failed"
 	errorTaskInvalid         = "task_result_invalid"
 	errorTaskPoll            = "task_poll_failed"
@@ -334,7 +335,7 @@ func (b *Bridge) acceptDurableA2AResult(
 		if err := b.ensureDurableDeadMan(ctx, job, evt); err != nil {
 			return err
 		}
-		return b.scheduleTaskPoll(ctx, *job)
+		return b.scheduleTaskPoll(ctx, *job, false)
 	}
 	if result.Failed {
 		captureDurableA2AEvidence(job, result)
@@ -382,7 +383,7 @@ func (b *Bridge) resumeKnownTask(ctx context.Context, job *state.Job) error {
 	if err := b.ensureDurableDeadMan(ctx, job, evt); err != nil {
 		return err
 	}
-	b.restartDurableDeadManOnPoll(ctx, job)
+	deadManRefreshFailed := b.restartDurableDeadManOnPoll(ctx, job)
 	client, ok := b.client.(durableA2AClient)
 	if !ok {
 		return b.finishDurableWithoutReply(ctx, job, state.StateDead, "durable_a2a_unsupported",
@@ -422,7 +423,7 @@ func (b *Bridge) resumeKnownTask(ctx context.Context, job *state.Job) error {
 				outcomeFailed, "task_input", errorInputRequired, 0,
 			)
 		}
-		return b.scheduleTaskPoll(ctx, *job)
+		return b.scheduleTaskPoll(ctx, *job, deadManRefreshFailed)
 	}
 	if result.Failed {
 		captureDurableA2AEvidence(job, result)
@@ -1001,11 +1002,18 @@ func (b *Bridge) scheduleDurableRetryWithCode(
 	return nil
 }
 
-func (b *Bridge) scheduleTaskPoll(ctx context.Context, job state.Job) error {
+func (b *Bridge) scheduleTaskPoll(ctx context.Context, job state.Job, deadManRefreshFailed bool) error {
 	now := time.Now().UTC()
 	delay := durableBackoff(b.pollInitial, b.pollMax, job.PollCount+1)
+	errorCode := "task_working"
+	if deadManRefreshFailed {
+		// Persist the failed refresh in the poll cursor so the next worker retries it even when
+		// the ordinary modulo cadence would skip that poll after a process restart.
+		delay = min(delay, b.deadManRefreshRetryInterval())
+		errorCode = errorDeadManRefresh
+	}
 	if err := b.store.ScheduleRetry(ctx, state.RetryRequest{
-		Lease: job.LeaseToken(), At: now, NextAttemptAt: now.Add(delay), ErrorCode: "task_working",
+		Lease: job.LeaseToken(), At: now, NextAttemptAt: now.Add(delay), ErrorCode: errorCode,
 		Kind: state.RetryPoll,
 	}); err != nil {
 		return fmt.Errorf("schedule durable task poll: %w", err)

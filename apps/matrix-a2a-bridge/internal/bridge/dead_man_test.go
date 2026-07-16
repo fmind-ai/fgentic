@@ -29,6 +29,7 @@ type fakeDeadManClient struct {
 	supportedErr error
 	scheduleErr  error
 	restartErr   error
+	restartErrs  []error
 	cancelErr    error
 	schedules    []deadManSchedule
 	restarts     []id.DelayID
@@ -58,6 +59,11 @@ func (f *fakeDeadManClient) Schedule(
 
 func (f *fakeDeadManClient) Restart(_ context.Context, _ *appservice.IntentAPI, delayID id.DelayID) error {
 	f.restarts = append(f.restarts, delayID)
+	if len(f.restartErrs) > 0 {
+		err := f.restartErrs[0]
+		f.restartErrs = f.restartErrs[1:]
+		return err
+	}
 	return f.restartErr
 }
 
