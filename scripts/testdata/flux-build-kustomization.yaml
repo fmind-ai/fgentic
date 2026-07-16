@@ -22,10 +22,17 @@ spec:
       ingress_ip_name: ci-fgentic-ingress
       llm_provider: vertex
       llm_model: google/gemini-2.5-flash
+      demo_bridge_tag: local
       vertex_region: europe-west1
       openai_host: api.openai.com
       azure_openai_resource: not-configured
       llm_usage_budget_15m: "100000"
+      admin_console: disabled
+      federation_partner_server_name: org-b.ci.fgentic.example
+      federation_denied_server_name: org-c.ci.fgentic.example
+      federation_gateway_ip: 127.0.0.1
+      federation_a2a_max_budget_units: "4096"
+      federation_a2a_quota_budget_units_per_minute: "8192"
       mcp_tool_burst_per_second: "2"
       mcp_agent_calls_per_hour: "300"
       quota_default_request_cpu: 25m

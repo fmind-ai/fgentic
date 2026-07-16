@@ -37,6 +37,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 - [Partner Federation Offboarding](federation-offboarding.md) - bilateral checklist to revoke a partner across every plane
 - [Delegation Attribution Audit](audit.md) - proving who invoked which agent, when, over which model path
 - [Retention and Data-Subject Erasure](retention.md) - finite Matrix policy, store-by-store limits, and the honest MAS-to-Synapse workflow
+- [Ketesa Administrator Console](admin-console.md) - opt-in deployment, authorization acceptance, five operator tasks, and zero-footprint removal
 - [Slack Interop Walkthrough](interop-slack.md) - enabling the opt-in mautrix-slack unit
 - [Bridge Performance Evidence](performance.md) - dated load-sanity evidence for §12.5
 

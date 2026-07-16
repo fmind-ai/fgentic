@@ -38,6 +38,10 @@ Delivery is Flux v2, pull-based. **Never `kubectl apply` / `helm upgrade` by han
 1. Secrets not decrypting: the `sops-age` Secret in `flux-system` must exist (bootstrap step).
 1. ESS chart values are schema-validated by the chart and the schema **changes between CalVer releases** — a values key that worked can fail after a chart bump; read the release notes.
 
+## Agent version rollback
+
+An in-repo Agent version binds the effective kagent Agent CRD and imported prompts (`agentContractSHA256`) to its complete live bridge mapping (`agent_version`). Change or revert the CRD/prompt and mapping digest in one reviewed Git revision, then let the `kagent` and `bridge` Kustomizations reconcile. A mapping-only change is adopted by the bridge's fail-closed ConfigMap reload loop without a pod restart. For evidence, require both Kustomizations' non-empty `status.lastAppliedRevision` and run `scripts/audit-attribution.sh` on a fresh probe; the resulting version must resolve to the live mapping. Never claim rollback from pod age or a Git ref alone.
+
 ## Version pins that bind each other (bump deliberately, together)
 
 1. Gateway API CRDs **v1.4.0 experimental** ↔ agentgateway v1.3.1 (watches TCPRoute v1alpha2, removed in v1.6) ↔ traefik chart **39.x** (proxy v3.6; v3.7 expects Gateway API v1.6). CRDs are the one out-of-band install (see the matrix-agents bootstrap runbook).

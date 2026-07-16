@@ -1,0 +1,18 @@
+# The UI is public static content; authorization remains at the Synapse and MAS admin APIs. The
+# deployment contains no reverse proxy and cannot turn possession of this route into admin access.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: ketesa
+  namespace: admin
+spec:
+  parentRefs:
+    - name: fgentic-gateway
+      namespace: gateway
+      sectionName: https-admin
+  hostnames:
+    - admin.${server_name}
+  rules:
+    - backendRefs:
+        - name: ketesa
+          port: 8080

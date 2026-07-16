@@ -362,6 +362,8 @@ func TestDelegationAuditRecordIsStableAndContentFree(t *testing.T) {
 		"ghost":                    "agent-k8s",
 		"ghost_mxid":               "@agent-k8s:" + ownServer,
 		"agent_path":               "/api/a2a/kagent/k8s-agent",
+		"agent_version":            ref.AgentVersion(),
+		"agent_contract_sha256":    "",
 		"a2a_attempted":            true,
 		"a2a_user_id":              "@alice:" + ownServer,
 		"a2a_context_id":           "context-1",

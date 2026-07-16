@@ -201,6 +201,18 @@ while IFS= read -r agent; do
     "select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"agents.yaml\" | from_yaml | .agents.\"${mapping}\".description | length > 0" \
     "${tmp_dir}/bridge.yaml" \
     "${mapping} must carry a startup profile fallback"
+  expected_contract="$(jq -er '.agent_contract_sha256 | select(test("^[0-9a-f]{64}$"))' "evals/${agent}/golden.json")" \
+    || fail "${agent} evaluation fixture must pin its effective Agent contract"
+  actual_contract="$(AGENT_MAPPING="${mapping}" yq -er '.agents[strenv(AGENT_MAPPING)].agentContractSHA256' "${tmp_dir}/agents.yaml")" \
+    || fail "${mapping} must pin its effective Agent contract"
+  [[ "${actual_contract}" == "${expected_contract}" ]] \
+    || fail "${mapping} contract digest does not match the effective Agent fixture"
+  agent_version="$(
+    mise --cd apps/matrix-a2a-bridge exec -- \
+      go run ./cmd/agent-version --config "${tmp_dir}/agents.yaml" --ghost "${mapping}"
+  )" || fail "${mapping} version-in-effect could not be derived"
+  [[ "${agent_version}" =~ ^sha256:[0-9a-f]{64}$ ]] \
+    || fail "${mapping} version-in-effect is invalid"
 done <<<"${actual_agents}"
 assert_yq \
   'select(.kind == "ConfigMap" and .metadata.name == "matrix-a2a-bridge-agents") | (.data | has("welcome.txt") | not)' \

@@ -30,11 +30,15 @@ bridgedOrigins:
 #   dataClassification: reviewed room/agent data class sent only to authenticated local
 #          agentgateway admission. Omission fails closed to `regulated`; it is never sent to a
 #          configured remote endpoint.
+#   agentContractSHA256: SHA-256 of the effective local Agent CRD plus imported prompt fragments.
+#          The authoring gate pins it; the bridge combines it with this live mapping to derive the
+#          content-free `agent_version` audit identifier. Remote targets omit it.
 agents:
   agent-platform-helper:
     namespace: kagent
     name: platform-helper
     dataClassification: public
+    agentContractSHA256: 239cd0991f26cda8bb80bb40d1d29de5ffa64f868fb780af49d356a936cb4359
     description: Read-only diagnostics for the evaluation profile's Kubernetes namespaces.
     # avatarURL: mxc://fgentic.fmind.ai/media-id
     # To admit one immutable Slack puppet deliberately, add
@@ -44,12 +48,14 @@ agents:
     namespace: kagent
     name: docs-qa
     dataClassification: public
+    agentContractSHA256: 81fe04d0099b150e2ec15d431940228ab63daf1076715d9cc119ad91fff4fa87
     description: Answers architecture and operations questions from local Fgentic documentation.
     allowedSenders: ["@alice:fgentic.fmind.ai"]
   agent-scribe:
     namespace: kagent
     name: scribe
     dataClassification: public
+    agentContractSHA256: d6a4e2405cb96d9735cb3b03199ef3f89e662ad052281968bae248a69520f924
     description: Summarizes pasted or quoted room discussion without tools.
     allowedSenders: ["@alice:fgentic.fmind.ai"]
 

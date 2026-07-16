@@ -322,6 +322,12 @@ func TestDurableReplyWithholdsArtifactsAfterMappingChange(t *testing.T) {
 	if err := json.Unmarshal(job.Payload, &payload); err != nil {
 		t.Fatalf("decode admitted payload: %v", err)
 	}
+	originalRef, ok := b.agents.Lookup("agent-k8s")
+	if !ok {
+		t.Fatal("agent-k8s fixture missing")
+	}
+	payload.AgentVersion = originalRef.AgentVersion()
+	payload.AgentContract = originalRef.AgentContractSHA256()
 	payload.Result = &a2aclient.Result{
 		Text: "completed", Terminal: true,
 		Files: []a2aclient.ResultFile{{Name: "secret.csv", MIMEType: "text/csv", Bytes: []byte("secret")}},
@@ -361,7 +367,8 @@ agents:
 	}
 	audits := auditRecords(t, output.String())
 	if len(audits) != 1 || audits[0]["agent_path"] != "" ||
-		audits[0]["target_fingerprint"] != job.TargetFingerprint {
+		audits[0]["target_fingerprint"] != job.TargetFingerprint ||
+		audits[0]["agent_version"] != payload.AgentVersion {
 		t.Fatalf("mapping-changed immutable audit = %#v", audits)
 	}
 }
@@ -405,6 +412,58 @@ func TestDurableKnownTaskResumesWithGetAndReusesPlaceholder(t *testing.T) {
 	}
 	if got := events[1].RelatesTo.GetReplaceID(); got != placeholder {
 		t.Fatalf("terminal edit target = %q, want placeholder %q", got, placeholder)
+	}
+}
+
+func TestDurableKnownTaskKeepsPollingAcrossContractOnlyChange(t *testing.T) {
+	const originalContract = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	client := &scriptedA2AClient{
+		callResult: a2aclient.Result{Text: "working", TaskID: "task-known", ContextID: "context-known"},
+		polls: []scriptedPoll{{result: a2aclient.Result{
+			Text: "finished", TaskID: "task-known", ContextID: "context-final", Terminal: true,
+		}}},
+	}
+	b, _, _, _, _ := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	original, err := LoadAgents(writeTemp(t, `schemaVersion: 1
+agents:
+  agent-k8s:
+    namespace: kagent
+    name: k8s-agent
+    agentContractSHA256: `+originalContract+`
+`))
+	if err != nil {
+		t.Fatalf("load original contract mapping: %v", err)
+	}
+	b.agents.Replace(original)
+	job := admitAndClaimDurableJob(t, b, "$durable-task-contract-change")
+	b.executeDurableJob(t.Context(), job)
+	waiting := loadDurableJob(t, b, job.JobID)
+	if waiting.State != state.StateAwaitingTask {
+		t.Fatalf("awaiting task state = %s", waiting.State)
+	}
+	replacement, err := LoadAgents(writeTemp(t, `schemaVersion: 1
+agents:
+  agent-k8s:
+    namespace: kagent
+    name: k8s-agent
+    agentContractSHA256: `+strings.Repeat("a", 64)+`
+`))
+	if err != nil {
+		t.Fatalf("load replacement contract mapping: %v", err)
+	}
+	b.agents.Replace(replacement)
+	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "replacement", Now: waiting.NextAttemptAt.Add(time.Millisecond), LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim known task = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateDelivered || client.callCount != 1 || client.resumeCount != 1 {
+		t.Fatalf("contract-changed known task = state %s, send/resume %d/%d", stored.State, client.callCount, client.resumeCount)
 	}
 }
 
@@ -571,6 +630,63 @@ func TestDurableJobDeadLettersAfterBoundedConsecutiveFailures(t *testing.T) {
 	events := recorder.snapshot()
 	if len(events) != 1 || !containsAll(events[0].Body, "could not be recovered", "repeated failures") {
 		t.Fatalf("dead-letter Matrix notice = %+v", events)
+	}
+}
+
+func TestDurablePreparedRetryRejectsContractOnlyChange(t *testing.T) {
+	const originalContract = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	client := &scriptedA2AClient{callErr: errors.New("local card preflight unavailable")}
+	b, _, _, _, recorder := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	original, err := LoadAgents(writeTemp(t, `schemaVersion: 1
+agents:
+  agent-k8s:
+    namespace: kagent
+    name: k8s-agent
+    agentContractSHA256: `+originalContract+`
+`))
+	if err != nil {
+		t.Fatalf("load original contract mapping: %v", err)
+	}
+	b.agents.Replace(original)
+	job := admitAndClaimDurableJob(t, b, "$durable-contract-change")
+
+	b.executeDurableJob(t.Context(), job)
+	retrying := loadDurableJob(t, b, job.JobID)
+	if retrying.State != state.StateA2APrepared || retrying.ErrorCode != errorA2APreflightRetry {
+		t.Fatalf("prepared retry = (%s, %s), want (%s, %s)", retrying.State, retrying.ErrorCode,
+			state.StateA2APrepared, errorA2APreflightRetry)
+	}
+	replacement, err := LoadAgents(writeTemp(t, `schemaVersion: 1
+agents:
+  agent-k8s:
+    namespace: kagent
+    name: k8s-agent
+    agentContractSHA256: `+strings.Repeat("a", 64)+`
+`))
+	if err != nil {
+		t.Fatalf("load replacement contract mapping: %v", err)
+	}
+	b.agents.Replace(replacement)
+	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "replacement", Now: retrying.NextAttemptAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim prepared retry = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateDenied || stored.ErrorCode != errorAgentMappingChanged {
+		t.Fatalf("contract-changed retry = (%s, %s), want denied/%s",
+			stored.State, stored.ErrorCode, errorAgentMappingChanged)
+	}
+	if client.callCount != 1 {
+		t.Fatalf("contract-changed retry made %d A2A calls, want only the original preflight", client.callCount)
+	}
+	events := recorder.snapshot()
+	if len(events) != 1 || events[0].Body != failureMessage(errorAgentMappingChanged, "agent-k8s", 0) {
+		t.Fatalf("contract-changed denial notice = %+v", events)
 	}
 }
 
