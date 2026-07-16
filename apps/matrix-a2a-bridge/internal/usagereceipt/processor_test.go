@@ -18,7 +18,7 @@ func TestProcessorInjectsAndArchivesTerminalReceipt(t *testing.T) {
 	request, err := ParseRequest([]byte(`{
   "jsonrpc":"2.0","id":"request-1","method":"SendMessage","params":{"message":{
     "messageId":"message-1","role":"ROLE_USER","parts":[{"text":"untrusted prompt"}],
-    "metadata":{"https://fgentic.fmind.ai/a2a/extensions/token-budget/v1":{"maxTokens":3000}}
+    "metadata":{"https://fgentic.fmind.ai/a2a/extensions/token-budget/v1":{"maxTokens":9007199254740993}}
   }}}
 `))
 	if err != nil {
@@ -45,7 +45,7 @@ func TestProcessorInjectsAndArchivesTerminalReceipt(t *testing.T) {
 	if err := Verify(signed, &processor.Key.PublicKey, processor.KeyID); err != nil {
 		t.Fatalf("Verify response receipt: %v", err)
 	}
-	if signed.Receipt.TokensReserved != 3000 || signed.Receipt.TokensConsumed != nil ||
+	if signed.Receipt.TokensReserved != 9007199254740993 || signed.Receipt.TokensConsumed != nil ||
 		signed.Receipt.AZP != "org-b-a2a" || signed.Receipt.TaskID != "task-1" ||
 		signed.Receipt.RequestHash != request.RequestHash {
 		t.Fatalf("response receipt = %+v", signed.Receipt)

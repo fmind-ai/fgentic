@@ -233,8 +233,8 @@ func attachReceipt(raw []byte, result map[string]any, signed Signed) ([]byte, bo
 	if err != nil {
 		return nil, false, err
 	}
-	var signedValue any
-	if err := json.Unmarshal(signedJSON, &signedValue); err != nil {
+	signedValue, err := decodeObject(signedJSON)
+	if err != nil {
 		return nil, false, fmt.Errorf("decode signed receipt metadata: %w", err)
 	}
 	metadata[ExtensionURI] = signedValue
