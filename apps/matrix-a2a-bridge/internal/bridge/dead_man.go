@@ -237,7 +237,7 @@ func (b *Bridge) durableDeadManRefreshDue(job state.Job) bool {
 }
 
 func (b *Bridge) cancelDurableDeadMan(ctx context.Context, job *state.Job) error {
-	if !b.deadManEnabled || job.MatrixDeadManDelayID == "" {
+	if job.MatrixDeadManDelayID == "" {
 		return nil
 	}
 	return b.cancelDurableDeadManID(ctx, job, id.DelayID(job.MatrixDeadManDelayID))

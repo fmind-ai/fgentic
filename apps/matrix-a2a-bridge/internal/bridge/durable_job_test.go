@@ -518,6 +518,46 @@ func TestDurableDeadManCancellationRetriesAfterTerminalProjection(t *testing.T) 
 	}
 }
 
+func TestDurableDeadManCancellationSurvivesDisabledStartupProbe(t *testing.T) {
+	client := &scriptedA2AClient{
+		callResult: a2aclient.Result{TaskID: "task-probe-disabled", ContextID: "context-probe-disabled"},
+		polls: []scriptedPoll{{result: a2aclient.Result{
+			Text: "finished", TaskID: "task-probe-disabled", ContextID: "context-final", Terminal: true,
+		}}},
+	}
+	b, _, _, _, _ := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	deadMan := &fakeDeadManClient{supported: true}
+	b.deadMan = deadMan
+	b.deadManEnabled = true
+	b.cfg.DeadManSwitchDelay = 2 * time.Minute
+	job := admitAndClaimDurableJob(t, b, "$durable-dead-man-probe-disabled")
+	b.executeDurableJob(t.Context(), job)
+	waiting := loadDurableJob(t, b, job.JobID)
+	if waiting.MatrixDeadManDelayID == "" {
+		t.Fatal("awaiting task has no persisted delayed-event ID")
+	}
+
+	// A restart may fail its capability probe or disable new scheduling. Persisted Synapse timers
+	// remain cleanup obligations regardless of the current scheduling capability.
+	b.deadManEnabled = false
+	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "replacement", Now: waiting.NextAttemptAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim known task = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateDelivered {
+		t.Fatalf("probe-disabled terminal state = %s", stored.State)
+	}
+	if len(deadMan.cancels) != 1 || deadMan.cancels[0] != id.DelayID(waiting.MatrixDeadManDelayID) {
+		t.Fatalf("probe-disabled cleanup cancels = %v", deadMan.cancels)
+	}
+}
+
 func TestDurableDeadManCancellationIgnoresDeliveryAttemptLimit(t *testing.T) {
 	client := &scriptedA2AClient{
 		callResult: a2aclient.Result{TaskID: "task-cancel-exhausted", ContextID: "context-cancel-exhausted"},
