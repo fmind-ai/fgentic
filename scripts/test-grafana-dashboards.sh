@@ -8,7 +8,16 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dashboard_dir="${repo_root}/infra/observability/dashboards"
 bridge_dashboard="${dashboard_dir}/fgentic-bridge.json"
 llm_dashboard="${dashboard_dir}/fgentic-llm-token-cost.json"
-identity_label_pattern='(^|[^[:alnum:]_])([[:alnum:]]+_)*(room|sender|user|mxid)(_[[:alnum:]]+)*([^[:alnum:]_]|$)'
+dashboard_label_allowlist='["ghost","outcome","le","gen_ai_system","gen_ai_request_model","route","gen_ai_token_type","status"]'
+label_query='
+  def query_labels:
+    ([scan("(?:by|without|on|ignoring|group_left|group_right)[[:space:]]*\\(([^)]*)\\)")
+      | .[] | gsub("[[:space:]]"; "") | split(",")[]]
+    + [scan("(?:\\{|,)[[:space:]]*([[:alpha:]_][[:alnum:]_]*)[[:space:]]*(?:=~|!~|!=|=)") | .[0]]);
+  def labels_allowed:
+    (test("(^|[^[:alnum:]_])(label_replace|label_join|count_values)([^[:alnum:]_]|$)") | not)
+    and all(query_labels[]; . as $label | $allowed | index($label));
+'
 
 fail() {
 	echo "Error: $*" >&2
@@ -24,6 +33,7 @@ assert_dashboard() {
     .title == $title
     and .uid == $uid
     and .editable == false
+		and ((.templating.list // []) | length == 0)
     and (.panels | length > 0)
     and (([.panels[].id] | length) == ([.panels[].id] | unique | length))
     and (([.panels[].title] | length) == ([.panels[].title] | unique | length))
@@ -57,39 +67,41 @@ assert_text() {
 	' "${file}" >/dev/null || fail "${file}: panel '${panel}' lacks text fragment '${fragment}'"
 }
 
-assert_no_identity_labels() {
+assert_only_reviewed_labels() {
 	local file="$1"
 
-	jq -e --arg identity_label_pattern "${identity_label_pattern}" '
-    all(.panels[].targets[]?.expr // "";
-			test($identity_label_pattern) | not)
-	' "${file}" >/dev/null || fail "${file}: dashboard query exposes a raw room, sender, or MXID label"
+	jq -e --argjson allowed "${dashboard_label_allowlist}" "${label_query}
+    all(.panels[].targets[]?.expr // \"\";
+			labels_allowed)
+	" "${file}" >/dev/null || fail "${file}: dashboard query uses a label outside the reviewed allowlist"
 }
 
-assert_identity_label_pattern() {
+assert_dashboard_label_allowlist() {
 	local unsafe_query
 	local safe_query
 
 	for unsafe_query in \
 		'sum by (sender_mxid) (metric)' \
-		'sum by (sender_mxid_hash) (metric)' \
-		'sum by (room_id_hash) (metric)' \
 		'sum by (source_mxid) (metric)' \
 		'sum by (bridge_room_id_hash) (metric)' \
-		'sum by (matrix_user_id) (metric)'; do
-		jq -en --arg pattern "${identity_label_pattern}" --arg query "${unsafe_query}" \
-			'$query | test($pattern)' >/dev/null || fail "identity-label guard missed: ${unsafe_query}"
+		'sum by (principal_hash) (metric)' \
+		'metric{matrix_user_id="example"}' \
+		'label_replace(metric, "principal_hash", "$1", "route", "(.*)")'; do
+		jq -en --argjson allowed "${dashboard_label_allowlist}" --arg query "${unsafe_query}" "${label_query}
+			\$query | labels_allowed | not
+		" >/dev/null || fail "dashboard label allowlist accepted: ${unsafe_query}"
 	done
 
 	for safe_query in \
-		'sum by (route, ghost, outcome) (metric)' \
+		'sum by (route, ghost) (metric{outcome="rate_limited"})' \
 		'rate(agentgateway_gen_ai_client_token_usage_sum[5m])'; do
-		jq -en --arg pattern "${identity_label_pattern}" --arg query "${safe_query}" \
-			'$query | test($pattern) | not' >/dev/null || fail "identity-label guard rejected: ${safe_query}"
+		jq -en --argjson allowed "${dashboard_label_allowlist}" --arg query "${safe_query}" "${label_query}
+			\$query | labels_allowed
+		" >/dev/null || fail "dashboard label allowlist rejected: ${safe_query}"
 	done
 }
 
-assert_identity_label_pattern
+assert_dashboard_label_allowlist
 
 assert_dashboard "${bridge_dashboard}" "Fgentic — Bridge" "fgentic-bridge"
 assert_query "${bridge_dashboard}" "Delegations by agent and outcome" "fgentic_delegations_total"
@@ -99,7 +111,7 @@ assert_query "${bridge_dashboard}" "Queue depth" "fgentic_queue_depth"
 assert_query "${bridge_dashboard}" "In-flight delegations" "fgentic_inflight_delegations"
 assert_query "${bridge_dashboard}" "Rate-limit rejections" 'outcome="rate_limited"'
 assert_query "${bridge_dashboard}" "Deduplicated events" "fgentic_dedup_skips_total"
-assert_no_identity_labels "${bridge_dashboard}"
+assert_only_reviewed_labels "${bridge_dashboard}"
 
 assert_dashboard "${llm_dashboard}" "Fgentic — LLM Token & Cost Guard" "fgentic-llm-token-cost"
 assert_query "${llm_dashboard}" "Token rate by provider, model, and route" "agentgateway_gen_ai_client_token_usage_sum"
@@ -110,7 +122,7 @@ assert_query "${llm_dashboard}" "Cost-catalog lookup coverage" "agentgateway_cos
 assert_query "${llm_dashboard}" "Token mix by provider and model" "agentgateway_gen_ai_client_token_usage_sum"
 assert_text "${llm_dashboard}" "Cost and agent-attribution boundary" "no Prometheus currency-cost value"
 assert_text "${llm_dashboard}" "Cost and agent-attribution boundary" "no stable Fgentic agent identity"
-assert_no_identity_labels "${llm_dashboard}"
+assert_only_reviewed_labels "${llm_dashboard}"
 
 yq -e '
   .spec.values.grafana.sidecar.dashboards.enabled == true
