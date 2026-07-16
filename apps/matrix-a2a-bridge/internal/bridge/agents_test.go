@@ -289,6 +289,9 @@ agents:
 	previousMappingID := mappingID(
 		ref.target, ref.timeout, ref.maxCost, ref.dev, ref.allowMedia, ref.DataClassification, "",
 	)
+	if ref.RouteID() != previousMappingID {
+		t.Fatalf("RouteID() = %q, want contract-free mapping %q", ref.RouteID(), previousMappingID)
+	}
 	if ref.MatchesMappingID(previousMappingID) || ref.MatchesMappingID(ref.legacyMappingID) {
 		t.Fatal("contract-pinned mapping accepted a fingerprint that does not bind the contract")
 	}
@@ -330,6 +333,9 @@ agents:
 	if changedContractRef.MappingID() == ref.MappingID() ||
 		changedContractRef.MatchesMappingID(ref.MappingID()) {
 		t.Fatal("contract-only change did not invalidate the durable target fingerprint")
+	}
+	if changedContractRef.RouteID() != ref.RouteID() {
+		t.Fatal("contract-only change altered the already-accepted task route identity")
 	}
 }
 

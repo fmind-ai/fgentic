@@ -60,6 +60,7 @@ type AgentRef struct {
 	dev             bool   // stage:dev — invocable only in configured staging rooms (#128)
 	allowMedia      bool   // remote opt-in to move file bytes across the org boundary (#115)
 	mappingID       string
+	routeID         string // mapping fingerprint without the local Agent contract pin
 	legacyMappingID string // pre-classification fingerprint accepted only by mappings without a contract pin
 	agentContract   string // effective local Agent CRD + imported prompt contract; empty for remote/legacy mappings
 	agentVersion    string // sha256 of the effective contract plus the complete normalized mapping
@@ -180,6 +181,12 @@ func (a *AgentRef) AllowsMedia() bool {
 // Profile caches can use it to avoid carrying metadata across any effective target change.
 func (a *AgentRef) MappingID() string {
 	return a.mappingID
+}
+
+// RouteID binds the transport, trust, admission, and classification policy without the mutable
+// local Agent contract. It is used only to resume a task the same target already accepted.
+func (a *AgentRef) RouteID() string {
+	return a.routeID
 }
 
 // AgentVersion returns the content-free identifier for the exact effective contract and mapping
@@ -345,6 +352,9 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 	ref.mappingID = mappingID(
 		ref.target, ref.timeout, ref.maxCost, ref.dev, ref.allowMedia, ref.DataClassification,
 		ref.agentContract,
+	)
+	ref.routeID = mappingID(
+		ref.target, ref.timeout, ref.maxCost, ref.dev, ref.allowMedia, ref.DataClassification, "",
 	)
 	ref.legacyMappingID = legacyMappingID(
 		ref.target, ref.timeout, ref.maxCost, ref.dev, ref.allowMedia,

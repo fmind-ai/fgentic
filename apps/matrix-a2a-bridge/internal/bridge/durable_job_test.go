@@ -412,6 +412,58 @@ func TestDurableKnownTaskResumesWithGetAndReusesPlaceholder(t *testing.T) {
 	}
 }
 
+func TestDurableKnownTaskKeepsPollingAcrossContractOnlyChange(t *testing.T) {
+	const originalContract = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	client := &scriptedA2AClient{
+		callResult: a2aclient.Result{Text: "working", TaskID: "task-known", ContextID: "context-known"},
+		polls: []scriptedPoll{{result: a2aclient.Result{
+			Text: "finished", TaskID: "task-known", ContextID: "context-final", Terminal: true,
+		}}},
+	}
+	b, _, _, _, _ := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	original, err := LoadAgents(writeTemp(t, `schemaVersion: 1
+agents:
+  agent-k8s:
+    namespace: kagent
+    name: k8s-agent
+    agentContractSHA256: `+originalContract+`
+`))
+	if err != nil {
+		t.Fatalf("load original contract mapping: %v", err)
+	}
+	b.agents.Replace(original)
+	job := admitAndClaimDurableJob(t, b, "$durable-task-contract-change")
+	b.executeDurableJob(t.Context(), job)
+	waiting := loadDurableJob(t, b, job.JobID)
+	if waiting.State != state.StateAwaitingTask {
+		t.Fatalf("awaiting task state = %s", waiting.State)
+	}
+	replacement, err := LoadAgents(writeTemp(t, `schemaVersion: 1
+agents:
+  agent-k8s:
+    namespace: kagent
+    name: k8s-agent
+    agentContractSHA256: `+strings.Repeat("a", 64)+`
+`))
+	if err != nil {
+		t.Fatalf("load replacement contract mapping: %v", err)
+	}
+	b.agents.Replace(replacement)
+	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "replacement", Now: waiting.NextAttemptAt.Add(time.Millisecond), LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim known task = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateDelivered || client.callCount != 1 || client.resumeCount != 1 {
+		t.Fatalf("contract-changed known task = state %s, send/resume %d/%d", stored.State, client.callCount, client.resumeCount)
+	}
+}
+
 func TestDurableTaskFailureEditsPlaceholderWhenNoticeBudgetIsExhausted(t *testing.T) {
 	client := &scriptedA2AClient{
 		callResult: a2aclient.Result{TaskID: "task-failed", ContextID: "context-failed"},

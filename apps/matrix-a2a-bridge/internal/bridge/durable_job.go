@@ -49,6 +49,7 @@ type durablePayload struct {
 	Event         json.RawMessage           `json:"event"`
 	AgentVersion  string                    `json:"agent_version,omitempty"`
 	AgentContract string                    `json:"agent_contract_sha256,omitempty"`
+	TargetRouteID string                    `json:"target_route_id,omitempty"`
 	Result        *a2aclient.Result         `json:"result,omitempty"`
 	Notice        string                    `json:"notice,omitempty"`
 	TerminalState state.DelegationState     `json:"terminal_state,omitempty"`
@@ -127,6 +128,7 @@ func (b *Bridge) executePendingJob(ctx context.Context, job *state.Job) error {
 	if ref != nil {
 		payload.AgentVersion = ref.AgentVersion()
 		payload.AgentContract = ref.AgentContractSHA256()
+		payload.TargetRouteID = ref.RouteID()
 	}
 	if denial != "" {
 		return b.denyDurableJob(ctx, job, payload, evt, ref, sender, denial)
@@ -347,7 +349,7 @@ func (b *Bridge) resumeKnownTask(ctx context.Context, job *state.Job) error {
 	if err != nil {
 		return b.finishDurableWithoutReply(ctx, job, state.StateDead, errorInvalidPayload, err)
 	}
-	sender, ref, denial := b.revalidateDurableJob(*job, evt)
+	sender, ref, denial := b.revalidateDurableTask(*job, payload, evt)
 	if denial != "" {
 		return b.denyDurableJob(ctx, job, payload, evt, ref, sender, denial)
 	}
@@ -645,6 +647,29 @@ func (b *Bridge) deliverPendingReply(ctx context.Context, job *state.Job) error 
 }
 
 func (b *Bridge) revalidateDurableJob(job state.Job, evt *event.Event) (senderIdentity, *AgentRef, string) {
+	return b.revalidateDurableTarget(job, evt, func(ref *AgentRef) bool {
+		return ref.MatchesMappingID(job.TargetFingerprint)
+	})
+}
+
+func (b *Bridge) revalidateDurableTask(
+	job state.Job,
+	payload durablePayload,
+	evt *event.Event,
+) (senderIdentity, *AgentRef, string) {
+	return b.revalidateDurableTarget(job, evt, func(ref *AgentRef) bool {
+		if payload.TargetRouteID == "" {
+			return ref.MatchesMappingID(job.TargetFingerprint)
+		}
+		return ref.RouteID() == payload.TargetRouteID
+	})
+}
+
+func (b *Bridge) revalidateDurableTarget(
+	job state.Job,
+	evt *event.Event,
+	targetMatches func(*AgentRef) bool,
+) (senderIdentity, *AgentRef, string) {
 	queuedSender, err := durableSender(job)
 	if err != nil {
 		return matrixSender(evt.Sender), nil, errorInvalidPayload
@@ -654,7 +679,7 @@ func (b *Bridge) revalidateDurableJob(job state.Job, evt *event.Event) (senderId
 	if !ok || ref == nil {
 		return sender, nil, errorAgentMappingChanged
 	}
-	if !ref.MatchesMappingID(job.TargetFingerprint) {
+	if !targetMatches(ref) {
 		// Never attribute persisted work to a replacement mapping. The immutable fingerprint remains
 		// the only trustworthy actor evidence once the original mapping disappears.
 		return sender, nil, errorAgentMappingChanged
