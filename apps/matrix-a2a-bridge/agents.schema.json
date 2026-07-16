@@ -127,7 +127,8 @@
             "anyOf": [
               { "required": ["namespace"] },
               { "required": ["name"] },
-              { "required": ["dataClassification"] }
+              { "required": ["dataClassification"] },
+              { "required": ["agentContractSHA256"] }
             ]
           }
         }
