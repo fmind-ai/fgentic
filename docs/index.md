@@ -40,6 +40,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 
 # Security deep dives
 
+- [Security and Auditor Dossier](security-whitepaper.md) - evidence-bound OWASP Agentic and LLM Top 10 control mapping
 - [security/](security/) - threat model, prompt-injection controls, supply-chain verification
 
 # Architecture Decision Records
