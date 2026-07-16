@@ -62,7 +62,8 @@ done <<< "${settings_env}"
 # belong in production settings. Export their unreachable fixture values for the raw schema pass;
 # the effective org-a/org-b/org-c releases are rendered separately through the recursive overlay.
 for key in federation_partner_server_name federation_denied_server_name federation_gateway_ip \
-  federation_a2a_max_budget_units federation_a2a_quota_budget_units_per_minute; do
+  federation_a2a_max_budget_units federation_a2a_quota_budget_units_per_minute \
+  demo_bridge_tag; do
   value="$(yq -er ".data.${key}" clusters/federation/platform-settings.yaml)"
   export "${key}=${value}"
 done

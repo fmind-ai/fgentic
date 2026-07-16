@@ -18,6 +18,7 @@ readonly SERVER_A="org-a.fgentic.localhost"
 readonly SERVER_B="org-b.fgentic.localhost"
 readonly A2A_AGENT_PATH="/api/a2a/kagent/docs-qa"
 readonly TOKEN_BUDGET_EXTENSION="https://fgentic.fmind.ai/a2a/extensions/token-budget/v1"
+readonly USAGE_RECEIPT_EXTENSION="https://fgentic.fmind.ai/a2a/extensions/usage-receipt/v1"
 readonly CA_CERT="${FGENTIC_CA_DIR:-${HOME}/.local/share/fgentic/local-ca}/ca.crt"
 readonly CACHE_DIR="${XDG_CACHE_HOME:-${HOME}/.cache}/fgentic/a2a-tck/${TCK_COMMIT}"
 readonly ARCHIVE_FILE="${CACHE_DIR}/source.tar.gz"
@@ -154,6 +155,7 @@ set +e
 	FGENTIC_TCK_INTERFACE_URL="${SUT_HOST}" \
 		FGENTIC_TCK_BEARER_TOKEN="${access_token}" \
 		FGENTIC_TCK_EXTENSION_URI="${TOKEN_BUDGET_EXTENSION}" \
+		FGENTIC_TCK_USAGE_RECEIPT_URI="${USAGE_RECEIPT_EXTENSION}" \
 		FGENTIC_TCK_MAX_TOKENS="1" \
 		FGENTIC_TCK_SCOPE_FILE="${TCK_SCOPE_FILE}" \
 		FGENTIC_TCK_SCOPE_REPORT="${REPORT_DIR}/fgentic-scope.json" \

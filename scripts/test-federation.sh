@@ -45,6 +45,7 @@ readonly POSTGRES_COMPONENT="${FEDERATION_ROOT}/postgres"
 readonly DELEGATION_COMPONENT="${FEDERATION_ROOT}/delegation"
 readonly AGENT_CARD_TEMPLATE="${DELEGATION_COMPONENT}/agent-card.json"
 readonly AGENT_CARD_SIGNER="${ROOT_DIR}/scripts/sign-agent-card.sh"
+readonly USAGE_RECEIPT_TOOL="${ROOT_DIR}/scripts/usage-receipt.sh"
 readonly -a DEMO_SOURCES=(
 	"${ROOT_DIR}/scripts/demo.sh"
 	"${ROOT_DIR}/scripts/lib.sh"

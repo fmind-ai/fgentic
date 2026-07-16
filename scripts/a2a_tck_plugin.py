@@ -97,7 +97,10 @@ def _patch_jsonrpc_client() -> None:
 
     interface_url = _required_environment("FGENTIC_TCK_INTERFACE_URL")
     bearer_token = _required_environment("FGENTIC_TCK_BEARER_TOKEN")
-    extension_uri = _required_environment("FGENTIC_TCK_EXTENSION_URI")
+    token_budget_uri = _required_environment("FGENTIC_TCK_EXTENSION_URI")
+    usage_receipt_uri = _required_environment("FGENTIC_TCK_USAGE_RECEIPT_URI")
+    if usage_receipt_uri == token_budget_uri:
+        raise pytest.UsageError("TCK extension URIs must be distinct")
     raw_max_tokens = _required_environment("FGENTIC_TCK_MAX_TOKENS")
     try:
         max_tokens = int(raw_max_tokens)
@@ -137,7 +140,7 @@ def _patch_jsonrpc_client() -> None:
         http_client.headers.update(
             {
                 "Authorization": f"Bearer {bearer_token}",
-                "A2A-Extensions": extension_uri,
+                "A2A-Extensions": f"{token_budget_uri}, {usage_receipt_uri}",
             }
         )
 
@@ -152,12 +155,13 @@ def _patch_jsonrpc_client() -> None:
         extensions = adapted_message.setdefault("extensions", [])
         if not isinstance(extensions, list):
             raise pytest.UsageError("TCK message extensions must be a list")
-        if extension_uri not in extensions:
-            extensions.append(extension_uri)
+        for extension_uri in (token_budget_uri, usage_receipt_uri):
+            if extension_uri not in extensions:
+                extensions.append(extension_uri)
         message_metadata = adapted_message.setdefault("metadata", {})
         if not isinstance(message_metadata, dict):
             raise pytest.UsageError("TCK message metadata must be an object")
-        budget = message_metadata.setdefault(extension_uri, {})
+        budget = message_metadata.setdefault(token_budget_uri, {})
         if not isinstance(budget, dict):
             raise pytest.UsageError("TCK token-budget metadata must be an object")
         budget.setdefault("maxTokens", max_tokens)

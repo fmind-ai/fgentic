@@ -49,6 +49,30 @@ The PostgreSQL row is deliberately orthogonal to the delegation chain. It can co
 
 The MCP record is likewise an independent capability-use record. Select it by `audit.kind`, authenticated Agent, resolved tool, status, and time window; do not infer which Matrix event caused it because the current MCP hop has no event, room, sender, context, or task join key. `mcp.quota.policy=per_agent_and_tool_admission` states which admission class was checked. A 429 means at least one configured fixed-window ceiling denied the request, but the record intentionally does not reveal which descriptor, its threshold, current counter, or remaining capacity. A non-429 record does not prove successful tool execution, and none of these fields are consumption or billing evidence.
 
+## Cross-organization usage receipt
+
+The federation lab's inbound public docs-qa route returns a seller-signed, content-free `fgentic.usage-receipt.v1` under `https://fgentic.fmind.ai/a2a/extensions/usage-receipt/v1` in terminal Task metadata: `result.task.metadata` for a wrapped `SendMessage` Task, or direct `result.metadata` for `GetTask`. A direct A2A Message is not terminal-task evidence and fails closed instead of being relabeled as completed. It is a separate evidence chain from the Matrix bridge audit above: the authenticated subject is the org-B machine client `azp`, not a Matrix sender or natural person.
+
+| Field                                         | Evidence meaning                                                                                                                |
+| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `azp`                                         | The exact authorized-party claim already validated by agentgateway before the receipt processor ran.                            |
+| `taskId`, `contextId`, `outcome`, `timestamp` | The terminal A2A identity and seller-observed completion state/time.                                                            |
+| `requestHash`                                 | SHA-256 of the RFC 8785 canonical A2A request; it binds the receipt without retaining prompt content.                           |
+| `tokensReserved`                              | The caller-declared ceiling admitted against that `azp`'s quota. It is not consumption.                                         |
+| `tokensConsumed`                              | Always `null` until the model boundary can attribute provider-reported actuals to this consumer and task.                       |
+| `keyId`, `protected`, `signature`             | The AgentCard-pinned key identity and flattened ES256/JCS proof. The receipt key is independent from the AgentCard signing key. |
+
+The processor appends the signed JSON object to its single-writer JSONL archive before adding it to the response. For a working Task, it persists only the request hash and reservation and correlates them with a later authenticated `GetTask`; it stores no request or response body. Repeated terminal `GetTask` calls replay the exact archived signature, so a lost client response does not mint a duplicate assertion or make the receipt unrecoverable. Verify a returned object with the separately authenticated public JWK published in `federated-docs-qa-agent-card`:
+
+```bash
+scripts/usage-receipt.sh verify \
+  --input usage-receipt.json \
+  --public-key usage-receipt-public-jwk.json \
+  --key-id fgentic-org-a-usage-receipt-v1
+```
+
+A valid signature proves that org A's receipt key signed those bounded fields. It does not prove natural-person identity, actual token consumption, price, currency cost, payment, or that a partner retained the receipt. An unauthorized prompt cannot manufacture evidence: JWT and exact-route authorization execute before the private external processor, and the lab compares the archive count across negative probes.
+
 ## ActivityPub transport evidence chain
 
 The ActivityPub agent gateway (`apps/activitypub-agent-gateway`, the second federation transport — [ADR 0014](adr/0014-activitypub-second-federation-transport.md), [fediverse spec §3](fediverse.md)) mirrors the bridge's evidence contract for fediverse-originated delegations. The join key starts at the inbound activity's actor URI, which the F3/F4 border **verified** (HTTP Signature + git allowlist + FEP-8b32 object integrity) before any A2A call.

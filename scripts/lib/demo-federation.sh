@@ -51,10 +51,14 @@ snapshot_source() {
 	git --git-dir="${SOURCE_CONTEXT}/repo.git" update-server-info
 }
 prepare_federation_agent_card_key() {
-	local bootstrap_json encoded_private_key public_artifacts_exist
+	local bootstrap_json configmap_json encoded_private_key encoded_receipt_key
+	local existing_receipt_jwk public_artifacts_exist
 	AGENT_CARD_PRIVATE_KEY="${WORK_DIR}/agent-card-private-key.pem"
 	AGENT_CARD_KEY_ID=""
 	EXISTING_AGENT_CARD_JWK_FILE=""
+	USAGE_RECEIPT_PRIVATE_KEY="${WORK_DIR}/usage-receipt-private-key.pem"
+	USAGE_RECEIPT_KEY_ID=""
+	EXISTING_USAGE_RECEIPT_JWK_FILE=""
 	chmod 700 "${WORK_DIR}"
 
 	# The signing key is needed before the ephemeral Git snapshot exists. Keep it only in the
@@ -65,20 +69,34 @@ prepare_federation_agent_card_key() {
 	bootstrap_json="$(kubectl --namespace flux-system get secret fgentic-demo-bootstrap \
 		--output json 2>/dev/null || printf '{}')"
 	public_artifacts_exist=false
-	if kubectl --namespace agentgateway-system get configmap \
-		"${FEDERATION_AGENT_CARD_CONFIGMAP}" >/dev/null 2>&1; then
+	if configmap_json="$(kubectl --namespace agentgateway-system get configmap \
+		"${FEDERATION_AGENT_CARD_CONFIGMAP}" --output json 2>/dev/null)"; then
 		public_artifacts_exist=true
 		EXISTING_AGENT_CARD_JWK_FILE="${WORK_DIR}/existing-public-jwk.json"
-		kubectl --namespace agentgateway-system get configmap \
-			"${FEDERATION_AGENT_CARD_CONFIGMAP}" \
-			--output 'go-template={{index .data "public-jwk.json"}}' \
-			>"${EXISTING_AGENT_CARD_JWK_FILE}"
+		jq -er '.data["public-jwk.json"] | select(type == "string" and length > 0)' \
+			<<<"${configmap_json}" >"${EXISTING_AGENT_CARD_JWK_FILE}" ||
+			die "existing federation AgentCard public JWK is invalid"
 		jq -e '
       keys == ["alg", "crv", "key_ops", "kid", "kty", "use", "x", "y"] and
       .kty == "EC" and .crv == "P-256" and .alg == "ES256" and
       .use == "sig" and .key_ops == ["verify"] and (has("d") | not)
     ' "${EXISTING_AGENT_CARD_JWK_FILE}" >/dev/null ||
 			die "existing federation AgentCard public JWK is invalid"
+		existing_receipt_jwk="${WORK_DIR}/existing-usage-receipt-public-jwk.json"
+		if jq -er '
+          .data["usage-receipt-public-jwk.json"] |
+          select(type == "string" and length > 0)
+        ' <<<"${configmap_json}" >"${existing_receipt_jwk}"; then
+			jq -e '
+          keys == ["alg", "crv", "key_ops", "kid", "kty", "use", "x", "y"] and
+          .kty == "EC" and .crv == "P-256" and .alg == "ES256" and
+          .use == "sig" and .key_ops == ["verify"] and (has("d") | not)
+        ' "${existing_receipt_jwk}" >/dev/null ||
+				die "existing federation usage-receipt public JWK is invalid"
+			EXISTING_USAGE_RECEIPT_JWK_FILE="${existing_receipt_jwk}"
+		else
+			rm -f "${existing_receipt_jwk}"
+		fi
 	fi
 
 	encoded_private_key="$(jq -r '.data["agent-card-private-key"] // ""' \
@@ -98,10 +116,29 @@ prepare_federation_agent_card_key() {
 	fi
 	chmod 600 "${AGENT_CARD_PRIVATE_KEY}"
 
+	encoded_receipt_key="$(jq -r '.data["usage-receipt-private-key"] // ""' \
+		<<<"${bootstrap_json}")"
+	USAGE_RECEIPT_KEY_ID="$(jq -r '.data["usage-receipt-key-id"] // "" | @base64d' \
+		<<<"${bootstrap_json}")"
+	if [ -n "${encoded_receipt_key}" ]; then
+		printf '%s' "${encoded_receipt_key}" | base64 --decode >"${USAGE_RECEIPT_PRIVATE_KEY}"
+		[ -n "${USAGE_RECEIPT_KEY_ID}" ] ||
+			die "federation usage-receipt key ID is missing from the bootstrap Secret"
+	else
+		[ -z "${EXISTING_USAGE_RECEIPT_JWK_FILE}" ] ||
+			die "refusing to rotate a missing usage-receipt key while public artifacts still exist"
+		USAGE_RECEIPT_KEY_ID="${FEDERATION_USAGE_RECEIPT_DEFAULT_KEY_ID}"
+		openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+			-out "${USAGE_RECEIPT_PRIVATE_KEY}" 2>/dev/null
+	fi
+	chmod 600 "${USAGE_RECEIPT_PRIVATE_KEY}"
+
 	if kubectl --namespace flux-system get secret fgentic-demo-bootstrap >/dev/null 2>&1; then
 		kubectl --namespace flux-system create secret generic fgentic-demo-bootstrap \
 			--from-file="agent-card-private-key=${AGENT_CARD_PRIVATE_KEY}" \
 			--from-literal="agent-card-key-id=${AGENT_CARD_KEY_ID}" \
+			--from-file="usage-receipt-private-key=${USAGE_RECEIPT_PRIVATE_KEY}" \
+			--from-literal="usage-receipt-key-id=${USAGE_RECEIPT_KEY_ID}" \
 			--dry-run=client --output=json |
 			jq --compact-output '{data: .data}' |
 			kubectl --namespace flux-system patch secret fgentic-demo-bootstrap \
@@ -110,10 +147,14 @@ prepare_federation_agent_card_key() {
 	else
 		apply_secret flux-system fgentic-demo-bootstrap \
 			--from-file="agent-card-private-key=${AGENT_CARD_PRIVATE_KEY}" \
-			--from-literal="agent-card-key-id=${AGENT_CARD_KEY_ID}"
+			--from-literal="agent-card-key-id=${AGENT_CARD_KEY_ID}" \
+			--from-file="usage-receipt-private-key=${USAGE_RECEIPT_PRIVATE_KEY}" \
+			--from-literal="usage-receipt-key-id=${USAGE_RECEIPT_KEY_ID}"
 	fi
 	bootstrap_json=""
+	configmap_json=""
 	encoded_private_key=""
+	encoded_receipt_key=""
 }
 
 sign_federation_agent_card_snapshot() {
@@ -124,6 +165,7 @@ sign_federation_agent_card_snapshot() {
 	bundle="${WORK_DIR}/agent-card-bundle.json"
 	AGENT_CARD_PUBLIC_FILE="${WORK_DIR}/agent-card.json"
 	AGENT_CARD_JWK_FILE="${WORK_DIR}/public-jwk.json"
+	USAGE_RECEIPT_JWK_FILE="${WORK_DIR}/usage-receipt-public-jwk.json"
 	[ -f "${template}" ] || die "federation AgentCard template not found"
 	[ -f "${policy}" ] || die "federation AgentCard policy not found"
 	marker_count="$(rg --only-matching --fixed-strings "${FEDERATION_AGENT_CARD_MARKER}" \
@@ -143,6 +185,26 @@ sign_federation_agent_card_snapshot() {
 	if rg --regexp '\$\{[^}]+\}' "${template}" >/dev/null; then
 		die "federation AgentCard contains an unresolved substitution before signing"
 	fi
+	"${ROOT_DIR}/scripts/usage-receipt.sh" public-jwk \
+		--private-key "${USAGE_RECEIPT_PRIVATE_KEY}" --key-id "${USAGE_RECEIPT_KEY_ID}" \
+		>"${USAGE_RECEIPT_JWK_FILE}"
+	jq -e '
+      keys == ["alg", "crv", "key_ops", "kid", "kty", "use", "x", "y"] and
+      .kty == "EC" and .crv == "P-256" and .alg == "ES256" and
+      .use == "sig" and .key_ops == ["verify"] and (has("d") | not)
+    ' "${USAGE_RECEIPT_JWK_FILE}" >/dev/null ||
+		die "generated federation usage-receipt public JWK is invalid"
+	RECEIPT_EXTENSION="${FEDERATION_USAGE_RECEIPT_EXTENSION}" \
+		RECEIPT_KEY_ID="${USAGE_RECEIPT_KEY_ID}" \
+		RECEIPT_JWK_FILE="${USAGE_RECEIPT_JWK_FILE}" yq --inplace '
+      (.capabilities.extensions[] | select(.uri == strenv(RECEIPT_EXTENSION)).params.keyId) =
+        strenv(RECEIPT_KEY_ID) |
+      (.capabilities.extensions[] | select(.uri == strenv(RECEIPT_EXTENSION)).params.publicJwk) =
+        load(strenv(RECEIPT_JWK_FILE))
+    ' "${template}"
+	if rg --fixed-strings '__FGENTIC_USAGE_RECEIPT_' "${template}" >/dev/null; then
+		die "usage-receipt public material was not injected before AgentCard signing"
+	fi
 
 	"${ROOT_DIR}/scripts/sign-agent-card.sh" sign \
 		--input "${template}" --private-key "${AGENT_CARD_PRIVATE_KEY}" \
@@ -159,6 +221,11 @@ sign_federation_agent_card_snapshot() {
 		jq --exit-status --slurp '.[0] == .[1]' \
 			"${EXISTING_AGENT_CARD_JWK_FILE}" "${AGENT_CARD_JWK_FILE}" >/dev/null ||
 			die "refusing to replace the independently pinnable AgentCard public JWK"
+	fi
+	if [ -n "${EXISTING_USAGE_RECEIPT_JWK_FILE}" ]; then
+		jq --exit-status --slurp '.[0] == .[1]' \
+			"${EXISTING_USAGE_RECEIPT_JWK_FILE}" "${USAGE_RECEIPT_JWK_FILE}" >/dev/null ||
+			die "refusing to replace the independently pinnable usage-receipt public JWK"
 	fi
 
 	signed_card="$(<"${AGENT_CARD_PUBLIC_FILE}")"
@@ -178,6 +245,7 @@ publish_federation_agent_card_artifacts() {
 		"${FEDERATION_AGENT_CARD_CONFIGMAP}" \
 		--from-file="agent-card.json=${AGENT_CARD_PUBLIC_FILE}" \
 		--from-file="public-jwk.json=${AGENT_CARD_JWK_FILE}" \
+		--from-file="usage-receipt-public-jwk.json=${USAGE_RECEIPT_JWK_FILE}" \
 		--dry-run=client --output=yaml |
 		kubectl apply --filename - >/dev/null
 }
@@ -229,8 +297,13 @@ create_federation_secrets() {
 	bootstrap_arguments+=(
 		"--from-file=agent-card-private-key=${AGENT_CARD_PRIVATE_KEY}"
 		"--from-literal=agent-card-key-id=${AGENT_CARD_KEY_ID}"
+		"--from-file=usage-receipt-private-key=${USAGE_RECEIPT_PRIVATE_KEY}"
+		"--from-literal=usage-receipt-key-id=${USAGE_RECEIPT_KEY_ID}"
 	)
 	apply_secret flux-system fgentic-demo-bootstrap "${bootstrap_arguments[@]}"
+	apply_secret agentgateway-system federated-usage-receipt-signing \
+		--from-file="private-key.pem=${USAGE_RECEIPT_PRIVATE_KEY}" \
+		--from-literal="key-id=${USAGE_RECEIPT_KEY_ID}"
 	bootstrap_json=""
 	value=""
 

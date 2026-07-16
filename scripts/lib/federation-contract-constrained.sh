@@ -354,6 +354,52 @@ check_federation_constrained_state_transitions() {
 		rg --fixed-strings --line-regexp "${milestone}" <<<"${milestones}" >/dev/null ||
 			fail "current-generation progress omits ${milestone}"
 	done
+
+	local constrained_wait_helpers="${WORK_DIR}/constrained-wait-image.sh"
+	extract_demo_functions "${constrained_wait_helpers}" \
+		bridge_image_wait_required load_bridge_image_for_platform wait_for_platform_constrained
+	(
+		# shellcheck disable=SC1090
+		source "${constrained_wait_helpers}"
+		image_attempts=0
+		load_bridge_image_if_requested() {
+			image_attempts=$((image_attempts + 1))
+			[ "${image_attempts}" -ge 2 ]
+		}
+		deadline_timeout() { printf '10s'; }
+		kubectl() { printf '%s\n' '{"items":[]}'; }
+		collect_platform_milestones() { :; }
+		platform_is_ready() { return 0; }
+		resource_trace_record_ready_layers() { :; }
+		sleep_before_deadline() { :; }
+		print_platform_wait_diagnostics() { :; }
+		PROFILE=federation
+		SOURCE_REVISION=deadbeef
+		BRIDGE_IMAGE=matrix-a2a-bridge:test
+		FEDERATION_NO_PROGRESS_SECONDS=10
+		FEDERATION_MAX_SECONDS=10
+		wait_for_platform_constrained
+		[ "${image_attempts}" -eq 2 ] ||
+			fail 'constrained reconciliation returned before importing the receipt image'
+	)
+	local constrained_image_failure="${WORK_DIR}/constrained-image-import-failure.txt"
+	if (
+		# shellcheck disable=SC1090
+		source "${constrained_wait_helpers}"
+		load_bridge_image_if_requested() { return 2; }
+		flux() { :; }
+		PROFILE=federation
+		SOURCE_REVISION=deadbeef
+		BRIDGE_IMAGE=matrix-a2a-bridge:test
+		FEDERATION_NO_PROGRESS_SECONDS=10
+		FEDERATION_MAX_SECONDS=10
+		wait_for_platform_constrained
+	) >"${constrained_image_failure}" 2>&1; then
+		fail 'constrained reconciliation ignored a failed receipt image import'
+	fi
+	rg --fixed-strings 'matrix-a2a-bridge:test, but its image import failed' \
+		"${constrained_image_failure}" >/dev/null ||
+		fail 'constrained receipt image import failure lacks a bounded diagnostic'
 }
 
 check_federation_constrained_node_capacity() {
@@ -571,11 +617,13 @@ check_federation_constrained_failure_guards() {
 		export SOURCE_BASE_IMAGE=example.invalid/source:fixed
 		export SOURCE_GIT_PACKAGES='git=fixed'
 		export SOURCE_IMAGE=fgentic-demo-source-fgentic-fed:test
+		export BRIDGE_IMAGE=matrix-a2a-bridge:test
 		CLUSTER_NAME=fgentic-fed
 		PROFILE=federation
 		build_and_load_images
 	)
 	for event in \
+		'build matrix-a2a-bridge:test' \
 		'k3d image import --mode auto --cluster fgentic-fed fgentic-demo-source-fgentic-fed:test' \
 		'docker image rm fgentic-demo-source-fgentic-fed:test fgentic-demo-source-fgentic-fed:stale'; do
 		rg --fixed-strings --line-regexp "${event}" "${image_events}" >/dev/null ||
@@ -622,6 +670,31 @@ check_federation_constrained_failure_guards() {
 		'docker image rm matrix-a2a-bridge:test matrix-a2a-bridge:stale' \
 		"${image_events}" | cut -d: -f1)"
 	((import_line < remove_line)) || fail 'bridge host image is removed before its successful import'
+	(
+		# shellcheck disable=SC1090
+		source "${image_helpers}"
+		kubectl() {
+			jq --null-input '{spec: {template: {spec: {containers: [{
+          name: "usage-receipt", image: "matrix-a2a-bridge:test"
+        }]}}}}'
+		}
+		k3d() { printf 'k3d %s\n' "$*" >>"${image_events}"; }
+		docker() {
+			printf 'docker %s\n' "$*" >>"${image_events}"
+			if [ "${1:-}" = images ] && [[ "$*" == *'--format'* ]]; then
+				printf '%s\n' matrix-a2a-bridge:test matrix-a2a-bridge:stale
+			fi
+		}
+		resource_trace_require_volume_sample() { return 0; }
+		PROFILE=federation
+		export BRIDGE_IMAGE=matrix-a2a-bridge:test
+		CLUSTER_NAME=fgentic-fed
+		load_bridge_image_if_requested
+	)
+	rg --fixed-strings --line-regexp \
+		'k3d image import --mode auto --cluster fgentic-fed matrix-a2a-bridge:test' \
+		"${image_events}" >/dev/null ||
+		fail 'federation receipt image is not side-loaded after its Deployment requests it'
 
 	extract_demo_functions "${node_helpers}" prune_stale_node_images
 	printf 'stale\n' >"${node_state}"

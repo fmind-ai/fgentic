@@ -148,6 +148,21 @@ func TestSignVerifyAndPublicJWK(t *testing.T) {
 	}
 }
 
+func TestEncodePublicJWKRejectsInvalidKeyID(t *testing.T) {
+	key := testPrivateKey(t)
+	for _, keyID := range []string{
+		"",
+		" padded",
+		"padded ",
+		"control\ncharacter",
+		strings.Repeat("a", 257),
+	} {
+		if _, err := EncodePublicJWK(&key.PublicKey, keyID); err == nil {
+			t.Fatalf("EncodePublicJWK accepted invalid key ID %q", keyID)
+		}
+	}
+}
+
 func TestSignRejectsExistingSignaturesAndInvalidKey(t *testing.T) {
 	wire := decodeTestObject(t, testCardJSON(t))
 	wire["signatures"] = nil

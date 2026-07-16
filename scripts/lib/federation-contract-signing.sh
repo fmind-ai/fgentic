@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # Definition-only federation signing contracts sourced by scripts/test-federation.sh.
 check_federation_signing() {
+# The receipt binary adds gRPC to the shipped image. Preserve its upstream NOTICE attribution in
+# the same file that the distroless image exposes with both production binaries.
+rg --fixed-strings 'Copyright 2014 gRPC authors.' \
+	"${ROOT_DIR}/apps/matrix-a2a-bridge/NOTICE" >/dev/null ||
+	fail 'usage-receipt image NOTICE omits the gRPC attribution'
+rg --fixed-strings \
+	'COPY NOTICE /usr/share/doc/matrix-a2a-bridge/NOTICE' \
+	"${ROOT_DIR}/apps/matrix-a2a-bridge/Dockerfile" >/dev/null ||
+	fail 'bridge image does not ship its third-party NOTICE'
+
 # Exercise the same offline signer that the lifecycle uses. The fixture is rendered to its final
 # public domains before signing, then verified and tampered without ever writing a key in the repo.
 cp "${AGENT_CARD_TEMPLATE}" "${WORK_DIR}/unsigned-agent-card.json"
@@ -15,7 +25,20 @@ if rg --regexp '\$\{[^}]+\}' "${WORK_DIR}/unsigned-agent-card.json" >/dev/null; 
 fi
 openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
 	-out "${WORK_DIR}/agent-card-private.pem" 2>/dev/null
+openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+	-out "${WORK_DIR}/usage-receipt-private.pem" 2>/dev/null
 chmod 600 "${WORK_DIR}/agent-card-private.pem"
+chmod 600 "${WORK_DIR}/usage-receipt-private.pem"
+"${USAGE_RECEIPT_TOOL}" public-jwk --private-key "${WORK_DIR}/usage-receipt-private.pem" \
+	--key-id fgentic-org-a-usage-receipt-v1 >"${WORK_DIR}/usage-receipt-public-jwk.json"
+RECEIPT_EXTENSION='https://fgentic.fmind.ai/a2a/extensions/usage-receipt/v1' \
+	RECEIPT_KEY_ID=fgentic-org-a-usage-receipt-v1 \
+	RECEIPT_JWK_FILE="${WORK_DIR}/usage-receipt-public-jwk.json" yq --inplace '
+  (.capabilities.extensions[] | select(.uri == strenv(RECEIPT_EXTENSION)).params.keyId) =
+    strenv(RECEIPT_KEY_ID) |
+  (.capabilities.extensions[] | select(.uri == strenv(RECEIPT_EXTENSION)).params.publicJwk) =
+    load(strenv(RECEIPT_JWK_FILE))
+' "${WORK_DIR}/unsigned-agent-card.json"
 "${AGENT_CARD_SIGNER}" sign --input "${WORK_DIR}/unsigned-agent-card.json" \
 	--private-key "${WORK_DIR}/agent-card-private.pem" \
 	--key-id fgentic-org-a-docs-qa-v1 --output "${WORK_DIR}/agent-card-bundle.json"
@@ -35,6 +58,14 @@ jq -e '
   .publicJwk.key_ops == ["verify"] and (.publicJwk | has("d") | not)
 ' "${WORK_DIR}/agent-card-bundle.json" >/dev/null ||
 	fail 'AgentCard signer did not emit the exact public ES256 contract'
+jq -e --slurpfile receipt_jwk "${WORK_DIR}/usage-receipt-public-jwk.json" '
+  any(.capabilities.extensions[]?;
+    .uri == "https://fgentic.fmind.ai/a2a/extensions/usage-receipt/v1" and
+    .required == true and .params.schema == "fgentic.usage-receipt.v1" and
+    .params.keyId == "fgentic-org-a-usage-receipt-v1" and
+    .params.publicJwk == $receipt_jwk[0])
+' "${WORK_DIR}/signed-agent-card.json" >/dev/null ||
+	fail 'signed AgentCard does not pin the independent usage-receipt verifier'
 # The verified card exposes the per-skill quote inside the signature (#142): a re-sign after a quote
 # change therefore yields a new signature atomically, and the price is tamper-evident for free.
 jq -e '
@@ -107,6 +138,9 @@ for contract in \
 		'agent-card-private-key=${AGENT_CARD_PRIVATE_KEY}' \
 		'agent-card.json=${AGENT_CARD_PUBLIC_FILE}' \
 		'public-jwk.json=${AGENT_CARD_JWK_FILE}' \
+		'usage-receipt-private-key=${USAGE_RECEIPT_PRIVATE_KEY}' \
+		'usage-receipt-public-jwk.json=${USAGE_RECEIPT_JWK_FILE}' \
+		'apply_secret agentgateway-system federated-usage-receipt-signing' \
 		'apply_secret postgres pg-synapse-c' \
 	'--from-literal=username=synapse_c' \
 	'apply_secret matrix-c pg-synapse-c'; do
@@ -124,5 +158,74 @@ if rg --fixed-strings 'ca.key' "${LIFECYCLE}" "${DEMO_SOURCES[@]}" \
 	"${CLUSTER_OVERLAY}" "${FEDERATION_ROOT}" >/dev/null; then
 	fail 'federation assets reference the private local-CA key'
 fi
+
+# A retained pre-receipt lab has an AgentCard key and public ConfigMap, but no receipt key or JWK.
+# Upgrading that exact state must add the new independent key rather than treating a missing
+# ConfigMap data entry as the literal go-template string "<no value>".
+legacy_private_key="$(base64 <"${WORK_DIR}/agent-card-private.pem" | tr -d '\n')"
+legacy_key_id="$(printf '%s' fgentic-org-a-docs-qa-v1 | base64 | tr -d '\n')"
+legacy_public_jwk="$(<"${WORK_DIR}/agent-card-public-jwk.json")"
+legacy_bootstrap="$(jq --null-input --arg private_key "${legacy_private_key}" \
+	--arg key_id "${legacy_key_id}" '{
+    data: {
+      "agent-card-private-key": $private_key,
+      "agent-card-key-id": $key_id
+    }
+  }')"
+legacy_configmap="$(jq --null-input --arg public_jwk "${legacy_public_jwk}" '{
+    data: {"public-jwk.json": $public_jwk}
+  }')"
+legacy_patch="${WORK_DIR}/legacy-receipt-bootstrap-patch"
+: >"${legacy_patch}"
+(
+	# shellcheck source=scripts/lib/demo-federation.sh
+	source "${ROOT_DIR}/scripts/lib/demo-federation.sh"
+	die() {
+		echo "error: $*" >&2
+		exit 1
+	}
+	apply_secret() {
+		die "legacy bootstrap unexpectedly replaced its existing Secret"
+	}
+	kubectl() {
+		case "$*" in
+		'create namespace flux-system --dry-run=client --output=yaml')
+			printf '%s\n' 'apiVersion: v1' 'kind: Namespace'
+			;;
+		'apply --filename -')
+			cat >/dev/null
+			;;
+		*'get secret fgentic-demo-bootstrap --output json'*)
+			printf '%s\n' "${legacy_bootstrap}"
+			;;
+		*'get configmap fgentic-agent-card --output json'*)
+			printf '%s\n' "${legacy_configmap}"
+			;;
+		*'get secret fgentic-demo-bootstrap')
+			return 0
+			;;
+		*'create secret generic fgentic-demo-bootstrap '*'--output=json'*)
+			printf '%s\n' '{"data":{"usage-receipt-private-key":"fixture"}}'
+			;;
+		*'patch secret fgentic-demo-bootstrap '*)
+			cat >/dev/null
+			printf '%s\n' patched >"${legacy_patch}"
+			;;
+		*) die "unexpected legacy bootstrap kubectl call: $*" ;;
+		esac
+	}
+	FEDERATION_AGENT_CARD_CONFIGMAP=fgentic-agent-card
+	FEDERATION_AGENT_CARD_DEFAULT_KEY_ID=fgentic-org-a-docs-qa-v1
+	FEDERATION_USAGE_RECEIPT_DEFAULT_KEY_ID=fgentic-org-a-usage-receipt-v1
+	prepare_federation_agent_card_key
+	[ -z "${EXISTING_USAGE_RECEIPT_JWK_FILE}" ] ||
+		die "legacy ConfigMap exposed a nonexistent usage-receipt JWK"
+	[ "${USAGE_RECEIPT_KEY_ID}" = "${FEDERATION_USAGE_RECEIPT_DEFAULT_KEY_ID}" ] ||
+		die "legacy upgrade generated the wrong usage-receipt key ID"
+	[ -s "${USAGE_RECEIPT_PRIVATE_KEY}" ] ||
+		die "legacy upgrade did not generate a usage-receipt private key"
+)
+[ "$(<"${legacy_patch}")" = patched ] ||
+	fail 'legacy federation bootstrap did not persist the new usage-receipt key'
 
 }

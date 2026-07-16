@@ -189,6 +189,10 @@ bash -n "${DEMO_SOURCES[@]}" "${DEV}" "${ROOT_DIR}/scripts/seed-demo.sh"
 	: >"${bridge_image_calls}"
 	kubectl() {
 		printf 'kubectl %s\n' "$*" >>"${bridge_image_calls}"
+		if [[ "$*" == *'--namespace agentgateway-system get deployment federation-usage-receipt'* ]]; then
+			printf '%s\n' '{"spec":{"template":{"spec":{"containers":[{"name":"usage-receipt","image":"matrix-a2a-bridge:fixture"}]}}}}'
+			return
+		fi
 		case "$(wc -l <"${bridge_image_calls}")" in
 		1)
 			printf '%s\n' '{"spec":{"values":{"image":{"repository":"matrix-a2a-bridge","tag":"stale"}}}}'
@@ -219,7 +223,11 @@ bash -n "${DEMO_SOURCES[@]}" "${DEV}" "${ROOT_DIR}/scripts/seed-demo.sh"
 			'k3d image import --mode auto --cluster fgentic-demo-fixture matrix-a2a-bridge:fixture' >/dev/null
 	PROFILE=federation
 	load_bridge_image_if_requested
-	[ "$(wc -l <"${bridge_image_calls}")" -eq 4 ]
+	[ "$(rg --count '^kubectl ' "${bridge_image_calls}")" -eq 4 ]
+	[ "$(rg --count '^k3d ' "${bridge_image_calls}")" -eq 2 ]
+	tail -n 1 "${bridge_image_calls}" |
+		rg --fixed-strings --line-regexp \
+			'k3d image import --mode auto --cluster fgentic-demo-fixture matrix-a2a-bridge:fixture' >/dev/null
 
 	# The real helper must distinguish a requested image whose containerd import fails.
 	PROFILE=demo
@@ -233,7 +241,7 @@ bash -n "${DEMO_SOURCES[@]}" "${DEV}" "${ROOT_DIR}/scripts/seed-demo.sh"
 	else
 		[ "$?" -eq 2 ]
 	fi
-	[ "$(wc -l <"${bridge_image_calls}")" -eq 6 ]
+	[ "$(wc -l <"${bridge_image_calls}")" -eq 8 ]
 
 	# A containerd/import failure is a terminal resource error, not a request-readiness retry.
 	SOURCE_REVISION=fixture

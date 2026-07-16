@@ -38,7 +38,22 @@ spec:
   traffic:
     buffer:
       request:
-        maxBytes: 64Ki
+        maxBytes: 8Ki
+      response:
+        maxBytes: 8Ki
+    extProc:
+      backendRef:
+        group: ""
+        kind: Service
+        name: federation-usage-receipt
+        port: 4444
+      processingOptions:
+        requestBodyMode: Buffered
+        responseBodyMode: Buffered
+        requestHeaderMode: Skip
+        responseHeaderMode: Skip
+        requestTrailerMode: Skip
+        responseTrailerMode: Skip
     jwtAuthentication:
       mode: Strict
       providers:
@@ -59,16 +74,25 @@ spec:
       action: Require
       policy:
         # Agentgateway's json() returns dynamic numeric values. An exact int round-trip rejects
-        # fractions and non-numeric JSON types without accepting numeric strings.
+        # fractions and non-numeric JSON types without accepting numeric strings. Parse only the
+        # media type so a standard optional charset remains valid. Use raw() because agentgateway
+        # optimizes a static header lookup to the first value; requiring one raw value makes
+        # duplicate fields fail closed before the media type is inspected.
         matchExpressions:
           - >-
             jwt.azp == "org-b-a2a" &&
             request.method == "POST" &&
             request.path == "/api/a2a/kagent/docs-qa" &&
+            "content-type" in request.headers &&
+            size(request.headers.raw()["content-type"]) == 1 &&
+            request.headers.raw()["content-type"][0].lowerAscii().split(";")[0].trim()
+              == "application/json" &&
             "a2a-version" in request.headers &&
             request.headers["a2a-version"] == "1.0" &&
             "a2a-extensions" in request.headers &&
             "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1"
+              in request.headers.split()["a2a-extensions"] &&
+            "https://fgentic.fmind.ai/a2a/extensions/usage-receipt/v1"
               in request.headers.split()["a2a-extensions"] &&
             json(request.body).with(body,
               body.jsonrpc == "2.0" &&

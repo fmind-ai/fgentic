@@ -1,0 +1,130 @@
+# The federation-only external processor runs after agentgateway authenticates org B, authorizes
+# the exact docs-qa route, and reserves the caller-declared token ceiling. It never receives a
+# model credential and cannot be reached by kagent or the public Gateway directly.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: federation-usage-receipts
+  namespace: agentgateway-system
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 64Mi
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: federation-usage-receipt
+  namespace: agentgateway-system
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: federation-usage-receipt
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: federation-usage-receipt
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: usage-receipt
+          image: matrix-a2a-bridge:${demo_bridge_tag}
+          imagePullPolicy: Never
+          command:
+            - /usr/local/bin/usage-receipt
+          args:
+            - serve
+            - --listen=:4444
+            - --private-key=/var/run/secrets/usage-receipt/private-key.pem
+            - --key-id=$(RECEIPT_KEY_ID)
+            - --azp=org-b-a2a
+            - --archive=/var/lib/usage-receipts/receipts.jsonl
+            - --pending-dir=/var/lib/usage-receipts/pending
+          env:
+            - name: RECEIPT_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: federated-usage-receipt-signing
+                  key: key-id
+          ports:
+            - name: grpc
+              containerPort: 4444
+          readinessProbe:
+            tcpSocket:
+              port: grpc
+            periodSeconds: 2
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 24Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+          volumeMounts:
+            - name: signing-key
+              mountPath: /var/run/secrets/usage-receipt
+              readOnly: true
+            - name: archive
+              mountPath: /var/lib/usage-receipts
+      volumes:
+        - name: signing-key
+          secret:
+            secretName: federated-usage-receipt-signing
+            defaultMode: 0400
+        - name: archive
+          persistentVolumeClaim:
+            claimName: federation-usage-receipts
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: federation-usage-receipt
+  namespace: agentgateway-system
+spec:
+  selector:
+    app.kubernetes.io/name: federation-usage-receipt
+  ports:
+    - name: grpc
+      port: 4444
+      targetPort: grpc
+      appProtocol: kubernetes.io/h2c
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: federation-usage-receipt
+  namespace: agentgateway-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: federation-usage-receipt
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agentgateway-proxy
+      ports:
+        - protocol: TCP
+          port: 4444
+  egress: []

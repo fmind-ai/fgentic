@@ -15,6 +15,8 @@ readonly FEDERATION_AGENT_CARD_POLICY_PATH="infra/federation/delegation/policies
 readonly FEDERATION_AGENT_CARD_MARKER="__FGENTIC_SIGNED_AGENT_CARD_JSON__"
 readonly FEDERATION_AGENT_CARD_CONFIGMAP="federated-docs-qa-agent-card"
 readonly FEDERATION_AGENT_CARD_DEFAULT_KEY_ID="fgentic-org-a-docs-qa-v1"
+readonly FEDERATION_USAGE_RECEIPT_DEFAULT_KEY_ID="fgentic-org-a-usage-receipt-v1"
+readonly FEDERATION_USAGE_RECEIPT_EXTENSION="https://fgentic.fmind.ai/a2a/extensions/usage-receipt/v1"
 readonly MAS_ADMIN_CLIENT_ID="01KX8D3M0AD3M0ADM1NC13NT01"
 readonly SOURCE_BASE_IMAGE="alpine:3.23@sha256:fd791d74b68913cbb027c6546007b3f0d3bc45125f797758156952bc2d6daf40"
 readonly SOURCE_GIT_PACKAGES="git=2.52.0-r0 git-daemon=2.52.0-r0 busybox-extras=1.37.0-r30"

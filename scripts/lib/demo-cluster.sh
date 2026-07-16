@@ -805,7 +805,7 @@ ENTRYPOINT ["httpd", "-f", "-v", "-p", "8080", "-h", "/www"]
 EOF
 
 	build_image "${SOURCE_IMAGE}" "${SOURCE_CONTEXT}/Dockerfile" "${SOURCE_CONTEXT}" source
-	if [ "${PROFILE}" = "demo" ]; then
+	if [ "${PROFILE}" = "demo" ] || [ "${PROFILE}" = "federation" ]; then
 		build_image "${BRIDGE_IMAGE}" "${ROOT_DIR}/apps/matrix-a2a-bridge/Dockerfile" \
 			"${ROOT_DIR}/apps/matrix-a2a-bridge" bridge
 	fi
@@ -820,15 +820,28 @@ EOF
 
 load_bridge_image_if_requested() {
 	local requested_image
-	[ "${PROFILE}" = "demo" ] || return 0
-	requested_image="$(
-		kubectl --namespace bridge get helmrelease matrix-a2a-bridge --output json 2>/dev/null |
-			jq --exit-status --raw-output \
-				'.spec.values.image | "\(.repository):\(.tag)"' 2>/dev/null
-	)" || return 1
+	case "${PROFILE}" in
+	demo)
+		requested_image="$(
+			kubectl --namespace bridge get helmrelease matrix-a2a-bridge --output json 2>/dev/null |
+				jq --exit-status --raw-output \
+					'.spec.values.image | "\(.repository):\(.tag)"' 2>/dev/null
+		)" || return 1
+		;;
+	federation)
+		requested_image="$(
+			kubectl --namespace agentgateway-system get deployment \
+				federation-usage-receipt --output json 2>/dev/null |
+				jq --exit-status --raw-output \
+					'.spec.template.spec.containers[] | select(.name == "usage-receipt") | .image' \
+					2>/dev/null
+		)" || return 1
+		;;
+	*) return 0 ;;
+	esac
 	[ "${requested_image}" = "${BRIDGE_IMAGE}" ] || return 1
 
-	# Loading only after Flux applies this exact HelmRelease tag leaves the long dependency wait
+	# Loading only after Flux applies the exact workload image leaves the long dependency wait
 	# behind us and can precede Pod creation, narrowing the unused pullPolicy=Never image window.
 	k3d image import --mode auto --cluster "${CLUSTER_NAME}" "${BRIDGE_IMAGE}" >/dev/null || return 2
 	resource_trace_require_volume_sample
@@ -1033,25 +1046,45 @@ deadline_diagnostic_timeout() {
 	printf '%ss' "${remaining}"
 }
 
+bridge_image_wait_required() {
+	case "${PROFILE}" in
+	demo | federation) return 0 ;;
+	*) return 1 ;;
+	esac
+}
+
+load_bridge_image_for_platform() {
+	local status
+	if load_bridge_image_if_requested; then
+		return 0
+	else
+		status=$?
+	fi
+	[ "${status}" -ne 2 ] || {
+		echo "The ${PROFILE} profile requested ${BRIDGE_IMAGE}, but its image import failed." >&2
+		flux get kustomizations >&2 || true
+		flux get helmreleases --all-namespaces >&2 || true
+		return 2
+	}
+	return 1
+}
+
 wait_for_platform_fixed() {
 	local bridge_image_loaded bridge_image_status expected_revision deadline kustomizations helmreleases
 	expected_revision="main@sha1:${SOURCE_REVISION}"
 	deadline=$((SECONDS + $(timeout_seconds "${DEMO_TIMEOUT}")))
-	bridge_image_loaded=false
-	[ "${PROFILE}" = "demo" ] || bridge_image_loaded=true
+	bridge_image_loaded=true
+	if bridge_image_wait_required; then
+		bridge_image_loaded=false
+	fi
 
 	while ((SECONDS < deadline)); do
 		if [ "${bridge_image_loaded}" = false ]; then
-			if load_bridge_image_if_requested; then
+			if load_bridge_image_for_platform; then
 				bridge_image_loaded=true
 			else
 				bridge_image_status=$?
-				if [ "${bridge_image_status}" -eq 2 ]; then
-					echo "Bridge HelmRelease requested ${BRIDGE_IMAGE}, but its image import failed." >&2
-					flux get kustomizations >&2 || true
-					flux get helmreleases --all-namespaces >&2 || true
-					return 1
-				fi
+				[ "${bridge_image_status}" -ne 2 ] || return 1
 			fi
 		fi
 		if ! kustomizations="$(kubectl --request-timeout=10s --namespace flux-system \
@@ -1070,7 +1103,7 @@ wait_for_platform_fixed() {
 	done
 
 	if [ "${bridge_image_loaded}" = false ]; then
-		echo "Bridge HelmRelease did not request the expected image ${BRIDGE_IMAGE}." >&2
+		echo "The ${PROFILE} profile did not request the expected image ${BRIDGE_IMAGE}." >&2
 	fi
 	print_platform_wait_diagnostics \
 		"Flux did not reconcile the evaluation revision within ${DEMO_TIMEOUT}"
@@ -1116,7 +1149,8 @@ collect_platform_milestones() {
 }
 
 wait_for_platform_constrained() {
-	local after before expected_revision hard_deadline helmreleases kustomizations
+	local after before bridge_image_loaded bridge_image_status expected_revision hard_deadline
+	local helmreleases kustomizations
 	local last_progress milestones no_progress_seconds max_seconds now request_timeout
 	expected_revision="main@sha1:${SOURCE_REVISION}"
 	no_progress_seconds="${FEDERATION_NO_PROGRESS_SECONDS}"
@@ -1125,9 +1159,22 @@ wait_for_platform_constrained() {
 	last_progress="${SECONDS}"
 	milestones="${WORK_DIR}/platform-milestones"
 	: >"${milestones}"
+	bridge_image_loaded=true
+	if bridge_image_wait_required; then
+		bridge_image_loaded=false
+	fi
 
 	while ((SECONDS < hard_deadline)); do
 		now="${SECONDS}"
+		if [ "${bridge_image_loaded}" = false ]; then
+			if load_bridge_image_for_platform; then
+				bridge_image_loaded=true
+				last_progress="${SECONDS}"
+			else
+				bridge_image_status=$?
+				[ "${bridge_image_status}" -ne 2 ] || return 1
+			fi
+		fi
 		if ! request_timeout="$(deadline_timeout "${hard_deadline}" 10)" ||
 			! kustomizations="$(kubectl --request-timeout="${request_timeout}" \
 				--namespace flux-system get kustomizations --output json)" ||
@@ -1156,7 +1203,8 @@ wait_for_platform_constrained() {
 			echo "Flux convergence progress: ${after} immutable milestones observed."
 			resource_trace_record_ready_layers "${expected_revision}" "${kustomizations}"
 		fi
-		if platform_is_ready "${expected_revision}" "${kustomizations}" "${helmreleases}"; then
+		if [ "${bridge_image_loaded}" = true ] &&
+			platform_is_ready "${expected_revision}" "${kustomizations}" "${helmreleases}"; then
 			return
 		fi
 		if ((SECONDS - last_progress >= no_progress_seconds)); then
@@ -1334,7 +1382,7 @@ demo_up() {
 	fi
 	wait_for_platform
 	prune_stale_node_images "${SOURCE_IMAGE}"
-	if [ "${PROFILE}" = demo ]; then
+	if [ "${PROFILE}" = demo ] || [ "${PROFILE}" = federation ]; then
 		prune_stale_node_images "${BRIDGE_IMAGE}"
 	fi
 	local admission_context

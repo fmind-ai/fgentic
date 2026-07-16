@@ -18,6 +18,8 @@ data:
   ingress_ip_name: unused-federation
   llm_provider: demo
   llm_model: fgentic-demo
+  # The lifecycle replaces this stable offline fixture with its per-run source image tag.
+  demo_bridge_tag: local
   # This lab has no Matrix appservice bridge; keep the shared substitutions explicit and disabled.
   bridge_dead_man_switch_delay: 0s
   synapse_max_event_delay_duration: "null"
