@@ -67,3 +67,10 @@ spec:
       ports:
         - port: 8084
           protocol: TCP
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: mcp-tool-rate-limit
+      ports:
+        - port: 8081
+          protocol: TCP

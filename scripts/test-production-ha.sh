@@ -158,6 +158,33 @@ assert_yq 'select(.kind == "AgentgatewayParameters" and .metadata.name == "secur
   .spec.resources.requests.cpu != null and .spec.resources.requests.memory != null and
   .spec.resources.limits.cpu != null and .spec.resources.limits.memory != null)' \
   "${GCP_RENDER}" "agentgateway data plane must have two bounded replicas and a one-pod PDB"
+assert_yq 'select(.kind == "Deployment" and .metadata.name == "mcp-tool-rate-limit" and
+  .metadata.namespace == "agentgateway-system") |
+  .spec.template.metadata.labels as $labels |
+  (.spec.replicas == 2 and
+  .spec.strategy.type == "RollingUpdate" and
+  .spec.strategy.rollingUpdate.maxSurge == 0 and
+  .spec.strategy.rollingUpdate.maxUnavailable == 1 and
+  ([.spec.template.spec.affinity.podAntiAffinity.requiredDuringSchedulingIgnoredDuringExecution[] |
+    select(.topologyKey == "kubernetes.io/hostname" and
+      (.labelSelector.matchLabels as $selector |
+        (($selector | length) > 0 and ($labels | contains($selector)))))] | length) == 1)' \
+  "${GCP_RENDER}" "production MCP rate-limit service must be replicated across hosts"
+assert_yq 'select(.kind == "PodDisruptionBudget" and .metadata.name == "mcp-tool-rate-limit" and
+  .metadata.namespace == "agentgateway-system") |
+  (.spec.maxUnavailable == 1 and
+  .spec.selector.matchLabels."app.kubernetes.io/name" == "mcp-tool-rate-limit")' \
+  "${GCP_RENDER}" "production MCP rate-limit service PDB is missing"
+assert_yq 'select(.kind == "Deployment" and .metadata.name == "mcp-tool-rate-limit-redis" and
+  .metadata.namespace == "agentgateway-system") |
+  (.spec.replicas == 1 and .spec.strategy.type == "Recreate" and
+  .spec.template.spec.volumes[0].persistentVolumeClaim.claimName ==
+    "mcp-tool-rate-limit-redis")' \
+  "${GCP_RENDER}" "the persistent MCP quota store must retain its explicit fast-restart posture"
+assert_yq_all '[select(.kind == "PodDisruptionBudget" and
+  .metadata.name == "mcp-tool-rate-limit-redis" and
+  .metadata.namespace == "agentgateway-system")] | length == 0' \
+  "${GCP_RENDER}" "the single RWO MCP quota store must not block voluntary drains"
 assert_yq_all '[select(.kind == "PodDisruptionBudget" and
   (.metadata.namespace == "matrix" or .metadata.namespace == "kagent"))] as $pdbs |
   ($pdbs | length) == 7 and
@@ -360,6 +387,13 @@ assert_yq 'select(.kind == "HelmRelease" and .metadata.name == "keycloak") |
 assert_yq 'select(.kind == "AgentgatewayParameters" and .metadata.name == "secured") |
   ((.spec.deployment.spec.replicas // 1) == 1 and .spec.podDisruptionBudget == null)' \
   "${LOCAL_RENDER}" "local agentgateway proxy must remain one replica without a PDB"
+assert_yq 'select(.kind == "Deployment" and .metadata.name == "mcp-tool-rate-limit" and
+  .metadata.namespace == "agentgateway-system") | .spec.replicas == 1' \
+  "${LOCAL_RENDER}" "local MCP rate-limit service must remain one replica"
+assert_yq_all '[select(.kind == "PodDisruptionBudget" and
+  .metadata.name == "mcp-tool-rate-limit" and
+  .metadata.namespace == "agentgateway-system")] | length == 0' \
+  "${LOCAL_RENDER}" "local MCP rate-limit service must not inherit the production PDB"
 assert_yq 'select(.kind == "HelmRelease" and .metadata.name == "kagent") |
   ((.spec.values.controller.replicas // 1) == 1 and (.spec.values.ui.replicas // 1) == 1 and
   (.spec.values."kagent-tools".replicaCount // 1) == 1 and

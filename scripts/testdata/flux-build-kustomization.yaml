@@ -33,6 +33,8 @@ spec:
       federation_gateway_ip: 127.0.0.1
       federation_a2a_max_budget_units: "4096"
       federation_a2a_quota_budget_units_per_minute: "8192"
+      mcp_tool_burst_per_second: "2"
+      mcp_agent_calls_per_hour: "300"
       quota_default_request_cpu: 25m
       quota_default_request_memory: 64Mi
       quota_default_limit_cpu: 500m

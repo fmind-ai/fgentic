@@ -39,6 +39,9 @@ data:
   # homeserver's ten-minute ceiling. The bridge still fails closed if Synapse omits MSC4140.
   bridge_dead_man_switch_delay: 5m
   synapse_max_event_delay_duration: 10m
+  # MCP admission ceilings: per authenticated agent+tool burst and per authenticated agent hour.
+  mcp_tool_burst_per_second: "2"
+  mcp_agent_calls_per_hour: "300"
   # Initial namespace-compute profiles. These are admission ceilings, not reservations; tighten
   # only after observing ResourceQuota usage through representative rollouts and peak traffic.
   quota_default_request_cpu: 25m

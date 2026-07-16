@@ -2,6 +2,8 @@
 # and AgentgatewayParameters CRD each own their corresponding PDB, avoiding selector drift.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
+resources:
+  - mcp-tool-rate-limit-pdb.yaml
 patches:
   - target:
       group: helm.toolkit.fluxcd.io
@@ -62,3 +64,29 @@ patches:
         value:
           spec:
             maxUnavailable: 1
+  - target:
+      group: apps
+      version: v1
+      kind: Deployment
+      name: mcp-tool-rate-limit
+      namespace: agentgateway-system
+    patch: |
+      - op: replace
+        path: /spec/replicas
+        value: 2
+      - op: add
+        path: /spec/strategy
+        value:
+          type: RollingUpdate
+          rollingUpdate:
+            maxSurge: 0
+            maxUnavailable: 1
+      - op: add
+        path: /spec/template/spec/affinity
+        value:
+          podAntiAffinity:
+            requiredDuringSchedulingIgnoredDuringExecution:
+              - topologyKey: kubernetes.io/hostname
+                labelSelector:
+                  matchLabels:
+                    app.kubernetes.io/name: mcp-tool-rate-limit
