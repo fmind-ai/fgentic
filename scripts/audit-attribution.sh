@@ -68,7 +68,10 @@ jq -e '
     and (
       if (.agent_path | startswith("/api/a2a/")) then
         ((.agent_contract_sha256 | type) == "string")
-        and (.agent_contract_sha256 | test("^[0-9a-f]{64}$"))
+        and (
+          .agent_contract_sha256 == ""
+          or (.agent_contract_sha256 | test("^[0-9a-f]{64}$"))
+        )
       else
         true
       end

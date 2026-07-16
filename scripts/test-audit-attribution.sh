@@ -6,7 +6,11 @@ set -euo pipefail
 bridge_record() {
 	local task_id="$1"
 	local agent_version="${2-${AUDIT_AGENT_VERSION:-}}"
-	jq -cn --arg task_id "${task_id}" --arg agent_version "${agent_version}" '{
+	local agent_contract_sha256="${3-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}"
+	jq -cn \
+		--arg task_id "${task_id}" \
+		--arg agent_version "${agent_version}" \
+		--arg agent_contract_sha256 "${agent_contract_sha256}" '{
 	    level: "INFO",
 	    time: "2026-07-11T09:00:02Z",
 	    msg: "delegation audit",
@@ -22,7 +26,7 @@ bridge_record() {
     ghost_mxid: "@agent-assistant:fgentic.localhost",
     agent_path: "/api/a2a/kagent/platform-assistant",
     agent_version: $agent_version,
-    agent_contract_sha256: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    agent_contract_sha256: $agent_contract_sha256,
     a2a_attempted: true,
     a2a_user_id: "@alice:fgentic.localhost",
     a2a_context_id: "context-1",
@@ -37,6 +41,7 @@ bridge_record() {
 }
 
 fixture_agents() {
+	local contract="${1-bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb}"
 	printf '%s\n' \
 		'schemaVersion: 1' \
 		'agents:' \
@@ -45,9 +50,11 @@ fixture_agents() {
 		'    name: platform-assistant' \
 		'    description: Integration audit fixture.' \
 		'    stage: prod' \
-		'    dataClassification: public' \
-		'    agentContractSHA256: bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb' \
-		'    allowedSenders: ["@alice:fgentic.localhost"]'
+		'    dataClassification: public'
+	if [ -n "${contract}" ]; then
+		printf '    agentContractSHA256: %s\n' "${contract}"
+	fi
+	printf '%s\n' '    allowedSenders: ["@alice:fgentic.localhost"]'
 }
 
 duplicate_record() {
@@ -97,6 +104,7 @@ mock_kubectl() {
 		empty_task) bridge_record "" ;;
 		missing_version) bridge_record "task-1" "" ;;
 		mismatched_version) bridge_record "task-1" "sha256:0000000000000000000000000000000000000000000000000000000000000000" ;;
+		legacy_local) bridge_record "task-1" "${AUDIT_LEGACY_AGENT_VERSION}" "" ;;
 		revision_mismatch | kagent_not_ready) bridge_record "task-1" ;;
 		*)
 			printf 'unknown audit test scenario: %s\n' "${AUDIT_SCENARIO}" >&2
@@ -105,7 +113,11 @@ mock_kubectl() {
 		esac
 		;;
 	"-n bridge get configmap matrix-a2a-bridge-agents -o json")
-		fixture_agents | jq -Rs '{data: {"agents.yaml": .}}'
+		if [ "${AUDIT_SCENARIO:-success}" = "legacy_local" ]; then
+			fixture_agents "" | jq -Rs '{data: {"agents.yaml": .}}'
+		else
+			fixture_agents | jq -Rs '{data: {"agents.yaml": .}}'
+		fi
 		;;
 	"-n flux-system get kustomizations bridge kagent -o json")
 		case "${AUDIT_SCENARIO:-success}" in
@@ -162,13 +174,20 @@ ln -s "${repo_root}/scripts/test-audit-attribution.sh" "${workdir}/kubectl"
 test_path="${workdir}:${PATH}"
 event_id="\$audit-event"
 fixture_agents >"${workdir}/agents.yaml"
+fixture_agents "" >"${workdir}/legacy-agents.yaml"
 AUDIT_AGENT_VERSION="$(
 	mise --cd "${repo_root}/apps/matrix-a2a-bridge" exec -- \
 		go run ./cmd/agent-version \
 		--config "${workdir}/agents.yaml" \
 		--ghost agent-assistant
 )"
-export AUDIT_AGENT_VERSION
+AUDIT_LEGACY_AGENT_VERSION="$(
+	mise --cd "${repo_root}/apps/matrix-a2a-bridge" exec -- \
+		go run ./cmd/agent-version \
+		--config "${workdir}/legacy-agents.yaml" \
+		--ghost agent-assistant
+)"
+export AUDIT_AGENT_VERSION AUDIT_LEGACY_AGENT_VERSION
 
 AUDIT_SCENARIO=success PATH="${test_path}" "${collector}" "${event_id}" 15m \
 	>"${workdir}/success.json"
@@ -193,6 +212,15 @@ jq -e '
   and (.prometheus.delegations | length) == 1
   and (.prometheus.token_usage | length) == 1
 ' "${workdir}/success.json" >/dev/null
+
+AUDIT_SCENARIO=legacy_local PATH="${test_path}" "${collector}" "${event_id}" 15m \
+	>"${workdir}/legacy-local.json"
+jq -e '
+  .bridge.agent_contract_sha256 == ""
+  and .source.agent_contract_sha256 == ""
+  and .bridge.agent_version == .source.agent_version
+  and .source.bridge_git_revision == .source.kagent_git_revision
+' "${workdir}/legacy-local.json" >/dev/null
 
 assert_rejected() {
 	local scenario="$1"
