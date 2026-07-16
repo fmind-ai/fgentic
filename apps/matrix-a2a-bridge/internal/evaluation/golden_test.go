@@ -47,8 +47,32 @@ func TestVerifyAgentGoldenSuitesRejectsAnswerRegression(t *testing.T) {
 		strings.NewReader(goldenTestPrompts),
 		GoldenAnswers{Answers: []GoldenAnswer{{ScenarioID: "helper-smoke", Answer: "deterministic answer"}}},
 	)
-	if err == nil || !strings.Contains(err.Error(), "failed") {
-		t.Fatalf("VerifyAgentGoldenSuites error = %v, want answer regression", err)
+	if err == nil || !strings.Contains(err.Error(), "--- expected\n+++ actual\n-changed answer\n+deterministic answer") {
+		t.Fatalf("VerifyAgentGoldenSuites error = %v, want clear answer diff", err)
+	}
+}
+
+func TestVerifyAgentGoldenSuiteUsesCompleteGateAssertionsWithoutRequiringOtherFixtures(t *testing.T) {
+	agents := goldenTestAgents + `---
+apiVersion: kagent.dev/v1alpha2
+kind: Agent
+metadata:
+  name: another
+spec:
+  declarative:
+    systemMessage: '{{include "zoo/common"}} another'
+`
+	results, err := VerifyAgentGoldenSuite(
+		goldenTestSuite(t),
+		strings.NewReader(agents),
+		strings.NewReader(goldenTestPrompts),
+		GoldenAnswers{Answers: []GoldenAnswer{{ScenarioID: "helper-smoke", Answer: "deterministic answer"}}},
+	)
+	if err != nil {
+		t.Fatalf("VerifyAgentGoldenSuite: %v", err)
+	}
+	if len(results) != 1 || results[0].Agent != "helper" {
+		t.Fatalf("results = %#v, want one helper result", results)
 	}
 }
 

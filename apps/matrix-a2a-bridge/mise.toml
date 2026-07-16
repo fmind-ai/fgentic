@@ -97,10 +97,14 @@ run = "bash scripts/eval-models.sh"
 
 [tasks."eval:golden"]
 description = "Verify every in-repo Agent contract against the deterministic demo response"
-run = "bash scripts/eval-golden.sh"
+run = "bash scripts/eval-golden.sh --all"
 
 [tasks."test:agents-golden"]
 description = "Run every in-repo Agent golden task against the zero-spend loopback model"
+run = "bash scripts/eval-golden.sh --all"
+
+[tasks."agent:test"]
+description = "Run one Agent's golden tasks against the zero-spend loopback model"
 run = "bash scripts/eval-golden.sh"
 
 [tasks.format]
