@@ -87,7 +87,7 @@ Each plane below names the exact control, how the change is applied, whether a r
 - **agentgateway authorization + quota:** in [infra/federation/delegation/policies.yaml](../infra/federation/delegation/policies.yaml), remove the `jwt.azp == "org-b-a2a"` authorization clause (or delete the `federated-docs-qa` policy); the fail-closed rate-limit descriptor keyed on `jwt.azp` then no longer reserves for the partner. A revoked client's request fails authorization with `403`.
 - **Public route:** delete the `federated-docs-qa-public` HTTPRoute in [routes.yaml](../infra/federation/delegation/routes.yaml) (and, to sever the JWKS fetch, its `ReferenceGrant`/NetworkPolicy) so the exact `POST /api/a2a/kagent/docs-qa` origin returns `404` with no agentgateway listener reachable.
 - **Apply:** all GitOps/Flux, data-plane reload, no Synapse involvement.
-- **Evidence:** the reservation series keyed on the partner `azp` stops advancing; a client-credentials call with the old secret is unauthenticated/unauthorized. Never report the reservation series as measured token consumption.
+- **Evidence:** record the reviewed render showing the partner `azp` authorization, descriptor, and public route removed; then prove that a client-credentials call with the old secret is unauthenticated/unauthorized and that the exact A2A `POST` fails `403` or `404`. The current rate-limit component stores transient reservation counters in Redis with StatsD disabled, so it exposes no per-`azp` Prometheus series; do not make a nonexistent series an offboarding condition or report reservation state as measured token consumption.
 
 ## 5. In-flight and mid-task behavior
 
@@ -124,7 +124,7 @@ Both operators execute and sign each stage; a unilateral success is insufficient
 
 | Stage         | Action                                                         | Exit condition (both orgs)                                              |
 | ------------- | -------------------------------------------------------------- | ----------------------------------------------------------------------- |
-| A2A stop      | Remove `azp` authorization + public route; disable OIDC client | Client-credentials call fails `403`/`404`; reservation stops            |
+| A2A stop      | Remove `azp` authorization + public route; disable OIDC client | Reviewed render omits `azp`/route; old client and exact POST fail       |
 | A2A discovery | Withdraw card discovery; revoke bridge pin                     | Card `GET` 404s; delegation audits `agent_card_untrusted`               |
 | Room          | Tighten `m.room.server_acl`; retire/read-only rooms            | Authenticated ACL state shows partner removed                           |
 | Policy border | Remove partner from `policy.json`; `fed:policy-reload`         | `server_not_allowed` violation with changed `policy_digest`, no restart |
@@ -153,7 +153,7 @@ The offboarding record is complete only when it contains:
 1. Both organizations' named owners and completion attestations.
 1. The revocation kind, trigger, and change/rollback references.
 1. Reviewed Git revisions for every git-declared plane and clean static-test results.
-1. Content-free evidence per plane: `federation_whitelist` query, ACL state, `policy_digest` and `server_not_allowed` violation IDs, `agent_card_untrusted` audit IDs, and the stopped `azp` reservation.
+1. Content-free evidence per plane: `federation_whitelist` query, ACL state, `policy_digest` and `server_not_allowed` violation IDs, `agent_card_untrusted` audit IDs, the rendered revision without the partner `azp`/route, and the old client's failed token and exact-POST status codes.
 1. Local purge, retention, and backup-expiry completion, with the explicit statement that replicated history is not retracted.
 1. Re-admission owner and conditions, if the partnership may resume.
 
