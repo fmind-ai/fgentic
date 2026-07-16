@@ -18,6 +18,10 @@ spec:
       labels:
         app.kubernetes.io/name: ketesa
         app.kubernetes.io/version: 1.3.0
+      annotations:
+        # Kustomize hashes source changes into the ConfigMap name before Flux substitution. This
+        # post-build value separately rolls the Pod when server_name changes after that hash step.
+        fgentic.dev/config-server-name: ${server_name}
     spec:
       automountServiceAccountToken: false
       securityContext:
@@ -62,8 +66,8 @@ spec:
               drop: [ALL]
             readOnlyRootFilesystem: true
           volumeMounts:
-            # The generated ConfigMap name is hash-suffixed, so a configuration change rolls the
-            # Deployment instead of leaving a stale subPath mount in a running Pod.
+            # Source changes roll through the generated ConfigMap name; server-name substitutions
+            # roll through the pod-template annotation above, keeping the subPath file current.
             - name: config
               mountPath: /var/public/config.json
               subPath: config.json

@@ -42,8 +42,8 @@ for profile in local gcp demo federation; do
   gateway_path=""
   setting="$(yq -er '.data.admin_console' \
     "${ROOT_DIR}/clusters/${profile}/platform-settings.yaml")"
-  [[ "${setting}" == disabled ]] ||
-    fail "tracked clusters/${profile} must keep the opt-in admin console disabled"
+  [[ "${setting}" == enabled || "${setting}" == disabled ]] ||
+    fail "clusters/${profile} admin_console must be enabled or disabled"
 
   effective="$({
     cd "${ROOT_DIR}"
@@ -71,6 +71,13 @@ for profile in local gcp demo federation; do
     ! yq -e 'select((.kind == "Gateway") and (.metadata.name == "fgentic-gateway")) |
       .spec.listeners[] | select(.name == "https-admin")' <<<"${selected_gateway}" >/dev/null 2>&1 ||
       fail "clusters/${profile} disabled gateway still exposes https-admin"
+  else
+    yq -e 'select(.kind == "Deployment" and .metadata.name == "ketesa")' \
+      <<<"${selected_admin}" >/dev/null ||
+      fail "clusters/${profile} enabled admin profile omitted Ketesa"
+    yq -e 'select(.kind == "Gateway" and .metadata.name == "fgentic-gateway") |
+      .spec.listeners[] | select(.name == "https-admin")' <<<"${selected_gateway}" >/dev/null ||
+      fail "clusters/${profile} enabled gateway omitted https-admin"
   fi
 done
 
@@ -116,6 +123,7 @@ jq -e '
 
 jq -e '.[] | select(.kind == "Deployment" and .metadata.name == "ketesa") |
   .spec.replicas == 1 and
+  .spec.template.metadata.annotations."fgentic.dev/config-server-name" == "fgentic.localhost" and
   .spec.template.spec.automountServiceAccountToken == false and
   .spec.template.spec.securityContext.runAsNonRoot == true and
   .spec.template.spec.securityContext.runAsUser == 1000 and
