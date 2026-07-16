@@ -121,6 +121,16 @@ jq -e '
   .asManagedUsers == ["^@a2a-bridge:.*$", "^@agent-[^:]+:.*$"]
 ' <<<"${config_json}" >/dev/null || fail "Ketesa homeserver or MAS configuration drifted"
 
+mas_login_policy="$(yq -er \
+  '.spec.values.matrixAuthenticationService.additional."00-login-policy".config' \
+  "${ROOT_DIR}/infra/matrix/helmrelease.yaml")" || fail "could not read MAS login policy"
+yq -e '
+  (.policy.data.admin_users | length) == 1 and
+  .policy.data.admin_users[0] == "alice" and
+  (.policy.data | has("admin_clients") | not)
+' <<<"${mas_login_policy}" >/dev/null ||
+  fail "Ketesa must use user-authorized dynamic registration, not an admin client credential"
+
 jq -e '.[] | select(.kind == "Deployment" and .metadata.name == "ketesa") |
   .spec.replicas == 1 and
   .spec.template.metadata.annotations."fgentic.dev/config-server-name" == "fgentic.localhost" and

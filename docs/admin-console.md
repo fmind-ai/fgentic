@@ -20,7 +20,9 @@ The structural flag is `admin_console` in the target cluster's tracked `platform
 1. Commit the change and let Flux reconcile. Wait for `gateway` before `admin`; the latter depends on the Gateway and Matrix layers.
 1. Open `https://admin.<server_name>`. The locked `config.json` removes the homeserver picker, resolves the apex well-known document, selects external authentication, and sends no browser cookies to cross-origin APIs. Choose the OIDC login path and authenticate through MAS.
 
-ESS 26.6.2 already exposes MAS's `adminapi` resource on the public MAS listener. Do not add a second listener or override the chart-owned `http.listeners` configuration.
+Ketesa v1.3.0 uses MAS dynamic client registration for this browser flow. It registers a public client (`token_endpoint_auth_method: none`) with the exact `https://admin.<server_name>/auth-callback/` redirect and requests `urn:mas:admin` alongside the Matrix client scopes. MAS grants that interactive admin scope only to a user permitted by `policy.data.admin_users` (or the corresponding per-user `can_request_admin` attribute); the Fgentic reference designates `alice` for bootstrap acceptance. Do not add Ketesa to `policy.data.admin_clients`: MAS reserves that list for non-interactive `client_credentials` clients, while a static SPA cannot hold a client secret.
+
+ESS 26.6.2 already exposes MAS's `adminapi` resource on the public MAS listener and keeps secure dynamic-registration defaults (`allow_host_mismatch: false`, `allow_insecure_uris: false`). Do not add a second listener or override the chart-owned `http.listeners` configuration.
 
 ## Required authorization acceptance
 
