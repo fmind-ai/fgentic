@@ -5,6 +5,10 @@ kind: HTTPRoute
 metadata:
   name: kagent-a2a
   namespace: agentgateway-system
+  annotations:
+    # #339 transfers this route with its authorization policy to an ordered admission owner.
+    # Disable garbage collection under the current owner until both inventories are verified.
+    kustomize.toolkit.fluxcd.io/prune: disabled
 spec:
   parentRefs:
     - name: agentgateway-proxy

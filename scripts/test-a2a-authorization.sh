@@ -3,6 +3,8 @@ set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 policy_file="${repo_root}/infra/agentgateway/a2a-authorization.yaml"
+route_file="${repo_root}/infra/agentgateway/a2a-route.yaml"
+owner_file="${repo_root}/infra/agentgateway/kustomization.yaml"
 secret_example="${repo_root}/infra/secrets/a2a-authorization.sops.yaml.example"
 runtime=false
 
@@ -42,6 +44,17 @@ expression="$(
 assert_equal "$(yq -r '.spec.traffic.apiKeyAuthentication.mode' "${policy_file}")" "Strict" "API-key mode"
 assert_equal "$(yq -r '.spec.traffic.apiKeyAuthentication.secretRef.name' "${policy_file}")" "a2a-bridge-callers" "API-key Secret"
 assert_equal "$(yq -r '.spec.traffic.authorization.action' "${policy_file}")" "Require" "authorization action"
+for guarded_file in "${route_file}" "${policy_file}"; do
+	assert_equal "$({
+		yq -r '.metadata.annotations."kustomize.toolkit.fluxcd.io/prune"' "${guarded_file}"
+	})" "disabled" "$(basename "${guarded_file}") ownership-handoff prune guard"
+done
+assert_equal "$({
+	yq -N -r '
+    [.resources[] | select(. == "a2a-route.yaml" or . == "a2a-authorization.yaml")]
+    | length
+  ' "${owner_file}"
+})" "2" "current A2A admission owner inventory"
 assert_contains "${expression}" 'apiKey.workload == "matrix-a2a-bridge"' "workload authorization"
 assert_contains "${expression}" 'request.path.startsWith("/api/a2a/kagent/")' "kagent path boundary"
 assert_contains "${expression}" 'request.method == "POST"' "A2A method boundary"

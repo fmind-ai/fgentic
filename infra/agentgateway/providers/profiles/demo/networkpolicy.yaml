@@ -5,6 +5,10 @@ kind: NetworkPolicy
 metadata:
   name: agentgateway-demo-egress
   namespace: agentgateway-system
+  annotations:
+    # #339 moves this policy to a separately ordered provider-egress owner. Disable garbage
+    # collection under the current owner before that inventory handoff so no fail-open gap exists.
+    kustomize.toolkit.fluxcd.io/prune: disabled
 spec:
   podSelector:
     matchLabels:
