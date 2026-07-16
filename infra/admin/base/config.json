@@ -1,0 +1,7 @@
+{
+  "asManagedUsers": ["^@a2a-bridge:.*$", "^@agent-[^:]+:.*$"],
+  "corsCredentials": "omit",
+  "externalAuthProvider": true,
+  "restrictBaseUrl": "https://${server_name}",
+  "wellKnownDiscovery": true
+}

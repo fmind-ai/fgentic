@@ -119,6 +119,8 @@ type delegationAuditResult struct {
 	mediaOut          int      // agent artifact files posted into the room (#115)
 	mediaRejected     int      // files withheld in either direction by the media policy (#115)
 	targetFingerprint string   // immutable durable mapping evidence; empty on legacy in-memory work
+	agentVersion      string   // version captured before a durable A2A attempt; empty uses ref snapshot
+	agentContract     string   // effective local Agent source contract paired with agentVersion
 }
 
 // Bridge orchestrates the @mention -> A2A -> reply flow for one appservice.
@@ -1632,6 +1634,14 @@ func (b *Bridge) logDelegationAudit(
 	sender senderIdentity,
 	result delegationAuditResult,
 ) {
+	agentVersion := result.agentVersion
+	if agentVersion == "" {
+		agentVersion = ref.AgentVersion()
+	}
+	agentContract := result.agentContract
+	if agentContract == "" {
+		agentContract = ref.AgentContractSHA256()
+	}
 	b.auditLog.Info(
 		"delegation audit",
 		"audit_schema", delegationAuditSchema,
@@ -1646,6 +1656,8 @@ func (b *Bridge) logDelegationAudit(
 		"ghost", localpart,
 		"ghost_mxid", id.NewUserID(localpart, b.cfg.ServerName).String(),
 		"agent_path", ref.Path(),
+		"agent_version", agentVersion,
+		"agent_contract_sha256", agentContract,
 		"target_fingerprint", result.targetFingerprint,
 		"a2a_attempted", result.a2aAttempted,
 		"a2a_user_id", result.a2aUserID,

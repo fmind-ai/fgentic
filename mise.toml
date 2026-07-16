@@ -125,6 +125,7 @@ depends = [
   "check:manifests",
   "check:charts",
   "check:overlays",
+  "check:admin-console",
   "check:retention-policy",
   "check:production-ha",
   "check:scan",
@@ -204,6 +205,10 @@ run = "helm-unittest apps/matrix-a2a-bridge/chart"
 [tasks."check:overlays"]
 description = "Flux-build and schema-validate the local and GCP cluster overlays"
 run = "bash scripts/check-flux-overlays.sh"
+
+[tasks."check:admin-console"]
+description = "Prove Ketesa's opt-in surface and zero-footprint disabled profile offline"
+run = "bash scripts/test-admin-console.sh"
 
 [tasks."check:retention-policy"]
 description = "Prove finite Matrix retention in local/GCP without changing disposable profiles"

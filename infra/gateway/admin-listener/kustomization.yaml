@@ -1,0 +1,27 @@
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: gateway.networking.k8s.io
+      version: v1
+      kind: Gateway
+      name: fgentic-gateway
+      namespace: gateway
+    patch: |
+      - op: add
+        path: /spec/listeners/-
+        value:
+          name: https-admin
+          protocol: HTTPS
+          port: 443
+          hostname: admin.${server_name}
+          tls:
+            mode: Terminate
+            certificateRefs:
+              - name: matrix-tls
+          allowedRoutes:
+            namespaces:
+              from: Selector
+              selector:
+                matchLabels:
+                  kubernetes.io/metadata.name: admin

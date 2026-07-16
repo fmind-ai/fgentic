@@ -13,6 +13,8 @@ readonly FEDERATION_QUOTA_FILE="${FEDERATION_NAMESPACE_DIR}/resource-quotas.yaml
 readonly ACTIVITYPUB_NAMESPACE_DIR="${ROOT_DIR}/apps/activitypub-agent-gateway/deploy"
 readonly ACTIVITYPUB_NAMESPACE_FILE="${ACTIVITYPUB_NAMESPACE_DIR}/namespace.yaml"
 readonly ACTIVITYPUB_QUOTA_FILE="${ACTIVITYPUB_NAMESPACE_DIR}/resource-quotas.yaml"
+readonly ADMIN_NAMESPACE_FILE="${ROOT_DIR}/infra/admin/base/namespace.yaml"
+readonly ADMIN_QUOTA_FILE="${ROOT_DIR}/infra/admin/base/resource-quotas.yaml"
 readonly FLUX_FILE="${ROOT_DIR}/clusters/base/infrastructure.yaml"
 readonly FLUX_BUILD_FIXTURE="${ROOT_DIR}/scripts/testdata/flux-build-kustomization.yaml"
 readonly KIND_CONFIG="${ROOT_DIR}/scripts/testdata/resource-quota-kind.yaml"
@@ -234,21 +236,24 @@ assert_static_contract() {
     fail "expected the shared and federation namespace sources to own sixteen namespaces"
   repository_namespaces="$(
     yq eval-all -o=json '[select(.kind == "Namespace")]' \
-      "${NAMESPACE_FILE}" "${FEDERATION_NAMESPACE_FILE}" "${ACTIVITYPUB_NAMESPACE_FILE}" |
+      "${NAMESPACE_FILE}" "${FEDERATION_NAMESPACE_FILE}" "${ACTIVITYPUB_NAMESPACE_FILE}" \
+      "${ADMIN_NAMESPACE_FILE}" |
       yq -r '.[].metadata.name' | sort
   )"
-  [[ "$(wc -l <<<"${repository_namespaces}" | tr -d ' ')" -eq 17 ]] ||
-    fail "expected all seventeen repository-owned namespaces to be quota-managed"
+  [[ "$(wc -l <<<"${repository_namespaces}" | tr -d ' ')" -eq 18 ]] ||
+    fail "expected all eighteen repository-owned namespaces to be quota-managed"
   repository_quota_namespaces="$(
     yq eval-all -o=json \
       '[select(.kind == "ResourceQuota" and .metadata.name == "compute-budget")]' \
-      "${NAMESPACE_QUOTA_FILE}" "${FEDERATION_QUOTA_FILE}" "${ACTIVITYPUB_QUOTA_FILE}" |
+      "${NAMESPACE_QUOTA_FILE}" "${FEDERATION_QUOTA_FILE}" "${ACTIVITYPUB_QUOTA_FILE}" \
+      "${ADMIN_QUOTA_FILE}" |
       yq -r '.[].metadata.namespace' | sort
   )"
   repository_limit_namespaces="$(
     yq eval-all -o=json \
       '[select(.kind == "LimitRange" and .metadata.name == "container-defaults")]' \
-      "${NAMESPACE_QUOTA_FILE}" "${FEDERATION_QUOTA_FILE}" "${ACTIVITYPUB_QUOTA_FILE}" |
+      "${NAMESPACE_QUOTA_FILE}" "${FEDERATION_QUOTA_FILE}" "${ACTIVITYPUB_QUOTA_FILE}" \
+      "${ADMIN_QUOTA_FILE}" |
       yq -r '.[].metadata.namespace' | sort
   )"
   [[ "${repository_quota_namespaces}" == "${repository_namespaces}" ]] ||
@@ -261,10 +266,11 @@ assert_static_contract() {
     yq eval-all -o=json '
       [select(.kind == "Namespace") |
         .metadata.labels."fgentic.dev/quota-profile"]
-    ' "${NAMESPACE_FILE}" "${FEDERATION_NAMESPACE_FILE}" "${ACTIVITYPUB_NAMESPACE_FILE}"
+    ' "${NAMESPACE_FILE}" "${FEDERATION_NAMESPACE_FILE}" "${ACTIVITYPUB_NAMESPACE_FILE}" \
+      "${ADMIN_NAMESPACE_FILE}"
   )"
   yq -e '
-    select(length == 17) |
+    select(length == 18) |
     [.[] | test("^(small|core|compute)$")] |
     select(all)
   ' <<<"${profiles}" >/dev/null || fail "every platform Namespace needs a known quota profile"

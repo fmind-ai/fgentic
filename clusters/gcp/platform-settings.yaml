@@ -53,6 +53,8 @@ data:
   quota_compute_limits_memory: 24Gi
   # The reference production profile is SSO-only. Override deliberately for a break-glass window.
   mas_local_login_enabled: "false"
+  # Opt in only after reviewing the public admin host and completing the admin/non-admin proof.
+  admin_console: disabled
   # Finite reference policy for normal Matrix rooms. Adapt these durations to the deployment's
   # approved purpose, legal basis, export process, and partner obligations before production use.
   matrix_message_retention_default: 90d

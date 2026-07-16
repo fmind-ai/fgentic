@@ -1,0 +1,13 @@
+# Ketesa is an optional, browser-only administrator client. Its namespace exists only while the
+# admin_console platform profile is enabled; disabling the profile lets Flux prune it completely.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: admin
+  labels:
+    fgentic.dev/managed: "true"
+    fgentic.dev/image-policy: enforce
+    fgentic.dev/quota-profile: small
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

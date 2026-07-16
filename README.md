@@ -58,22 +58,23 @@ The plaintext command fallback works in Matrix clients without ghost-MXID autoco
 
 ## Architecture at a glance
 
-| Layer                      | Component                                                                                                   | Namespace             |
-| -------------------------- | ----------------------------------------------------------------------------------------------------------- | --------------------- |
-| UI + collaboration fabric  | Element Web/X · Synapse · MAS (via [ESS Community](https://github.com/element-hq/ess-helm))                 | `matrix`              |
-| The bridge (the glue)      | `matrix-a2a-bridge` (Go, `mautrix/go` appservice + `a2a-go`)                                                | `bridge`              |
-| AI data plane / governance | agentgateway (LLM + A2A routing, credential chokepoint)                                                     | `agentgateway-system` |
-| Agents                     | kagent (Agent CRDs served as A2A on `:8083`)                                                                | `kagent`              |
-| Optional network interop   | Digest-pinned mautrix Slack/Telegram appservices; disabled until selected and accepted                      | `bridges`             |
-| Optional reference IdP     | Keycloak 26.7 via the KeycloakX chart                                                                       | `keycloak`            |
-| Optional self-hosted model | vLLM CPU + pinned Qwen2.5-0.5B demo model                                                                   | `models`              |
-| Shared state               | CloudNativePG: scoped service databases plus the composed pgvector knowledge store                          | `postgres`            |
-| Web ingress + TLS          | Gateway API (Traefik) + cert-manager (Let's Encrypt)                                                        | `gateway`             |
-| Observability              | kube-prometheus-stack: Prometheus · Grafana · Alertmanager ([docs/observability.md](docs/observability.md)) | `monitoring`          |
-| Runtime image security     | Trivy Operator: continuous HIGH/CRITICAL feed-drift reports and alert                                       | `trivy-system`        |
-| Delivery                   | Flux v2 pull-based GitOps                                                                                   | `flux-system`         |
+| Layer                      | Component                                                                                                      | Namespace             |
+| -------------------------- | -------------------------------------------------------------------------------------------------------------- | --------------------- |
+| UI + collaboration fabric  | Element Web/X · Synapse · MAS (via [ESS Community](https://github.com/element-hq/ess-helm))                    | `matrix`              |
+| The bridge (the glue)      | `matrix-a2a-bridge` (Go, `mautrix/go` appservice + `a2a-go`)                                                   | `bridge`              |
+| AI data plane / governance | agentgateway (LLM + A2A routing, credential chokepoint)                                                        | `agentgateway-system` |
+| Agents                     | kagent (Agent CRDs served as A2A on `:8083`)                                                                   | `kagent`              |
+| Optional network interop   | Digest-pinned mautrix Slack/Telegram appservices; disabled until selected and accepted                         | `bridges`             |
+| Optional reference IdP     | Keycloak 26.7 via the KeycloakX chart                                                                          | `keycloak`            |
+| Optional administrator UI  | Ketesa v1.3.0, locked to the local homeserver and authorized by Synapse/MAS ([runbook](docs/admin-console.md)) | `admin`               |
+| Optional self-hosted model | vLLM CPU + pinned Qwen2.5-0.5B demo model                                                                      | `models`              |
+| Shared state               | CloudNativePG: scoped service databases plus the composed pgvector knowledge store                             | `postgres`            |
+| Web ingress + TLS          | Gateway API (Traefik) + cert-manager (Let's Encrypt)                                                           | `gateway`             |
+| Observability              | kube-prometheus-stack: Prometheus · Grafana · Alertmanager ([docs/observability.md](docs/observability.md))    | `monitoring`          |
+| Runtime image security     | Trivy Operator: continuous HIGH/CRITICAL feed-drift reports and alert                                          | `trivy-system`        |
+| Delivery                   | Flux v2 pull-based GitOps                                                                                      | `flux-system`         |
 
-Reference deployment: `fgentic.fmind.ai` (Element at `chat.`, Synapse at `matrix.`, MAS at `auth.`, optional Keycloak IdP at `id.`; user IDs `@name:fgentic.fmind.ai` via apex `.well-known` delegation).
+Reference deployment: `fgentic.fmind.ai` (Element at `chat.`, Synapse at `matrix.`, MAS at `auth.`, optional Keycloak IdP at `id.`, optional Ketesa at `admin.`; user IDs `@name:fgentic.fmind.ai` via apex `.well-known` delegation).
 
 ## Key decisions (the short version — details in [docs/design-decisions.md](docs/design-decisions.md))
 
@@ -185,7 +186,7 @@ Running Fgentic under your own GitHub org, domain, GCP project, and registry? Th
 apps/matrix-a2a-bridge/  # the Go bridge (mautrix/go appservice + a2a-go client) + its deploy/ Flux unit
 apps/synapse-federation-policy/ # standalone Python Synapse callback policy + namespace-neutral ConfigMaps
 apps/activitypub-agent-gateway/ # experimental 2nd federation transport (ActivityPub); implemented, not yet in the reconciled DAG (ADR 0014)
-infra/{namespaces,terraform,flux,gateway,postgres,matrix,keycloak,agentgateway,models,kagent,bridges,federation,policies,production-ha,observability,trivy-operator,secrets}
+infra/{namespaces,terraform,flux,gateway,postgres,matrix,admin,keycloak,agentgateway,models,kagent,bridges,federation,policies,production-ha,observability,trivy-operator,secrets}
 clusters/               # Flux entrypoints: base/ DAG + demo/, federation/, local/ (k3d), and gcp/ (GKE) overlays
 docs/                    # the specification split by topic (architecture, decisions, security, federation, …) + docs/adr/
 .github/                 # CI (mise gates) + CD (signed, digest-pinned bridge image) + issue/PR templates

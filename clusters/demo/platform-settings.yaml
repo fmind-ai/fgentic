@@ -43,3 +43,5 @@ data:
   quota_compute_limits_cpu: "8"
   quota_compute_limits_memory: 12Gi
   mas_local_login_enabled: "true"
+  # Evaluation stays minimal and never exposes the administrator client.
+  admin_console: disabled
