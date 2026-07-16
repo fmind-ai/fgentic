@@ -8,7 +8,7 @@ repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 dashboard_dir="${repo_root}/infra/observability/dashboards"
 bridge_dashboard="${dashboard_dir}/fgentic-bridge.json"
 llm_dashboard="${dashboard_dir}/fgentic-llm-token-cost.json"
-identity_label_pattern='(^|[^[:alnum:]_])((matrix_)?(room|sender|user)(_(id|mxid))?|mxid)(_[[:alnum:]_]+)*([^[:alnum:]_]|$)'
+identity_label_pattern='(^|[^[:alnum:]_])([[:alnum:]]+_)*(room|sender|user|mxid)(_[[:alnum:]]+)*([^[:alnum:]_]|$)'
 
 fail() {
 	echo "Error: $*" >&2
@@ -74,6 +74,8 @@ assert_identity_label_pattern() {
 		'sum by (sender_mxid) (metric)' \
 		'sum by (sender_mxid_hash) (metric)' \
 		'sum by (room_id_hash) (metric)' \
+		'sum by (source_mxid) (metric)' \
+		'sum by (bridge_room_id_hash) (metric)' \
 		'sum by (matrix_user_id) (metric)'; do
 		jq -en --arg pattern "${identity_label_pattern}" --arg query "${unsafe_query}" \
 			'$query | test($pattern)' >/dev/null || fail "identity-label guard missed: ${unsafe_query}"
