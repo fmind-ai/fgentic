@@ -227,6 +227,39 @@ func TestProcessorCorrelatesWorkingTaskToGetTask(t *testing.T) {
 	}
 }
 
+func TestProcessorRejectsTerminalGetTaskWithoutReservationEvidence(t *testing.T) {
+	processor, archivePath := testProcessor(t)
+	request, err := ParseRequest([]byte(
+		`{"jsonrpc":"2.0","id":"request-orphan","method":"GetTask","params":{"id":"task-orphan"}}`,
+	))
+	if err != nil {
+		t.Fatalf("ParseRequest GetTask: %v", err)
+	}
+	working := []byte(`{"jsonrpc":"2.0","id":"request-orphan","result":{
+	  "id":"task-orphan","contextId":"context-orphan","status":{"state":"TASK_STATE_WORKING"}
+	}}`)
+	if updated, attached, err := processor.TransformResponse(request, working); err != nil ||
+		attached ||
+		string(updated) != string(working) {
+		t.Fatalf("working response = attached %v, err %v, body %s", attached, err, updated)
+	}
+	completed := []byte(`{"jsonrpc":"2.0","id":"request-orphan","result":{
+	  "id":"task-orphan","contextId":"context-orphan","status":{"state":"TASK_STATE_COMPLETED"}
+	}}`)
+	updated, attached, err := processor.TransformResponse(request, completed)
+	if err == nil || !strings.Contains(err.Error(), "no reservation evidence") ||
+		attached ||
+		updated != nil {
+		t.Fatalf("terminal response = attached %v, err %v, body %s", attached, err, updated)
+	}
+	if _, err := os.Stat(archivePath); !os.IsNotExist(err) {
+		t.Fatalf("terminal response without evidence created an archive: %v", err)
+	}
+	if _, found, err := processor.Pending.Load("task-orphan"); err != nil || found {
+		t.Fatalf("terminal response persisted pending evidence: found %v, err %v", found, err)
+	}
+}
+
 func TestRequestHashCanonicalizationRejectsUnsafeIntegers(t *testing.T) {
 	first, err := RequestHash([]byte(`{"jsonrpc":"2.0","id":"request-1","value":0.1}`))
 	if err != nil {

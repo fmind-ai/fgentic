@@ -361,7 +361,7 @@ func (p *Processor) TransformResponse(request requestEvidence, raw []byte) ([]by
 			return nil, false, err
 		}
 		if !found {
-			return raw, false, nil
+			return nil, false, fmt.Errorf("terminal A2A response has no reservation evidence")
 		}
 	}
 	if evidence.RequestHash == "" || evidence.TokensReserved == 0 {
