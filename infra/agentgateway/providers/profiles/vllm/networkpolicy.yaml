@@ -1,10 +1,14 @@
 # While vLLM is selected, the data-plane proxy can reach only its internal control/data-plane
-# dependencies. This policy is part of the selected provider inventory and is pruned on switch.
+# dependencies. This policy remains in the selected provider inventory until #339 transfers it.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
   name: agentgateway-vllm-egress
   namespace: agentgateway-system
+  annotations:
+    # #339 moves this policy to a separately ordered provider-egress owner. Disable garbage
+    # collection under the current owner before that inventory handoff so no fail-open gap exists.
+    kustomize.toolkit.fluxcd.io/prune: disabled
 spec:
   podSelector:
     matchLabels:
