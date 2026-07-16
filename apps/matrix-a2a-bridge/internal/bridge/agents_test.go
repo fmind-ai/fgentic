@@ -283,6 +283,15 @@ agents:
 	if got := ref.AgentContractSHA256(); got != contract {
 		t.Fatalf("AgentContractSHA256() = %q, want %q", got, contract)
 	}
+	if !strings.HasPrefix(ref.MappingID(), "v3:") {
+		t.Fatalf("MappingID() = %q, want contract-bound v3 fingerprint", ref.MappingID())
+	}
+	previousMappingID := mappingID(
+		ref.target, ref.timeout, ref.maxCost, ref.dev, ref.allowMedia, ref.DataClassification, "",
+	)
+	if ref.MatchesMappingID(previousMappingID) || ref.MatchesMappingID(ref.legacyMappingID) {
+		t.Fatal("contract-pinned mapping accepted a fingerprint that does not bind the contract")
+	}
 
 	reordered := strings.Replace(base,
 		"allowedServers: [z.example, a.example]\n    allowedSenders: [\"@z:z.example\", \"@a:a.example\"]",
@@ -312,6 +321,15 @@ agents:
 				t.Errorf("%s change did not alter agent version %q", name, ref.AgentVersion())
 			}
 		})
+	}
+	changedContractAgents, err := LoadAgents(writeTemp(t, strings.Replace(base, contract, strings.Repeat("a", 64), 1)))
+	if err != nil {
+		t.Fatalf("LoadAgents changed contract: %v", err)
+	}
+	changedContractRef, _ := changedContractAgents.Lookup("agent-x")
+	if changedContractRef.MappingID() == ref.MappingID() ||
+		changedContractRef.MatchesMappingID(ref.MappingID()) {
+		t.Fatal("contract-only change did not invalidate the durable target fingerprint")
 	}
 }
 

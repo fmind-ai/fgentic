@@ -239,7 +239,7 @@ For a durable capacity refusal, require `outcome=queue_full`, `terminal_stage=qu
 
 ### Agent version and rollback contract
 
-The authoring gate computes `agentContractSHA256` from the effective kagent Agent CRD and imported prompt ConfigMap fragments. At config load, the bridge combines that digest with the complete normalized `agents.yaml` entry to derive `agent_version`. Each immutable `AgentRef` therefore carries one version. The durable dispatcher copies it into the recovery payload before the persisted `a2a_prepared` transition and before calling A2A; terminal audit uses that copy even if `agents.yaml` reloads while the task is running. Non-durable refusal paths use the same immutable dispatch snapshot.
+The authoring gate computes `agentContractSHA256` from the effective kagent Agent CRD and imported prompt ConfigMap fragments. At config load, the bridge combines that digest with the complete normalized `agents.yaml` entry to derive `agent_version`, and binds the same contract digest into the local target fingerprint. Each immutable `AgentRef` therefore carries one version. The durable dispatcher copies it into the recovery payload before the persisted `a2a_prepared` transition and before calling A2A; terminal audit uses that copy even if `agents.yaml` reloads while the task is running. A prepared retry is refused before another A2A call when only the contract changed, because accepting a pre-contract fingerprint would let old evidence name a newly reconciled Agent. Non-durable refusal paths use the same immutable dispatch snapshot.
 
 Rollback is ordinary GitOps, not a runtime registry operation:
 

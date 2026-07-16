@@ -578,6 +578,63 @@ func TestDurableJobDeadLettersAfterBoundedConsecutiveFailures(t *testing.T) {
 	}
 }
 
+func TestDurablePreparedRetryRejectsContractOnlyChange(t *testing.T) {
+	const originalContract = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	client := &scriptedA2AClient{callErr: errors.New("local card preflight unavailable")}
+	b, _, _, _, recorder := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	original, err := LoadAgents(writeTemp(t, `schemaVersion: 1
+agents:
+  agent-k8s:
+    namespace: kagent
+    name: k8s-agent
+    agentContractSHA256: `+originalContract+`
+`))
+	if err != nil {
+		t.Fatalf("load original contract mapping: %v", err)
+	}
+	b.agents.Replace(original)
+	job := admitAndClaimDurableJob(t, b, "$durable-contract-change")
+
+	b.executeDurableJob(t.Context(), job)
+	retrying := loadDurableJob(t, b, job.JobID)
+	if retrying.State != state.StateA2APrepared || retrying.ErrorCode != errorA2APreflightRetry {
+		t.Fatalf("prepared retry = (%s, %s), want (%s, %s)", retrying.State, retrying.ErrorCode,
+			state.StateA2APrepared, errorA2APreflightRetry)
+	}
+	replacement, err := LoadAgents(writeTemp(t, `schemaVersion: 1
+agents:
+  agent-k8s:
+    namespace: kagent
+    name: k8s-agent
+    agentContractSHA256: `+strings.Repeat("a", 64)+`
+`))
+	if err != nil {
+		t.Fatalf("load replacement contract mapping: %v", err)
+	}
+	b.agents.Replace(replacement)
+	claimed, found, err := b.store.Claim(t.Context(), state.ClaimRequest{
+		Owner: "replacement", Now: retrying.NextAttemptAt, LeaseDuration: time.Minute,
+	})
+	if err != nil || !found {
+		t.Fatalf("claim prepared retry = (%v, %v)", found, err)
+	}
+	b.executeDurableJob(t.Context(), claimed)
+
+	stored := loadDurableJob(t, b, job.JobID)
+	if stored.State != state.StateDenied || stored.ErrorCode != errorAgentMappingChanged {
+		t.Fatalf("contract-changed retry = (%s, %s), want denied/%s",
+			stored.State, stored.ErrorCode, errorAgentMappingChanged)
+	}
+	if client.callCount != 1 {
+		t.Fatalf("contract-changed retry made %d A2A calls, want only the original preflight", client.callCount)
+	}
+	events := recorder.snapshot()
+	if len(events) != 1 || events[0].Body != failureMessage(errorAgentMappingChanged, "agent-k8s", 0) {
+		t.Fatalf("contract-changed denial notice = %+v", events)
+	}
+}
+
 func TestDurableJobKeepsWholeTaskDeadlineAcrossRecovery(t *testing.T) {
 	client := &scriptedA2AClient{callResult: a2aclient.Result{Text: "must not run", Terminal: true}}
 	b, _, _, _, recorder := pollingHarness(t, client)

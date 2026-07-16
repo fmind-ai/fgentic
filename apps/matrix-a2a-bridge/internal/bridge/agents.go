@@ -60,7 +60,7 @@ type AgentRef struct {
 	dev             bool   // stage:dev — invocable only in configured staging rooms (#128)
 	allowMedia      bool   // remote opt-in to move file bytes across the org boundary (#115)
 	mappingID       string
-	legacyMappingID string // pre-classification fingerprint accepted only during the producer rollout
+	legacyMappingID string // pre-classification fingerprint accepted only by mappings without a contract pin
 	agentContract   string // effective local Agent CRD + imported prompt contract; empty for remote/legacy mappings
 	agentVersion    string // sha256 of the effective contract plus the complete normalized mapping
 }
@@ -176,8 +176,8 @@ func (a *AgentRef) AllowsMedia() bool {
 	return a.allowMedia
 }
 
-// MappingID binds a mapping to its route, pinned signer, token budget, and timeout. Profile
-// caches can use it to avoid carrying metadata across a same-URL signer change.
+// MappingID binds a mapping to its route, trust and admission policy, and local Agent contract.
+// Profile caches can use it to avoid carrying metadata across any effective target change.
 func (a *AgentRef) MappingID() string {
 	return a.mappingID
 }
@@ -194,13 +194,13 @@ func (a *AgentRef) AgentContractSHA256() string {
 	return a.agentContract
 }
 
-// MatchesMappingID accepts both the current classification-bound fingerprint and the exact
-// pre-migration fingerprint. The compatibility branch lets work queued by the previous bridge
-// drain while this producer-only release rolls out; the enforcement follow-up removes it after the
-// compatible image is pinned. New jobs always persist MappingID and therefore re-key on a class
-// change immediately.
+// MatchesMappingID accepts the exact current fingerprint. Mappings without a repository-owned
+// contract also accept the pre-classification fingerprint during the existing producer rollout.
+// Contract-pinned local mappings deliberately reject every older fingerprint: those identifiers
+// cannot prove which Agent contract was effective, so prepared work must fail closed on upgrade.
 func (a *AgentRef) MatchesMappingID(mappingID string) bool {
-	return a != nil && (mappingID == a.mappingID || mappingID == a.legacyMappingID)
+	return a != nil && (mappingID == a.mappingID ||
+		(a.agentContract == "" && mappingID == a.legacyMappingID))
 }
 
 // SameTarget protects queued work from configuration reloads. A change to any routing, trust,
@@ -344,6 +344,7 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 	}
 	ref.mappingID = mappingID(
 		ref.target, ref.timeout, ref.maxCost, ref.dev, ref.allowMedia, ref.DataClassification,
+		ref.agentContract,
 	)
 	ref.legacyMappingID = legacyMappingID(
 		ref.target, ref.timeout, ref.maxCost, ref.dev, ref.allowMedia,
@@ -488,13 +489,19 @@ func mappingID(
 	maxCost uint64,
 	dev, allowMedia bool,
 	classification modelcatalog.Classification,
+	agentContract string,
 ) string {
 	identity := target.IdentityFingerprint()
-	sum := sha256.Sum256([]byte(fmt.Sprintf(
+	base := fmt.Sprintf(
 		"%s\x00%x\x00%d\x00%d\x00%d\x00%t\x00%t\x00%s",
 		target.ID(), identity, target.TokenBudget(), timeout, maxCost, dev, allowMedia, classification,
-	)))
-	return "v2:" + hex.EncodeToString(sum[:])
+	)
+	if agentContract == "" {
+		sum := sha256.Sum256([]byte(base))
+		return "v2:" + hex.EncodeToString(sum[:])
+	}
+	sum := sha256.Sum256([]byte(base + "\x00" + agentContract))
+	return "v3:" + hex.EncodeToString(sum[:])
 }
 
 func legacyMappingID(
