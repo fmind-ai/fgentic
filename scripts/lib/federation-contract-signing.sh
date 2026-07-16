@@ -1,6 +1,16 @@
 #!/usr/bin/env bash
 # Definition-only federation signing contracts sourced by scripts/test-federation.sh.
 check_federation_signing() {
+# The receipt binary adds gRPC to the shipped image. Preserve its upstream NOTICE attribution in
+# the same file that the distroless image exposes with both production binaries.
+rg --fixed-strings 'Copyright 2014 gRPC authors.' \
+	"${ROOT_DIR}/apps/matrix-a2a-bridge/NOTICE" >/dev/null ||
+	fail 'usage-receipt image NOTICE omits the gRPC attribution'
+rg --fixed-strings \
+	'COPY NOTICE /usr/share/doc/matrix-a2a-bridge/NOTICE' \
+	"${ROOT_DIR}/apps/matrix-a2a-bridge/Dockerfile" >/dev/null ||
+	fail 'bridge image does not ship its third-party NOTICE'
+
 # Exercise the same offline signer that the lifecycle uses. The fixture is rendered to its final
 # public domains before signing, then verified and tampered without ever writing a key in the repo.
 cp "${AGENT_CARD_TEMPLATE}" "${WORK_DIR}/unsigned-agent-card.json"
