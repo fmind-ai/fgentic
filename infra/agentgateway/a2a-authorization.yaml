@@ -8,6 +8,10 @@ kind: AgentgatewayPolicy
 metadata:
   name: a2a-bridge-authorization
   namespace: agentgateway-system
+  annotations:
+    # #339 transfers this policy with its route to an ordered admission owner. Disable garbage
+    # collection under the current owner until both inventories are verified.
+    kustomize.toolkit.fluxcd.io/prune: disabled
 spec:
   targetRefs:
     - group: gateway.networking.k8s.io

@@ -632,7 +632,8 @@ assert_yq \
 	"${WORK_DIR}/cluster.yaml" 'demo platform settings are incomplete'
 assert_yq \
 	'select(.kind == "Kustomization" and .metadata.name == "agentgateway-provider") |
-    .spec.path == "./infra/agentgateway/providers/profiles/demo"' \
+    .spec.path == "./infra/agentgateway/providers/profiles/demo" and
+    .spec.prune == true' \
 	"${WORK_DIR}/cluster.yaml" 'provider-selection did not select the demo inventory'
 assert_yq \
 	'select(.kind == "Kustomization" and .metadata.name == "admin") |
@@ -722,7 +723,10 @@ assert_yq \
     .spec.values.image.tag == "local" and
     .spec.values.image.pullPolicy == "Never" and
     .spec.values.config.otelEndpoint == "" and
-    .spec.values.metrics.podMonitor.enabled == false' \
+    .spec.values.metrics.podMonitor.enabled == false and
+    .spec.values.agents."agent-docs-qa".dataClassification == "public" and
+    .spec.values.agents."agent-platform-helper".dataClassification == "public" and
+    .spec.values.agents."agent-scribe".dataClassification == "public"' \
 	"${WORK_DIR}/demo-bridge.yaml" 'demo bridge resource patch is ineffective'
 yq eval-all -o=yaml \
 	'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") |
@@ -741,6 +745,9 @@ assert_yq \
      $agents."agent-docs-qa".name == "docs-qa" and
      $agents."agent-platform-helper".name == "platform-helper" and
      $agents."agent-scribe".name == "scribe" and
+     $agents."agent-docs-qa".dataClassification == "public" and
+     $agents."agent-platform-helper".dataClassification == "public" and
+     $agents."agent-scribe".dataClassification == "public" and
      ([$agents[] | select(
        .namespace == "kagent" and
        (.allowedSenders | length) == 1 and
@@ -804,6 +811,11 @@ assert_yq \
     .spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem == true and
     (.spec.template.spec.containers[0].image | contains("python:3.14-slim@sha256:"))' \
 	"${WORK_DIR}/provider.yaml" 'demo model workload is not pinned and hardened'
+assert_yq \
+	'select(.kind == "NetworkPolicy" and .metadata.name == "agentgateway-demo-egress") |
+    .metadata.annotations."kustomize.toolkit.fluxcd.io/prune" == "disabled"' \
+	"${WORK_DIR}/provider.yaml" \
+	'demo provider egress policy is not protected for the Flux ownership handoff'
 
 yq --unwrapScalar \
 	'select(.kind == "ConfigMap" and .metadata.name == "demo-llm") | .data."server.py"' \

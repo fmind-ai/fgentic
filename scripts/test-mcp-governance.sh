@@ -383,6 +383,7 @@ assert_equal "$({
     ' "${tmp_dir}/agentgateway.yaml"
 })" "agentgateway-proxy|mcp-tool-rate-limit-redis|6379" "MCP-quota-to-Redis boundary"
 for profile in demo vllm; do
+	profile_root="${REPO_ROOT}/infra/agentgateway/providers/profiles/${profile}"
 	assert_equal "$({
 		yq eval-all -N -r '
         select(.kind == "NetworkPolicy" and
@@ -392,8 +393,26 @@ for profile in demo vllm; do
               "mcp-tool-rate-limit" and
             .ports[0].port == 8081
           )] | length
-      ' "${REPO_ROOT}/infra/agentgateway/providers/profiles/${profile}/networkpolicy.yaml"
+      ' "${profile_root}/networkpolicy.yaml"
 	})" "1" "${profile} proxy-to-MCP-quota egress"
+	assert_equal "$({
+		yq -er '.metadata.annotations."kustomize.toolkit.fluxcd.io/prune"' \
+			"${profile_root}/networkpolicy.yaml"
+	})" "disabled" "${profile} egress-policy handoff prune guard"
+	assert_equal "$({
+		yq -N -r '[.resources[] | select(. == "networkpolicy.yaml")] | length' \
+			"${profile_root}/kustomization.yaml"
+	})" "1" "${profile} current provider owner inventory"
+	kubectl kustomize "${profile_root}" >"${tmp_dir}/${profile}-provider.yaml"
+	assert_equal "$({
+		PROFILE="${profile}" yq eval-all -N -r '
+        [select(.kind == "NetworkPolicy" and
+          .metadata.name == "agentgateway-" + strenv(PROFILE) + "-egress" and
+          .metadata.namespace == "agentgateway-system" and
+          .metadata.annotations."kustomize.toolkit.fluxcd.io/prune" == "disabled")]
+        | length
+      ' "${tmp_dir}/${profile}-provider.yaml"
+	})" "1" "${profile} effective egress-policy handoff guard"
 done
 for profile in vertex openai anthropic mistral azure-openai; do
 	[[ ! -e "${REPO_ROOT}/infra/agentgateway/providers/profiles/${profile}/networkpolicy.yaml" ]] ||
