@@ -463,6 +463,10 @@ depends = [
   "test:agents-golden",
 ]
 
+[tasks."test:fuzz"]
+description = "Bounded fuzz smoke over every owned untrusted-input parser (#461); seeds/Hypothesis already ride the normal gates"
+run = "bash scripts/fuzz-smoke.sh"
+
 [tasks."test:integration"]
 description = "Run the bridge's kind-based Matrix appservice integration test"
 dir = "apps/matrix-a2a-bridge"
