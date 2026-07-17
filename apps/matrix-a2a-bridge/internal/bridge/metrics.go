@@ -49,6 +49,11 @@ var (
 		Name: "fgentic_agent_reply_quality_signals_total",
 		Help: "Content-free human quality reactions on known terminal agent replies.",
 	}, []string{"ghost", "signal"})
+
+	replySecretScans = promauto.NewCounterVec(prometheus.CounterOpts{
+		Name: "fgentic_reply_secret_scans_total",
+		Help: "Agent replies where the reply->room scan detected credential material, by ghost and enforcement action (#343).",
+	}, []string{"ghost", "action"})
 )
 
 // Outcome labels for fgentic_delegations_total.
