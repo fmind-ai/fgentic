@@ -808,6 +808,7 @@ EOF
       '  name: platform-settings-overrides' \
       '  namespace: flux-system' \
       'data:' \
+      '  gcp_project: unchanged-provider' \
       "  llm_model: ${fixture_conflicting_model}" |
       "${kube[@]}" create --filename=- >/dev/null
   fi
@@ -1014,9 +1015,13 @@ EOF
         "remove the llm_model override before projecting the guarded model tuple"
     [[ "${ADMISSION_TEST_PLATFORM_SETTINGS_OVERRIDE_OWNED}" == true ]] ||
       fail "refusing to remove a platform-settings override not owned by this test"
-    "${kube[@]}" delete configmap platform-settings-overrides --namespace flux-system \
-      --wait=true >/dev/null
-    ADMISSION_TEST_PLATFORM_SETTINGS_OVERRIDE_OWNED=false
+    "${kube[@]}" patch configmap platform-settings-overrides --namespace flux-system \
+      --type=json --patch='[{"op":"remove","path":"/data/llm_model"}]' >/dev/null
+    local preserved_override
+    preserved_override="$("${kube[@]}" get configmap platform-settings-overrides \
+      --namespace flux-system -o jsonpath='{.data.gcp_project}')"
+    [[ "${preserved_override}" == unchanged-provider ]] ||
+      fail "guarded override cleanup changed an unrelated provider setting"
     selected_provider_kustomizations_manifest |
       "${kube[@]}" apply --filename=- >/dev/null
   fi
