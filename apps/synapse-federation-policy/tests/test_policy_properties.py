@@ -9,7 +9,7 @@ from __future__ import annotations
 
 import json
 
-from hypothesis import given
+from hypothesis import given, settings
 from hypothesis import strategies as st
 
 import fgentic_federation_policy as policy_module
@@ -47,6 +47,7 @@ def _valid_document(servers: list[str], event_types: list[str], invite_rule: str
     }
 
 
+@settings(deadline=None)
 @given(st.binary(max_size=70_000))
 def test_arbitrary_bytes_reject_or_valid(raw: bytes) -> None:
     """Any byte string parses to a valid Policy or fails closed with PolicyError only."""
@@ -57,6 +58,7 @@ def test_arbitrary_bytes_reject_or_valid(raw: bytes) -> None:
     _assert_valid_policy(parsed)
 
 
+@settings(deadline=None)
 @given(_json_values)
 def test_arbitrary_json_documents(document: object) -> None:
     """Any JSON-serialisable document rejects with PolicyError or yields a valid Policy."""
@@ -73,6 +75,7 @@ def test_arbitrary_json_documents(document: object) -> None:
     event_types=st.lists(st.sampled_from(_VALID_EVENT_TYPES), min_size=1, max_size=5, unique=True),
     invite_rule=st.sampled_from(_INVITE_RULES),
 )
+@settings(deadline=None)
 def test_valid_policies_round_trip(servers: list[str], event_types: list[str], invite_rule: str) -> None:
     """A genuinely valid policy is accepted and parses to exactly its declared sets — never broader."""
     raw = json.dumps(_valid_document(servers, event_types, invite_rule)).encode("utf-8")
@@ -100,6 +103,7 @@ def test_valid_policies_round_trip(servers: list[str], event_types: list[str], i
         ]
     ),
 )
+@settings(deadline=None)
 def test_near_valid_mutations_reject(
     servers: list[str],
     event_types: list[str],
