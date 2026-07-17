@@ -24,6 +24,9 @@ type RunConfig struct {
 	ScenarioTimeout time.Duration
 	PollInterval    time.Duration
 	QuietWindow     time.Duration
+	// Judge optionally enables the sovereign LLM-as-judge scoring lane for RubricOptionalLLMJudge
+	// scenarios. It runs only when the run's model is self-hosted (JudgeConfig.ApprovedFor).
+	Judge JudgeConfig
 }
 
 // Runner executes fixed scenarios over A2A and attributes direct metric deltas.
@@ -53,8 +56,16 @@ func (r *Runner) Run(ctx context.Context, config RunConfig, scenarios []Scenario
 	if config.ScenarioTimeout <= 0 || config.PollInterval <= 0 || config.QuietWindow <= 0 {
 		return ProfileRun{}, fmt.Errorf("scenario timeout, poll interval, and quiet window must be positive")
 	}
+	if err := config.Judge.Validate(); err != nil {
+		return ProfileRun{}, fmt.Errorf("judge lane: %w", err)
+	}
 	if err := ValidateScenarios(scenarios); err != nil {
 		return ProfileRun{}, err
+	}
+	judgeApproved := config.Judge.ApprovedFor(config.Model)
+	if config.Judge.Enabled && !judgeApproved {
+		r.log.Info("judge lane blocked by approved-profile guard",
+			"profile", config.Profile, "residency", string(config.Model.Residency))
 	}
 
 	run := ProfileRun{
@@ -95,7 +106,7 @@ func (r *Runner) Run(ctx context.Context, config RunConfig, scenarios []Scenario
 		if err := validateObservedModel(config.Model, usage.Identity); err != nil {
 			return ProfileRun{}, fmt.Errorf("scenario %s: %w", scenario.ID, err)
 		}
-		score, err := ScoreAnswer(answer, scenario.Rubric)
+		score, judgeScores, err := r.scoreScenario(policyCtx, config, judgeApproved, scenario, answer)
 		if err != nil {
 			return ProfileRun{}, fmt.Errorf("score scenario %s: %w", scenario.ID, err)
 		}
@@ -106,7 +117,7 @@ func (r *Runner) Run(ctx context.Context, config RunConfig, scenarios []Scenario
 		run.Results = append(run.Results, ScenarioResult{
 			ScenarioID: scenario.ID, Agent: scenario.Agent, Prompt: scenario.Prompt,
 			Rubric: scenario.Rubric, Answer: answer, LatencyMilliseconds: latency.Milliseconds(),
-			Usage: usage, EstimatedCost: cost, Score: score,
+			Usage: usage, EstimatedCost: cost, Score: score, JudgeScores: judgeScores,
 		})
 	}
 	run.CompletedAt = time.Now().UTC()
@@ -164,11 +175,49 @@ func (r *Runner) stableSnapshot(ctx context.Context, quietWindow time.Duration) 
 }
 
 func (r *Runner) callScenario(ctx context.Context, scenario Scenario, pollInterval time.Duration) (string, error) {
-	target, err := a2aclient.NewLocalTarget("/api/a2a/kagent/" + string(scenario.Agent))
+	return r.callAgent(ctx, scenario.Agent, scenario.Prompt, pollInterval)
+}
+
+// scoreScenario applies the judge lane to a RubricOptionalLLMJudge scenario when the lane is enabled
+// and approved for the run's self-hosted model; otherwise it applies the deterministic local rubric.
+// A judge transport failure aborts the run (like a scenario call failure); malformed judge output
+// fails the scenario fail-closed rather than silently passing it.
+func (r *Runner) scoreScenario(
+	ctx context.Context,
+	config RunConfig,
+	judgeApproved bool,
+	scenario Scenario,
+	answer string,
+) (Score, *JudgeScores, error) {
+	if scenario.Rubric.Kind != RubricOptionalLLMJudge || !judgeApproved {
+		score, err := ScoreAnswer(answer, scenario.Rubric)
+		return score, nil, err
+	}
+	judgeCtx, cancel := context.WithTimeout(ctx, config.ScenarioTimeout)
+	defer cancel()
+	raw, err := r.callAgent(judgeCtx, config.Judge.Agent, judgePrompt(scenario.Rubric.Description, scenario.Prompt, answer), config.PollInterval)
+	if err != nil {
+		return Score{}, nil, fmt.Errorf("judge call: %w", err)
+	}
+	result, parseErr := ParseJudgeResult(raw)
+	if parseErr != nil {
+		// Fail closed with a payload-free reason; the parse detail is logged, never recorded.
+		r.log.Warn("judge output failed strict validation", "scenario", scenario.ID, "error", parseErr)
+		fail := 0.0
+		return Score{Verdict: VerdictFail, Points: &fail, Reason: "judge output failed strict validation"}, nil, nil
+	}
+	scores := result.Scores()
+	return result.Score(config.Judge.Thresholds), &scores, nil
+}
+
+// callAgent submits one prompt to a local kagent agent over A2A and returns its terminal text answer,
+// polling a long task without holding a worker. It is shared by the scenario and judge lanes.
+func (r *Runner) callAgent(ctx context.Context, agent Agent, prompt string, pollInterval time.Duration) (string, error) {
+	target, err := a2aclient.NewLocalTarget("/api/a2a/kagent/" + string(agent))
 	if err != nil {
 		return "", fmt.Errorf("build local A2A target: %w", err)
 	}
-	result, err := r.a2a.Call(ctx, target, scenario.Prompt, "", nil)
+	result, err := r.a2a.Call(ctx, target, prompt, "", nil)
 	if err != nil {
 		return "", err
 	}

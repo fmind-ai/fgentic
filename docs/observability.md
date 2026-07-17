@@ -68,6 +68,12 @@ A human 👍 or 👎 reaction on a successfully projected terminal agent `m.noti
 
 The handler accepts only reply IDs in a 4,096-entry process-local, content-free registry populated after a terminal `m.notice` is projected successfully. Unknown events, events from another room, and reactions authored by the bridge bot or agent ghosts are ignored. Registry eviction or a bridge restart can therefore lose a late quality signal; Matrix remains the event source of record, and this metric is not a durable feedback ledger. Repeated valid reaction events are observations, not unique users or task-success proof. No reaction calls Matrix, A2A, an LLM, or emits another room event, so it cannot create invocation spend or an automation loop.
 
+## 9.4 Sovereign LLM-as-judge eval scores
+
+The optional `eval:models` judge lane (#355) scores qualitative scenarios for **groundedness** and **task success** using a judge model composed from the self-hosted `vllm` profile over the existing A2A/agentgateway route — eval prompts and agent outputs never leave the cluster and no evaluator holds a model credential ([docs/models.md](models.md)). The lane is opt-in and runs only against a `residency: self-hosted` catalog model; a metered external provider blocks it fail-closed.
+
+The judge answer is parsed into a trusted type at the boundary (strict JSON, scores bounded to `[0,1]`); a malformed, missing, or out-of-range judge answer **fails the scenario** rather than silently passing it. Only the two bounded numbers are recorded (`judge_scores.groundedness`/`judge_scores.task_success` per scenario in the eval report, alongside existing token/latency deltas); the judge rationale, prompt, and agent output are never persisted, logged, or metered. These scores feed the optional MLflow eval store as content-free quality evidence, not a live production signal.
+
 ## 9.7 Database audit stream
 
 The shared CNPG cluster enables pgAudit through four operator-managed parameters: `pgaudit.log=ddl, role`, with catalog-only noise, SQL statement text, and parameters disabled. CloudNativePG manages `shared_preload_libraries` and the extension lifecycle for every connectable database, then emits each parsed record with `logger=pgaudit`, `msg=record`, and typed fields under `record.audit`. Normal Synapse and application `READ`/`WRITE` traffic is not audited, so ordinary platform activity does not become a high-volume content stream.
