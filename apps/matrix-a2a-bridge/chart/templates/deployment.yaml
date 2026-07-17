@@ -131,6 +131,10 @@ spec:
               value: {{ .Values.config.agentCardRefreshInterval | quote }}
             - name: WELCOME_ENABLED
               value: {{ .Values.config.welcomeEnabled | quote }}
+            - name: REPLY_SCAN_MODE
+              value: {{ .Values.config.replyScanMode | quote }}
+            - name: REPLY_SCAN_FEDERATED_MODE
+              value: {{ .Values.config.replyScanFederatedMode | quote }}
             {{- if .Values.config.otelEndpoint }}
             - name: OTEL_EXPORTER_OTLP_ENDPOINT
               value: {{ .Values.config.otelEndpoint | quote }}

@@ -375,6 +375,9 @@ func TestDelegationAuditRecordIsStableAndContentFree(t *testing.T) {
 		"duration_ms":              float64(1500),
 		"dedup_verdict":            string(dedupVerdictAccepted),
 		"rate_limit_verdict":       string(rateLimitVerdictAllowed),
+		"secret_scan_action":       "",
+		"secret_match_count":       float64(0),
+		"secret_rule_classes":      "",
 	}
 	for key, value := range want {
 		if got := record[key]; got != value {

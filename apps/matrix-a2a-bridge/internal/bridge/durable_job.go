@@ -40,6 +40,7 @@ const (
 	errorTaskPoll            = "task_poll_failed"
 	errorTaskTimeout         = "task_timeout"
 	errorStateContext        = "context_load_failed"
+	errorSecretInReply       = "secret_in_reply"
 )
 
 var errDeadManCleanupPending = errors.New("dead-man cleanup remains pending")
@@ -70,6 +71,13 @@ type durableTerminalAuditState struct {
 	// network-side effect from an unrelated terminal state.
 	A2AAttempted bool  `json:"a2a_attempted,omitempty"`
 	A2AStartedAt int64 `json:"a2a_started_at_ms,omitempty"`
+	// SecretScanAction/SecretMatchCount/SecretRuleClasses record the reply->room secret-scan verdict
+	// (#343). They are content-free: the action is the applied enforcement mode, the count is the
+	// number of masked spans, and the classes are fixed rule-class identifiers — never a matched
+	// value. Empty when the scan was off or found nothing, so a clean reply's audit is unchanged.
+	SecretScanAction  string   `json:"secret_scan_action,omitempty"`
+	SecretMatchCount  int      `json:"secret_match_count,omitempty"`
+	SecretRuleClasses []string `json:"secret_rule_classes,omitempty"`
 }
 
 type durableA2AClient interface {
@@ -359,8 +367,7 @@ func (b *Bridge) acceptDurableA2AResult(
 			outcomeFailed, "message_result", errorEmptyReply, 0,
 		)
 	}
-	return b.prepareDurableResult(ctx, job, payload, result, state.StateDelivered,
-		outcomeOK, "message_result", "completed")
+	return b.deliverScannedResult(ctx, job, payload, evt, ref, sender, result, "message_result")
 }
 
 func (b *Bridge) resumeKnownTask(ctx context.Context, job *state.Job) error {
@@ -450,8 +457,7 @@ func (b *Bridge) resumeKnownTask(ctx context.Context, job *state.Job) error {
 			outcomeFailed, "task_result", errorEmptyReply, 0,
 		)
 	}
-	return b.prepareDurableResult(ctx, job, payload, result, state.StateDelivered,
-		outcomeOK, "task_result", "completed")
+	return b.deliverScannedResult(ctx, job, payload, evt, ref, sender, result, "task_result")
 }
 
 func (b *Bridge) ensureDurablePlaceholder(
@@ -491,7 +497,10 @@ func (b *Bridge) prepareDurableResult(
 	payload.Audit = durableTerminalAuditState{
 		Outcome: outcome, TerminalStage: terminalStage, TerminalReason: terminalReason,
 		A2AAttempted: payload.Audit.A2AAttempted, A2AStartedAt: payload.Audit.A2AStartedAt,
-		RateLimit: payload.Audit.RateLimit,
+		RateLimit:         payload.Audit.RateLimit,
+		SecretScanAction:  payload.Audit.SecretScanAction,
+		SecretMatchCount:  payload.Audit.SecretMatchCount,
+		SecretRuleClasses: payload.Audit.SecretRuleClasses,
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -526,7 +535,10 @@ func (b *Bridge) prepareDurableNotice(
 	payload.Audit = durableTerminalAuditState{
 		Outcome: outcome, TerminalStage: terminalStage, TerminalReason: terminalReason,
 		A2AAttempted: payload.Audit.A2AAttempted, A2AStartedAt: payload.Audit.A2AStartedAt,
-		RateLimit: payload.Audit.RateLimit,
+		RateLimit:         payload.Audit.RateLimit,
+		SecretScanAction:  payload.Audit.SecretScanAction,
+		SecretMatchCount:  payload.Audit.SecretMatchCount,
+		SecretRuleClasses: payload.Audit.SecretRuleClasses,
 	}
 	encoded, err := json.Marshal(payload)
 	if err != nil {
@@ -591,7 +603,10 @@ func (b *Bridge) prepareDurableDeniedNotice(
 		payload.Audit = durableTerminalAuditState{
 			Outcome: outcomeDenied, TerminalStage: terminalStage, TerminalReason: terminalReason,
 			A2AAttempted: payload.Audit.A2AAttempted, A2AStartedAt: payload.Audit.A2AStartedAt,
-			RateLimit: durableRateLimitVerdict(*job),
+			RateLimit:         durableRateLimitVerdict(*job),
+			SecretScanAction:  payload.Audit.SecretScanAction,
+			SecretMatchCount:  payload.Audit.SecretMatchCount,
+			SecretRuleClasses: payload.Audit.SecretRuleClasses,
 		}
 		return b.finishDurableWithoutReplyWithEvidence(
 			ctx, job, state.StateDenied, terminalReason, nil, payload, evt, ref, sender,
@@ -1179,6 +1194,9 @@ func (b *Bridge) recordDurableTerminal(
 		targetFingerprint: job.TargetFingerprint,
 		agentVersion:      payload.AgentVersion,
 		agentContract:     payload.AgentContract,
+		secretScanAction:  payload.Audit.SecretScanAction,
+		secretMatchCount:  payload.Audit.SecretMatchCount,
+		secretRuleClasses: payload.Audit.SecretRuleClasses,
 		duration:          time.Since(job.CreatedAt),
 	})
 }

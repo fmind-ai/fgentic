@@ -121,6 +121,9 @@ type delegationAuditResult struct {
 	targetFingerprint string   // immutable durable mapping evidence; empty on legacy in-memory work
 	agentVersion      string   // version captured before a durable A2A attempt; empty uses ref snapshot
 	agentContract     string   // effective local Agent source contract paired with agentVersion
+	secretScanAction  string   // reply->room secret-scan enforcement applied (#343); empty when off/clean
+	secretMatchCount  int      // masked spans the reply scan found; 0 when off/clean
+	secretRuleClasses []string // fixed rule classes the reply scan matched; content-free, empty when clean
 }
 
 // Bridge orchestrates the @mention -> A2A -> reply flow for one appservice.
@@ -1674,6 +1677,9 @@ func (b *Bridge) logDelegationAudit(
 		"duration_ms", result.duration.Milliseconds(),
 		"dedup_verdict", string(result.dedupVerdict),
 		"rate_limit_verdict", string(result.rateLimitVerdict),
+		"secret_scan_action", result.secretScanAction,
+		"secret_match_count", result.secretMatchCount,
+		"secret_rule_classes", strings.Join(result.secretRuleClasses, ","),
 	)
 }
 

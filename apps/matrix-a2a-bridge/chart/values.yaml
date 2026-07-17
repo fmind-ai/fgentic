@@ -45,6 +45,14 @@ config:
   agentsReloadInterval: 5s # poll the projected ConfigMap for routing/profile changes
   agentCardRefreshInterval: 5m # independently revalidate every signed remote AgentCard
   welcomeEnabled: true # post one sender-filtered welcome when the bot first joins a room
+  # Reply->room secret/credential leak scan (#343): scans the terminal agent reply before it is
+  # persisted or posted. replyScanMode is the same-org base posture; replyScanFederatedMode is the
+  # stricter posture applied when the delegation shows federation exposure (remote sender, bridged
+  # origin, or remote target) — it must be at least as strict as the base. Both accept
+  # off|annotate|redact|block. annotate/redact mask the value in place; block withholds the whole
+  # reply. Set both to "off" to restore the prior post-unchanged behavior.
+  replyScanMode: annotate
+  replyScanFederatedMode: block
   # Standard OTLP/HTTP endpoint. Empty keeps tracing disabled for standalone installs.
   otelEndpoint: ""
   # Room IDs where stage:dev agents may be invoked (#128). Empty = every dev agent is

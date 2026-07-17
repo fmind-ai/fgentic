@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/replyscan"
 )
 
 const (
@@ -146,8 +148,35 @@ type Config struct {
 	MediaMaxBytes      int64    `env:"MEDIA_MAX_BYTES" envDefault:"10485760"`
 	MediaMaxTotalBytes int64    `env:"MEDIA_MAX_TOTAL_BYTES" envDefault:"26214400"`
 
+	// ReplyScanMode / ReplyScanFederatedMode govern the reply->room secret/credential leak scan
+	// (#343). The scan runs on the terminal agent reply before it is persisted or posted, catching a
+	// key, private key, or connection-string password the model or a tool inadvertently emitted.
+	// ReplyScanMode is the base posture for a delegation with no detected federation exposure;
+	// ReplyScanFederatedMode is the load-bearing posture applied when the delegation shows federation
+	// exposure (a remote-homeserver sender, a bridged origin, or a remote agent target), because a
+	// credential replicated to a partner homeserver cannot be retracted (docs/federation.md §8).
+	// Both accept off|annotate|redact|block. Every non-off mode masks the matched value so the raw
+	// secret never enters the room or a log; the modes differ only in transparency and in whether the
+	// masked remainder is still delivered. The federated posture must be at least as strict as the
+	// base posture. Set both to off to fully restore the prior post-unchanged behavior.
+	ReplyScanMode          string `env:"REPLY_SCAN_MODE" envDefault:"annotate"`
+	ReplyScanFederatedMode string `env:"REPLY_SCAN_FEDERATED_MODE" envDefault:"block"`
+
 	LogLevel  string `env:"LOG_LEVEL" envDefault:"info"`
 	LogFormat string `env:"LOG_FORMAT" envDefault:"json"`
+}
+
+// ReplyScanBaseMode returns the parsed base reply-scan posture. validate() has already rejected an
+// invalid value, so the parse cannot fail here.
+func (c Config) ReplyScanBaseMode() replyscan.Mode {
+	m, _ := replyscan.ParseMode(c.ReplyScanMode)
+	return m
+}
+
+// ReplyScanFederatedPosture returns the parsed federation-exposed reply-scan posture.
+func (c Config) ReplyScanFederatedPosture() replyscan.Mode {
+	m, _ := replyscan.ParseMode(c.ReplyScanFederatedMode)
+	return m
 }
 
 // Load parses the environment into a Config and validates it, failing fast on bad input.
@@ -249,11 +278,36 @@ func (c Config) validate() error {
 	if err := c.validateMedia(); err != nil {
 		return err
 	}
+	if err := c.validateReplyScan(); err != nil {
+		return err
+	}
 	if _, err := c.SlogLevel(); err != nil {
 		return err
 	}
 	if c.LogFormat != LogFormatJSON && c.LogFormat != LogFormatText {
 		return fmt.Errorf("LOG_FORMAT %q must be %q or %q", c.LogFormat, LogFormatJSON, LogFormatText)
+	}
+	return nil
+}
+
+// validateReplyScan rejects an invalid or inconsistent reply-scan policy fail-fast (#343). Both
+// modes must be a known token, and the federation-exposed posture must never be weaker than the
+// same-org base posture — a room that can replicate to a partner homeserver cannot be treated more
+// leniently than a purely local one.
+func (c Config) validateReplyScan() error {
+	base, err := replyscan.ParseMode(c.ReplyScanMode)
+	if err != nil {
+		return fmt.Errorf("REPLY_SCAN_MODE: %w", err)
+	}
+	federated, err := replyscan.ParseMode(c.ReplyScanFederatedMode)
+	if err != nil {
+		return fmt.Errorf("REPLY_SCAN_FEDERATED_MODE: %w", err)
+	}
+	if !federated.AtLeastAsStrict(base) {
+		return fmt.Errorf(
+			"REPLY_SCAN_FEDERATED_MODE (%s) must be at least as strict as REPLY_SCAN_MODE (%s)",
+			federated, base,
+		)
 	}
 	return nil
 }
