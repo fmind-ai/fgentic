@@ -279,14 +279,58 @@ teardown_receipt_path() {
 	printf '%s/cluster-teardown/%s.json\n' "${state_root}" "${CLUSTER_NAME}"
 }
 
+validate_teardown_state_directory() {
+	local receipt state_dir
+	receipt="$(teardown_receipt_path)"
+	state_dir="${receipt%/*}"
+	if [ -L "${state_dir}" ] || { [ -e "${state_dir}" ] && [ ! -d "${state_dir}" ]; }; then
+		teardown_receipt_fail "teardown state must be a non-symlink directory for ${CLUSTER_NAME}"
+	fi
+}
+
 teardown_receipt_exists() {
 	local receipt
+	validate_teardown_state_directory
 	receipt="$(teardown_receipt_path)"
-	[ -e "${receipt}" ]
+	[ -e "${receipt}" ] || [ -L "${receipt}" ]
+}
+
+teardown_temporary_paths() {
+	local path receipt state_dir
+	validate_teardown_state_directory
+	receipt="$(teardown_receipt_path)"
+	state_dir="${receipt%/*}"
+	for path in "${state_dir}/.${CLUSTER_NAME}".*; do
+		if [ -e "${path}" ] || [ -L "${path}" ]; then
+			printf '%s\n' "${path}"
+		fi
+	done
+}
+
+validate_teardown_temporary_state() {
+	local path
+	validate_teardown_state_directory
+	while IFS= read -r path; do
+		[ -n "${path}" ] || continue
+		[ -f "${path}" ] && [ ! -L "${path}" ] ||
+			teardown_receipt_fail "teardown atomic state must be a regular non-symlink file for ${CLUSTER_NAME}"
+	done < <(teardown_temporary_paths)
+}
+
+cleanup_teardown_temporary_state() {
+	local path
+	validate_teardown_state_directory
+	validate_teardown_temporary_state
+	while IFS= read -r path; do
+		[ -n "${path}" ] || continue
+		rm -f "${path}" ||
+			teardown_receipt_fail "could not remove teardown atomic state for ${CLUSTER_NAME}"
+	done < <(teardown_temporary_paths)
 }
 
 validate_teardown_receipt_file() {
 	local receipt="$1"
+	validate_teardown_state_directory
 	[ -f "${receipt}" ] && [ ! -L "${receipt}" ] || return 1
 	jq --exit-status --arg cluster "${CLUSTER_NAME}" --arg owner "${OWNER_LABEL}" \
 		--arg profile "${PROFILE}" '
@@ -344,7 +388,13 @@ require_valid_teardown_receipt() {
 }
 
 require_no_pending_teardown() {
-	local operation="$1"
+	local operation="$1" temporary
+	validate_teardown_state_directory
+	temporary="$(teardown_temporary_paths)"
+	if [ -n "${temporary}" ]; then
+		validate_teardown_temporary_state
+		die "${CLUSTER_NAME} teardown atomic recovery is pending; run the matching down command before ${operation}"
+	fi
 	teardown_receipt_exists || return 0
 	require_valid_teardown_receipt
 	die "${CLUSTER_NAME} teardown recovery is pending; run the matching down command before ${operation}"
@@ -356,9 +406,11 @@ write_teardown_receipt() {
 	local container_ids=()
 	local image_ids=()
 	local volume_names=()
+	validate_teardown_state_directory
 	receipt="$(teardown_receipt_path)"
 	state_dir="${receipt%/*}"
-	[ ! -e "${receipt}" ] || teardown_receipt_fail "teardown receipt already exists for ${CLUSTER_NAME}"
+	[ ! -e "${receipt}" ] && [ ! -L "${receipt}" ] ||
+		teardown_receipt_fail "teardown receipt already exists for ${CLUSTER_NAME}"
 
 	container_output="$(cluster_container_ids)" ||
 		die "could not inspect ${CLUSTER_NAME} containers before receipt creation"
@@ -426,8 +478,13 @@ write_teardown_receipt() {
 		image_output='[]'
 	fi
 
+	if [ -L "${state_dir}" ] || { [ -e "${state_dir}" ] && [ ! -d "${state_dir}" ]; }; then
+		teardown_receipt_fail "teardown state must be a non-symlink directory for ${CLUSTER_NAME}"
+	fi
 	mkdir -p "${state_dir}" ||
 		die "could not create ${CLUSTER_NAME} teardown state directory"
+	[ -d "${state_dir}" ] && [ ! -L "${state_dir}" ] ||
+		teardown_receipt_fail "teardown state must be a non-symlink directory for ${CLUSTER_NAME}"
 	chmod 700 "${state_dir}" ||
 		die "could not protect ${CLUSTER_NAME} teardown state directory"
 	temporary="$(mktemp "${state_dir}/.${CLUSTER_NAME}.XXXXXX")" ||
@@ -1483,8 +1540,14 @@ require_cluster_runtime() {
 
 demo_status() {
 	local artifact_status capacity_mode container_output image_bytes retained_bytes running_output state
-	local total_containers running_containers volume_bytes
+	local temporary total_containers running_containers volume_bytes
 	require_cluster_runtime
+	validate_teardown_state_directory
+	temporary="$(teardown_temporary_paths)"
+	if [ -n "${temporary}" ]; then
+		validate_teardown_temporary_state
+		echo "Cluster ${CLUSTER_NAME}: state=recovery-pending atomic teardown state remains; run the matching down command to recover."
+	fi
 	if teardown_receipt_exists; then
 		require_valid_teardown_receipt
 		validate_teardown_receipt_resources
@@ -1556,9 +1619,48 @@ demo_stop() {
 	echo "Federation cluster ${CLUSTER_NAME}: state=stopped running_containers=0 image_volume_bytes=${image_volume_bytes} retained_cluster_bytes=${retained_bytes}; the exact image volume is preserved."
 }
 
+demo_prepare_down() {
+	local artifact_status
+	require_cluster_runtime
+	[ "${PROFILE}" = federation ] && [ "${FEDERATION_LAYOUT}" != canonical ] ||
+		die "teardown receipt preparation is reserved for split federation"
+	cleanup_teardown_temporary_state
+	if teardown_receipt_exists; then
+		require_valid_teardown_receipt
+		validate_teardown_receipt_resources
+		echo "Prepared existing teardown receipt for ${CLUSTER_NAME}: $(teardown_receipt_path)"
+		return
+	fi
+	if cluster_exists; then
+		cluster_owned_by_demo ||
+			die "refusing to record ${CLUSTER_NAME}: it was not created by scripts/demo.sh"
+		write_teardown_receipt
+		require_valid_teardown_receipt
+		validate_teardown_receipt_resources
+		echo "Prepared teardown receipt for ${CLUSTER_NAME}: $(teardown_receipt_path)"
+		return
+	fi
+	if cluster_artifacts_exist; then
+		teardown_receipt_fail "refusing orphan cleanup for ${CLUSTER_NAME}: teardown receipt and owner-labelled server evidence are unavailable"
+	else
+		artifact_status=$?
+		[ "${artifact_status}" -eq 1 ] ||
+			die "could not inspect retained artifacts for ${CLUSTER_NAME}"
+	fi
+	echo "Split federation child ${CLUSTER_NAME}: state=absent retained_bytes=0"
+}
+
+demo_cleanup_down() {
+	[ "${PROFILE}" = federation ] && [ "${FEDERATION_LAYOUT}" != canonical ] ||
+		die "teardown atomic cleanup is reserved for split federation"
+	cleanup_teardown_temporary_state
+	echo "Recovered split child teardown atomic state for ${CLUSTER_NAME}."
+}
+
 demo_down() {
 	local artifact_status
 	require_cluster_runtime
+	cleanup_teardown_temporary_state
 	if teardown_receipt_exists; then
 		recover_teardown_receipt || die "could not finish ${CLUSTER_NAME} teardown recovery"
 		echo "Recovered teardown for ${CLUSTER_NAME}. The reusable local CA and FGENTIC_DEMO_CACHE_DIR, when set, were preserved."

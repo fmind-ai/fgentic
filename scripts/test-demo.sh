@@ -8,6 +8,7 @@ WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo-check.XXXXXX")"
 readonly WORK_DIR
 readonly DEMO="${ROOT_DIR}/scripts/demo.sh"
 readonly DEV="${ROOT_DIR}/scripts/dev.sh"
+readonly FEDERATION="${ROOT_DIR}/scripts/federation.sh"
 readonly SPLIT="${ROOT_DIR}/scripts/federation-split.sh"
 readonly DEMO_SETTINGS_FILE="${ROOT_DIR}/clusters/demo/platform-settings.yaml"
 readonly REPLY_FILTER="${ROOT_DIR}/scripts/lib/demo-reply.jq"
@@ -530,6 +531,90 @@ fi
 rg --fixed-strings 'requires an internal prepare, reconcile, or lifecycle phase' \
 	"${WORK_DIR}/split-direct-child.txt" >/dev/null
 
+canonical_guard_root="${WORK_DIR}/canonical-guard-root"
+canonical_guard_bin="${WORK_DIR}/canonical-guard-bin"
+canonical_guard_state="${WORK_DIR}/canonical-guard-state"
+canonical_guard_commands="${WORK_DIR}/canonical-guard-commands"
+mkdir -p "${canonical_guard_root}/scripts" "${canonical_guard_bin}" \
+	"${canonical_guard_state}"
+cp "${FEDERATION}" "${ROOT_DIR}/scripts/lib.sh" "${canonical_guard_root}/scripts/"
+cat >"${canonical_guard_root}/scripts/demo.sh" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'create\n' >>"${FAKE_FED_COMMANDS:?}"
+EOF
+cat >"${canonical_guard_bin}/k3d" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'k3d %s\n' "$*" >>"${FAKE_FED_COMMANDS:?}"
+case "${1:-} ${2:-}" in
+"cluster list")
+	if [ "${FAKE_FED_SCENARIO:-absent}" = child ]; then
+		printf '[{"name":"fgentic-fed-a"}]\n'
+	else
+		printf '[]\n'
+	fi
+	;;
+*) exit 2 ;;
+esac
+EOF
+cat >"${canonical_guard_bin}/docker" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+printf 'docker %s\n' "$*" >>"${FAKE_FED_COMMANDS:?}"
+case "${1:-}" in
+info) ;;
+ps)
+	case "$*" in
+	*'label=dev.fgentic.demo=federation-split-a'*)
+		[ "${FAKE_FED_SCENARIO:-absent}" != orphan-container ] || printf 'split-a-container-id\n'
+		;;
+	esac
+	;;
+network | volume)
+	[ "${2:-}" = ls ] || exit 2
+	;;
+*) exit 2 ;;
+esac
+EOF
+chmod +x "${canonical_guard_root}/scripts/demo.sh" \
+	"${canonical_guard_bin}/docker" "${canonical_guard_bin}/k3d"
+
+assert_canonical_guard_refuses() {
+	local expected="$1"
+	local scenario="$2"
+	: >"${canonical_guard_commands}"
+	if PATH="${canonical_guard_bin}:${PATH}" \
+		FAKE_FED_COMMANDS="${canonical_guard_commands}" \
+		FAKE_FED_SCENARIO="${scenario}" \
+		FGENTIC_DEMO_STATE_DIR="${canonical_guard_state}" \
+		"${canonical_guard_root}/scripts/federation.sh" up \
+		>"${WORK_DIR}/canonical-guard-${scenario}.txt" 2>&1; then
+		echo "error: canonical federation accepted split state scenario ${scenario}" >&2
+		exit 1
+	fi
+	if rg --fixed-strings 'create' "${canonical_guard_commands}" >/dev/null; then
+		echo "error: canonical federation mutated after split state scenario ${scenario}" >&2
+		exit 1
+	fi
+	rg --fixed-strings "${expected}" \
+		"${WORK_DIR}/canonical-guard-${scenario}.txt" >/dev/null
+}
+
+mkdir -p "${canonical_guard_state}/federation-split"
+printf '{}\n' >"${canonical_guard_state}/federation-split/relays.json"
+assert_canonical_guard_refuses 'split federation state reserves 127.0.0.2' parent-state
+rm -rf "${canonical_guard_state}/federation-split"
+mkdir -p "${canonical_guard_state}/cluster-teardown"
+printf 'interrupted\n' \
+	>"${canonical_guard_state}/cluster-teardown/.fgentic-fed-a.interrupted"
+assert_canonical_guard_refuses 'split federation state reserves 127.0.0.2' child-temp
+rm -f "${canonical_guard_state}/cluster-teardown/.fgentic-fed-a.interrupted"
+rmdir "${canonical_guard_state}/cluster-teardown"
+assert_canonical_guard_refuses 'split federation child cluster reserves 127.0.0.2' child
+assert_canonical_guard_refuses 'split federation child containers remain for fgentic-fed-a' \
+	orphan-container
+
 dev_fake_bin="${WORK_DIR}/dev-fake-bin"
 dev_fake_state="${WORK_DIR}/dev-fake-state"
 mkdir -p "${dev_fake_bin}" "${dev_fake_state}"
@@ -573,6 +658,26 @@ case "$*" in
 esac
 EOF
 chmod +x "${dev_fake_bin}/docker" "${dev_fake_bin}/k3d" "${dev_fake_bin}/kubectl"
+
+dangling_ca_dir="${WORK_DIR}/dangling-ca"
+dangling_ca_targets="${WORK_DIR}/dangling-ca-targets"
+mkdir -p "${dangling_ca_dir}" "${dangling_ca_targets}"
+ln -s "${dangling_ca_targets}/ca.crt" "${dangling_ca_dir}/ca.crt"
+ln -s "${dangling_ca_targets}/ca.key" "${dangling_ca_dir}/ca.key"
+if FGENTIC_CA_DIR="${dangling_ca_dir}" \
+	"${ROOT_DIR}/scripts/local-ca.sh" --generate-only \
+	>"${dev_fake_state}/dangling-ca.txt" 2>&1; then
+	echo 'error: local CA accepted two dangling keypair symlinks' >&2
+	exit 1
+fi
+rg --fixed-strings 'keypair must be regular non-symlink files' \
+	"${dev_fake_state}/dangling-ca.txt" >/dev/null
+[ -L "${dangling_ca_dir}/ca.crt" ] && [ -L "${dangling_ca_dir}/ca.key" ] &&
+	[ ! -e "${dangling_ca_targets}/ca.crt" ] && \
+	[ ! -e "${dangling_ca_targets}/ca.key" ] || {
+	echo 'error: local CA followed dangling keypair symlinks to external targets' >&2
+	exit 1
+}
 
 : >"${dev_fake_state}/commands"
 PATH="${dev_fake_bin}:${PATH}" \
@@ -762,10 +867,10 @@ FGENTIC_DEMO_STATE_DIR="${split_relay_state}" SPLIT_SCRIPT="${SPLIT}" bash -c '
     "network inspect")
       case "$3" in
       k3d-fgentic-fed-a)
-        printf "%s\n" "[{\"Containers\":{\"relay-a-id\":{},\"relay-b-id\":{},\"server-a-id\":{}}}]"
+        printf "%s\n" "[{\"Id\":\"network-a-id\",\"Name\":\"k3d-fgentic-fed-a\",\"Labels\":{\"app\":\"k3d\",\"k3d.cluster\":\"fgentic-fed-a\"},\"Containers\":{\"relay-a-id\":{},\"relay-b-id\":{},\"server-a-id\":{}}}]"
         ;;
       k3d-fgentic-fed-b)
-        printf "%s\n" "[{\"Containers\":{\"relay-a-id\":{},\"relay-b-id\":{},\"server-b-id\":{}}}]"
+        printf "%s\n" "[{\"Id\":\"network-b-id\",\"Name\":\"k3d-fgentic-fed-b\",\"Labels\":{\"app\":\"k3d\",\"k3d.cluster\":\"fgentic-fed-b\"},\"Containers\":{\"relay-a-id\":{},\"relay-b-id\":{},\"server-b-id\":{}}}]"
         ;;
       *) return 1 ;;
       esac
@@ -782,14 +887,18 @@ FGENTIC_DEMO_STATE_DIR="${split_relay_state}" SPLIT_SCRIPT="${SPLIT}" bash -c '
         ;;
       *) return 1 ;;
       esac
+      generation="$(jq -r --arg direction "${direction}" \
+        ".relays[] | select(.direction == \$direction).generation" "${RELAY_RECEIPT}")"
       jq -cn --arg id "${id}" --arg name "${name}" --arg direction "${direction}" \
-        --arg image "${RELAY_IMAGE}" --arg owner "${RELAY_OWNER}" --arg config "${config}" \
+        --arg generation "${generation}" --arg image "${RELAY_IMAGE}" \
+        --arg owner "${RELAY_OWNER}" --arg config "${config}" \
         --arg network_a "${NETWORK_A}" --arg network_b "${NETWORK_B}" \
         --arg ip_a "${ip_a}" --arg ip_b "${ip_b}" "[{
           Id: \$id, Image: \"sha256:relay-image\", Name: (\"/\" + \$name),
           Config: {Image: \$image, Labels: {
             \"dev.fgentic.federation-split\": \$owner,
-            \"dev.fgentic.federation-split.direction\": \$direction
+            \"dev.fgentic.federation-split.direction\": \$direction,
+            \"dev.fgentic.federation-split.generation\": \$generation
           }},
           Mounts: [{Type: \"bind\", Source: \$config,
             Destination: \"/etc/confd/values.yaml\", RW: false}],
@@ -813,6 +922,20 @@ FGENTIC_DEMO_STATE_DIR="${split_relay_state}" SPLIT_SCRIPT="${SPLIT}" bash -c '
     echo "error: relay validator accepted a drifted recorded IP" >&2
     exit 1
   fi
+  die() {
+    echo "error: $*" >&2
+    exit 1
+  }
+  fake_a_local_ip=172.18.0.10
+  owner_relay_ids() {
+    printf "%s\n" "[\"relay-a-id\",\"relay-b-id\",\"third-owner-relay-id\"]"
+  }
+  if (preflight_relay_teardown_state) >"${SPLIT_STATE_DIR}.third-relay.txt" 2>&1; then
+    echo "error: split teardown preflight accepted a third owner-labelled relay" >&2
+    exit 1
+  fi
+  rg --fixed-strings "owner-label inventory differs before teardown" \
+    "${SPLIT_STATE_DIR}.third-relay.txt" >/dev/null
 ' || {
 	echo 'error: exact relay identity, address, or dual-network fixture failed' >&2
 	exit 1

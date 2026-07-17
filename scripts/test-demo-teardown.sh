@@ -289,6 +289,24 @@ create_receipt() {
 	)
 }
 
+prepare_split_receipt() {
+	local state="$1"
+	(
+		export PATH="${FAKE_BIN}:${PATH}"
+		export FAKE_DOCKER_STATE="${state}"
+		export FAKE_CLUSTER_NAME="${CLUSTER_NAME}"
+		export FGENTIC_DEMO_STATE_DIR="${state}/lifecycle"
+		# shellcheck source=scripts/lib.sh
+		source "${ROOT_DIR}/scripts/lib.sh"
+		# shellcheck source=scripts/lib/demo-cluster.sh
+		source "${ROOT_DIR}/scripts/lib/demo-cluster.sh"
+		PROFILE=federation
+		FEDERATION_LAYOUT=split-a
+		OWNER_LABEL=federation-split-a
+		demo_prepare_down
+	)
+}
+
 run_demo() {
 	local action="$1" state="$2" scenario="${3:-transient}"
 	PATH="${FAKE_BIN}:${PATH}" \
@@ -413,6 +431,68 @@ fi
 [ -f "${malformed_state}/cluster" ] || fail 'malformed receipt mutated cluster metadata'
 rg --fixed-strings 'malformed or stale teardown receipt' "${malformed_state}/output" >/dev/null
 rg --fixed-strings 'inspect only: jq .' "${malformed_state}/output" >/dev/null
+
+split_prepare_state="${WORK_DIR}/split-prepare"
+initialize_state "${split_prepare_state}" federation-split-a
+split_receipt="$(receipt_path "${split_prepare_state}")"
+mkdir -p "$(dirname "${split_receipt}")"
+printf 'interrupted\n' \
+	>"$(dirname "${split_receipt}")/.${CLUSTER_NAME}.interrupted"
+prepare_split_receipt "${split_prepare_state}" >"${split_prepare_state}/prepare-output" 2>&1
+[ -f "${split_receipt}" ] ||
+	fail 'split prepare-down did not persist the child generation receipt'
+[ ! -e "$(dirname "${split_receipt}")/.${CLUSTER_NAME}.interrupted" ] ||
+	fail 'split prepare-down retained its interrupted atomic receipt'
+[ ! -s "${split_prepare_state}/commands" ] ||
+	fail 'split prepare-down deleted or changed runtime resources'
+jq --exit-status '
+  .profile == "federation" and .owner == "federation-split-a" and
+  .generation == "container-server-id" and
+  .network.id == "network-id" and
+  (.volumes[] | select(.kind == "images").created_at) == "2026-07-15T00:00:00Z"
+' "${split_receipt}" >/dev/null ||
+	fail 'split prepare-down omitted a parent-required generation identity'
+prepare_split_receipt "${split_prepare_state}" \
+	>"${split_prepare_state}/prepare-idempotent-output" 2>&1
+[ ! -s "${split_prepare_state}/commands" ] ||
+	fail 'idempotent split prepare-down mutated runtime resources'
+
+split_symlink_state="${WORK_DIR}/split-prepare-symlink"
+initialize_state "${split_symlink_state}" federation-split-a
+split_symlink_receipt="$(receipt_path "${split_symlink_state}")"
+mkdir -p "$(dirname "${split_symlink_receipt}")"
+touch "${split_symlink_state}/outside"
+ln -s "${split_symlink_state}/outside" \
+	"$(dirname "${split_symlink_receipt}")/.${CLUSTER_NAME}.interrupted"
+if prepare_split_receipt "${split_symlink_state}" \
+	>"${split_symlink_state}/prepare-output" 2>&1; then
+	fail 'split prepare-down accepted a symlinked atomic receipt'
+fi
+[ -f "${split_symlink_state}/outside" ] && [ ! -e "${split_symlink_receipt}" ] &&
+	[ ! -s "${split_symlink_state}/commands" ] ||
+	fail 'split prepare-down followed a symlink or mutated runtime before rejection'
+
+split_state_dir_symlink="${WORK_DIR}/split-state-dir-symlink"
+initialize_state "${split_state_dir_symlink}" federation-split-a
+mkdir -p "${split_state_dir_symlink}/lifecycle" \
+	"${split_state_dir_symlink}/outside-teardown"
+touch "${split_state_dir_symlink}/outside-teardown/sentinel"
+cp "${split_receipt}" \
+	"${split_state_dir_symlink}/outside-teardown/${CLUSTER_NAME}.json"
+outside_receipt_hash="$(openssl dgst -sha256 -r \
+	"${split_state_dir_symlink}/outside-teardown/${CLUSTER_NAME}.json" | awk '{print $1}')"
+ln -s "${split_state_dir_symlink}/outside-teardown" \
+	"${split_state_dir_symlink}/lifecycle/cluster-teardown"
+if prepare_split_receipt "${split_state_dir_symlink}" \
+	>"${split_state_dir_symlink}/prepare-output" 2>&1; then
+	fail 'split prepare-down accepted a symlinked teardown state directory'
+fi
+[ -f "${split_state_dir_symlink}/outside-teardown/sentinel" ] &&
+	[ "$(openssl dgst -sha256 -r \
+		"${split_state_dir_symlink}/outside-teardown/${CLUSTER_NAME}.json" |
+		awk '{print $1}')" = "${outside_receipt_hash}" ] &&
+	[ ! -s "${split_state_dir_symlink}/commands" ] ||
+	fail 'split prepare-down traversed its symlinked teardown state directory'
 
 if rg --regexp 'stat -c|readlink -f|flock' "${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null; then
 	fail 'teardown receipt uses a Linux-only filesystem primitive'

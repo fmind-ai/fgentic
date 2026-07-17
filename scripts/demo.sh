@@ -212,7 +212,7 @@ up)
 	*) die "the lifecycle child phase cannot reconcile a split cluster" ;;
 	esac
 	;;
-status | stop | down)
+status | stop | prepare-down | cleanup-down | down)
 	if [ "${FEDERATION_LAYOUT}" != canonical ] &&
 		[ "${FEDERATION_CHILD_PHASE}" != lifecycle ]; then
 		die "split federation lifecycle actions require the coordinator"
@@ -220,6 +220,8 @@ status | stop | down)
 	case "$1" in
 	status) demo_status ;;
 	stop) demo_stop ;;
+	prepare-down) demo_prepare_down ;;
+	cleanup-down) demo_cleanup_down ;;
 	down) demo_down ;;
 	*) die "unsupported lifecycle action" ;;
 	esac

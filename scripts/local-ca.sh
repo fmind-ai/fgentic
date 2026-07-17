@@ -34,8 +34,12 @@ if [ -L "${CA_DIR}" ] || { [ -e "${CA_DIR}" ] && [ ! -d "${CA_DIR}" ]; }; then
   exit 1
 fi
 
-[ ! -e "${CA_CRT}" ] && [ ! -L "${CA_CRT}" ] || crt_present=yes
-[ ! -e "${CA_KEY}" ] && [ ! -L "${CA_KEY}" ] || key_present=yes
+if [ -L "${CA_CRT}" ] || [ -L "${CA_KEY}" ]; then
+  echo "error: local CA keypair must be regular non-symlink files in ${CA_DIR}" >&2
+  exit 1
+fi
+[ ! -e "${CA_CRT}" ] || crt_present=yes
+[ ! -e "${CA_KEY}" ] || key_present=yes
 if [ "${crt_present}" != "${key_present}" ]; then
   echo "error: local CA keypair is incomplete in ${CA_DIR}" >&2
   exit 1
