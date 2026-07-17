@@ -125,7 +125,9 @@ func (b *Bridge) federationExposed(sender senderIdentity, ref *AgentRef) bool {
 // ledger. Text and data blocks are scanned raw because they are posted verbatim (no control strip),
 // so a control-split token stays split in the room and cannot reassemble.
 func replyFragments(result a2aclient.Result) []string {
-	fragments := make([]string, 0, 1+len(result.Data)+2*len(result.Links))
+	// No pre-sized capacity: the slices are small (data/link counts are bounded at render) and a
+	// capacity expression over attacker-influenced lengths is an integer-overflow footgun.
+	var fragments []string
 	fragments = append(fragments, result.Text)
 	fragments = append(fragments, result.Data...)
 	for _, link := range result.Links {
