@@ -40,6 +40,16 @@ The root check resolves every tracked `clusters/*/platform-settings.yaml` provid
 
 The catalog is policy input, not a router or enforcement claim. agentgateway still owns routing/serving, and the classification-aware denial path is implemented separately by #339. Until that gate lands, selecting a cluster profile remains the effective model boundary; catalog validation alone does not prevent egress.
 
+## Sovereign LLM-as-judge scoring lane (#355)
+
+The `eval:models` harness can optionally score the qualitative (`optional_llm_judge`) scenarios for groundedness and task success instead of leaving them unscored. The judge model is **composed** from the self-hosted `vllm` profile reached over the existing A2A/agentgateway route — it is not a Fgentic-built scorer, and no evaluator holds a model credential. The judge is invoked as an ordinary kagent Agent (`--judge-agent`, default `sovereign-judge`), so eval prompts and agent outputs never leave the cluster.
+
+The lane is opt-in (`mise run eval:models -- --judge …`) and fail-safe:
+
+1. **Approved-profile guard.** The judge lane runs only when the run's catalog model is `residency: self-hosted`; selecting a metered `eu`/`global` provider blocks it, so a judge invocation can never egress eval data to an external model. The guard is enforced in the Go runner, not just the wrapper script.
+1. **Parse at the boundary.** The judge must return exactly `{"groundedness": <0..1>, "task_success": <0..1>, "rationale": "…"}`; strict decoding fails closed on any extra prose, missing field, wrong type, or out-of-range score. A malformed or missing judge answer **fails the scenario**, never silently passes it. A judge transport failure aborts the run like any scenario call failure.
+1. **Payload-free evidence.** Only the two bounded scores are recorded (`judge_scores` in the report); the judge rationale, prompt, and agent output are never persisted, logged, or metered. Thresholds are operator-set (`--judge-min-groundedness`, `--judge-min-task-success`).
+
 ## Data-flow map by profile
 
 Every agent uses the same in-cluster route. The selected profile changes only the final model hop; credentials terminate at agentgateway and never enter kagent or the bridge.

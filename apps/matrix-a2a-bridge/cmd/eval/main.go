@@ -42,6 +42,10 @@ func run(ctx context.Context, args []string) error {
 	scenarioTimeout := flags.Duration("scenario-timeout", 2*time.Minute, "deadline for each A2A scenario")
 	pollInterval := flags.Duration("poll-interval", time.Second, "GetTask polling interval")
 	quietWindow := flags.Duration("quiet-window", 2*time.Second, "metric stability window before and after each scenario")
+	judge := flags.Bool("judge", false, "enable the sovereign LLM-as-judge scoring lane (runs only on a self-hosted model)")
+	judgeAgent := flags.String("judge-agent", "sovereign-judge", "kagent Agent backing the self-hosted judge model")
+	judgeMinGroundedness := flags.Float64("judge-min-groundedness", 0.7, "minimum judge groundedness score to pass, in [0,1]")
+	judgeMinTaskSuccess := flags.Float64("judge-min-task-success", 0.6, "minimum judge task-success score to pass, in [0,1]")
 	if err := flags.Parse(args); err != nil {
 		return err
 	}
@@ -91,6 +95,12 @@ func run(ctx context.Context, args []string) error {
 	runResult, err := runner.Run(ctx, evaluation.RunConfig{
 		Profile: *profile, Model: governedModel, UserID: *userID,
 		ScenarioTimeout: *scenarioTimeout, PollInterval: *pollInterval, QuietWindow: *quietWindow,
+		Judge: evaluation.JudgeConfig{
+			Enabled: *judge, Agent: evaluation.Agent(*judgeAgent),
+			Thresholds: evaluation.JudgeThresholds{
+				MinGroundedness: *judgeMinGroundedness, MinTaskSuccess: *judgeMinTaskSuccess,
+			},
+		},
 	}, scenarios)
 	if err != nil {
 		return err

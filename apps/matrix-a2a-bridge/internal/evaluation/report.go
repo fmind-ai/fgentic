@@ -29,6 +29,9 @@ type ScenarioResult struct {
 	Usage               UsageDelta    `json:"usage"`
 	EstimatedCost       *CostEstimate `json:"estimated_cost,omitempty"`
 	Score               Score         `json:"score"`
+	// JudgeScores holds the content-free sovereign LLM-as-judge score pair when the judge lane scored
+	// this scenario; nil when the deterministic rubric applied or the judge lane was blocked (#355).
+	JudgeScores *JudgeScores `json:"judge_scores,omitempty"`
 }
 
 // CostSummary aggregates estimates made with one catalog identity.
