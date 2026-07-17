@@ -193,6 +193,7 @@ PG_KAGENT="${PG_KAGENT:-$(openssl rand -hex 24)}"
 PG_KEYCLOAK="${PG_KEYCLOAK:-$(openssl rand -hex 24)}"
 PG_KNOWLEDGE_OWNER="${PG_KNOWLEDGE_OWNER:-$(openssl rand -hex 24)}"
 PG_KNOWLEDGE_INGESTION="${PG_KNOWLEDGE_INGESTION:-$(openssl rand -hex 24)}"
+PG_KNOWLEDGE_CONNECTOR="${PG_KNOWLEDGE_CONNECTOR:-$(openssl rand -hex 24)}"
 PG_KNOWLEDGE_RETRIEVAL="${PG_KNOWLEDGE_RETRIEVAL:-$(openssl rand -hex 24)}"
 PG_SLACKBRIDGE="${PG_SLACKBRIDGE:-$(openssl rand -hex 24)}"
 PG_TELEGRAMBRIDGE="${PG_TELEGRAMBRIDGE:-$(openssl rand -hex 24)}"
@@ -390,9 +391,9 @@ EOF
 	emit knowledge-db.sops.yaml "${KNOWLEDGE_DB}"
 fi
 
-# The ingestion database login and agentgateway caller key are separate credentials but form one
-# workload boundary. Keep both namespace copies coherent without ever projecting the schema owner
-# or a model/provider key into the knowledge namespace.
+# The ingestion and connector database logins plus the agentgateway caller key are separate
+# credentials in one optional workload boundary. Keep each namespace pair coherent without ever
+# projecting the schema owner or a model/provider key into the knowledge namespace.
 if want knowledge-ingestion; then
 	KNOWLEDGE_INGESTION="$(
 		cat <<EOF
@@ -405,6 +406,26 @@ type: kubernetes.io/basic-auth
 stringData:
   username: knowledge_ingestion
   password: ${PG_KNOWLEDGE_INGESTION}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg-knowledge-connector
+  namespace: postgres
+type: kubernetes.io/basic-auth
+stringData:
+  username: knowledge_connector
+  password: ${PG_KNOWLEDGE_CONNECTOR}
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: pg-knowledge-connector
+  namespace: knowledge
+type: kubernetes.io/basic-auth
+stringData:
+  username: knowledge_connector
+  password: ${PG_KNOWLEDGE_CONNECTOR}
 ---
 apiVersion: v1
 kind: Secret

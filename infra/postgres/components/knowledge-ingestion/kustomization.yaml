@@ -2,7 +2,9 @@ apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 resources:
   - role.yaml
+  - connector-role.yaml
   - knowledge-schema-v2.yaml
+  - knowledge-schema-v3.yaml
 patches:
   - target:
       group: postgresql.cnpg.io
@@ -14,3 +16,6 @@ patches:
       - op: add
         path: /spec/postgresql/pg_hba/6
         value: hostssl knowledge knowledge_ingestion all scram-sha-256
+      - op: add
+        path: /spec/postgresql/pg_hba/7
+        value: hostssl knowledge knowledge_connector all scram-sha-256

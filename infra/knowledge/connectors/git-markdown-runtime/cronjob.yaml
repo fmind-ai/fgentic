@@ -1,0 +1,120 @@
+# This schedule performs acquisition only: it reads the already reconciled Flux artifact and writes
+# an immutable snapshot. Retained snapshots are keyed by canonical inventory digest and observed
+# revision; the separately verified Flux artifact digest remains evidence inside each inventory. It has no
+# database, model, provider, or agentgateway credential, so the opt-in knowledge profile may run it
+# without spending a model call. Source selection and ingestion acknowledgement are separate
+# fail-closed phases; unacknowledged snapshots are never removed here.
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: knowledge-git-markdown-connector
+  namespace: knowledge
+  labels:
+    app.kubernetes.io/name: knowledge-git-markdown-connector
+    app.kubernetes.io/component: source-connector
+    app.kubernetes.io/part-of: fgentic
+spec:
+  schedule: "*/5 * * * *"
+  suspend: false
+  concurrencyPolicy: Forbid
+  startingDeadlineSeconds: 300
+  successfulJobsHistoryLimit: 1
+  failedJobsHistoryLimit: 2
+  jobTemplate:
+    spec:
+      activeDeadlineSeconds: 300
+      backoffLimit: 0
+      ttlSecondsAfterFinished: 86400
+      template:
+        metadata:
+          labels:
+            app.kubernetes.io/name: knowledge-git-markdown-connector
+            app.kubernetes.io/component: source-connector
+            app.kubernetes.io/part-of: fgentic
+        spec:
+          serviceAccountName: knowledge-git-markdown-connector
+          automountServiceAccountToken: false
+          enableServiceLinks: false
+          restartPolicy: Never
+          securityContext:
+            fsGroup: 2000
+            fsGroupChangePolicy: OnRootMismatch
+            runAsNonRoot: true
+            seccompProfile:
+              type: RuntimeDefault
+          containers:
+            - name: acquire
+              image: python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
+              imagePullPolicy: IfNotPresent
+              command:
+                - python
+              args:
+                - /runtime/fetch.py
+                - --output-root
+                - /bundle/.connector/git-markdown
+                - --token-file
+                - /var/run/secrets/fgentic/token
+                - --ca-file
+                - /var/run/secrets/fgentic/ca.crt
+              env:
+                - name: HOME
+                  value: /tmp
+                - name: TMPDIR
+                  value: /tmp
+                - name: PYTHONDONTWRITEBYTECODE
+                  value: "1"
+                - name: PYTHONUNBUFFERED
+                  value: "1"
+              resources:
+                requests:
+                  cpu: 25m
+                  memory: 64Mi
+                  ephemeral-storage: 16Mi
+                limits:
+                  cpu: 500m
+                  memory: 384Mi
+                  ephemeral-storage: 64Mi
+              securityContext:
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+                # Files remain readable by every ingestion phase through the Pod fsGroup.
+                runAsGroup: 2000
+                runAsNonRoot: true
+                runAsUser: 65532
+              volumeMounts:
+                - name: runtime
+                  mountPath: /runtime
+                  readOnly: true
+                - name: source-bundle
+                  mountPath: /bundle
+                - name: kube-api-access
+                  mountPath: /var/run/secrets/fgentic
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+          volumes:
+            - name: runtime
+              configMap:
+                name: knowledge-git-markdown-connector-runtime
+                defaultMode: 0444
+            - name: source-bundle
+              persistentVolumeClaim:
+                claimName: knowledge-source-bundle
+            - name: kube-api-access
+              projected:
+                defaultMode: 0440
+                sources:
+                  - serviceAccountToken:
+                      expirationSeconds: 600
+                      path: token
+                  - configMap:
+                      name: kube-root-ca.crt
+                      items:
+                        - key: ca.crt
+                          path: ca.crt
+            - name: tmp
+              emptyDir:
+                sizeLimit: 16Mi

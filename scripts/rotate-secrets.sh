@@ -30,7 +30,7 @@ Supported secret sets:
                     Knowledge retrieval role and its identical namespace-local copy
   knowledge-db     Both knowledge database roles and the retrieval namespace copy
   knowledge-ingestion
-                    DML-only ingestion database copies + scoped gateway caller credential
+                    Ingestion/connector database copies + scoped gateway caller credential
   provider         Selected API provider key; unsupported for ambient Vertex/self-hosted vLLM
   keycloak-db      Keycloak database role and both namespace copies
   slack            Optional mautrix-slack DB password + appservice registration tokens
@@ -552,16 +552,35 @@ validate_knowledge_db() {
 validate_knowledge_ingestion() {
 	local old_file="${SECRETS_DIR}/knowledge-ingestion.sops.yaml"
 	local new_file="${STAGE_DIR}/knowledge-ingestion.sops.yaml"
-	local old_db old_authorization postgres_db workload_db gateway_key workload_authorization
-	local postgres_user workload_user
+	local old_db old_connector_db old_authorization
+	local postgres_db workload_db postgres_connector_db workload_connector_db
+	local gateway_key workload_authorization
+	local postgres_user workload_user postgres_connector_user workload_connector_user
 	old_db="$(secret_value "${old_file}" postgres pg-knowledge-ingestion '.stringData.password')"
+	old_connector_db="$(
+		# A pre-#335 optional set has no connector pair; the first post-upgrade rotation adds it.
+		secret_value "${old_file}" postgres pg-knowledge-connector '.stringData.password' 2>/dev/null ||
+			true
+	)"
 	old_authorization="$(
 		secret_value "${old_file}" knowledge knowledge-ingestion-credential '.stringData.authorization'
 	)"
 	postgres_db="$(secret_value "${new_file}" postgres pg-knowledge-ingestion '.stringData.password')"
 	workload_db="$(secret_value "${new_file}" knowledge pg-knowledge-ingestion '.stringData.password')"
+	postgres_connector_db="$(
+		secret_value "${new_file}" postgres pg-knowledge-connector '.stringData.password'
+	)"
+	workload_connector_db="$(
+		secret_value "${new_file}" knowledge pg-knowledge-connector '.stringData.password'
+	)"
 	postgres_user="$(secret_value "${new_file}" postgres pg-knowledge-ingestion '.stringData.username')"
 	workload_user="$(secret_value "${new_file}" knowledge pg-knowledge-ingestion '.stringData.username')"
+	postgres_connector_user="$(
+		secret_value "${new_file}" postgres pg-knowledge-connector '.stringData.username'
+	)"
+	workload_connector_user="$(
+		secret_value "${new_file}" knowledge pg-knowledge-connector '.stringData.username'
+	)"
 	gateway_key="$(
 		secret_value "${new_file}" agentgateway-system knowledge-ingestion-callers \
 			'.stringData."knowledge-ingestion" | from_json | .key'
@@ -572,9 +591,17 @@ validate_knowledge_ingestion() {
 	assert_equal "${postgres_user}" "knowledge_ingestion" "knowledge ingestion username drifted"
 	assert_equal "${postgres_user}" "${workload_user}" "knowledge ingestion usernames differ"
 	assert_equal "${postgres_db}" "${workload_db}" "knowledge ingestion database copies differ"
+	assert_equal "${postgres_connector_user}" "knowledge_connector" \
+		"knowledge connector username drifted"
+	assert_equal "${postgres_connector_user}" "${workload_connector_user}" \
+		"knowledge connector usernames differ"
+	assert_equal "${postgres_connector_db}" "${workload_connector_db}" \
+		"knowledge connector database copies differ"
 	assert_equal "Bearer ${gateway_key}" "${workload_authorization}" \
 		"knowledge ingestion gateway credentials differ"
 	assert_changed "${old_db}" "${postgres_db}" "knowledge ingestion database password"
+	assert_changed "${old_connector_db}" "${postgres_connector_db}" \
+		"knowledge connector database password"
 	assert_changed "${old_authorization}" "${workload_authorization}" \
 		"knowledge ingestion workload credential"
 }
@@ -762,8 +789,8 @@ db-knowledge-owner | db-knowledge-retrieval | knowledge-db)
 		"then restart the retrieval consumer when its credential changed."
 	;;
 knowledge-ingestion)
-	echo "Restart order: wait for the CNPG ingestion role and gateway policy to accept the new" \
-		"copies before starting another ingestion Job."
+	echo "Restart order: wait for the CNPG connector/ingestion roles and gateway policy to accept" \
+		"the new copies before starting another ingestion Job; acquisition holds none of them."
 	;;
 slack)
 	echo "Restart order: wait for the slackbridge CNPG role, restart Synapse, then restart mautrix-slack."

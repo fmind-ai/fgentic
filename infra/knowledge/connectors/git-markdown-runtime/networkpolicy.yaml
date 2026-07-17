@@ -1,0 +1,51 @@
+# Kubernetes NetworkPolicy cannot select the kubernetes.default Service by identity, and installed
+# CNIs may enforce egress after Service DNAT. The cluster therefore substitutes the API endpoint's
+# exact /32 and port, not the Service VIP/port. The fail-closed documentation address must be
+# overridden before enabling this profile and proved with the installed CNI; never widen it.
+# The source-controller Service exposes port 80, translated to target port 9090 before this rule.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: knowledge-git-markdown-connector
+  namespace: knowledge
+  labels:
+    app.kubernetes.io/name: knowledge-git-markdown-connector
+    app.kubernetes.io/component: source-connector
+    app.kubernetes.io/part-of: fgentic
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: knowledge-git-markdown-connector
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: flux-system
+          podSelector:
+            matchLabels:
+              app: source-controller
+      ports:
+        - protocol: TCP
+          port: 9090
+    - to:
+        - ipBlock:
+            cidr: ${kubernetes_api_egress_cidr}
+      ports:
+        - protocol: TCP
+          port: ${kubernetes_api_egress_port}

@@ -13,6 +13,9 @@ readonly INGESTION_CHECKPOINT_SQL="${ROOT_DIR}/infra/knowledge/base/checkpoint.s
 readonly INGESTION_GC_SQL="${ROOT_DIR}/infra/knowledge/base/gc.sql"
 readonly INGESTION_PLAN_SQL="${ROOT_DIR}/infra/knowledge/base/plan.sql"
 readonly INGESTION_WRITE_SQL="${ROOT_DIR}/infra/knowledge/base/write.sql"
+readonly CONNECTOR_PUBLISH_SQL="${ROOT_DIR}/infra/knowledge/base/connector-publish.sql"
+readonly CONNECTOR_CLAIM_SQL="${ROOT_DIR}/infra/knowledge/base/connector-claim.sql"
+readonly CONNECTOR_TOMBSTONE_SQL="${ROOT_DIR}/infra/knowledge/base/connector-tombstone.sql"
 readonly INGESTION_CRONJOB="${ROOT_DIR}/infra/knowledge/base/cronjob.yaml"
 readonly INGESTION_SCRIPT="${ROOT_DIR}/infra/knowledge/base/ingestion.py"
 readonly MATRIX_SOURCE_EXAMPLE="${ROOT_DIR}/infra/knowledge/source-bundle.example.yaml"
@@ -21,6 +24,7 @@ readonly KIND_CONFIG="${ROOT_DIR}/scripts/testdata/postgres-audit-kind.yaml"
 readonly KIND_NODE_IMAGE="kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a"
 readonly POSTGRES_IMAGE="ghcr.io/cloudnative-pg/postgresql:17.10-202607130907-system-trixie@sha256:c141aec61cab8da3e215aebe0fa155e78442fbb41c982a86743915a967e12af9"
 readonly OWNER_PASSWORD="KNOWLEDGE_OWNER_PASSWORD_SENTINEL"
+readonly CONNECTOR_PASSWORD="KNOWLEDGE_CONNECTOR_PASSWORD_SENTINEL"
 readonly INGESTION_PASSWORD="KNOWLEDGE_INGESTION_PASSWORD_SENTINEL"
 readonly RETRIEVAL_PASSWORD="KNOWLEDGE_RETRIEVAL_PASSWORD_SENTINEL"
 RUNTIME_CLUSTER_NAME=""
@@ -53,9 +57,18 @@ static_contract() {
   require_commands jq kubectl rg yq
 
   local base_render base_render_objects render render_objects roles database job policy schema_sql
-  local job_v2 policy_v2 schema_v2_sql secret_template ingestion_secret_template
-  local checkpoint_sql gc_sql plan_sql write_sql
+  local job_v2 policy_v2 schema_v2_sql job_v3 policy_v3 schema_v3_sql
+  local secret_template ingestion_secret_template
+  local checkpoint_sql gc_sql plan_sql write_sql connector_publish_sql connector_claim_sql
+  local connector_tombstone_sql
   local lease_reclaim_line lease_claim_line pending_cleanup_line final_cleanup_line current_reset
+  local connector_complete_line
+  local publish_digest_line publish_begin_line publish_insert_line publish_complete_line
+  local publish_commit_line tombstone_insert_line tombstone_apply_line tombstone_release_line
+  local tombstone_commit_line write_lease_release_line write_commit_line
+  local connector_claim_limit_count publish_begin_count publish_commit_count
+  local claim_begin_count claim_commit_count tombstone_begin_count tombstone_commit_count
+  local lease_clock_count pending_delete_count final_delete_count
   base_render="$(kubectl kustomize "${ROOT_DIR}/infra/postgres")"
   base_render_objects="$(yq eval-all -o=json '.' <<<"${base_render}" | jq --slurp '.')"
   render="$(kubectl kustomize "${INGESTION_FIXTURE}" --load-restrictor LoadRestrictionsNone)"
@@ -65,6 +78,7 @@ static_contract() {
       select(.kind == "DatabaseRole" and
         (.metadata.name == "knowledge-owner" or
           .metadata.name == "knowledge-ingestion" or
+          .metadata.name == "knowledge-connector" or
           .metadata.name == "knowledge-retrieval"))
     ' <<<"${render}" | jq --slurp '.'
   )"
@@ -98,10 +112,26 @@ static_contract() {
     yq eval-all -r 'select(.kind == "ConfigMap" and .metadata.name == "knowledge-schema-v2") |
       .data."schema.sql"' <<<"${render}"
   )"
+  job_v3="$(
+    yq eval-all -o=json 'select(.kind == "Job" and .metadata.name == "knowledge-schema-v3")' \
+      <<<"${render}"
+  )"
+  policy_v3="$(
+    yq eval-all -o=json '
+      select(.kind == "NetworkPolicy" and .metadata.name == "knowledge-schema-v3")
+    ' <<<"${render}"
+  )"
+  schema_v3_sql="$(
+    yq eval-all -r 'select(.kind == "ConfigMap" and .metadata.name == "knowledge-schema-v3") |
+      .data."schema.sql"' <<<"${render}"
+  )"
   checkpoint_sql="$(<"${INGESTION_CHECKPOINT_SQL}")"
   gc_sql="$(<"${INGESTION_GC_SQL}")"
   plan_sql="$(<"${INGESTION_PLAN_SQL}")"
   write_sql="$(<"${INGESTION_WRITE_SQL}")"
+  connector_publish_sql="$(<"${CONNECTOR_PUBLISH_SQL}")"
+  connector_claim_sql="$(<"${CONNECTOR_CLAIM_SQL}")"
+  connector_tombstone_sql="$(<"${CONNECTOR_TOMBSTONE_SQL}")"
   secret_template="$(
     yq eval-all -o=json 'select(.kind == "Secret")' \
       "${ROOT_DIR}/infra/secrets/knowledge-db.sops.yaml.example" | jq --slurp '.'
@@ -114,10 +144,12 @@ static_contract() {
   jq -e '
     ([.[] | select(.kind == "Cluster") | .metadata.name] == ["platform-pg"]) and
     ([.[] | select(.kind == "Deployment" or .kind == "StatefulSet")] | length == 0) and
-    ([.[] | select(.kind == "DatabaseRole" and .metadata.name == "knowledge-ingestion")] |
+    ([.[] | select(.kind == "DatabaseRole" and
+      (.metadata.name == "knowledge-ingestion" or .metadata.name == "knowledge-connector"))] |
       length == 0) and
     ([.[] | select(.kind == "Job") | .metadata.name] == ["knowledge-schema-v1"]) and
-    ([.[] | select(.kind == "ConfigMap" and .metadata.name == "knowledge-schema-v2")] |
+    ([.[] | select(.kind == "ConfigMap" and
+      (.metadata.name == "knowledge-schema-v2" or .metadata.name == "knowledge-schema-v3"))] |
       length == 0)
   ' <<<"${base_render_objects}" >/dev/null ||
     fail "base Postgres render unexpectedly enables the optional ingestion boundary"
@@ -126,12 +158,18 @@ static_contract() {
     ([.[] | select(.kind == "Cluster") | .metadata.name] == ["platform-pg"]) and
     ([.[] | select(.kind == "Deployment" or .kind == "StatefulSet")] | length == 0) and
     ([.[] | select(.kind == "Job") | .metadata.name] | sort) ==
-      ["knowledge-schema-v1", "knowledge-schema-v2"] and
+      ["knowledge-schema-v1", "knowledge-schema-v2", "knowledge-schema-v3"] and
     ([.[] | select(.kind == "ConfigMap" and
-      (.metadata.name == "knowledge-schema-v1" or .metadata.name == "knowledge-schema-v2")) |
-      .immutable] == [true, true])
+      (.metadata.name == "knowledge-schema-v1" or
+        .metadata.name == "knowledge-schema-v2" or
+        .metadata.name == "knowledge-schema-v3")) |
+      .immutable] | length == 3) and
+    all(.[] | select(.kind == "ConfigMap" and
+      (.metadata.name == "knowledge-schema-v1" or
+        .metadata.name == "knowledge-schema-v2" or
+        .metadata.name == "knowledge-schema-v3")); .immutable == true)
   ' <<<"${render_objects}" >/dev/null ||
-    fail "knowledge store must reuse platform-pg and retain both immutable schema artifacts"
+    fail "knowledge store must reuse platform-pg and retain all immutable schema artifacts"
 
   EXPECTED_POSTGRES_IMAGE="${POSTGRES_IMAGE}" yq -e '
     .spec.imageName == strenv(EXPECTED_POSTGRES_IMAGE) and
@@ -147,12 +185,12 @@ static_contract() {
   yq eval-all -e '
     select(.kind == "Cluster" and .metadata.name == "platform-pg") |
     (.spec.postgresql.pg_hba | join("|")) ==
-      "hostssl synapse synapse all scram-sha-256|hostssl mas mas all scram-sha-256|hostssl bridge bridge all scram-sha-256|hostssl kagent kagent all scram-sha-256|hostssl keycloak keycloak all scram-sha-256|hostssl knowledge knowledge_owner all scram-sha-256|hostssl knowledge knowledge_ingestion all scram-sha-256|hostssl knowledge knowledge_retrieval all scram-sha-256|hostssl all all all reject|hostnossl all all all reject"
+      "hostssl synapse synapse all scram-sha-256|hostssl mas mas all scram-sha-256|hostssl bridge bridge all scram-sha-256|hostssl kagent kagent all scram-sha-256|hostssl keycloak keycloak all scram-sha-256|hostssl knowledge knowledge_owner all scram-sha-256|hostssl knowledge knowledge_ingestion all scram-sha-256|hostssl knowledge knowledge_connector all scram-sha-256|hostssl knowledge knowledge_retrieval all scram-sha-256|hostssl all all all reject|hostnossl all all all reject"
   ' <<<"${render}" >/dev/null ||
-    fail "opt-in ingestion Component did not insert the exact knowledge HBA row"
+    fail "opt-in ingestion Component did not insert the exact knowledge HBA rows"
 
   jq -e '
-    length == 3 and
+    length == 4 and
     ([.[].spec | keys | sort] | unique) == [[
       "bypassrls", "cluster", "connectionLimit", "createdb", "createrole",
       "databaseRoleReclaimPolicy", "ensure", "inherit", "login", "name",
@@ -169,6 +207,9 @@ static_contract() {
     any(.[].spec;
       .name == "knowledge_ingestion" and .connectionLimit == 4 and
       .passwordSecret.name == "pg-knowledge-ingestion") and
+    any(.[].spec;
+      .name == "knowledge_connector" and .connectionLimit == 2 and
+      .passwordSecret.name == "pg-knowledge-connector") and
     any(.[].spec;
       .name == "knowledge_retrieval" and .connectionLimit == 16 and
       .passwordSecret.name == "pg-knowledge-retrieval")
@@ -187,14 +228,16 @@ static_contract() {
   yq -e '
     (.resources | contains(["knowledge-schema-v1.yaml"])) and
     (.resources | contains(["knowledge-schema-v2.yaml"]) | not) and
+    (.resources | contains(["knowledge-schema-v3.yaml"]) | not) and
     (has("replacements") | not)
   ' "${KUSTOMIZATION}" >/dev/null ||
-    fail "base Postgres Kustomization unexpectedly includes the opt-in v2 migration"
+    fail "base Postgres Kustomization unexpectedly includes an opt-in migration"
 
   yq -e '
     .apiVersion == "kustomize.config.k8s.io/v1alpha1" and
     .kind == "Component" and
-    (.resources | sort | join("|")) == "knowledge-schema-v2.yaml|role.yaml" and
+    (.resources | sort | join("|")) ==
+      "connector-role.yaml|knowledge-schema-v2.yaml|knowledge-schema-v3.yaml|role.yaml" and
     (.patches | length) == 1 and
     .patches[0].target.group == "postgresql.cnpg.io" and
     .patches[0].target.version == "v1" and
@@ -203,7 +246,10 @@ static_contract() {
     .patches[0].target.namespace == "postgres" and
     (.patches[0].patch | contains("path: /spec/postgresql/pg_hba/6")) and
     (.patches[0].patch |
-      contains("value: hostssl knowledge knowledge_ingestion all scram-sha-256"))
+      contains("value: hostssl knowledge knowledge_ingestion all scram-sha-256")) and
+    (.patches[0].patch | contains("path: /spec/postgresql/pg_hba/7")) and
+    (.patches[0].patch |
+      contains("value: hostssl knowledge knowledge_connector all scram-sha-256"))
   ' "${INGESTION_COMPONENT}" >/dev/null ||
     fail "opt-in ingestion Component resources or exact HBA patch drifted"
 
@@ -272,6 +318,39 @@ static_contract() {
   ' <<<"${job_v2}" >/dev/null ||
     fail "bounded restricted v2 schema Job contract drifted"
 
+  jq -e --arg image "${POSTGRES_IMAGE}" '
+    .spec.backoffLimit == 2 and (has("activeDeadlineSeconds") | not) and
+    (has("ttlSecondsAfterFinished") | not) and
+    .spec.template.spec.automountServiceAccountToken == false and
+    .spec.template.spec.restartPolicy == "Never" and
+    .spec.template.spec.securityContext == {
+      "runAsNonRoot": true,
+      "seccompProfile": {"type": "RuntimeDefault"}
+    } and
+    (.spec.template.spec.containers | length) == 1 and
+    (.spec.template.spec.containers[0] |
+      .name == "schema" and .image == $image and .imagePullPolicy == "IfNotPresent" and
+      .securityContext == {
+        "allowPrivilegeEscalation": false,
+        "readOnlyRootFilesystem": true,
+        "capabilities": {"drop": ["ALL"]}
+      } and
+      .resources.requests == {"cpu": "10m", "memory": "32Mi", "ephemeral-storage": "8Mi"} and
+      .resources.limits == {"cpu": "100m", "memory": "64Mi", "ephemeral-storage": "32Mi"} and
+      ([.env[] | select(.valueFrom.secretKeyRef != null) | .valueFrom.secretKeyRef.name] |
+        unique) == ["pg-knowledge-owner"] and
+      ([.env[] | select(.name == "PGSSLMODE") | .value] == ["require"]) and
+      (.args | length) == 1 and
+      (.args[0] | contains("while true; do")) and
+      (.args[0] | contains("knowledge_connector")) and
+      (.args[0] | contains("schema_migrations WHERE version = 2")) and
+      (.args[0] | contains("exec psql --no-psqlrc --set=ON_ERROR_STOP=1")) and
+      (.volumeMounts | map(select(.name == "schema" and .readOnly == true)) | length) == 1) and
+    (.spec.template.spec.volumes |
+      map(select(.name == "schema" and .configMap.name == "knowledge-schema-v3")) | length) == 1
+  ' <<<"${job_v3}" >/dev/null ||
+    fail "bounded restricted v3 schema Job contract drifted"
+
   jq -e '
     .spec.podSelector.matchLabels == {
       "app.kubernetes.io/name": "knowledge-schema",
@@ -306,6 +385,23 @@ static_contract() {
     fail "v2 schema Job egress is broader than DNS plus platform-pg"
 
   jq -e '
+    .spec.podSelector.matchLabels == {
+      "app.kubernetes.io/name": "knowledge-schema",
+      "app.kubernetes.io/instance": "v3"
+    } and
+    .spec.policyTypes == ["Egress"] and (.spec.egress | length) == 2 and
+    any(.spec.egress[];
+      .to == [{"namespaceSelector": {"matchLabels": {
+        "kubernetes.io/metadata.name": "kube-system"
+      }}}] and
+      ([.ports[] | [.protocol, .port]] | sort) == [["TCP", 53], ["UDP", 53]]) and
+    any(.spec.egress[];
+      .to == [{"podSelector": {"matchLabels": {"cnpg.io/cluster": "platform-pg"}}}] and
+      .ports == [{"protocol": "TCP", "port": 5432}])
+  ' <<<"${policy_v3}" >/dev/null ||
+    fail "v3 schema Job egress is broader than DNS plus platform-pg"
+
+  jq -e '
     length == 3 and
     all(.[];
       .type == "kubernetes.io/basic-auth" and
@@ -324,13 +420,19 @@ static_contract() {
     fail "knowledge credential template widened owner scope or drifted retrieval copies"
 
   jq -e '
-    length == 4 and
+    length == 6 and
     ([.[] | select(.metadata.name == "pg-knowledge-ingestion") |
       .metadata.namespace] | sort) == ["knowledge", "postgres"] and
     all(.[] | select(.metadata.name == "pg-knowledge-ingestion");
       .type == "kubernetes.io/basic-auth" and
       .stringData.username == "knowledge_ingestion" and
       .stringData.password == "REPLACE_WITH_PG_KNOWLEDGE_INGESTION_PASSWORD") and
+    ([.[] | select(.metadata.name == "pg-knowledge-connector") |
+      .metadata.namespace] | sort) == ["knowledge", "postgres"] and
+    all(.[] | select(.metadata.name == "pg-knowledge-connector");
+      .type == "kubernetes.io/basic-auth" and
+      .stringData.username == "knowledge_connector" and
+      .stringData.password == "REPLACE_WITH_PG_KNOWLEDGE_CONNECTOR_PASSWORD") and
     any(.[];
       .metadata.name == "knowledge-ingestion-callers" and
       .metadata.namespace == "agentgateway-system" and
@@ -485,6 +587,244 @@ static_contract() {
   fi
 
   for required_sql in \
+    "pg_advisory_xact_lock(hashtextextended('fgentic:knowledge-schema:v3', 0))" \
+    'REVOKE ALL ON DATABASE knowledge FROM knowledge_connector' \
+    'GRANT CONNECT, TEMPORARY ON DATABASE knowledge TO knowledge_connector' \
+    'REVOKE ALL ON ALL TABLES IN SCHEMA knowledge FROM knowledge_connector' \
+    'REVOKE ALL ON ALL SEQUENCES IN SCHEMA knowledge FROM knowledge_connector' \
+    'REVOKE ALL ON ALL FUNCTIONS IN SCHEMA knowledge FROM knowledge_connector' \
+    'CREATE TABLE IF NOT EXISTS knowledge.connector_snapshots' \
+    "connector_id = 'git-markdown'" \
+    'CREATE TABLE IF NOT EXISTS knowledge.connector_inventory' \
+    'CREATE TABLE IF NOT EXISTS knowledge.connector_sources' \
+    'claim_expires_at IS NOT NULL' \
+    "claim_expires_at <= claimed_at + interval '35 minutes'" \
+    'CREATE OR REPLACE FUNCTION knowledge.canonical_jsonb_text(value jsonb)' \
+    'ORDER BY entry.key COLLATE "C"' \
+    'ORDER BY entry.ordinality' \
+    'CREATE OR REPLACE FUNCTION knowledge.connector_inventory_json_digest(value jsonb)' \
+    'CREATE OR REPLACE FUNCTION knowledge.connector_inventory_digest(' \
+    "'source_id', inventory.source_id" \
+    "'source_path', inventory.source_path" \
+    "'source_revision', inventory.source_revision" \
+    "'content_digest', inventory.content_digest" \
+    "'acl_digest', inventory.acl_digest" \
+    "'metadata', inventory.metadata" \
+    'ORDER BY inventory.source_id COLLATE "C"' \
+    'CREATE OR REPLACE FUNCTION knowledge.guard_connector_inventory()' \
+    'BEFORE INSERT OR UPDATE OR DELETE ON knowledge.connector_inventory' \
+    'CREATE OR REPLACE FUNCTION knowledge.begin_connector_snapshot(' \
+    "requested_connector_id <> 'git-markdown'" \
+    'CREATE OR REPLACE FUNCTION knowledge.block_connector_snapshot(' \
+    'blocked_artifact_digest = requested_artifact_digest' \
+    'CREATE OR REPLACE FUNCTION knowledge.try_advance_connector_snapshot(' \
+    'CREATE OR REPLACE FUNCTION knowledge.complete_connector_snapshot(' \
+    'actual_inventory_digest := knowledge.connector_inventory_digest(' \
+    'actual_source_count <> current_snapshot.expected_source_count' \
+    'actual_inventory_digest <> requested_inventory_digest' \
+    'inventory.acl_digest IS DISTINCT FROM' \
+    "'classification', inventory.metadata->'classification'" \
+    "'allowed_principals', inventory.metadata->'allowed_principals'" \
+    "'allowed_groups', inventory.metadata->'allowed_groups'" \
+    'connector inventory source count, canonical digest, or ACL digest is invalid' \
+    'SET applied_snapshot_revision = sources.desired_snapshot_revision' \
+    'sources.applied_metadata IS NOT DISTINCT FROM sources.desired_metadata' \
+    "chunks.metadata->>'classification' = 'authentication'" \
+    'sources.applied_digest IS DISTINCT FROM inventory.content_digest' \
+    'sources.applied_acl_digest IS DISTINCT FROM inventory.acl_digest' \
+    'sources.applied_metadata IS DISTINCT FROM inventory.metadata' \
+    "sources.desired_action IS DISTINCT FROM 'tombstone'" \
+    "sources.applied_action IS DISTINCT FROM 'tombstone'" \
+    "split_part(source_id, '/', 2) = connector_id" \
+    "split_part(source_id, '/', 1) || '/' || connector_id || '/' || source_path" \
+    'position(chr(92) IN source_path) = 0' \
+    "metadata->'source' ?& ARRAY['id', 'locator', 'revision']" \
+    'UPDATE knowledge.chunks AS chunks' \
+    "'{classification}'" \
+    "to_jsonb('authentication'::text)" \
+    "chunks.metadata #>> '{source,id}' = sources.source_id" \
+    "chunks.metadata->>'classification' <> 'authentication'" \
+    'CREATE OR REPLACE FUNCTION knowledge.complete_connector_present(' \
+    'CREATE OR REPLACE FUNCTION knowledge.apply_connector_tombstone(' \
+    'GRANT SELECT ON knowledge.connector_snapshots TO knowledge_connector' \
+    'GRANT INSERT ON knowledge.connector_inventory TO knowledge_connector' \
+    'GRANT EXECUTE ON FUNCTION knowledge.is_full_mxid(text)' \
+    'GRANT EXECUTE ON FUNCTION knowledge.is_valid_principal_array(jsonb, integer)' \
+    'GRANT EXECUTE ON FUNCTION knowledge.is_valid_group_array(jsonb, integer)' \
+    'GRANT EXECUTE ON FUNCTION knowledge.connector_inventory_json_digest(jsonb)' \
+    'GRANT EXECUTE ON FUNCTION knowledge.begin_connector_snapshot(text, text, text, integer)' \
+    'GRANT EXECUTE ON FUNCTION knowledge.block_connector_snapshot(text, text, text)' \
+    'GRANT EXECUTE ON FUNCTION knowledge.complete_connector_snapshot(text, text, text)' \
+    'GRANT SELECT ON knowledge.connector_snapshots, knowledge.connector_inventory' \
+    'GRANT SELECT ON knowledge.connector_sources TO knowledge_ingestion' \
+    'GRANT UPDATE (claim_holder, claimed_at, claim_expires_at)' \
+    'GRANT EXECUTE ON FUNCTION knowledge.complete_connector_present(uuid)' \
+    'GRANT EXECUTE ON FUNCTION knowledge.apply_connector_tombstone(uuid)' \
+    'INSERT INTO knowledge.schema_migrations (version)' \
+    'VALUES (3)'; do
+    rg --fixed-strings --quiet "${required_sql}" <<<"${schema_v3_sql}" ||
+      fail "knowledge schema v3 SQL is missing: ${required_sql}"
+  done
+  if rg --multiline --multiline-dotall --quiet \
+    'GRANT[^;]*ON (FUNCTION )?knowledge\.(chunks|ingestion_[a-z_]+|search_authorized_[a-z_]+)[^;]*TO knowledge_connector;' \
+    <<<"${schema_v3_sql}"; then
+    fail "knowledge connector gained chunk, embedding, ingestion, or retrieval authority"
+  fi
+  if rg --multiline --multiline-dotall --quiet \
+    'GRANT[^;]*(INSERT|UPDATE|DELETE|TRUNCATE|REFERENCES|TRIGGER|ALL)[^;]*ON knowledge\.(connector_snapshots|connector_sources)[^;]*TO knowledge_connector;|GRANT[^;]*(SELECT|UPDATE|DELETE|TRUNCATE|REFERENCES|TRIGGER|ALL)[^;]*ON knowledge\.connector_inventory[^;]*TO knowledge_connector;' \
+    <<<"${schema_v3_sql}"; then
+    fail "knowledge connector gained connector-state read or mutation authority"
+  fi
+  if rg --multiline --multiline-dotall --quiet \
+    'GRANT[^;]*(INSERT|DELETE|TRUNCATE)[^;]*ON knowledge\.connector_[a-z_]+[^;]*TO knowledge_ingestion;' \
+    <<<"${schema_v3_sql}"; then
+    fail "knowledge ingestion gained connector publication or deletion authority"
+  fi
+  if rg --multiline --multiline-dotall --quiet \
+    'GRANT UPDATE[[:space:]]+ON knowledge\.connector_[a-z_]+[^;]*TO knowledge_ingestion;|GRANT[^;]*(INSERT|DELETE|TRUNCATE|REFERENCES|TRIGGER|ALL)[^;]*ON knowledge\.connector_[a-z_]+[^;]*TO knowledge_ingestion;' \
+    <<<"${schema_v3_sql}"; then
+    fail "knowledge ingestion gained broad connector-state mutation authority"
+  fi
+  if rg --multiline --multiline-dotall --quiet \
+    'GRANT EXECUTE ON FUNCTION knowledge\.(canonical_jsonb_text|connector_inventory_[a-z_]+|begin_connector_snapshot|complete_connector_snapshot)[^;]*TO knowledge_ingestion;' \
+    <<<"${schema_v3_sql}"; then
+    fail "knowledge ingestion can publish or complete connector inventories"
+  fi
+
+  for required_sql in \
+    '\set ON_ERROR_STOP on' \
+    'BEGIN;' \
+    'CREATE TEMPORARY TABLE connector_snapshot_input' \
+    "\\copy connector_snapshot_input (payload) FROM '/sources/.connector/git-markdown/current.json'" \
+    'jsonb_array_length(snapshot->'"'"'sources'"'"')' \
+    "snapshot ? 'blocked'" \
+    'knowledge.block_connector_snapshot(' \
+    'jsonb_agg(' \
+    'jsonb_build_object(' \
+    "'source_id'" \
+    "'source_path'" \
+    "'source_revision'" \
+    "'content_digest'" \
+    "'acl_digest'" \
+    "'metadata'" \
+    'knowledge.connector_inventory_json_digest(canonical_inventory)' \
+    'knowledge.begin_connector_snapshot(' \
+    'INSERT INTO knowledge.connector_inventory (' \
+    'knowledge.complete_connector_snapshot(' \
+    'COMMIT;'; do
+    rg --fixed-strings --quiet "${required_sql}" <<<"${connector_publish_sql}" ||
+      fail "connector publish SQL is missing: ${required_sql}"
+  done
+  if rg --quiet 'knowledge\.(chunks|ingestion_embedding_cache)' <<<"${connector_publish_sql}"; then
+    fail "connector publisher touches chunks or embedding state"
+  fi
+  if rg --fixed-strings --quiet 'connector snapshot has unapplied actions' <<<"${schema_v3_sql}"; then
+    fail "newer complete connector inventories cannot preempt stale desired state"
+  fi
+
+  for required_sql in \
+    '\set ON_ERROR_STOP on' \
+    'BEGIN;' \
+    'WHERE claim_expires_at <= transaction_timestamp()' \
+    'snapshots.enumeration_complete' \
+    'snapshots.blocked_at IS NULL' \
+    'FOR UPDATE OF sources SKIP LOCKED' \
+    'LIMIT 1' \
+    "transaction_timestamp() + interval '35 minutes'" \
+    '\o /work/connector-action.json' \
+    '\o /work/connector-kind' \
+    "'action', sources.desired_action" \
+    "'source_id', sources.source_id" \
+    "'content_digest', sources.desired_digest" \
+    "'acl_digest', sources.desired_acl_digest" \
+    "'claim_expires_at', selected.claim_expires_at" \
+    'sources.applied_snapshot_revision IS DISTINCT FROM sources.desired_snapshot_revision' \
+    'sources.applied_inventory_digest IS DISTINCT FROM sources.desired_inventory_digest' \
+    'COMMIT;'; do
+    rg --fixed-strings --quiet "${required_sql}" <<<"${connector_claim_sql}" ||
+      fail "connector claim SQL is missing: ${required_sql}"
+  done
+  connector_claim_limit_count="$(rg --fixed-strings --count 'LIMIT 1' <<<"${connector_claim_sql}")"
+  [[ "${connector_claim_limit_count}" -eq 1 ]] ||
+    fail "connector claim must select exactly one bounded action"
+
+  for required_sql in \
+    '\set ON_ERROR_STOP on' \
+    'BEGIN;' \
+    'DELETE FROM knowledge.ingestion_leases' \
+    'INSERT INTO knowledge.ingestion_leases (name, holder, expires_at)' \
+    "'chunks-v1'" \
+    'SELECT knowledge.apply_connector_tombstone(' \
+    'DELETE FROM knowledge.ingestion_leases' \
+    'COMMIT;'; do
+    rg --fixed-strings --quiet "${required_sql}" <<<"${connector_tombstone_sql}" ||
+      fail "connector tombstone SQL is missing: ${required_sql}"
+  done
+  publish_begin_count="$(rg --fixed-strings --count 'BEGIN;' <<<"${connector_publish_sql}")"
+  publish_commit_count="$(rg --fixed-strings --count 'COMMIT;' <<<"${connector_publish_sql}")"
+  claim_begin_count="$(rg --fixed-strings --count 'BEGIN;' <<<"${connector_claim_sql}")"
+  claim_commit_count="$(rg --fixed-strings --count 'COMMIT;' <<<"${connector_claim_sql}")"
+  tombstone_begin_count="$(rg --fixed-strings --count 'BEGIN;' <<<"${connector_tombstone_sql}")"
+  tombstone_commit_count="$(rg --fixed-strings --count 'COMMIT;' <<<"${connector_tombstone_sql}")"
+  [[ "${publish_begin_count}" -eq 1 ]] &&
+    [[ "${publish_commit_count}" -eq 1 ]] &&
+    [[ "${claim_begin_count}" -eq 1 ]] &&
+    [[ "${claim_commit_count}" -eq 1 ]] &&
+    [[ "${tombstone_begin_count}" -eq 1 ]] &&
+    [[ "${tombstone_commit_count}" -eq 1 ]] ||
+    fail "connector SQL programs must each expose one atomic transaction"
+
+  publish_digest_line="$(
+    rg --line-number --fixed-strings --max-count 1 \
+      'inventory_digest := knowledge.connector_inventory_json_digest' \
+      <<<"${connector_publish_sql}" | cut -d: -f1
+  )"
+  publish_begin_line="$(
+    rg --line-number --fixed-strings --max-count 1 \
+      'PERFORM knowledge.begin_connector_snapshot' <<<"${connector_publish_sql}" | cut -d: -f1
+  )"
+  publish_insert_line="$(
+    rg --line-number --fixed-strings --max-count 1 \
+      'INSERT INTO knowledge.connector_inventory' <<<"${connector_publish_sql}" | cut -d: -f1
+  )"
+  publish_complete_line="$(
+    rg --line-number --fixed-strings --max-count 1 \
+      'PERFORM knowledge.complete_connector_snapshot' <<<"${connector_publish_sql}" | cut -d: -f1
+  )"
+  publish_commit_line="$(
+    rg --line-number --fixed-strings --max-count 1 'COMMIT;' \
+      <<<"${connector_publish_sql}" | cut -d: -f1
+  )"
+  if ! ((publish_digest_line < publish_begin_line && \
+    publish_begin_line < publish_insert_line && \
+    publish_insert_line < publish_complete_line && \
+    publish_complete_line < publish_commit_line)); then
+    fail "connector publisher does not validate, stage, complete, and commit in order"
+  fi
+
+  tombstone_insert_line="$(
+    rg --line-number --fixed-strings --max-count 1 \
+      'INSERT INTO knowledge.ingestion_leases' <<<"${connector_tombstone_sql}" | cut -d: -f1
+  )"
+  tombstone_apply_line="$(
+    rg --line-number --fixed-strings --max-count 1 \
+      'SELECT knowledge.apply_connector_tombstone' <<<"${connector_tombstone_sql}" | cut -d: -f1
+  )"
+  tombstone_release_line="$(
+    rg --line-number --fixed-strings 'DELETE FROM knowledge.ingestion_leases' \
+      <<<"${connector_tombstone_sql}" | tail -n 1 | cut -d: -f1
+  )"
+  tombstone_commit_line="$(
+    rg --line-number --fixed-strings --max-count 1 'COMMIT;' \
+      <<<"${connector_tombstone_sql}" | cut -d: -f1
+  )"
+  if ! ((tombstone_insert_line < tombstone_apply_line && \
+    tombstone_apply_line < tombstone_release_line && \
+    tombstone_release_line < tombstone_commit_line)); then
+    fail "connector tombstone does not delete and advance within the shared lease transaction"
+  fi
+
+  for required_sql in \
     'pending chunk set must contain between 1 and 512 rows' \
     'pending chunk set must contain exactly one source' \
     'WHERE expires_at <= transaction_timestamp()' \
@@ -524,16 +864,23 @@ static_contract() {
     rg --line-number --fixed-strings --max-count 1 \
       'DELETE FROM knowledge.ingestion_final AS final' <<<"${plan_sql}" | cut -d: -f1
   )"
-  if ! ((lease_reclaim_line < lease_claim_line &&
-    lease_claim_line < pending_cleanup_line &&
+  if ! ((lease_reclaim_line < lease_claim_line && \
+    lease_claim_line < pending_cleanup_line && \
     pending_cleanup_line < final_cleanup_line)); then
     fail "knowledge ingestion plan must claim the lease before locking staging receipts"
   fi
-  [[ "$(rg --only-matching 'transaction_timestamp\(\)' <<<"${plan_sql}" | wc -l)" -eq 4 ]] ||
+  lease_clock_count="$(rg --only-matching 'transaction_timestamp\(\)' <<<"${plan_sql}" | wc -l)"
+  [[ "${lease_clock_count}" -eq 4 ]] ||
     fail "knowledge ingestion lease decisions must share exactly one transaction-stable clock"
-  [[ "$(rg --fixed-strings --count 'DELETE FROM knowledge.ingestion_pending' <<<"${plan_sql}")" -eq 2 ]] ||
+  pending_delete_count="$(
+    rg --fixed-strings --count 'DELETE FROM knowledge.ingestion_pending' <<<"${plan_sql}"
+  )"
+  [[ "${pending_delete_count}" -eq 2 ]] ||
     fail "knowledge ingestion plan must clean orphan and current-run pending receipts"
-  [[ "$(rg --fixed-strings --count 'DELETE FROM knowledge.ingestion_final' <<<"${plan_sql}")" -eq 2 ]] ||
+  final_delete_count="$(
+    rg --fixed-strings --count 'DELETE FROM knowledge.ingestion_final' <<<"${plan_sql}"
+  )"
+  [[ "${final_delete_count}" -eq 2 ]] ||
     fail "knowledge ingestion plan must clean orphan and current-run final receipts"
   for current_reset in ingestion_pending ingestion_final; do
     rg --multiline --quiet \
@@ -613,6 +960,48 @@ static_contract() {
     rg --fixed-strings --quiet "${required_sql}" <<<"${write_sql}" ||
       fail "knowledge ingestion write SQL is missing: ${required_sql}"
   done
+  for required_sql in \
+    '\if :{?connector_action}' \
+    "SELECT knowledge.complete_connector_present(:'run_id'::uuid);"; do
+    rg --fixed-strings --quiet "${required_sql}" <<<"${write_sql}" ||
+      fail "knowledge ingestion write SQL omits the connector completion hook: ${required_sql}"
+  done
+  connector_complete_line="$(
+    rg --line-number --fixed-strings --max-count 1 \
+      'SELECT knowledge.complete_connector_present' <<<"${write_sql}" | cut -d: -f1
+  )"
+  pending_cleanup_line="$(
+    rg --line-number --fixed-strings \
+      'DELETE FROM knowledge.ingestion_pending' <<<"${write_sql}" | tail -n 1 | cut -d: -f1
+  )"
+  final_cleanup_line="$(
+    rg --line-number --fixed-strings \
+      'DELETE FROM knowledge.ingestion_final' <<<"${write_sql}" | tail -n 1 | cut -d: -f1
+  )"
+  write_lease_release_line="$(
+    rg --line-number --fixed-strings 'DELETE FROM knowledge.ingestion_leases' \
+      <<<"${write_sql}" | tail -n 1 | cut -d: -f1
+  )"
+  write_commit_line="$(
+    rg --line-number --fixed-strings --max-count 1 'COMMIT;' \
+      <<<"${write_sql}" | cut -d: -f1
+  )"
+  if ! ((connector_complete_line < pending_cleanup_line && \
+    pending_cleanup_line < final_cleanup_line && \
+    final_cleanup_line < write_lease_release_line && \
+    write_lease_release_line < write_commit_line)); then
+    fail "connector source completion must share the final chunk transaction"
+  fi
+
+  yq -e '
+    .kind == "CronJob" and
+    .metadata.name == "knowledge-ingestion" and
+    .spec.schedule == "2-59/5 * * * *" and
+    .spec.suspend == true and
+    .spec.concurrencyPolicy == "Forbid" and
+    .spec.startingDeadlineSeconds == 300
+  ' "${INGESTION_CRONJOB}" >/dev/null ||
+    fail "knowledge ingestion schedule no longer offsets acquisition or drains one action safely"
 
   yq -e '
     .kind == "Cluster" and .nodes[0].role == "control-plane" and
@@ -706,6 +1095,10 @@ runtime_contract() {
     --type kubernetes.io/basic-auth \
     --from-literal username=knowledge_ingestion \
     --from-literal password="${INGESTION_PASSWORD}" >/dev/null
+  kubectl --namespace "${namespace}" create secret generic pg-knowledge-connector \
+    --type kubernetes.io/basic-auth \
+    --from-literal username=knowledge_connector \
+    --from-literal password="${CONNECTOR_PASSWORD}" >/dev/null
   kubectl --namespace "${namespace}" create secret generic pg-knowledge-retrieval \
     --type kubernetes.io/basic-auth \
     --from-literal username=knowledge_retrieval \
@@ -718,6 +1111,7 @@ runtime_contract() {
     .spec.postgresql.pg_hba = [
       "hostssl knowledge knowledge_owner all scram-sha-256",
       "hostssl knowledge knowledge_ingestion all scram-sha-256",
+      "hostssl knowledge knowledge_connector all scram-sha-256",
       "hostssl knowledge knowledge_retrieval all scram-sha-256",
       "hostssl all all all reject",
       "hostnossl all all all reject"
@@ -738,17 +1132,21 @@ runtime_contract() {
       (.kind == "DatabaseRole" and
         (.metadata.name == "knowledge-owner" or
           .metadata.name == "knowledge-ingestion" or
+          .metadata.name == "knowledge-connector" or
           .metadata.name == "knowledge-retrieval")) or
       (.kind == "Database" and .metadata.name == "knowledge") or
       (.kind == "ConfigMap" and
         (.metadata.name == "knowledge-schema-v1" or
-          .metadata.name == "knowledge-schema-v2")) or
+          .metadata.name == "knowledge-schema-v2" or
+          .metadata.name == "knowledge-schema-v3")) or
       (.kind == "Job" and
         (.metadata.name == "knowledge-schema-v1" or
-          .metadata.name == "knowledge-schema-v2")) or
+          .metadata.name == "knowledge-schema-v2" or
+          .metadata.name == "knowledge-schema-v3")) or
       (.kind == "NetworkPolicy" and
         (.metadata.name == "knowledge-schema-v1" or
-          .metadata.name == "knowledge-schema-v2"))
+          .metadata.name == "knowledge-schema-v2" or
+          .metadata.name == "knowledge-schema-v3"))
     )
   ' "${runtime_render}" >"${RUNTIME_WORKDIR}/knowledge.raw.yaml"
   flux envsubst --strict <"${RUNTIME_WORKDIR}/knowledge.raw.yaml" \
@@ -767,6 +1165,12 @@ runtime_contract() {
     kubectl --namespace "${namespace}" get cluster,databaserole,database,job,pod >&2 || true
     kubectl --namespace "${namespace}" logs job/knowledge-schema-v2 >&2 || true
     fail "knowledge schema v2 Job did not complete"
+  fi
+  if ! kubectl --namespace "${namespace}" wait job/knowledge-schema-v3 \
+    --for=condition=Complete --timeout=8m >/dev/null; then
+    kubectl --namespace "${namespace}" get cluster,databaserole,database,job,pod >&2 || true
+    kubectl --namespace "${namespace}" logs job/knowledge-schema-v3 >&2 || true
+    fail "knowledge schema v3 Job did not complete"
   fi
 
   primary="$(kubectl --namespace "${namespace}" get cluster platform-pg \
@@ -792,6 +1196,12 @@ runtime_contract() {
       psql --no-psqlrc --set=ON_ERROR_STOP=1 \
       --dbname='host=127.0.0.1 dbname=knowledge user=knowledge_ingestion sslmode=require' "$@"
   }
+  connector_sql() {
+    kubectl --namespace "${namespace}" exec --stdin "pod/${primary}" --container postgres -- \
+      env PGPASSWORD="${CONNECTOR_PASSWORD}" \
+      psql --no-psqlrc --set=ON_ERROR_STOP=1 \
+      --dbname='host=127.0.0.1 dbname=knowledge user=knowledge_connector sslmode=require' "$@"
+  }
   retrieval_sql() {
     kubectl --namespace "${namespace}" exec --stdin "pod/${primary}" --container postgres -- \
       env PGPASSWORD="${RETRIEVAL_PASSWORD}" \
@@ -812,6 +1222,9 @@ runtime_contract() {
     --from-file="gc.sql=${INGESTION_GC_SQL}" \
     --from-file="plan.sql=${INGESTION_PLAN_SQL}" \
     --from-file="write.sql=${INGESTION_WRITE_SQL}" \
+    --from-file="connector-publish.sql=${CONNECTOR_PUBLISH_SQL}" \
+    --from-file="connector-claim.sql=${CONNECTOR_CLAIM_SQL}" \
+    --from-file="connector-tombstone.sql=${CONNECTOR_TOMBSTONE_SQL}" \
     --dry-run=client \
     --output=yaml |
     kubectl apply --filename=- >/dev/null
@@ -889,6 +1302,8 @@ spec:
           readOnly: true
         - name: work
           mountPath: /work
+        - name: work
+          mountPath: /sources
         - name: tmp
           mountPath: /tmp
   volumes:
@@ -933,8 +1348,8 @@ YAML
     local run_id="$1"
     local source="${2:-/work/checkpoint.ready}"
     ingestion_client_exec /bin/sh -ceu \
-      'exec psql --quiet --no-psqlrc --set="run_id=$1" \
-        --file=/runtime/checkpoint.sql <"$2"' \
+      "exec psql --quiet --no-psqlrc --set=\"run_id=\$1\" \\
+        --file=/runtime/checkpoint.sql <\"\$2\"" \
       -- "${run_id}" "${source}"
   }
   ingestion_client_gc() {
@@ -944,6 +1359,28 @@ YAML
     local run_id="$1"
     ingestion_client_exec psql --quiet --no-psqlrc \
       --set="run_id=${run_id}" --file=/runtime/write.sql
+  }
+  connector_client_publish() {
+    ingestion_client_exec env \
+      PGUSER=knowledge_connector \
+      "PGPASSWORD=${CONNECTOR_PASSWORD}" \
+      psql --quiet --no-psqlrc --file=/runtime/connector-publish.sql
+  }
+  connector_client_claim() {
+    local run_id="$1"
+    ingestion_client_exec psql --quiet --no-psqlrc \
+      --set="run_id=${run_id}" --file=/runtime/connector-claim.sql
+  }
+  connector_client_commit() {
+    local run_id="$1"
+    ingestion_client_exec psql --quiet --no-psqlrc \
+      --set="run_id=${run_id}" --set=connector_action=true \
+      --file=/runtime/write.sql
+  }
+  connector_client_tombstone() {
+    local run_id="$1"
+    ingestion_client_exec psql --quiet --no-psqlrc \
+      --set="run_id=${run_id}" --file=/runtime/connector-tombstone.sql
   }
   ingestion_client_query() {
     local query="$1"
@@ -1002,6 +1439,104 @@ YAML
         embedding: [range(0; 1024) | if . == $axis then 1 else 0 end]
       }'
   }
+  connector_acl_digest() {
+    local metadata="$1"
+    connector_sql --quiet --tuples-only --no-align \
+      --set="metadata=${metadata}" <<'SQL'
+WITH input AS (SELECT :'metadata'::jsonb AS metadata)
+SELECT knowledge.connector_inventory_json_digest(
+  jsonb_build_object(
+    'classification', metadata->'classification',
+    'allowed_principals', metadata->'allowed_principals',
+    'allowed_groups', metadata->'allowed_groups'
+  )
+)
+FROM input;
+SQL
+  }
+  connector_content_digest() {
+    CONNECTOR_CONTENT="$1" python -c '
+import hashlib
+import os
+
+print("sha256:" + hashlib.sha256(os.environ["CONNECTOR_CONTENT"].encode()).hexdigest())
+'
+  }
+  connector_inventory_digest() {
+    local inventory="$1"
+    connector_sql --quiet --tuples-only --no-align \
+      --set="inventory=${inventory}" <<'SQL'
+SELECT knowledge.connector_inventory_json_digest(:'inventory'::jsonb);
+SQL
+  }
+  connector_inventory_digest_python() {
+    CONNECTOR_INVENTORY="$1" python -c '
+import hashlib
+import json
+import os
+
+value = json.loads(os.environ["CONNECTOR_INVENTORY"])
+canonical = json.dumps(
+    value,
+    ensure_ascii=False,
+    sort_keys=True,
+    separators=(",", ":"),
+).encode()
+print("sha256:" + hashlib.sha256(canonical).hexdigest())
+'
+  }
+  connector_snapshot() {
+    local revision="$1" artifact_digest="$2" inventory="$3" inventory_digest
+    inventory_digest="$(connector_inventory_digest "${inventory}")"
+    jq -cn \
+      --arg revision "${revision}" \
+      --arg artifact_digest "${artifact_digest}" \
+      --arg inventory_digest "${inventory_digest}" \
+      --argjson inventory "${inventory}" '
+        {
+          connector_id: "git-markdown",
+          snapshot_revision: $revision,
+          artifact_digest: $artifact_digest,
+          inventory_digest: $inventory_digest,
+          source_count: ($inventory | length),
+          sources: ($inventory | map(. + {
+            connector_id: "git-markdown",
+            snapshot_revision: $revision,
+            inventory_digest: $inventory_digest
+          }))
+        }
+      '
+  }
+  connector_publish_snapshot() {
+    local snapshot="$1"
+    ingestion_client_exec mkdir -p /sources/.connector/git-markdown
+    ingestion_client_write /sources/.connector/git-markdown/current.json <<<"${snapshot}"
+    connector_client_publish
+  }
+  connector_pending_record() {
+    local action="$1" chunk_id="$2" content="$3"
+    jq -cn \
+      --argjson action "${action}" \
+      --arg chunk_id "${chunk_id}" \
+      --arg content "${content}" '
+        {
+          chunk_id: $chunk_id,
+          content: $content,
+          metadata: ($action.metadata | .source.location = "chunk:000001")
+        }
+      '
+  }
+  connector_final_record() {
+    local record axis="$4"
+    record="$(connector_pending_record "$1" "$2" "$3")"
+    jq -cn \
+      --argjson record "${record}" \
+      --argjson axis "${axis}" '
+        $record + {
+          embedding: [range(0; 1024) | if . == $axis then 1 else 0 end]
+        }
+      '
+  }
   assert_ingestion_staging_empty() {
     local counts
     counts="$(ingestion_client_query "
@@ -1038,7 +1573,8 @@ YAML
     local rerun="$5"
     local axis="$6"
     local sample_root input_root raw_root source_root manifest_path pending_path
-    local plan_path final_path source_id expected_count persisted_rows first_xmins rerun_xmins
+    local plan_path final_path checkpoint_path source_id expected_count persisted_rows
+    local first_xmins rerun_xmins remaining_count
 
     sample_root="${RUNTIME_WORKDIR}/docling-${label}"
     input_root="${sample_root}/input"
@@ -1048,6 +1584,7 @@ YAML
     pending_path="${sample_root}/pending.jsonl"
     plan_path="${sample_root}/plan.jsonl"
     final_path="${sample_root}/chunks.jsonl"
+    checkpoint_path="${sample_root}/checkpoint.jsonl"
     mkdir -p "${input_root}" "${raw_root}" "${source_root}"
     chmod 2770 "${raw_root}"
 
@@ -1159,18 +1696,17 @@ YAML
         embedding: [range(0; 1024) | if . == $axis then 1 else 0 end]
       }
     ' "${plan_path}" >"${final_path}"
+    jq -cs '
+      unique_by(.content)[] |
+      {
+        profile: "bge-m3-1024-v1",
+        content,
+        embedding
+      }
+    ' "${final_path}" >"${checkpoint_path}"
     while IFS= read -r checkpoint; do
       ingestion_client_checkpoint "${first_run}" <<<"${checkpoint}"
-    done < <(
-      jq -cs '
-        unique_by(.content)[] |
-        {
-          profile: "bge-m3-1024-v1",
-          content,
-          embedding
-        }
-      ' "${final_path}"
-    )
+    done <"${checkpoint_path}"
     ingestion_client_write /work/chunks.jsonl <"${final_path}"
     ingestion_client_commit "${first_run}" >/dev/null
     assert_ingestion_staging_empty
@@ -1239,23 +1775,27 @@ YAML
       DELETE FROM knowledge.chunks
       WHERE metadata #>> '{source,id}' = '${source_id}'
     " >/dev/null
-    [[ "$(ingestion_client_query "
+    remaining_count="$(ingestion_client_query "
       SELECT count(*) FROM knowledge.chunks
       WHERE metadata #>> '{source,id}' = '${source_id}'
-    ")" == "0" ]] || fail "real ${label} sample cleanup left knowledge rows"
+    ")"
+    [[ "${remaining_count}" == "0" ]] || fail "real ${label} sample cleanup left knowledge rows"
     assert_ingestion_staging_empty
     assert_embedding_cache_count 0
   }
 
   local actual
   actual="$(admin_sql postgres --tuples-only --no-align --command="
-    SELECT count(*) = 3
+    SELECT count(*) = 4
     FROM pg_roles
-    WHERE rolname IN ('knowledge_owner', 'knowledge_ingestion', 'knowledge_retrieval')
+    WHERE rolname IN (
+      'knowledge_owner', 'knowledge_ingestion', 'knowledge_connector', 'knowledge_retrieval'
+    )
       AND rolcanlogin AND NOT rolinherit AND NOT rolsuper AND NOT rolcreatedb
       AND NOT rolcreaterole AND NOT rolreplication AND NOT rolbypassrls
       AND ((rolname = 'knowledge_owner' AND rolconnlimit = 4)
         OR (rolname = 'knowledge_ingestion' AND rolconnlimit = 4)
+        OR (rolname = 'knowledge_connector' AND rolconnlimit = 2)
         OR (rolname = 'knowledge_retrieval' AND rolconnlimit = 16))
   ")"
   [[ "${actual}" == "t" ]] || fail "runtime role attributes are not least-privilege"
@@ -1267,6 +1807,9 @@ YAML
       AND to_regclass('knowledge.chunks') IS NOT NULL
       AND to_regclass('knowledge.schema_migrations') IS NOT NULL
       AND to_regclass('knowledge.ingestion_embedding_cache') IS NOT NULL
+      AND to_regclass('knowledge.connector_snapshots') IS NOT NULL
+      AND to_regclass('knowledge.connector_inventory') IS NOT NULL
+      AND to_regclass('knowledge.connector_sources') IS NOT NULL
       AND (
         SELECT count(*) = 7
         FROM pg_constraint
@@ -1287,15 +1830,101 @@ YAML
       AND to_regprocedure(
         'knowledge.search_authorized_groups(vector,text[],text[],integer)'
       ) IS NOT NULL
+      AND to_regprocedure('knowledge.connector_inventory_json_digest(jsonb)') IS NOT NULL
+      AND to_regprocedure(
+        'knowledge.begin_connector_snapshot(text,text,text,integer)'
+      ) IS NOT NULL
+      AND to_regprocedure(
+        'knowledge.complete_connector_snapshot(text,text,text)'
+      ) IS NOT NULL
+      AND to_regprocedure('knowledge.complete_connector_present(uuid)') IS NOT NULL
+      AND to_regprocedure('knowledge.apply_connector_tombstone(uuid)') IS NOT NULL
       AND (SELECT count(*) = 5 FROM pg_indexes
         WHERE schemaname = 'knowledge' AND indexname IN (
 		  'chunks_classification_idx', 'chunks_principals_gin_idx',
 		  'chunks_groups_gin_idx', 'chunks_source_id_idx', 'chunks_embedding_hnsw_idx'
         ))
-      AND (SELECT array_agg(version ORDER BY version) = ARRAY[1, 2]
+      AND (SELECT array_agg(version ORDER BY version) = ARRAY[1, 2, 3]
         FROM knowledge.schema_migrations)
+      AND has_database_privilege('knowledge_connector', 'knowledge', 'CONNECT')
+      AND has_database_privilege('knowledge_connector', 'knowledge', 'TEMPORARY')
+      AND has_schema_privilege('knowledge_connector', 'knowledge', 'USAGE')
+      AND NOT has_schema_privilege('knowledge_connector', 'knowledge', 'CREATE')
+      AND has_table_privilege(
+        'knowledge_connector', 'knowledge.connector_snapshots', 'SELECT'
+      )
+      AND NOT has_table_privilege(
+        'knowledge_connector', 'knowledge.connector_snapshots', 'INSERT'
+      )
+      AND has_table_privilege(
+        'knowledge_connector', 'knowledge.connector_inventory', 'INSERT'
+      )
+      AND NOT has_table_privilege(
+        'knowledge_connector', 'knowledge.connector_inventory', 'SELECT'
+      )
+      AND NOT has_table_privilege(
+        'knowledge_connector', 'knowledge.connector_inventory', 'UPDATE'
+      )
+      AND NOT has_table_privilege(
+        'knowledge_connector', 'knowledge.connector_inventory', 'DELETE'
+      )
+      AND NOT has_table_privilege(
+        'knowledge_connector', 'knowledge.connector_sources', 'SELECT'
+      )
+      AND NOT has_table_privilege('knowledge_connector', 'knowledge.chunks', 'SELECT')
+      AND NOT has_table_privilege(
+        'knowledge_connector', 'knowledge.ingestion_embedding_cache', 'SELECT'
+      )
+      AND has_function_privilege(
+        'knowledge_connector', 'knowledge.is_full_mxid(text)', 'EXECUTE'
+      )
+      AND has_function_privilege(
+        'knowledge_connector',
+        'knowledge.is_valid_principal_array(jsonb,integer)',
+        'EXECUTE'
+      )
+      AND has_function_privilege(
+        'knowledge_connector',
+        'knowledge.is_valid_group_array(jsonb,integer)',
+        'EXECUTE'
+      )
+      AND has_function_privilege(
+        'knowledge_connector', 'knowledge.is_valid_metadata(jsonb)', 'EXECUTE'
+      )
+      AND has_function_privilege(
+        'knowledge_connector', 'knowledge.canonical_jsonb_text(jsonb)', 'EXECUTE'
+      )
+      AND has_function_privilege(
+        'knowledge_connector',
+        'knowledge.connector_inventory_json_digest(jsonb)',
+        'EXECUTE'
+      )
+      AND has_function_privilege(
+        'knowledge_connector',
+        'knowledge.begin_connector_snapshot(text,text,text,integer)',
+        'EXECUTE'
+      )
+      AND has_function_privilege(
+        'knowledge_connector',
+        'knowledge.complete_connector_snapshot(text,text,text)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'knowledge_connector',
+        'knowledge.connector_inventory_digest(text,text,text)',
+        'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'knowledge_connector', 'knowledge.complete_connector_present(uuid)', 'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'knowledge_connector', 'knowledge.apply_connector_tombstone(uuid)', 'EXECUTE'
+      )
       AND NOT has_table_privilege('knowledge_retrieval', 'knowledge.chunks', 'INSERT')
       AND has_table_privilege('knowledge_retrieval', 'knowledge.chunks', 'SELECT')
+      AND NOT has_table_privilege(
+        'knowledge_retrieval', 'knowledge.connector_snapshots', 'SELECT'
+      )
       AND has_database_privilege('knowledge_ingestion', 'knowledge', 'CONNECT')
       AND NOT has_database_privilege('knowledge_ingestion', 'knowledge', 'TEMPORARY')
       AND has_schema_privilege('knowledge_ingestion', 'public', 'USAGE')
@@ -1394,6 +2023,47 @@ YAML
       AND NOT has_function_privilege(
         'knowledge_ingestion',
         'knowledge.search_authorized_groups(vector,text[],text[],integer)',
+        'EXECUTE'
+      )
+      AND has_table_privilege(
+        'knowledge_ingestion', 'knowledge.connector_snapshots', 'SELECT'
+      )
+      AND has_table_privilege(
+        'knowledge_ingestion', 'knowledge.connector_inventory', 'SELECT'
+      )
+      AND NOT has_table_privilege(
+        'knowledge_ingestion', 'knowledge.connector_inventory', 'INSERT'
+      )
+      AND has_table_privilege(
+        'knowledge_ingestion', 'knowledge.connector_sources', 'SELECT'
+      )
+      AND NOT has_table_privilege(
+        'knowledge_ingestion', 'knowledge.connector_sources', 'UPDATE'
+      )
+      AND has_column_privilege(
+        'knowledge_ingestion', 'knowledge.connector_sources', 'claim_holder', 'UPDATE'
+      )
+      AND has_column_privilege(
+        'knowledge_ingestion', 'knowledge.connector_sources', 'claimed_at', 'UPDATE'
+      )
+      AND has_column_privilege(
+        'knowledge_ingestion', 'knowledge.connector_sources', 'claim_expires_at', 'UPDATE'
+      )
+      AND NOT has_column_privilege(
+        'knowledge_ingestion', 'knowledge.connector_sources', 'desired_action', 'UPDATE'
+      )
+      AND NOT has_column_privilege(
+        'knowledge_ingestion', 'knowledge.connector_sources', 'applied_action', 'UPDATE'
+      )
+      AND has_function_privilege(
+        'knowledge_ingestion', 'knowledge.complete_connector_present(uuid)', 'EXECUTE'
+      )
+      AND has_function_privilege(
+        'knowledge_ingestion', 'knowledge.apply_connector_tombstone(uuid)', 'EXECUTE'
+      )
+      AND NOT has_function_privilege(
+        'knowledge_ingestion',
+        'knowledge.begin_connector_snapshot(text,text,text,integer)',
         'EXECUTE'
       )
   ")"
@@ -2180,7 +2850,7 @@ SQL
   knowledge_pending_record \
     "${chunk_cache_bound}" "Hard-bound plan input" \
     "public" "@frank:org-a.example" "runtime-sql/cache-bound-current" |
-  ingestion_client_write /work/pending.jsonl
+    ingestion_client_write /work/pending.jsonl
   ingestion_client_plan "${run_cache_bound}" >/dev/null
   plan_json="$(ingestion_client_exec cat /work/plan.jsonl)"
   jq -e '
@@ -2682,6 +3352,13 @@ SQL
     --command='SELECT 1' >/dev/null 2>&1; then
     fail "knowledge ingestion role crossed the exact knowledge HBA boundary"
   fi
+  if kubectl --namespace "${namespace}" exec "pod/${primary}" --container postgres -- \
+    env PGPASSWORD="${CONNECTOR_PASSWORD}" \
+    psql --no-psqlrc --set=ON_ERROR_STOP=1 \
+    --dbname='host=127.0.0.1 dbname=unrelated_service user=knowledge_connector sslmode=require' \
+    --command='SELECT 1' >/dev/null 2>&1; then
+    fail "knowledge connector role crossed the exact knowledge HBA boundary"
+  fi
 
   echo "==> Verifying ACL prefilter indexes, materialization, exact sort, and separate HNSW"
   local query_vector matrix_plan classification_plan principal_plan group_plan hnsw_plan
@@ -2744,6 +3421,893 @@ SQL
 		all(.. | objects; .["Index Name"]? != "chunks_principals_gin_idx") and
 		all(.. | objects; .["Index Name"]? != "chunks_groups_gin_idx")
   ' <<<"${hnsw_plan}" >/dev/null || fail "vector-only plan was not independently HNSW-eligible"
+
+  echo "==> Exercising resumable connector snapshot, present, ACL, and tombstone SQL"
+  local connector_source_a connector_source_b connector_content_a connector_content_b
+  local connector_digest_a connector_digest_b connector_acl_alice connector_acl_alice_b
+  local connector_acl_bob
+  local connector_metadata_a_alice connector_metadata_b_alice connector_metadata_a_bob
+  local connector_metadata_invalid
+  local connector_inventory_bad connector_inventory_bad_metadata connector_inventory_preempt
+  local connector_inventory_revoke
+  local connector_inventory_v1 connector_inventory_v2
+  local connector_inventory_v1_db_digest connector_inventory_v1_python_digest
+  local connector_snapshot_bad connector_snapshot_bad_metadata connector_snapshot_blocked
+  local connector_snapshot_noop connector_snapshot_preempt connector_snapshot_revert
+  local connector_snapshot_revoke connector_snapshot_v1 connector_snapshot_v2
+  local connector_action_a connector_action_replay connector_action_b
+  local connector_action_acl connector_action_tombstone connector_action_reclaimed
+  local connector_action_tombstone_normalized connector_action_reclaimed_normalized
+  local connector_chunk_a connector_chunk_b connector_bad_acl
+  local connector_run_a connector_run_b connector_run_acl connector_run_old connector_run_new
+  connector_source_a="reference-docs/git-markdown/docs/a.md"
+  connector_source_b="reference-docs/git-markdown/docs/é.md"
+  connector_content_a="Stable connector source A content"
+  connector_content_b="Connector source B content"
+  connector_digest_a="$(connector_content_digest "${connector_content_a}")"
+  connector_digest_b="$(connector_content_digest "${connector_content_b}")"
+  printf -v connector_chunk_a 'sha256:%064x' 21
+  printf -v connector_chunk_b 'sha256:%064x' 22
+  printf -v connector_bad_acl 'sha256:%064x' 0
+  connector_run_a="00000000-0000-4000-8000-000000000021"
+  connector_run_b="00000000-0000-4000-8000-000000000022"
+  connector_run_acl="00000000-0000-4000-8000-000000000023"
+  connector_run_old="00000000-0000-4000-8000-000000000024"
+  connector_run_new="00000000-0000-4000-8000-000000000025"
+
+  connector_metadata_a_alice="$(jq -cn \
+    --arg source_id "${connector_source_a}" \
+    --arg revision "${connector_digest_a}" '
+      {
+        source: {
+          id: $source_id,
+          title: "Connector source A é",
+          locator: "git:flux-system/flux-system#docs/a.md",
+          revision: $revision
+        },
+        classification: "approved_non_public",
+        allowed_principals: [{kind: "matrix", principal: "@alice:org-a.example"}],
+        allowed_groups: []
+      }
+    ')"
+  connector_metadata_b_alice="$(jq -cn \
+    --arg source_id "${connector_source_b}" \
+    --arg revision "${connector_digest_b}" '
+      {
+        source: {
+          id: $source_id,
+          title: "Connector source B",
+          locator: "git:flux-system/flux-system#docs/é.md",
+          revision: $revision
+        },
+        classification: "approved_non_public",
+        allowed_principals: [{kind: "matrix", principal: "@alice:org-a.example"}],
+        allowed_groups: []
+      }
+    ')"
+  connector_metadata_a_bob="$(jq -cn \
+    --arg source_id "${connector_source_a}" \
+    --arg revision "${connector_digest_a}" '
+      {
+        source: {
+          id: $source_id,
+          title: "Connector source A é",
+          locator: "git:flux-system/flux-system#docs/a.md",
+          revision: $revision
+        },
+        classification: "approved_non_public",
+        allowed_principals: [{kind: "matrix", principal: "@bob:org-a.example"}],
+        allowed_groups: []
+      }
+    ')"
+  connector_acl_alice="$(connector_acl_digest "${connector_metadata_a_alice}")"
+  connector_acl_alice_b="$(connector_acl_digest "${connector_metadata_b_alice}")"
+  [[ "${connector_acl_alice}" == "${connector_acl_alice_b}" ]] ||
+    fail "equal connector ACL operands produced different canonical digests"
+  connector_acl_bob="$(connector_acl_digest "${connector_metadata_a_bob}")"
+  [[ "${connector_acl_alice}" != "${connector_acl_bob}" ]] ||
+    fail "changed connector ACL operands retained the old canonical digest"
+  connector_metadata_invalid="$(jq -c 'del(.source.locator)' <<<"${connector_metadata_a_alice}")"
+
+  connector_inventory_bad="$(jq -cn \
+    --arg source_id "${connector_source_a}" \
+    --arg revision "${connector_digest_a}" \
+    --arg content_digest "${connector_digest_a}" \
+    --arg acl_digest "${connector_bad_acl}" \
+    --argjson metadata "${connector_metadata_a_alice}" '
+      [{
+        source_id: $source_id,
+        source_path: "docs/a.md",
+        source_revision: $revision,
+        content_digest: $content_digest,
+        acl_digest: $acl_digest,
+        metadata: $metadata
+      }]
+    ')"
+  connector_snapshot_bad="$(connector_snapshot \
+    "git-invalid-acl" \
+    "sha256:9999999999999999999999999999999999999999999999999999999999999999" \
+    "${connector_inventory_bad}")"
+  if connector_publish_snapshot "${connector_snapshot_bad}" >/dev/null 2>&1; then
+    fail "connector publisher accepted an ACL digest unrelated to the validated metadata"
+  fi
+  actual="$(ingestion_client_query "
+    SELECT
+      (SELECT count(*) FROM knowledge.connector_snapshots) || '|' ||
+      (SELECT count(*) FROM knowledge.connector_inventory) || '|' ||
+      (SELECT count(*) FROM knowledge.connector_sources)
+  ")"
+  [[ "${actual}" == "0|0|0" ]] ||
+    fail "rejected connector ACL publication left partial database state"
+
+  connector_inventory_bad_metadata="$(jq -cn \
+    --arg source_id "${connector_source_a}" \
+    --arg revision "${connector_digest_a}" \
+    --arg content_digest "${connector_digest_a}" \
+    --arg acl_digest "${connector_acl_alice}" \
+    --argjson metadata "${connector_metadata_invalid}" '
+      [{
+        source_id: $source_id,
+        source_path: "docs/a.md",
+        source_revision: $revision,
+        content_digest: $content_digest,
+        acl_digest: $acl_digest,
+        metadata: $metadata
+      }]
+    ')"
+  connector_snapshot_bad_metadata="$(connector_snapshot \
+    "git-invalid-metadata" \
+    "sha256:8888888888888888888888888888888888888888888888888888888888888888" \
+    "${connector_inventory_bad_metadata}")"
+  if connector_publish_snapshot "${connector_snapshot_bad_metadata}" >/dev/null 2>&1; then
+    fail "connector publisher accepted metadata the materializer cannot consume"
+  fi
+  actual="$(ingestion_client_query "
+    SELECT
+      (SELECT count(*) FROM knowledge.connector_snapshots) || '|' ||
+      (SELECT count(*) FROM knowledge.connector_inventory) || '|' ||
+      (SELECT count(*) FROM knowledge.connector_sources)
+  ")"
+  [[ "${actual}" == "0|0|0" ]] ||
+    fail "rejected connector metadata publication left partial database state"
+
+  connector_inventory_v1="$(jq -cn \
+    --arg source_a "${connector_source_a}" \
+    --arg source_b "${connector_source_b}" \
+    --arg digest_a "${connector_digest_a}" \
+    --arg digest_b "${connector_digest_b}" \
+    --arg acl_digest "${connector_acl_alice}" \
+    --argjson metadata_a "${connector_metadata_a_alice}" \
+    --argjson metadata_b "${connector_metadata_b_alice}" '
+      [
+        {
+          source_id: $source_a,
+          source_path: "docs/a.md",
+          source_revision: $digest_a,
+          content_digest: $digest_a,
+          acl_digest: $acl_digest,
+          metadata: $metadata_a
+        },
+        {
+          source_id: $source_b,
+          source_path: "docs/é.md",
+          source_revision: $digest_b,
+          content_digest: $digest_b,
+          acl_digest: $acl_digest,
+          metadata: $metadata_b
+        }
+      ] | sort_by(.source_id)
+    ')"
+  connector_inventory_v1_db_digest="$(connector_inventory_digest "${connector_inventory_v1}")"
+  connector_inventory_v1_python_digest="$(
+    connector_inventory_digest_python "${connector_inventory_v1}"
+  )"
+  [[ "${connector_inventory_v1_db_digest}" == "${connector_inventory_v1_python_digest}" ]] ||
+    fail "PostgreSQL and the UTF-8 connector serializer disagreed on canonical inventory digest"
+  connector_snapshot_v1="$(connector_snapshot \
+    "git-snapshot-v1" \
+    "sha256:1111111111111111111111111111111111111111111111111111111111111111" \
+    "${connector_inventory_v1}")"
+  connector_publish_snapshot "${connector_snapshot_v1}" >/dev/null
+  actual="$(ingestion_client_query "
+    SELECT enumeration_complete
+      AND applied_revision IS NULL
+      AND (SELECT count(*) FROM knowledge.connector_sources
+        WHERE desired_action = 'present') = 2
+      AND (SELECT count(*) FROM knowledge.connector_sources
+        WHERE applied_action IS NOT NULL) = 0
+    FROM knowledge.connector_snapshots
+    WHERE connector_id = 'git-markdown'
+  ")"
+  [[ "${actual}" == "t" ]] ||
+    fail "complete connector inventory advanced before both sources were applied"
+
+  if ingestion_sql --quiet --command="
+    UPDATE knowledge.connector_sources
+    SET claim_holder = '00000000-0000-4000-8000-000000000099'::uuid,
+        claimed_at = clock_timestamp(),
+        claim_expires_at = NULL
+    WHERE source_id = '${connector_source_a}'
+  " >/dev/null 2>&1; then
+    fail "connector source accepted a claim holder without a bounded expiry"
+  fi
+
+  connector_client_claim "${connector_run_a}" >/dev/null
+  connector_action_a="$(ingestion_client_exec cat /work/connector-action.json)"
+  jq -e \
+    --arg source_id "${connector_source_a}" \
+    --arg digest "${connector_digest_a}" \
+    --arg acl_digest "${connector_acl_alice}" \
+    --argjson metadata "${connector_metadata_a_alice}" '
+      .connector_id == "git-markdown" and
+      .source_id == $source_id and
+      .source_path == "docs/a.md" and
+      .action == "present" and
+      .source_revision == $digest and
+      .content_digest == $digest and
+      .acl_digest == $acl_digest and
+      .metadata == $metadata and
+      .snapshot_revision == "git-snapshot-v1" and
+      (.claim_expires_at | type) == "string"
+    ' <<<"${connector_action_a}" >/dev/null || {
+    echo "connector action: ${connector_action_a}" >&2
+    fail "connector claim lost source A identity, digest, ACL, or snapshot binding"
+  }
+
+  connector_publish_snapshot "${connector_snapshot_v1}" >/dev/null
+  connector_client_claim "${connector_run_a}" >/dev/null
+  connector_action_replay="$(ingestion_client_exec cat /work/connector-action.json)"
+  [[ "${connector_action_replay}" == "${connector_action_a}" ]] ||
+    fail "identical snapshot replay replaced or extended the active connector claim"
+
+  connector_pending_record \
+    "${connector_action_a}" "${connector_chunk_a}" "${connector_content_a}" |
+    ingestion_client_write /work/pending.jsonl
+  ingestion_client_plan "${connector_run_a}" >/dev/null
+  connector_final_record \
+    "${connector_action_a}" "${connector_chunk_a}" "${connector_content_a}" 21 |
+    ingestion_client_write /work/chunks.jsonl
+  knowledge_checkpoint_record "${connector_content_a}" 21 |
+    ingestion_client_checkpoint "${connector_run_a}"
+  connector_client_commit "${connector_run_a}" >/dev/null
+  assert_ingestion_staging_empty
+  connector_client_claim "${connector_run_b}" >/dev/null
+  connector_action_b="$(ingestion_client_exec cat /work/connector-action.json)"
+  jq -e --arg source_id "${connector_source_b}" '
+    .source_id == $source_id and .action == "present"
+  ' <<<"${connector_action_b}" >/dev/null ||
+    fail "preemption fixture did not hold the older source B claim"
+  actual="$(retrieval_sql --tuples-only --no-align --command="
+    SELECT count(*) = 1
+    FROM knowledge.search_authorized_matrix(
+      ${query_vector},
+      ARRAY['approved_non_public', 'public']::text[],
+      '[{\"kind\":\"matrix\",\"principal\":\"@alice:org-a.example\"}]'::jsonb,
+      50
+    )
+    WHERE metadata #>> '{source,id}' = '${connector_source_a}'
+  ")"
+  [[ "${actual}" == "t" ]] ||
+    fail "preemption fixture source A was not initially retrievable to Alice"
+
+  connector_inventory_preempt="$(jq -cn \
+    --arg source_id "${connector_source_a}" \
+    --arg digest "${connector_digest_a}" \
+    --arg acl_digest "${connector_acl_bob}" \
+    --argjson metadata "${connector_metadata_a_bob}" '
+      [{
+        source_id: $source_id,
+        source_path: "docs/a.md",
+        source_revision: $digest,
+        content_digest: $digest,
+        acl_digest: $acl_digest,
+        metadata: $metadata
+      }]
+    ')"
+  connector_snapshot_preempt="$(connector_snapshot \
+    "git-snapshot-preempt" \
+    "sha256:7777777777777777777777777777777777777777777777777777777777777777" \
+    "${connector_inventory_preempt}")"
+  connector_publish_snapshot "${connector_snapshot_preempt}" >/dev/null
+  actual="$(ingestion_client_query "
+    SELECT snapshots.desired_revision = 'git-snapshot-preempt'
+      AND snapshots.applied_revision IS NULL
+      AND snapshots.blocked_at IS NULL
+      AND (SELECT count(*) FROM knowledge.connector_sources
+        WHERE source_id = '${connector_source_a}'
+          AND desired_action = 'present'
+          AND desired_acl_digest = '${connector_acl_bob}'
+          AND applied_action = 'present'
+          AND claim_holder IS NULL) = 1
+      AND (SELECT count(*) FROM knowledge.connector_sources
+        WHERE source_id = '${connector_source_b}'
+          AND desired_action = 'tombstone'
+          AND applied_action IS NULL
+          AND claim_holder IS NULL) = 1
+      AND (SELECT count(*) FROM knowledge.chunks
+        WHERE metadata #>> '{source,id}' = '${connector_source_a}'
+          AND metadata->>'classification' = 'authentication') = 1
+    FROM knowledge.connector_snapshots AS snapshots
+    WHERE snapshots.connector_id = 'git-markdown'
+  ")"
+  [[ "${actual}" == "t" ]] ||
+    fail "newer connector inventory did not preempt and invalidate older pending work"
+  if ingestion_sql --quiet --command="
+    SELECT knowledge.complete_connector_present('${connector_run_b}'::uuid)
+  " >/dev/null 2>&1; then
+    fail "preempted connector action still completed against newer desired state"
+  fi
+  actual="$(retrieval_sql --tuples-only --no-align --command="
+    SELECT
+      (SELECT count(*) = 0
+        FROM knowledge.search_authorized_matrix(
+          ${query_vector},
+          ARRAY['approved_non_public', 'public']::text[],
+          '[{\"kind\":\"matrix\",\"principal\":\"@alice:org-a.example\"}]'::jsonb,
+          50
+        )
+        WHERE metadata #>> '{source,id}' = '${connector_source_a}')
+      AND
+      (SELECT count(*) = 0
+        FROM knowledge.search_authorized_matrix(
+          ${query_vector},
+          ARRAY['approved_non_public', 'public']::text[],
+          '[{\"kind\":\"matrix\",\"principal\":\"@bob:org-a.example\"}]'::jsonb,
+          50
+        )
+        WHERE metadata #>> '{source,id}' = '${connector_source_a}')
+  ")"
+  [[ "${actual}" == "t" ]] ||
+    fail "preempted ACL remained retrievable to its old or new audience"
+  connector_client_claim "${connector_run_new}" >/dev/null
+  connector_action_replay="$(ingestion_client_exec cat /work/connector-action.json)"
+  jq -e \
+    --arg source_id "${connector_source_a}" \
+    --arg acl_digest "${connector_acl_bob}" '
+      .source_id == $source_id and
+      .snapshot_revision == "git-snapshot-preempt" and
+      .acl_digest == $acl_digest
+    ' <<<"${connector_action_replay}" >/dev/null ||
+    fail "post-preemption claim did not select only the latest source contract"
+
+  owner_sql --quiet >/dev/null <<'SQL'
+BEGIN;
+DELETE FROM knowledge.ingestion_embedding_cache
+WHERE source_id LIKE 'reference-docs/git-markdown/%';
+DELETE FROM knowledge.chunks
+WHERE metadata #>> '{source,id}' LIKE 'reference-docs/git-markdown/%';
+UPDATE knowledge.connector_snapshots
+SET enumeration_complete = false,
+    enumeration_completed_at = NULL;
+DELETE FROM knowledge.connector_inventory;
+DELETE FROM knowledge.connector_sources;
+DELETE FROM knowledge.connector_snapshots;
+COMMIT;
+SQL
+  connector_publish_snapshot "${connector_snapshot_v1}" >/dev/null
+  connector_client_claim "${connector_run_a}" >/dev/null
+  connector_action_a="$(ingestion_client_exec cat /work/connector-action.json)"
+
+  connector_pending_record \
+    "${connector_action_a}" "${connector_chunk_a}" "${connector_content_a}" |
+    ingestion_client_write /work/pending.jsonl
+  ingestion_client_plan "${connector_run_a}" >/dev/null
+  plan_json="$(ingestion_client_exec cat /work/plan.jsonl)"
+  jq -e \
+    --arg source_id "${connector_source_a}" \
+    --argjson metadata "${connector_metadata_a_alice}" '
+      .embedding == null and
+      .metadata.source.id == $source_id and
+      (.metadata.source | del(.location)) == $metadata.source and
+      .metadata.classification == $metadata.classification and
+      .metadata.allowed_principals == $metadata.allowed_principals and
+      .metadata.allowed_groups == $metadata.allowed_groups
+    ' <<<"${plan_json}" >/dev/null ||
+    fail "connector source A plan changed its exact inventory metadata"
+  connector_final_record \
+    "${connector_action_a}" "${connector_chunk_a}" "${connector_content_a}" 21 |
+    ingestion_client_write /work/chunks.jsonl
+  knowledge_checkpoint_record "${connector_content_a}" 21 |
+    ingestion_client_checkpoint "${connector_run_a}"
+  connector_client_commit "${connector_run_a}" >/dev/null
+  assert_ingestion_staging_empty
+  actual="$(ingestion_client_query "
+    SELECT applied_action = 'present'
+      AND applied_digest = '${connector_digest_a}'
+      AND applied_acl_digest = '${connector_acl_alice}'
+      AND claim_holder IS NULL
+      AND (SELECT applied_revision IS NULL
+        FROM knowledge.connector_snapshots WHERE connector_id = 'git-markdown')
+    FROM knowledge.connector_sources
+    WHERE source_id = '${connector_source_a}'
+  ")"
+  [[ "${actual}" == "t" ]] ||
+    fail "source A completion advanced the repository before source B"
+
+  connector_client_claim "${connector_run_b}" >/dev/null
+  connector_action_b="$(ingestion_client_exec cat /work/connector-action.json)"
+  jq -e --arg source_id "${connector_source_b}" '
+    .source_id == $source_id and .source_path == "docs/é.md" and .action == "present"
+  ' <<<"${connector_action_b}" >/dev/null || fail "connector did not claim source B second"
+  connector_pending_record \
+    "${connector_action_b}" "${connector_chunk_b}" "${connector_content_b}" |
+    ingestion_client_write /work/pending.jsonl
+  ingestion_client_plan "${connector_run_b}" >/dev/null
+  connector_final_record \
+    "${connector_action_b}" "${connector_chunk_b}" "${connector_content_b}" 22 |
+    ingestion_client_write /work/chunks.jsonl
+  knowledge_checkpoint_record "${connector_content_b}" 22 |
+    ingestion_client_checkpoint "${connector_run_b}"
+  connector_client_commit "${connector_run_b}" >/dev/null
+  assert_ingestion_staging_empty
+  actual="$(ingestion_client_query "
+    SELECT applied_revision = desired_revision
+      AND applied_inventory_digest = desired_inventory_digest
+      AND applied_revision = 'git-snapshot-v1'
+      AND NOT EXISTS (
+        SELECT 1 FROM knowledge.connector_sources
+        WHERE applied_action IS DISTINCT FROM desired_action
+          OR applied_revision IS DISTINCT FROM desired_revision
+          OR applied_digest IS DISTINCT FROM desired_digest
+          OR applied_acl_digest IS DISTINCT FROM desired_acl_digest
+          OR applied_metadata IS DISTINCT FROM desired_metadata
+      )
+    FROM knowledge.connector_snapshots
+    WHERE connector_id = 'git-markdown'
+  ")"
+  [[ "${actual}" == "t" ]] ||
+    fail "connector v1 cursor did not advance after both exact source actions"
+
+  connector_snapshot_noop="$(connector_snapshot \
+    "git-snapshot-noop" \
+    "sha256:5555555555555555555555555555555555555555555555555555555555555555" \
+    "${connector_inventory_v1}")"
+  connector_publish_snapshot "${connector_snapshot_noop}" >/dev/null
+  actual="$(ingestion_client_query "
+    SELECT snapshots.desired_revision = 'git-snapshot-noop'
+      AND snapshots.applied_revision = snapshots.desired_revision
+      AND snapshots.applied_inventory_digest = snapshots.desired_inventory_digest
+      AND NOT EXISTS (
+        SELECT 1 FROM knowledge.connector_sources
+        WHERE desired_snapshot_revision <> 'git-snapshot-noop'
+          OR applied_snapshot_revision IS DISTINCT FROM desired_snapshot_revision
+          OR applied_inventory_digest IS DISTINCT FROM desired_inventory_digest
+          OR applied_action IS DISTINCT FROM desired_action
+          OR applied_revision IS DISTINCT FROM desired_revision
+          OR applied_digest IS DISTINCT FROM desired_digest
+          OR applied_acl_digest IS DISTINCT FROM desired_acl_digest
+          OR applied_metadata IS DISTINCT FROM desired_metadata
+          OR claim_holder IS NOT NULL
+      )
+      AND (SELECT count(*) FROM knowledge.chunks
+        WHERE metadata #>> '{source,id}' IN ('${connector_source_a}', '${connector_source_b}')
+          AND metadata->>'classification' = 'approved_non_public') = 2
+    FROM knowledge.connector_snapshots AS snapshots
+    WHERE snapshots.connector_id = 'git-markdown'
+  ")"
+  [[ "${actual}" == "t" ]] ||
+    fail "unchanged sources did not fast-forward their newer repository snapshot without model work"
+  connector_client_claim "${connector_run_acl}" >/dev/null
+  actual="$(ingestion_client_exec cat /work/connector-kind)"
+  [[ -z "${actual}" ]] || fail "repository-only connector revision produced a source action"
+
+  connector_inventory_revoke="$(jq -cn \
+    --arg source_a "${connector_source_a}" \
+    --arg source_b "${connector_source_b}" \
+    --arg digest_a "${connector_digest_a}" \
+    --arg digest_b "${connector_digest_b}" \
+    --arg acl_alice "${connector_acl_alice}" \
+    --arg acl_bob "${connector_acl_bob}" \
+    --argjson metadata_a "${connector_metadata_a_bob}" \
+    --argjson metadata_b "${connector_metadata_b_alice}" '
+      [
+        {
+          source_id: $source_a,
+          source_path: "docs/a.md",
+          source_revision: $digest_a,
+          content_digest: $digest_a,
+          acl_digest: $acl_bob,
+          metadata: $metadata_a
+        },
+        {
+          source_id: $source_b,
+          source_path: "docs/é.md",
+          source_revision: $digest_b,
+          content_digest: $digest_b,
+          acl_digest: $acl_alice,
+          metadata: $metadata_b
+        }
+      ] | sort_by(.source_id)
+    ')"
+  connector_snapshot_revoke="$(connector_snapshot \
+    "git-snapshot-revoke" \
+    "sha256:4444444444444444444444444444444444444444444444444444444444444444" \
+    "${connector_inventory_revoke}")"
+  connector_publish_snapshot "${connector_snapshot_revoke}" >/dev/null
+  actual="$(ingestion_client_query "
+    SELECT snapshots.applied_revision = 'git-snapshot-noop'
+      AND snapshots.desired_revision = 'git-snapshot-revoke'
+      AND (SELECT count(*) FROM knowledge.chunks
+        WHERE metadata #>> '{source,id}' = '${connector_source_a}'
+          AND metadata->>'classification' = 'authentication') = 1
+      AND (SELECT count(*) FROM knowledge.chunks
+        WHERE metadata #>> '{source,id}' = '${connector_source_b}'
+          AND metadata->>'classification' = 'approved_non_public') = 1
+    FROM knowledge.connector_snapshots AS snapshots
+    WHERE snapshots.connector_id = 'git-markdown'
+  ")"
+  [[ "${actual}" == "t" ]] ||
+    fail "pending ACL revocation did not quarantine only its changed source"
+
+  connector_snapshot_revert="$(connector_snapshot \
+    "git-snapshot-revert" \
+    "sha256:3333333333333333333333333333333333333333333333333333333333333333" \
+    "${connector_inventory_v1}")"
+  connector_publish_snapshot "${connector_snapshot_revert}" >/dev/null
+  actual="$(ingestion_client_query "
+    SELECT snapshots.applied_revision = 'git-snapshot-noop'
+      AND snapshots.desired_revision = 'git-snapshot-revert'
+      AND (SELECT count(*) FROM knowledge.connector_sources
+        WHERE source_id = '${connector_source_a}'
+          AND applied_acl_digest = desired_acl_digest
+          AND applied_snapshot_revision = 'git-snapshot-noop'
+          AND desired_snapshot_revision = 'git-snapshot-revert') = 1
+      AND (SELECT count(*) FROM knowledge.connector_sources
+        WHERE source_id = '${connector_source_b}'
+          AND applied_snapshot_revision = desired_snapshot_revision
+          AND desired_snapshot_revision = 'git-snapshot-revert') = 1
+      AND (SELECT count(*) FROM knowledge.chunks
+        WHERE metadata #>> '{source,id}' = '${connector_source_a}'
+          AND metadata->>'classification' = 'authentication') = 1
+    FROM knowledge.connector_snapshots AS snapshots
+    WHERE snapshots.connector_id = 'git-markdown'
+  ")"
+  [[ "${actual}" == "t" ]] ||
+    fail "reverted ACL incorrectly fast-forwarded a quarantined source"
+  connector_client_claim "${connector_run_acl}" >/dev/null
+  connector_action_acl="$(ingestion_client_exec cat /work/connector-action.json)"
+  jq -e \
+    --arg source_id "${connector_source_a}" \
+    --arg acl_digest "${connector_acl_alice}" '
+      .source_id == $source_id and
+      .snapshot_revision == "git-snapshot-revert" and
+      .acl_digest == $acl_digest
+    ' <<<"${connector_action_acl}" >/dev/null ||
+    fail "quarantined ACL revert did not produce an exact present action"
+  connector_pending_record \
+    "${connector_action_acl}" "${connector_chunk_a}" "${connector_content_a}" |
+    ingestion_client_write /work/pending.jsonl
+  ingestion_client_plan "${connector_run_acl}" >/dev/null
+  plan_json="$(ingestion_client_exec cat /work/plan.jsonl)"
+  jq -e '
+    (.embedding | type) == "array" and (.embedding | length) == 1024 and
+    .metadata.allowed_principals == [{kind: "matrix", principal: "@alice:org-a.example"}]
+  ' <<<"${plan_json}" >/dev/null ||
+    fail "quarantined ACL revert did not reuse its prior vector under the restored ACL"
+  ingestion_client_copy_plan
+  connector_client_commit "${connector_run_acl}" >/dev/null
+  actual="$(ingestion_client_query "
+    SELECT applied_revision = desired_revision
+      AND applied_revision = 'git-snapshot-revert'
+      AND NOT EXISTS (
+        SELECT 1 FROM knowledge.connector_sources
+        WHERE applied_snapshot_revision IS DISTINCT FROM desired_snapshot_revision
+          OR applied_inventory_digest IS DISTINCT FROM desired_inventory_digest
+      )
+    FROM knowledge.connector_snapshots
+    WHERE connector_id = 'git-markdown'
+  ")"
+  [[ "${actual}" == "t" ]] ||
+    fail "restored ACL action did not advance the exact reverted snapshot"
+  actual="$(retrieval_sql --tuples-only --no-align --command="
+    SELECT
+      (SELECT count(*) = 1
+        FROM knowledge.search_authorized_matrix(
+          ${query_vector},
+          ARRAY['approved_non_public', 'public']::text[],
+          '[{\"kind\":\"matrix\",\"principal\":\"@alice:org-a.example\"}]'::jsonb,
+          50
+        )
+        WHERE metadata #>> '{source,id}' = '${connector_source_a}')
+      AND
+      (SELECT count(*) = 0
+        FROM knowledge.search_authorized_matrix(
+          ${query_vector},
+          ARRAY['approved_non_public', 'public']::text[],
+          '[{\"kind\":\"matrix\",\"principal\":\"@bob:org-a.example\"}]'::jsonb,
+          50
+        )
+        WHERE metadata #>> '{source,id}' = '${connector_source_a}')
+  ")"
+  [[ "${actual}" == "t" ]] ||
+    fail "restored connector ACL did not reauthorize only Alice"
+
+  connector_snapshot_blocked="$(jq -cn \
+    '{
+      connector_id: "git-markdown",
+      blocked: true,
+      snapshot_revision: "git-snapshot-invalid-acl",
+      artifact_digest:
+        "sha256:6666666666666666666666666666666666666666666666666666666666666666",
+      reason: "artifact-rejected"
+    }')"
+  connector_publish_snapshot "${connector_snapshot_blocked}" >/dev/null
+  actual="$(ingestion_client_query "
+    SELECT snapshots.blocked_revision = 'git-snapshot-invalid-acl'
+      AND snapshots.blocked_artifact_digest =
+        'sha256:6666666666666666666666666666666666666666666666666666666666666666'
+      AND snapshots.blocked_at IS NOT NULL
+      AND snapshots.applied_revision = 'git-snapshot-revert'
+      AND NOT EXISTS (
+        SELECT 1 FROM knowledge.connector_sources
+        WHERE applied_action IS NOT NULL
+          OR applied_revision IS NOT NULL
+          OR applied_digest IS NOT NULL
+          OR applied_acl_digest IS NOT NULL
+          OR applied_metadata IS NOT NULL
+          OR applied_snapshot_revision IS NOT NULL
+          OR applied_inventory_digest IS NOT NULL
+          OR applied_at IS NOT NULL
+          OR claim_holder IS NOT NULL
+      )
+      AND (SELECT count(*) FROM knowledge.chunks
+        WHERE metadata #>> '{source,id}' IN ('${connector_source_a}', '${connector_source_b}')
+          AND metadata->>'classification' = 'authentication') = 2
+    FROM knowledge.connector_snapshots AS snapshots
+    WHERE snapshots.connector_id = 'git-markdown'
+  ")"
+  [[ "${actual}" == "t" ]] ||
+    fail "rejected Ready artifact did not quarantine every prior connector authorization"
+  connector_client_claim "${connector_run_acl}" >/dev/null
+  actual="$(ingestion_client_exec cat /work/connector-kind)"
+  [[ -z "${actual}" ]] || fail "blocked connector snapshot still exposed a claim"
+
+  connector_inventory_v2="$(jq -cn \
+    --arg source_id "${connector_source_a}" \
+    --arg digest "${connector_digest_a}" \
+    --arg acl_digest "${connector_acl_bob}" \
+    --argjson metadata "${connector_metadata_a_bob}" '
+      [{
+        source_id: $source_id,
+        source_path: "docs/a.md",
+        source_revision: $digest,
+        content_digest: $digest,
+        acl_digest: $acl_digest,
+        metadata: $metadata
+      }]
+    ')"
+  connector_snapshot_v2="$(connector_snapshot \
+    "git-snapshot-v2" \
+    "sha256:2222222222222222222222222222222222222222222222222222222222222222" \
+    "${connector_inventory_v2}")"
+  connector_publish_snapshot "${connector_snapshot_v2}" >/dev/null
+  actual="$(ingestion_client_query "
+    SELECT snapshots.applied_revision = 'git-snapshot-revert'
+      AND snapshots.desired_revision = 'git-snapshot-v2'
+      AND snapshots.blocked_at IS NULL
+      AND (SELECT count(*) FROM knowledge.connector_sources
+        WHERE source_id = '${connector_source_a}'
+          AND desired_action = 'present'
+          AND applied_digest IS NULL
+          AND applied_acl_digest IS NULL) = 1
+      AND (SELECT count(*) FROM knowledge.connector_sources
+        WHERE source_id = '${connector_source_b}'
+          AND desired_action = 'tombstone'
+          AND applied_action IS NULL) = 1
+      AND (SELECT count(*) FROM knowledge.chunks
+        WHERE metadata #>> '{source,id}' IN ('${connector_source_a}', '${connector_source_b}')
+          AND metadata->>'classification' = 'authentication') = 2
+    FROM knowledge.connector_snapshots AS snapshots
+    WHERE snapshots.connector_id = 'git-markdown'
+  ")"
+  [[ "${actual}" == "t" ]] ||
+    fail "connector v2 did not isolate ACL-only work from the omitted-source tombstone"
+  actual="$(retrieval_sql --tuples-only --no-align --command="
+    SELECT
+      (SELECT count(*) = 0
+        FROM knowledge.search_authorized_matrix(
+          ${query_vector},
+          ARRAY['approved_non_public', 'public']::text[],
+          '[{\"kind\":\"matrix\",\"principal\":\"@alice:org-a.example\"}]'::jsonb,
+          50
+        )
+        WHERE metadata #>> '{source,id}' = '${connector_source_a}')
+      AND
+      (SELECT count(*) = 0
+        FROM knowledge.search_authorized_matrix(
+          ${query_vector},
+          ARRAY['approved_non_public', 'public']::text[],
+          '[{\"kind\":\"matrix\",\"principal\":\"@bob:org-a.example\"}]'::jsonb,
+          50
+        )
+        WHERE metadata #>> '{source,id}' = '${connector_source_a}')
+  ")"
+  [[ "${actual}" == "t" ]] ||
+    fail "pending connector ACL change remained retrievable to Alice or Bob"
+
+  connector_client_claim "${connector_run_acl}" >/dev/null
+  connector_action_acl="$(ingestion_client_exec cat /work/connector-action.json)"
+  jq -e \
+    --arg source_id "${connector_source_a}" \
+    --arg acl_digest "${connector_acl_bob}" '
+      .source_id == $source_id and .action == "present" and .acl_digest == $acl_digest and
+      .metadata.allowed_principals == [{kind: "matrix", principal: "@bob:org-a.example"}]
+    ' <<<"${connector_action_acl}" >/dev/null ||
+    fail "ACL-only connector claim did not bind source A to Bob"
+  connector_pending_record \
+    "${connector_action_acl}" "${connector_chunk_a}" "${connector_content_a}" |
+    ingestion_client_write /work/pending.jsonl
+  ingestion_client_plan "${connector_run_acl}" >/dev/null
+  plan_json="$(ingestion_client_exec cat /work/plan.jsonl)"
+  jq -e '
+    (.embedding | type) == "array" and (.embedding | length) == 1024 and
+    .embedding[21] == 1 and
+    .metadata.allowed_principals == [{kind: "matrix", principal: "@bob:org-a.example"}]
+  ' <<<"${plan_json}" >/dev/null ||
+    fail "ACL-only connector update did not reuse the exact prior embedding"
+  ingestion_client_copy_plan
+  connector_client_commit "${connector_run_acl}" >/dev/null
+  assert_ingestion_staging_empty
+  actual="$(ingestion_client_query "
+    SELECT metadata->'allowed_principals' =
+        '[{\"kind\":\"matrix\",\"principal\":\"@bob:org-a.example\"}]'::jsonb
+      AND (embedding::real[])[22] = 1
+      AND (SELECT applied_revision = 'git-snapshot-revert'
+        FROM knowledge.connector_snapshots WHERE connector_id = 'git-markdown')
+    FROM knowledge.chunks
+    WHERE chunk_id = '${connector_chunk_a}'
+  ")"
+  [[ "${actual}" == "t" ]] ||
+    fail "ACL-only connector commit changed the vector or advanced past the tombstone"
+  actual="$(retrieval_sql --tuples-only --no-align --command="
+    SELECT
+      (SELECT count(*) = 1
+        FROM knowledge.search_authorized_matrix(
+          ${query_vector},
+          ARRAY['approved_non_public', 'public']::text[],
+          '[{\"kind\":\"matrix\",\"principal\":\"@bob:org-a.example\"}]'::jsonb,
+          50
+        )
+        WHERE metadata #>> '{source,id}' = '${connector_source_a}')
+      AND
+      (SELECT count(*) = 0
+        FROM knowledge.search_authorized_matrix(
+          ${query_vector},
+          ARRAY['approved_non_public', 'public']::text[],
+          '[{\"kind\":\"matrix\",\"principal\":\"@alice:org-a.example\"}]'::jsonb,
+          50
+        )
+        WHERE metadata #>> '{source,id}' = '${connector_source_a}')
+  ")"
+  [[ "${actual}" == "t" ]] ||
+    fail "applied connector ACL did not admit only Bob to source A"
+
+  connector_client_claim "${connector_run_old}" >/dev/null
+  connector_action_tombstone="$(ingestion_client_exec cat /work/connector-action.json)"
+  jq -e --arg source_id "${connector_source_b}" '
+    .source_id == $source_id and .action == "tombstone" and
+    .acl_digest == null and .metadata == null
+  ' <<<"${connector_action_tombstone}" >/dev/null ||
+    fail "omitted connector source did not produce an exact tombstone action"
+  ingestion_sql --quiet --command="
+    UPDATE knowledge.connector_sources
+    SET claimed_at = clock_timestamp() - interval '30 minutes',
+        claim_expires_at = clock_timestamp() - interval '1 second'
+    WHERE claim_holder = '${connector_run_old}'::uuid
+  " >/dev/null
+  connector_client_claim "${connector_run_new}" >/dev/null
+  connector_action_reclaimed="$(ingestion_client_exec cat /work/connector-action.json)"
+  connector_action_reclaimed_normalized="$(
+    jq -cS 'del(.claim_expires_at)' <<<"${connector_action_reclaimed}"
+  )"
+  connector_action_tombstone_normalized="$(
+    jq -cS 'del(.claim_expires_at)' <<<"${connector_action_tombstone}"
+  )"
+  [[ "${connector_action_reclaimed_normalized}" == "${connector_action_tombstone_normalized}" ]] ||
+    fail "expired connector tombstone reclaim changed the bound action"
+  actual="$(ingestion_client_query "
+    SELECT claim_holder = '${connector_run_new}'::uuid
+      AND claimed_at IS NOT NULL
+      AND claim_expires_at > clock_timestamp()
+    FROM knowledge.connector_sources
+    WHERE source_id = '${connector_source_b}'
+  ")"
+  [[ "${actual}" == "t" ]] || fail "expired connector claim was not safely reclaimed"
+
+  ingestion_sql --quiet --command="
+    INSERT INTO knowledge.ingestion_embedding_cache (
+      profile, source_id, content_sha256, content, embedding, cached_at, expires_at
+    ) VALUES
+      (
+        'bge-m3-1024-v1', '${connector_source_a}',
+        encode(sha256(convert_to('connector cache A', 'UTF8')), 'hex'),
+        'connector cache A',
+        (ARRAY[1::real] || array_fill(0::real, ARRAY[1023]))::vector(1024),
+        clock_timestamp(), clock_timestamp() + interval '1 hour'
+      ),
+      (
+        'bge-m3-1024-v1', '${connector_source_b}',
+        encode(sha256(convert_to('connector cache B', 'UTF8')), 'hex'),
+        'connector cache B',
+        (ARRAY[0::real, 1::real] || array_fill(0::real, ARRAY[1022]))::vector(1024),
+        clock_timestamp(), clock_timestamp() + interval '1 hour'
+      )
+  " >/dev/null
+  connector_client_tombstone "${connector_run_new}" >/dev/null
+  assert_ingestion_staging_empty
+  actual="$(ingestion_client_query "
+    SELECT
+      (SELECT count(*) FROM knowledge.chunks
+        WHERE metadata #>> '{source,id}' = '${connector_source_a}') = 1
+      AND (SELECT count(*) FROM knowledge.chunks
+        WHERE metadata #>> '{source,id}' = '${connector_source_b}') = 0
+      AND (SELECT count(*) FROM knowledge.chunks
+        WHERE metadata #>> '{source,id}' = 'source-matrix-shared') = 1
+      AND (SELECT count(*) FROM knowledge.ingestion_embedding_cache
+        WHERE source_id = '${connector_source_a}') = 1
+      AND (SELECT count(*) FROM knowledge.ingestion_embedding_cache
+        WHERE source_id = '${connector_source_b}') = 0
+      AND (SELECT applied_action = 'tombstone' AND claim_holder IS NULL
+        FROM knowledge.connector_sources WHERE source_id = '${connector_source_b}')
+      AND (SELECT applied_action = 'present' AND claim_holder IS NULL
+        FROM knowledge.connector_sources WHERE source_id = '${connector_source_a}')
+      AND (SELECT applied_revision = desired_revision
+        AND applied_inventory_digest = desired_inventory_digest
+        AND applied_revision = 'git-snapshot-v2'
+        FROM knowledge.connector_snapshots WHERE connector_id = 'git-markdown')
+      AND NOT EXISTS (
+        SELECT 1 FROM knowledge.connector_sources
+        WHERE applied_action IS DISTINCT FROM desired_action
+          OR applied_revision IS DISTINCT FROM desired_revision
+          OR applied_digest IS DISTINCT FROM desired_digest
+          OR applied_acl_digest IS DISTINCT FROM desired_acl_digest
+          OR applied_metadata IS DISTINCT FROM desired_metadata
+          OR claim_holder IS NOT NULL
+      )
+  ")"
+  [[ "${actual}" == "t" ]] ||
+    fail "connector tombstone did not isolate deletion, cache cleanup, and cursor advancement"
+
+  if connector_sql --command='SELECT count(*) FROM knowledge.chunks' >/dev/null 2>&1; then
+    fail "knowledge connector unexpectedly read chunk content"
+  fi
+  if connector_sql --command="
+    SELECT knowledge.apply_connector_tombstone('${connector_run_new}'::uuid)
+  " >/dev/null 2>&1; then
+    fail "knowledge connector unexpectedly executed the ingestion tombstone function"
+  fi
+  if ingestion_sql --command="
+    SELECT knowledge.begin_connector_snapshot(
+      'git-markdown', 'forbidden',
+      'sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 0
+    )
+  " >/dev/null 2>&1; then
+    fail "knowledge ingestion unexpectedly opened a connector snapshot"
+  fi
+  if ingestion_sql --command="
+    UPDATE knowledge.connector_sources SET desired_action = 'present'
+    WHERE false
+  " >/dev/null 2>&1; then
+    fail "knowledge ingestion unexpectedly changed desired connector state"
+  fi
+  if ingestion_sql --command="
+    INSERT INTO knowledge.connector_inventory
+    SELECT * FROM knowledge.connector_inventory WHERE false
+  " >/dev/null 2>&1; then
+    fail "knowledge ingestion unexpectedly published connector inventory"
+  fi
+  if retrieval_sql --command='SELECT count(*) FROM knowledge.connector_snapshots' \
+    >/dev/null 2>&1; then
+    fail "knowledge retrieval unexpectedly read connector control state"
+  fi
+  if connector_sql --command="
+    SELECT knowledge.begin_connector_snapshot(
+      'other-connector', 'forbidden',
+      'sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb', 0
+    )
+  " >/dev/null 2>&1; then
+    fail "knowledge connector escaped its exact database-bound identity"
+  fi
 
   echo "Knowledge store runtime contract passed (${chart} ${chart_version}, ${primary})"
 }

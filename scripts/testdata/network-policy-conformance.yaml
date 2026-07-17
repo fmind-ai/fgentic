@@ -46,6 +46,15 @@ metadata:
 apiVersion: v1
 kind: Namespace
 metadata:
+  name: flux-system
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
   name: postgres
   labels:
     pod-security.kubernetes.io/enforce: restricted
@@ -60,6 +69,48 @@ metadata:
     pod-security.kubernetes.io/enforce: restricted
     pod-security.kubernetes.io/audit: restricted
     pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: knowledge-git-markdown-connector
+  namespace: knowledge
+  labels:
+    app.kubernetes.io/name: knowledge-git-markdown-connector
+    fgentic.dev/network-policy-fixture: client
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: probe
+      image: docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+      imagePullPolicy: IfNotPresent
+      command: [sh, -ec]
+      args:
+        - |
+          trap 'exit 0' TERM
+          while :; do
+            sleep 3600 &
+            wait $!
+          done
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 1m
+          memory: 2Mi
+        limits:
+          cpu: 20m
+          memory: 16Mi
 ---
 apiVersion: v1
 kind: Pod
@@ -102,6 +153,68 @@ spec:
         limits:
           cpu: 20m
           memory: 16Mi
+---
+apiVersion: v1
+kind: Pod
+metadata:
+  name: source-controller
+  namespace: flux-system
+  labels:
+    app: source-controller
+    fgentic.dev/network-policy-fixture: server
+spec:
+  automountServiceAccountToken: false
+  restartPolicy: Never
+  securityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    seccompProfile:
+      type: RuntimeDefault
+  containers:
+    - name: server
+      image: docker.io/library/busybox:1.37.0@sha256:9532d8c39891ca2ecde4d30d7710e01fb739c87a8b9299685c63704296b16028
+      imagePullPolicy: IfNotPresent
+      command: [sh, -ec]
+      args:
+        - |
+          httpd -p 9090
+          exec httpd -f -p 8080
+      ports:
+        - name: artifact
+          containerPort: 9090
+          protocol: TCP
+        - name: metrics
+          containerPort: 8080
+          protocol: TCP
+      securityContext:
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop: [ALL]
+      resources:
+        requests:
+          cpu: 1m
+          memory: 2Mi
+        limits:
+          cpu: 20m
+          memory: 16Mi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: source-controller
+  namespace: flux-system
+spec:
+  selector:
+    app: source-controller
+  ports:
+    - name: artifact
+      port: 80
+      targetPort: artifact
+    - name: metrics
+      port: 8080
+      targetPort: metrics
 ---
 apiVersion: v1
 kind: Pod

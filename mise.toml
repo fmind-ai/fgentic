@@ -110,11 +110,11 @@ run = [
 ]
 
 [tasks."format:knowledge-ingestion"]
-description = "Format the standalone sovereign-ingestion Python boundary"
+description = "Format the sovereign ingestion and Git/Markdown connector boundaries"
 dir = "apps/synapse-federation-policy"
 run = [
-  "uv run ruff check --config ../../infra/knowledge/pyproject.toml --select I --fix ../../infra/knowledge/base/ingestion.py ../../infra/knowledge/tests/test_ingestion.py",
-  "uv run ruff format --config ../../infra/knowledge/pyproject.toml ../../infra/knowledge/base/ingestion.py ../../infra/knowledge/tests/test_ingestion.py",
+  "uv run ruff check --config ../../infra/knowledge/pyproject.toml --select I --fix ../../infra/knowledge/base ../../infra/knowledge/connectors ../../infra/knowledge/tests",
+  "uv run ruff format --config ../../infra/knowledge/pyproject.toml ../../infra/knowledge/base ../../infra/knowledge/connectors ../../infra/knowledge/tests",
 ]
 
 [tasks."format:app"]
@@ -314,12 +314,13 @@ description = "Validate the pgvector image, scoped roles, ACL schema, indexes, a
 run = "bash scripts/test-knowledge-store.sh"
 
 [tasks."check:knowledge-ingestion"]
-description = "Validate the bounded Docling, ACL binder, embeddings route, and opt-in Flux contract"
+description = "Validate bounded ingestion, connector state, ACL mirroring, and opt-in Flux contracts"
 run = [
   "bash scripts/test-knowledge-ingestion.sh",
-  "mise --cd apps/synapse-federation-policy exec -- uv run ruff format --check --config ../../infra/knowledge/pyproject.toml ../../infra/knowledge/base/ingestion.py ../../infra/knowledge/tests/test_ingestion.py",
-  "mise --cd apps/synapse-federation-policy exec -- uv run ruff check --config ../../infra/knowledge/pyproject.toml ../../infra/knowledge/base/ingestion.py ../../infra/knowledge/tests/test_ingestion.py",
-  "mise --cd apps/synapse-federation-policy exec -- env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=../../infra/knowledge/base uv run ty check ../../infra/knowledge/base/ingestion.py ../../infra/knowledge/tests/test_ingestion.py",
+  "bash scripts/test-knowledge-connectors.sh",
+  "mise --cd apps/synapse-federation-policy exec -- uv run ruff format --check --config ../../infra/knowledge/pyproject.toml ../../infra/knowledge/base ../../infra/knowledge/connectors ../../infra/knowledge/tests",
+  "mise --cd apps/synapse-federation-policy exec -- uv run ruff check --config ../../infra/knowledge/pyproject.toml ../../infra/knowledge/base ../../infra/knowledge/connectors ../../infra/knowledge/tests",
+  "mise --cd apps/synapse-federation-policy exec -- env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=../../infra/knowledge/base:../../infra/knowledge/connectors uv run ty check ../../infra/knowledge/base ../../infra/knowledge/connectors ../../infra/knowledge/tests",
 ]
 
 [tasks."check:trivy-operator"]
@@ -403,9 +404,9 @@ description = "Exercise the pgvector ACL schema and plans in an isolated disposa
 run = "bash scripts/test-knowledge-store.sh --runtime"
 
 [tasks."test:knowledge-ingestion"]
-description = "Run the deterministic sovereign-ingestion unit and boundary suite"
+description = "Run deterministic ingestion, connector, checkpoint, tombstone, and ACL unit suites"
 dir = "apps/synapse-federation-policy"
-run = "env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=../../infra/knowledge/base uv run pytest -q ../../infra/knowledge/tests/test_ingestion.py"
+run = "env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=../../infra/knowledge/base:../../infra/knowledge/connectors uv run pytest -q ../../infra/knowledge/tests"
 
 [tasks."test:mautrix-bridges"]
 description = "Validate exact pinned mautrix images without contacting external networks"

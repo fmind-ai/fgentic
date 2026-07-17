@@ -19,3 +19,7 @@ metadata:
   namespace: flux-system
 data:
   gcp_project: your-gcp-project # <-- set your real GCP project ID here (kept out of git)
+  # Set to the current API endpoint /32 seen by Pod egress after kubernetes.default Service DNAT
+  # before enabling the knowledge profile; 192.0.2.1/32 is intentionally unreachable.
+  kubernetes_api_egress_cidr: 192.0.2.1/32
+  kubernetes_api_egress_port: "6443"
