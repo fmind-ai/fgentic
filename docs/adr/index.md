@@ -21,3 +21,4 @@ Settled designs (including the D1–D20 register) are revisited by proposing a n
 - [0017 — Permission-Aware Retrieval Identity Binding](0017-permission-aware-identity-binding.md) - gateway-projected identity and complete output-audience ACL prefiltering
 - [0018 — Content-Bounded Matrix Identity Audit](0018-content-bounded-identity-audit.md) - opt-in authentication/event evidence from exact pinned source records, never generic logs
 - [0019 — Snapshot-Backed Synapse Media PVC](0019-synapse-media-store.md) - retained local PVC and explicit CSI snapshot recovery for the GKE reference
+- [0021 — Authenticated Query-Embedding Egress for Permission-Aware Retrieval](0021-retrieval-query-embedding-egress.md) - one authenticated retrieval→agentgateway embeddings edge to unblock #333, Proposed (M25)
