@@ -355,6 +355,7 @@ run = "bash scripts/test-federation.sh"
 description = "Validate the opt-in two-control-plane federation drill offline"
 run = [
   "bash scripts/test-federation-split-manifests.sh",
+  "bash scripts/test-federation-split-lifecycle.sh",
   "bash scripts/test-federation-split-seed.sh",
 ]
 

@@ -36,6 +36,18 @@ readonly RELAY_CONFIG_DIR="${SPLIT_STATE_DIR}/relay-config"
 readonly RELAY_CONFIG_A_TO_B="${RELAY_CONFIG_DIR}/a-to-b.yaml"
 readonly RELAY_CONFIG_B_TO_A="${RELAY_CONFIG_DIR}/b-to-a.yaml"
 readonly RELAY_RECEIPT="${SPLIT_STATE_DIR}/relays.json"
+SPLIT_UP_WORK_DIR=""
+
+cleanup_split_up() {
+	local status="$1"
+	if [ -n "${SPLIT_UP_WORK_DIR}" ]; then
+		rm -rf "${SPLIT_UP_WORK_DIR}"
+	fi
+	if [ "${status}" -ne 0 ]; then
+		echo "Split federation did not complete; run fed:split:status, then fed:split:down for exact recovery." >&2
+	fi
+	return "${status}"
+}
 
 usage() {
 	cat <<'EOF'
@@ -842,21 +854,16 @@ invoke_split_seed() {
 
 split_up() {
 	local child_a_state child_b_state local_a local_b remote_a remote_b work_dir
-	local kubeconfig_a kubeconfig_b completed=no
+	local kubeconfig_a kubeconfig_b
 	require_canonical_absent
 	child_a_state="$(child_preflight_state "${LAYOUT_A}" "${CLUSTER_A}" "${CA_DIR_A}")"
 	child_b_state="$(child_preflight_state "${LAYOUT_B}" "${CLUSTER_B}" "${CA_DIR_B}")"
 	prepare_public_roots "${child_a_state}" "${child_b_state}"
 	work_dir="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-fed-split.XXXXXX")"
-	cleanup_split_up() {
-		local status=$?
-		rm -rf "${work_dir}"
-		if [ "${completed}" != yes ] && [ "${status}" -ne 0 ]; then
-			echo "Split federation did not complete; run fed:split:status, then fed:split:down for exact recovery." >&2
-		fi
-		return "${status}"
-	}
-	trap cleanup_split_up EXIT INT TERM
+	SPLIT_UP_WORK_DIR="${work_dir}"
+	trap 'cleanup_split_up "$?"' EXIT
+	trap 'exit 130' INT
+	trap 'exit 143' TERM
 
 	# Both owned control planes and both public roots exist before either snapshot can consume peer
 	# settings. This phase performs no Flux install, image build/import, Secret write, or seed.
@@ -882,8 +889,8 @@ split_up() {
 		"${local_a}" "${remote_a}"
 
 	invoke_split_seed "${kubeconfig_a}" "${kubeconfig_b}"
-	completed=yes
 	rm -rf "${work_dir}"
+	SPLIT_UP_WORK_DIR=""
 	trap - EXIT INT TERM
 	echo "Split federation proof passed across ${CLUSTER_A} (${LOOPBACK_A}) and ${CLUSTER_B} (${LOOPBACK_B})."
 }
