@@ -258,10 +258,10 @@ static_contract() {
 
   local guarded_resource
   for guarded_resource in \
-    "${ROOT_DIR}/infra/agentgateway/admission/a2a-route.yaml" \
-    "${ROOT_DIR}/infra/agentgateway/admission/a2a-authorization.yaml" \
-    "${ROOT_DIR}/infra/agentgateway/providers/egress/demo/networkpolicy.yaml" \
-    "${ROOT_DIR}/infra/agentgateway/providers/egress/vllm/networkpolicy.yaml"; do
+    "${ROOT_DIR}/infra/agentgateway/a2a-route.yaml" \
+    "${ROOT_DIR}/infra/agentgateway/a2a-authorization.yaml" \
+    "${ROOT_DIR}/infra/agentgateway/providers/profiles/demo/networkpolicy.yaml" \
+    "${ROOT_DIR}/infra/agentgateway/providers/profiles/vllm/networkpolicy.yaml"; do
     yq -e '.metadata.annotations."kustomize.toolkit.fluxcd.io/prune" == "disabled"' \
       "${guarded_resource}" >/dev/null ||
       fail "the temporary provider freeze must remain paired with every handoff prune guard"
