@@ -149,10 +149,22 @@ spec:
       expression: 'request.operation == "DELETE" ? oldObject.metadata.name in ["agentgateway-provider", "agentgateway-admission", "agentgateway-provider-egress"] : object.metadata.name in ["agentgateway-provider", "agentgateway-admission", "agentgateway-provider-egress"]'
     # Flux dry-runs every rendered object on each reconciliation. Admit only a guard-relevant spec
     # no-op of the still-installed legacy provider; CREATE and every tuple/spec mutation continue
-    # into the fail-closed future-shape validations below.
+    # into the fail-closed exact legacy-or-future validations below.
     - name: changed-or-projected-provider
       expression: '!(request.operation == "UPDATE" && object.metadata.name == "agentgateway-provider" && (!has(oldObject.metadata.labels) || !("fgentic.dev/llm-provider" in oldObject.metadata.labels)) && (!has(object.metadata.labels) || !("fgentic.dev/llm-provider" in object.metadata.labels)) && (!has(oldObject.metadata.annotations) || !("fgentic.dev/llm-model" in oldObject.metadata.annotations)) && (!has(object.metadata.annotations) || !("fgentic.dev/llm-model" in object.metadata.annotations)) && (!has(object.spec.postBuild) || !has(object.spec.postBuild.substitute) || (!("llm_provider" in object.spec.postBuild.substitute) && !("llm_model" in object.spec.postBuild.substitute))) && object.spec == oldObject.spec)'
   variables:
+    - name: legacyProviderCreate
+      expression: >-
+        request.operation == "CREATE" &&
+        object.metadata.name == "agentgateway-provider" &&
+        (!has(object.metadata.labels) ||
+        !("fgentic.dev/llm-provider" in object.metadata.labels)) &&
+        (!has(object.metadata.annotations) ||
+        !("fgentic.dev/llm-model" in object.metadata.annotations)) &&
+        (!has(object.spec.postBuild) ||
+        !has(object.spec.postBuild.substitute) ||
+        (!("llm_provider" in object.spec.postBuild.substitute) &&
+        !("llm_model" in object.spec.postBuild.substitute)))
     - name: stableBaseReadyExpr
       expression: >-
         "dep.metadata.labels['fgentic.dev/agentgateway-layout'] == 'split-v1' &&
@@ -173,13 +185,13 @@ spec:
     - name: localADCBackendPatch
       expression: '"- op: add\n  path: /spec/policies/auth/gcp/secretRef\n  value:\n    name: gcp-adc"'
   validations:
-    - expression: 'request.operation == "DELETE" || (has(params.data) && "llm_provider" in params.data && "llm_model" in params.data)'
+    - expression: 'request.operation == "DELETE" || (has(params.data) && "llm_provider" in params.data && "llm_model" in params.data && "cluster_issuer" in params.data)'
       message: guarded provider Kustomizations require the complete platform model selection
       reason: Forbidden
-    - expression: 'request.operation == "DELETE" || (has(object.metadata.labels) && "fgentic.dev/llm-provider" in object.metadata.labels && object.metadata.labels["fgentic.dev/llm-provider"] == params.data["llm_provider"])'
+    - expression: 'request.operation == "DELETE" || variables.legacyProviderCreate || (has(object.metadata.labels) && "fgentic.dev/llm-provider" in object.metadata.labels && object.metadata.labels["fgentic.dev/llm-provider"] == params.data["llm_provider"])'
       message: provider Kustomizations must retain the locked selected-provider identity
       reason: Forbidden
-    - expression: 'request.operation == "DELETE" || (has(object.metadata.annotations) && "fgentic.dev/llm-model" in object.metadata.annotations && object.metadata.annotations["fgentic.dev/llm-model"] == params.data["llm_model"])'
+    - expression: 'request.operation == "DELETE" || variables.legacyProviderCreate || (has(object.metadata.annotations) && "fgentic.dev/llm-model" in object.metadata.annotations && object.metadata.annotations["fgentic.dev/llm-model"] == params.data["llm_model"])'
       message: provider Kustomizations must retain the locked selected-model identity
       reason: Forbidden
     - expression: 'request.operation != "UPDATE" || !has(oldObject.metadata.labels) || !("fgentic.dev/llm-provider" in oldObject.metadata.labels) || object.metadata.labels["fgentic.dev/llm-provider"] == oldObject.metadata.labels["fgentic.dev/llm-provider"]'
@@ -221,7 +233,63 @@ spec:
       message: provider Kustomizations must retain their exact source and ownership contract
       reason: Forbidden
     - expression: >-
+        !variables.legacyProviderCreate ||
+        (
+        has(object.spec.postBuild) &&
+        !has(object.spec.postBuild.substitute) &&
+        has(object.spec.postBuild.substituteFrom) &&
+        size(object.spec.postBuild.substituteFrom) == 2 &&
+        object.spec.postBuild.substituteFrom[0].kind == "ConfigMap" &&
+        object.spec.postBuild.substituteFrom[0].name == "platform-settings" &&
+        (!has(object.spec.postBuild.substituteFrom[0].optional) ||
+        !object.spec.postBuild.substituteFrom[0].optional) &&
+        object.spec.postBuild.substituteFrom[1].kind == "ConfigMap" &&
+        object.spec.postBuild.substituteFrom[1].name == "platform-settings-overrides" &&
+        has(object.spec.postBuild.substituteFrom[1].optional) &&
+        object.spec.postBuild.substituteFrom[1].optional &&
+        !has(object.spec.components) &&
+        (
+        (!has(object.spec.patches) &&
+        (params.data["cluster_issuer"] != "local-ca" ||
+        "federation_partner_server_name" in params.data)) ||
+        (has(object.spec.patches) &&
+        size(object.spec.patches) == 1 &&
+        params.data["cluster_issuer"] == "local-ca" &&
+        !("federation_partner_server_name" in params.data) &&
+        has(object.spec.patches[0].patch) &&
+        object.spec.patches[0].patch == variables.localADCBackendPatch &&
+        has(object.spec.patches[0].target) &&
+        object.spec.patches[0].target.group == "agentgateway.dev" &&
+        object.spec.patches[0].target.version == "v1alpha1" &&
+        object.spec.patches[0].target.kind == "AgentgatewayBackend" &&
+        object.spec.patches[0].target.name == "llm-vertex" &&
+        object.spec.patches[0].target.namespace == "agentgateway-system" &&
+        !has(object.spec.patches[0].target.labelSelector) &&
+        !has(object.spec.patches[0].target.annotationSelector))
+        ) &&
+        !has(object.spec.images) &&
+        !has(object.spec.targetNamespace) &&
+        !has(object.spec.serviceAccountName) &&
+        !has(object.spec.kubeConfig) &&
+        !has(object.spec.namePrefix) &&
+        !has(object.spec.nameSuffix) &&
+        !has(object.spec.commonMetadata) &&
+        !has(object.spec.buildMetadata) &&
+        !has(object.spec.decryption) &&
+        !has(object.spec.deletionPolicy) &&
+        !has(object.spec.healthCheckExprs) &&
+        !has(object.spec.healthChecks) &&
+        !has(object.spec.ignore) &&
+        !has(object.spec.ignoreMissingComponents) &&
+        !has(object.spec.postBuild.substituteStrategy) &&
+        (!has(object.spec.force) || !object.spec.force) &&
+        (!has(object.spec.suspend) || !object.spec.suspend)
+        )
+      message: legacy provider bootstrap must match the exact selected Stage-A render
+      reason: Forbidden
+    - expression: >-
         request.operation == "DELETE" ||
+        variables.legacyProviderCreate ||
         (
         has(object.spec.postBuild) &&
         has(object.spec.postBuild.substitute) &&
@@ -291,11 +359,14 @@ spec:
         size(object.spec.dependsOn) == 2 &&
         object.spec.dependsOn[0].name == "agentgateway" &&
         !has(object.spec.dependsOn[0].namespace) &&
-        has(object.spec.dependsOn[0].readyExpr) &&
-        object.spec.dependsOn[0].readyExpr == variables.stableBaseReadyExpr &&
         object.spec.dependsOn[1].name == "platform-secrets" &&
         !has(object.spec.dependsOn[1].namespace) &&
-        !has(object.spec.dependsOn[1].readyExpr)) ||
+        !has(object.spec.dependsOn[1].readyExpr) &&
+        ((variables.legacyProviderCreate &&
+        !has(object.spec.dependsOn[0].readyExpr)) ||
+        (!variables.legacyProviderCreate &&
+        has(object.spec.dependsOn[0].readyExpr) &&
+        object.spec.dependsOn[0].readyExpr == variables.stableBaseReadyExpr))) ||
         (object.metadata.name == "agentgateway-admission" &&
         size(object.spec.dependsOn) == 1 &&
         object.spec.dependsOn[0].name == "agentgateway-provider" &&
@@ -317,10 +388,10 @@ spec:
     - expression: 'request.operation == "DELETE" || !("federation_partner_server_name" in params.data) || object.metadata.name != "agentgateway-admission"'
       message: federation must not recreate the deleted local admission inventory
       reason: Forbidden
-    - expression: 'request.operation == "DELETE" || (has(object.metadata.labels) && "fgentic.dev/llm-provider" in object.metadata.labels && has(object.spec.postBuild) && has(object.spec.postBuild.substitute) && "llm_provider" in object.spec.postBuild.substitute && object.spec.postBuild.substitute["llm_provider"] == object.metadata.labels["fgentic.dev/llm-provider"])'
+    - expression: 'request.operation == "DELETE" || variables.legacyProviderCreate || (has(object.metadata.labels) && "fgentic.dev/llm-provider" in object.metadata.labels && has(object.spec.postBuild) && has(object.spec.postBuild.substitute) && "llm_provider" in object.spec.postBuild.substitute && object.spec.postBuild.substitute["llm_provider"] == object.metadata.labels["fgentic.dev/llm-provider"])'
       message: inline provider substitution must equal the frozen provider identity
       reason: Forbidden
-    - expression: 'request.operation == "DELETE" || (has(object.metadata.annotations) && "fgentic.dev/llm-model" in object.metadata.annotations && has(object.spec.postBuild) && has(object.spec.postBuild.substitute) && "llm_model" in object.spec.postBuild.substitute && object.spec.postBuild.substitute["llm_model"] == object.metadata.annotations["fgentic.dev/llm-model"])'
+    - expression: 'request.operation == "DELETE" || variables.legacyProviderCreate || (has(object.metadata.annotations) && "fgentic.dev/llm-model" in object.metadata.annotations && has(object.spec.postBuild) && has(object.spec.postBuild.substitute) && "llm_model" in object.spec.postBuild.substitute && object.spec.postBuild.substitute["llm_model"] == object.metadata.annotations["fgentic.dev/llm-model"])'
       message: inline model substitution must equal the frozen model identity
       reason: Forbidden
     - expression: 'request.operation != "UPDATE" || ((!has(oldObject.spec.patches) && !has(object.spec.patches)) || (has(oldObject.spec.patches) && has(object.spec.patches) && object.spec.patches == oldObject.spec.patches))'

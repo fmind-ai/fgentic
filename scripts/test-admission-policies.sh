@@ -157,6 +157,9 @@ static_contract() {
     "provider Kustomizations must retain the locked selected-provider identity" \
     'object.metadata.labels["fgentic.dev/llm-provider"] == params.data["llm_provider"]'
   require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "provider Kustomizations must retain the locked selected-provider identity" \
+    "variables.legacyProviderCreate"
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
     "provider Kustomizations must retain the locked selected-model identity" \
     'object.metadata.annotations["fgentic.dev/llm-model"] == params.data["llm_model"]'
   require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
@@ -169,6 +172,12 @@ static_contract() {
     "provider Kustomizations must retain their exact source and ownership contract" \
     'object.spec.sourceRef.name == "flux-system"'
   require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "legacy provider bootstrap must match the exact selected Stage-A render" \
+    "!variables.legacyProviderCreate"
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "legacy provider bootstrap must match the exact selected Stage-A render" \
+    "!has(object.spec.postBuild.substitute)"
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
     "provider Kustomizations cannot redirect their guarded render inputs" \
     "size(object.spec.postBuild.substituteFrom) == 2"
   require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
@@ -177,6 +186,9 @@ static_contract() {
   require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
     "provider Kustomizations must retain their exact current-generation dependency chain" \
     "object.spec.dependsOn[0].readyExpr == variables.modelTupleReadyExpr"
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "provider Kustomizations must retain their exact current-generation dependency chain" \
+    "variables.legacyProviderCreate"
   require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
     "federation must not recreate the deleted local admission inventory" \
     'object.metadata.name != "agentgateway-admission"'
@@ -249,7 +261,31 @@ static_contract() {
       fail "legacy provider no-op boundary lost: ${condition_fragment}"
   done
   [[ "${provider_noop_condition}" != *CREATE* ]] ||
-    fail "legacy provider CREATE must remain fail closed"
+    fail "legacy provider CREATE must remain validation-gated"
+  local legacy_create_variable
+  legacy_create_variable="$(yq -r '
+      select(.kind == "ValidatingAdmissionPolicy" and
+        .metadata.name == "model-provider-kustomization-freeze.fgentic.dev") |
+      .spec.variables[] |
+      select(.name == "legacyProviderCreate") |
+      .expression
+    ' <<<"${rendered}")"
+  for condition_fragment in \
+    'request.operation == "CREATE"' \
+    'object.metadata.name == "agentgateway-provider"' \
+    '"fgentic.dev/llm-provider" in object.metadata.labels' \
+    '"fgentic.dev/llm-model" in object.metadata.annotations' \
+    '"llm_provider" in object.spec.postBuild.substitute' \
+    '"llm_model" in object.spec.postBuild.substitute'; do
+    grep -Fq "${condition_fragment}" <<<"${legacy_create_variable}" ||
+      fail "model-provider-kustomization-freeze.fgentic.dev legacy CREATE boundary lost: ${condition_fragment}"
+  done
+  yq -e '
+    select(.kind == "ValidatingAdmissionPolicy" and
+      .metadata.name == "model-provider-override-conflict.fgentic.dev") |
+    (has(.spec.variables) | not)
+  ' <<<"${rendered}" >/dev/null ||
+    fail "the override-conflict policy must not exempt legacy provider CREATE"
 
   yq -e '
     select(.kind == "ValidatingAdmissionPolicyBinding" and
@@ -891,8 +927,6 @@ EOF
       fail "fresh provider fixtures require a controller-free disposable context"
     fi
     ADMISSION_TEST_PROVIDER_KUSTOMIZATIONS_OWNED=true
-    selected_legacy_provider_kustomization_manifest |
-      "${kube[@]}" apply --filename=- >/dev/null
     if [[ "${federation_topology}" == true ]]; then
       provider_kustomizations_manifest |
         yq 'select(.metadata.name == "agentgateway-admission")' |
@@ -975,6 +1009,37 @@ EOF
     }
   }
 
+  if [[ "${provider_kustomization_count}" -eq 0 ]]; then
+    # A pre-existing selection override must block every provider CREATE. Remove only the owned
+    # conflicting key, preserve unrelated data, then mirror clean demo/Flux bootstrap with
+    # admission active before the exact selected legacy provider is created.
+    selected_legacy_provider_kustomization_manifest |
+      expect_manifest_denied \
+        "remove the llm_model override before projecting the guarded model tuple"
+    selected_provider_kustomizations_manifest |
+      expect_apply_manifest_denied \
+        "remove the llm_model override before projecting the guarded model tuple"
+    [[ "${ADMISSION_TEST_PLATFORM_SETTINGS_OVERRIDE_OWNED}" == true ]] ||
+      fail "refusing to remove a platform-settings override not owned by this test"
+    "${kube[@]}" patch configmap platform-settings-overrides --namespace flux-system \
+      --type=json --patch='[{"op":"remove","path":"/data/llm_model"}]' >/dev/null
+    local preserved_override
+    preserved_override="$("${kube[@]}" get configmap platform-settings-overrides \
+      --namespace flux-system -o jsonpath='{.data.gcp_project}')"
+    [[ "${preserved_override}" == unchanged-provider ]] ||
+      fail "guarded override cleanup changed an unrelated provider setting"
+    selected_legacy_provider_kustomization_manifest |
+      yq '.spec.namePrefix = "redirected-"' |
+      expect_manifest_denied \
+        "legacy provider bootstrap must match the exact selected Stage-A render"
+    selected_legacy_provider_kustomization_manifest |
+      yq '.spec.sourceRef.name = "alternate-source"' |
+      expect_manifest_denied \
+        "provider Kustomizations must retain their exact source and ownership contract"
+    selected_legacy_provider_kustomization_manifest |
+      "${kube[@]}" apply --filename=- >/dev/null
+  fi
+
   if [[ "${provider_kustomization_count}" -eq 0 ||
     "${legacy_provider_topology}" == true ]]; then
     "${kube[@]}" get kustomization agentgateway-provider --namespace flux-system -o json |
@@ -1010,18 +1075,6 @@ EOF
       "${kube[@]}" patch kustomization --namespace flux-system agentgateway-provider \
       --type=merge --dry-run=server \
       --patch "{\"metadata\":{\"annotations\":{\"fgentic.dev/llm-model\":\"${fixture_conflicting_model}\"},\"labels\":{\"fgentic.dev/llm-provider\":\"${fixture_provider}\"}},\"spec\":{\"postBuild\":{\"substitute\":{\"llm_model\":\"${fixture_conflicting_model}\",\"llm_provider\":\"${fixture_provider}\"}}}}"
-    selected_provider_kustomizations_manifest |
-      expect_apply_manifest_denied \
-        "remove the llm_model override before projecting the guarded model tuple"
-    [[ "${ADMISSION_TEST_PLATFORM_SETTINGS_OVERRIDE_OWNED}" == true ]] ||
-      fail "refusing to remove a platform-settings override not owned by this test"
-    "${kube[@]}" patch configmap platform-settings-overrides --namespace flux-system \
-      --type=json --patch='[{"op":"remove","path":"/data/llm_model"}]' >/dev/null
-    local preserved_override
-    preserved_override="$("${kube[@]}" get configmap platform-settings-overrides \
-      --namespace flux-system -o jsonpath='{.data.gcp_project}')"
-    [[ "${preserved_override}" == unchanged-provider ]] ||
-      fail "guarded override cleanup changed an unrelated provider setting"
     selected_provider_kustomizations_manifest |
       "${kube[@]}" apply --filename=- >/dev/null
   fi
