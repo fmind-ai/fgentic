@@ -38,7 +38,9 @@ Stage 2 (A2A/AgentCard conformance) runs only when --a2a-url is given and requir
 Options:
   --expect-server <host:port>   Pin the partner's delegated Matrix server (passed to fed-check.sh).
   --a2a-url <https-url>         Exact partner A2A agent URL; enables the conformance stage.
-  --public-jwk <path>          Out-of-band-pinned partner public P-256 JWK (required with --a2a-url).
+  --public-jwk <path>          Out-of-band-pinned partner public P-256 JOSE JWK (required with
+                               --a2a-url): kty=EC, crv=P-256, alg=ES256, use=sig, key_ops=[verify],
+                               plus the exported kid; a bare-coordinate key is rejected.
   --key-id <kid>               Expected JWS key id; defaults to the "kid" field of --public-jwk.
 
 Environment:

@@ -80,9 +80,14 @@ sign_card "${WORK_DIR}/resolved-old.json" "${WORK_DIR}/key1b.pem" "${KID_GOOD}" 
 	"${WORK_DIR}/old-interface.json" "${WORK_DIR}/jwk1b.json"
 sign_card "${WORK_DIR}/resolved-no-budget.json" "${WORK_DIR}/key1c.pem" "${KID_GOOD}" \
 	"${WORK_DIR}/no-budget.json" "${WORK_DIR}/jwk1c.json"
-# A second, unrelated key: pinning its JWK against the good card proves wrong-key rejection.
+# A second, unrelated key with its own kid: pinning it against the good card proves rejection on
+# the kid-mismatch short-circuit.
 sign_card "${WORK_DIR}/resolved.json" "${WORK_DIR}/key2.pem" "${KID_OTHER}" \
 	"${WORK_DIR}/good2.json" "${WORK_DIR}/jwk2.json"
+# A third, unrelated key reusing the good card's kid: pinning it exercises the ECDSA signature
+# rejection itself (matching kid, wrong public key), not just the kid short-circuit.
+sign_card "${WORK_DIR}/resolved.json" "${WORK_DIR}/key3.pem" "${KID_GOOD}" \
+	"${WORK_DIR}/good3.json" "${WORK_DIR}/jwk3.json"
 
 # unsigned = the resolved card with no signatures; tampered = the good card with a mutated field.
 cp "${WORK_DIR}/resolved.json" "${WORK_DIR}/unsigned.json"
@@ -168,9 +173,12 @@ expect_failure 'unsigned card' 'signature verification failed' \
 expect_failure 'tampered card' 'signature verification failed' \
 	run_onboard success "${WORK_DIR}/tampered.json" \
 	--a2a-url "${A2A_URL}" --public-jwk "${WORK_DIR}/jwk1.json" partner.example
-expect_failure 'wrong pinned key' 'signature verification failed' \
+expect_failure 'wrong pinned key (kid mismatch)' 'signature verification failed' \
 	run_onboard success "${WORK_DIR}/good.json" \
 	--a2a-url "${A2A_URL}" --public-jwk "${WORK_DIR}/jwk2.json" partner.example
+expect_failure 'wrong pinned key (same kid, ECDSA)' 'signature verification failed' \
+	run_onboard success "${WORK_DIR}/good.json" \
+	--a2a-url "${A2A_URL}" --public-jwk "${WORK_DIR}/jwk3.json" partner.example
 expect_failure 'wrong interface version' 'no JSONRPC A2A v1.0 interface' \
 	run_onboard success "${WORK_DIR}/old-interface.json" \
 	--a2a-url "${A2A_URL}" --public-jwk "${WORK_DIR}/jwk1b.json" partner.example

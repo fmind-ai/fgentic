@@ -63,7 +63,7 @@ The script uses HTTPS only, follows no redirects, reads no credentials or `.netr
 
 The output deliberately sets `trust_level` to `public_unauthenticated_probe` and `governance_verified` to `false`. Store it in the private onboarding record, not in Git. A probe failure blocks activation until the owner explains and fixes the public boundary; bypassing TLS verification is not an accepted workaround.
 
-When the partner will also export an A2A agent (section 6), run the staged onboarding preflight, which adds an opt-in AgentCard **conformance** stage on top of the same connectivity probe. Pin the partner's public P-256 JWK out of band first, then:
+When the partner will also export an A2A agent (section 6), run the staged onboarding preflight, which adds an opt-in AgentCard **conformance** stage on top of the same connectivity probe. Pin the partner's public P-256 signing JWK out of band first — a complete JOSE public JWK (`kty: EC`, `crv: P-256`, `alg: ES256`, `use: sig`, `key_ops: ["verify"]`, and the exported `kid`), never a bare-coordinate key — then:
 
 ```bash
 scripts/fed-onboard.sh --expect-server matrix.partner.example:443 \
