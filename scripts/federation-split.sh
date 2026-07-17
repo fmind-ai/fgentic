@@ -790,13 +790,15 @@ assert_split_control_plane_boundary() {
 		die "split server or ingress container identities overlap"
 	jq -e --arg ip "${LOOPBACK_A}" '
       .[0].HostConfig.PortBindings as $ports |
-      all(["80/tcp", "443/tcp"][] as $port;
+      all(["80/tcp", "443/tcp"][];
+        . as $port |
         ($ports[$port] | length == 1) and $ports[$port][0].HostIp == $ip and
         $ports[$port][0].HostPort == ($port | split("/")[0]))
     ' <<<"${serverlb_a}" >/dev/null || die "split A ingress is not fixed to ${LOOPBACK_A}"
 	jq -e --arg ip "${LOOPBACK_B}" '
       .[0].HostConfig.PortBindings as $ports |
-      all(["80/tcp", "443/tcp"][] as $port;
+      all(["80/tcp", "443/tcp"][];
+        . as $port |
         ($ports[$port] | length == 1) and $ports[$port][0].HostIp == $ip and
         $ports[$port][0].HostPort == ($port | split("/")[0]))
     ' <<<"${serverlb_b}" >/dev/null || die "split B ingress is not fixed to ${LOOPBACK_B}"
