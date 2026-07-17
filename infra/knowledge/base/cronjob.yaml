@@ -58,9 +58,14 @@ spec:
                 - --
               args:
                 - |
-                  if [[ ! -s /sources/.connector/git-markdown/current.json ]]; then
+                  inventory=/sources/.connector/git-markdown/current.json
+                  if [[ ! -e "$inventory" && ! -L "$inventory" ]]; then
                     touch /dispatch/manual
                     exit 0
+                  fi
+                  if [[ ! -f "$inventory" || -L "$inventory" || ! -s "$inventory" ]]; then
+                    echo "connector inventory exists but is not a non-empty regular file" >&2
+                    exit 1
                   fi
                   exec psql --quiet --no-psqlrc --file=/runtime/connector-publish.sql
               env:

@@ -217,7 +217,10 @@ jq -e \
   (.spec.jobTemplate.spec.template.spec.initContainers[] |
     select(.name == "connector-publish") |
     .image == $postgres and
-    (.args[0] | contains("/sources/.connector/git-markdown/current.json") and
+    (.args[0] | contains("inventory=/sources/.connector/git-markdown/current.json") and
+      contains("[[ ! -e \"$inventory\" && ! -L \"$inventory\" ]]") and
+      contains("[[ ! -f \"$inventory\" || -L \"$inventory\" || ! -s \"$inventory\" ]]") and
+      contains("connector inventory exists but is not a non-empty regular file") and
       contains("--file=/runtime/connector-publish.sql") and
       contains("/dispatch/manual")) and
     ([.env[] | select(.valueFrom.secretKeyRef != null) |
