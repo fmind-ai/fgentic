@@ -248,6 +248,41 @@ func TestReplyScanModeSelection(t *testing.T) {
 	}
 }
 
+func TestReplyScanCatchesControlCharSplitSecretInLink(t *testing.T) {
+	// An agent (e.g. under prompt injection) hides a token behind a DEL byte inside a link URL. The
+	// render path strips control chars via sanitizeInline, which would reassemble a working credential
+	// in the room; the scan must normalize link fragments the same way and catch it before persistence.
+	token := "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz"
+	split := token[:8] + "\x7f" + token[8:] // DEL byte breaks the scanner's contiguity anchors
+	client := &scriptedA2AClient{callResult: a2aclient.Result{
+		Text:     "here is the link",
+		Links:    []a2aclient.ResultLink{{Label: "creds", URL: "https://host/" + split}},
+		Terminal: true,
+	}}
+	b, _, _, _, recorder := pollingHarness(t, client)
+	configureDurableTestBridge(b)
+	b.cfg.ReplyScanMode = "block"
+	var output strings.Builder
+	setBridgeLogOutput(b, &output)
+
+	job := admitAndClaimDurableJob(t, b, "$link-ctl")
+	b.executeDurableJob(t.Context(), job)
+
+	events := recorder.snapshot()
+	if len(events) != 1 || !strings.Contains(events[0].Body, "reply withheld") {
+		t.Fatalf("control-char-split secret in link not withheld: %+v", events)
+	}
+	// The reassembled (control-stripped) token must never appear in the room or the log.
+	for _, evt := range events {
+		if strings.Contains(strings.ReplaceAll(evt.Body, "\x7f", ""), token) {
+			t.Fatalf("reassembled secret leaked into the event: %q", evt.Body)
+		}
+	}
+	if strings.Contains(strings.ReplaceAll(output.String(), "\x7f", ""), token) {
+		t.Fatal("reassembled secret leaked into the log/audit stream")
+	}
+}
+
 // assertNoSecretLeak fails if the example credential appears in any posted Matrix event or any
 // log/audit line — the core invariant of #343: the matched value never enters the room or the log.
 func assertNoSecretLeak(t *testing.T, recorder *matrixRecorder, logOutput string) {

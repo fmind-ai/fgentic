@@ -90,32 +90,39 @@ func Sanitize(text string) Result {
 	if len(spans) == 0 {
 		return Result{Masked: text}
 	}
-	// Sort by start, then by widest span, and keep only non-overlapping spans so masking rewrites
-	// each region exactly once with a deterministic class.
+	// Sort by start, then by widest span, then merge any overlapping or adjacent spans into disjoint
+	// union regions. Merging (rather than skipping) is load-bearing: a partial overlap — a span that
+	// starts inside an earlier match but ends after it — would otherwise leave its tail unmasked. The
+	// full class set is collected before merging so the audit still reports every matched rule class.
 	sort.Slice(spans, func(i, j int) bool {
 		if spans[i].start != spans[j].start {
 			return spans[i].start < spans[j].start
 		}
 		return spans[i].end > spans[j].end
 	})
-	var (
-		masked  strings.Builder
-		classes = map[string]struct{}{}
-		cursor  int
-		count   int
-	)
+	classes := map[string]struct{}{}
+	merged := make([]span, 0, len(spans))
 	for _, s := range spans {
-		if s.start < cursor {
-			continue // covered by an already-masked span
+		classes[s.class] = struct{}{}
+		if n := len(merged); n > 0 && s.start <= merged[n-1].end {
+			if s.end > merged[n-1].end {
+				merged[n-1].end = s.end // extend the union to cover a partial overlap
+			}
+			continue
 		}
+		merged = append(merged, s)
+	}
+	var (
+		masked strings.Builder
+		cursor int
+	)
+	for _, s := range merged {
 		masked.WriteString(text[cursor:s.start])
 		masked.WriteString(redactionPlaceholder(s.class))
-		classes[s.class] = struct{}{}
 		cursor = s.end
-		count++
 	}
 	masked.WriteString(text[cursor:])
-	return Result{Masked: masked.String(), Count: count, Classes: sortedKeys(classes)}
+	return Result{Masked: masked.String(), Count: len(merged), Classes: sortedKeys(classes)}
 }
 
 // SanitizeAll scans several reply fragments (the reply text plus each rendered data block and link)

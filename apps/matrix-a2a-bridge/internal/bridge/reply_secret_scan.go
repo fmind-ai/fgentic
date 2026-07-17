@@ -117,12 +117,23 @@ func (b *Bridge) federationExposed(sender senderIdentity, ref *AgentRef) bool {
 // replyFragments lists, in a fixed order, every text-bearing fragment folded into the visible reply
 // so the scan sees exactly what a room member would: the reply text, each structured data block, and
 // each link's label then URL. applyMaskedFragments consumes the same order to rebuild the result.
+//
+// Link fragments are normalized through the exact renderLinks transformation (sanitizeInline strips
+// C0/DEL control characters and trims) BEFORE scanning. renderLinks applies that strip at delivery,
+// so a control byte embedded in a link would otherwise break the scanner's contiguity anchors while
+// the render-time strip silently reassembles a working credential in the posted event and the
+// ledger. Text and data blocks are scanned raw because they are posted verbatim (no control strip),
+// so a control-split token stays split in the room and cannot reassemble.
 func replyFragments(result a2aclient.Result) []string {
 	fragments := make([]string, 0, 1+len(result.Data)+2*len(result.Links))
 	fragments = append(fragments, result.Text)
 	fragments = append(fragments, result.Data...)
 	for _, link := range result.Links {
-		fragments = append(fragments, link.Label, link.URL)
+		fragments = append(
+			fragments,
+			sanitizeInline(link.Label, maxFilenameRunes),
+			sanitizeInline(link.URL, maxLinkChars),
+		)
 	}
 	return fragments
 }

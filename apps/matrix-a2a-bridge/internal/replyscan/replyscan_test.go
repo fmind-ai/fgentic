@@ -95,6 +95,24 @@ func TestSanitizeDeduplicatesAndSortsClasses(t *testing.T) {
 	}
 }
 
+func TestSanitizeMergesOverlappingMatchesAndUnionsClasses(t *testing.T) {
+	// A github token embedded as a URL basic-auth password matches both the connection-string rule
+	// (the wider span) and the github rule (nested inside it). The overlap must mask exactly once with
+	// no unmasked tail, while the audit still reports both rule classes.
+	token := "ghp_" + "1234567890abcdefghijklmnopqrstuvwxyz"
+	got := Sanitize("see https://user:" + token + "@host/path")
+	if got.Count != 1 {
+		t.Fatalf("Count = %d, want 1 merged region", got.Count)
+	}
+	if strings.Contains(got.Masked, token) || strings.Contains(got.Masked, "ghp_") {
+		t.Fatalf("overlapping match left the secret exposed: %q", got.Masked)
+	}
+	if len(got.Classes) != 2 ||
+		got.Classes[0] != "connection-string-password" || got.Classes[1] != "github-token" {
+		t.Fatalf("Classes = %v, want both overlapping classes", got.Classes)
+	}
+}
+
 func TestSanitizeAllAggregatesFragments(t *testing.T) {
 	fragments := []string{
 		"summary text",
