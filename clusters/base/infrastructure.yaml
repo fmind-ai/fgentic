@@ -355,6 +355,36 @@ spec:
         name: platform-settings-overrides
         optional: true
 ---
+# Optional sovereign embeddings + reranker runtime (#340). Orthogonal to the chat provider above:
+# the disabled profile renders zero objects, and a cluster overlay switches the final path segment
+# to `.../embeddings/enabled` to install the CPU BGE-M3 runtime plus its proxy-to-model egress edge.
+# Reusing one Kustomization name makes Flux prune the runtime when the setting is disabled again.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: agentgateway-embeddings
+  namespace: flux-system
+spec:
+  interval: 30m
+  retryInterval: 2m
+  path: ./infra/agentgateway/providers/profiles/embeddings/disabled
+  prune: true
+  wait: true
+  # Self-hosted profiles may need to fetch pinned model snapshots before their HelmRelease is Ready.
+  timeout: 45m
+  dependsOn:
+    - name: agentgateway
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true
+---
 # kagent platform + extras (ModelConfig + sample Agent). Depends on postgres — the kagent
 # controller migrates its database at startup (which is why it cannot sit in controllers).
 apiVersion: kustomize.toolkit.fluxcd.io/v1

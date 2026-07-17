@@ -36,7 +36,7 @@ Every API-key Secret is namespace-local to `agentgateway-system` and stores the 
 1. One or more `chat`, `embeddings`, or `rerank` capabilities.
 1. At most one `costRef`, fixed to the operator-reviewed `fgentic.eval.pricing.v1` overlay identity. The catalog contains no mutable price or price URL.
 
-The root check resolves every tracked `clusters/*/platform-settings.yaml` provider/model pair through the catalog and fails closed on an unknown selection, missing classification, unsupported enum, duplicate identity, or missing provider directory. The current inventory covers the tracked `demo` and `vertex` choices plus the canonical self-hosted `vllm` model. Before selecting a different API model or adding an embeddings/rerank backend, add its exact reviewed entry in the same change; do not copy residency or classification fields into an overlay or route.
+The root check resolves every tracked `clusters/*/platform-settings.yaml` provider/model pair through the catalog and fails closed on an unknown selection, missing classification, unsupported enum, duplicate identity, or missing provider directory. The current inventory covers the tracked `demo` and `vertex` choices, the canonical self-hosted `vllm` chat model, and the opt-in self-hosted `embeddings` profile's two governed models (`BAAI/bge-m3` with the `embeddings` capability and `BAAI/bge-reranker-v2-m3` with the `rerank` capability, sharing one provider directory). Before selecting a different API model or adding an embeddings/rerank backend, add its exact reviewed entry in the same change; do not copy residency or classification fields into an overlay or route.
 
 The catalog is policy input, not a router or enforcement claim. agentgateway still owns routing/serving, and the classification-aware denial path is implemented separately by #339. Until that gate lands, selecting a cluster profile remains the effective model boundary; catalog validation alone does not prevent egress.
 
@@ -189,6 +189,45 @@ mise exec -- yq -e '
 This proves rendering, schema validity, and the intended image/resource/command contract only. Live CUDA discovery, model loading, `/health`, direct and agentgateway chat, mention-to-reply, metrics, and NetworkPolicy denial evidence require a funded GPU environment and remain human acceptance work for issue #10.
 
 The current constrained k3d host is not runtime acceptance evidence: it lacks safe memory headroom, and repo-owned k3d servers disable kube-router because this host aborts policy synchronization with `iptables-restore: Message too large`. Do not download the large artifacts merely for static validation or claim “prompts never leave” until the full NetworkPolicy conformance probe and mention-to-reply capture pass on a verified policy engine.
+
+### Sovereign embeddings and reranker (M25 grounding, #340)
+
+Grounding/RAG (M25), memory, and the LLM-judge eval (M30) need embeddings and reranking without handing a credential to a caller or sending document content to a hosted API. The opt-in `embeddings` provider profile serves both in-cluster, behind the same credential-free agentgateway chokepoint and token-metering path as chat. It is **orthogonal to the chat `llm_provider`**: enable it whenever a consumer needs in-cluster embeddings, regardless of which chat backend is selected.
+
+The profile is out of the default reconciled DAG. The `agentgateway-embeddings` Flux Kustomization renders [`infra/agentgateway/providers/profiles/embeddings/disabled`](../infra/agentgateway/providers/profiles/embeddings/disabled) (zero objects) until a cluster overlay patches its final path segment to `.../embeddings/enabled`:
+
+```yaml
+# clusters/<env>/kustomization.yaml — opt in to the sovereign embeddings runtime
+patches:
+  - target:
+      kind: Kustomization
+      name: agentgateway-embeddings
+    patch: |
+      - op: replace
+        path: /spec/path
+        value: ./infra/agentgateway/providers/profiles/embeddings/enabled
+```
+
+Enabling the profile alongside an **external** chat provider (Vertex/Anthropic/OpenAI/Azure/Mistral) requires operator care: those providers ship no proxy egress policy, so the additive `agentgateway-embeddings-egress` policy flips the proxy to default-deny egress. Pair it with a self-hosted chat provider (`vllm`) or extend the provider-egress inventory (#339) to permit the external chat endpoint too. See "Fail-closed reachability" below.
+
+The enabled profile deploys the vLLM Production Stack chart `0.1.11` and CPU runtime `v0.24.0` (both Apache-2.0) as two engines under `infra/models/embeddings/`:
+
+| Engine                 | Model                     | Revision                                   | License    | vLLM runner       | Endpoints                     |
+| ---------------------- | ------------------------- | ------------------------------------------ | ---------- | ----------------- | ----------------------------- |
+| `knowledge-embeddings` | `BAAI/bge-m3`             | `5617a9f61b028005a4858fdac845db406aefb181` | MIT        | `pooling` (embed) | `/v1/embeddings`, `/tokenize` |
+| `knowledge-reranker`   | `BAAI/bge-reranker-v2-m3` | `953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e` | Apache-2.0 | `pooling` (score) | `/rerank`, `/score`           |
+
+vLLM v0.24.0 removed the top-level `--task` flag; `--runner pooling` auto-detects the embedding architecture (bge-m3) and the cross-encoder scorer (bge-reranker-v2-m3, `num_labels == 1` → `/score` + `/rerank`).
+
+Each engine's one-shot, prompt-free loader Job writes its pinned snapshot (~5 GiB PVC) and is the only Pod allowed public HTTPS; the serving Pods mount the cache read-only, run Hugging Face and vLLM offline/telemetry-off, and receive no egress allowance. Stable Services `knowledge-embeddings.models.svc.cluster.local:8000` and `knowledge-reranker.models…:8000` honour the #332 ingestion consumer contract (`bge-m3-1024-v1`, 1024 dimensions, `max_model_len=8192`) so callers never see the local model path.
+
+CPU envelope (constrained-profile sizing; override per node): embeddings requests 2 CPU / 4 GiB, limits 4 CPU / 6 GiB; the reranker requests 1 CPU / 3 GiB, limits 3 CPU / 5 GiB; `float32`, one tensor-parallel shard, four concurrent sequences each. Expect slow CPU inference — this proves sovereign grounding, not throughput.
+
+**Fail-closed reachability.** `knowledge-embeddings-allow-platform-ingress` admits only the agentgateway proxy (and Prometheus) to the serving Pods on `:8000`; a distinct `models-embeddings-default-deny` lets the profile stand alone or coexist with the chat `vllm` profile without a two-owner conflict. The proxy-to-model egress edge (`agentgateway-embeddings-egress`) is **additive** to the selected chat provider's egress inventory, which #339 is centralizing into one provider-egress owner. It composes cleanly with a locked-down self-hosted proxy egress (the sovereign end-to-end path). With an **external** chat provider the proxy egress is otherwise open, so enabling this profile there requires the operator's provider-egress inventory to permit the external chat endpoint and this internal embeddings edge together — #339's remit.
+
+Routes and authorization are consumer-owned: ingestion's `/v1/embeddings` + `/tokenize` route and API-key policy ship in `infra/knowledge/base` (#332); permission-aware retrieval (#333) owns the reranker route. #340 owns only the runtime, the two governed catalog entries, and the fail-closed proxy-to-model NetworkPolicy edge.
+
+Offline gates prove structure: `check:manifests` renders both engines through the pinned chart and schema-validates every manifest, and `check:model-catalog` validates the two governed entries. Live serving acceptance — `/health`, `/v1/embeddings` and `/rerank` responses, agentgateway-only reachability with a blocked direct/external path, a Prometheus scrape, and the NetworkPolicy conformance probe — requires a cluster with real memory headroom and remains capture work once the runtime is enabled on a verified policy engine.
 
 ### Mistral La Plateforme
 

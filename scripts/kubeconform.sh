@@ -86,6 +86,21 @@ VLLM_CHART_DIR="$(fetch_chart vllm "${VLLM_CHART}" --repo "${VLLM_REPOSITORY}" -
     | "${KUBECONFORM[@]}"
 )
 
+echo "==> Rendering + validating the opt-in sovereign embeddings + reranker profile charts"
+# #340's runtime reuses the same pinned vLLM chart; render both engines so a bad value shape fails
+# here rather than only in a live cluster. Model snapshots are literal (no envsubst vars needed).
+for embeddings_release in \
+  infra/models/embeddings/embeddings-helmrelease.yaml \
+  infra/models/embeddings/reranker-helmrelease.yaml; do
+  release_name="$(yq -er '.metadata.name' "${embeddings_release}")"
+  yq -o=yaml '.spec.values' "${embeddings_release}" \
+    | flux envsubst --strict \
+    | helm template "${release_name}" "${VLLM_CHART_DIR}" \
+      --namespace models \
+      --values - \
+    | "${KUBECONFORM[@]}"
+done
+
 echo "==> Rendering + validating the pinned tracing charts"
 TRACING_RELEASE=infra/observability/tracing-helmreleases.yaml
 for release in otel-collector jaeger; do

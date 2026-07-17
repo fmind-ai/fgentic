@@ -1,0 +1,9 @@
+# Opt-in sovereign embeddings + reranker provider (#340). Selecting this profile installs the
+# CPU-only BGE-M3 embeddings + BGE reranker runtime and the additive proxy-to-model egress edge.
+# Orthogonal to the chat `llm_provider`: enable it whenever grounding/memory/eval need in-cluster
+# embeddings, regardless of which chat backend is selected.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../../models/embeddings
+  - gateway-egress.yaml

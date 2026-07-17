@@ -1,0 +1,165 @@
+# Sovereign in-cluster BGE reranker (cross-encoder) engine (M25/#340). Same chart/image/posture as
+# the embeddings engine; a distinct release keeps its Service, NetworkPolicy selector, and CPU
+# envelope independent. The scoring runner exposes /rerank and /score for retrieval-time reranking.
+apiVersion: helm.toolkit.fluxcd.io/v2
+kind: HelmRelease
+metadata:
+  name: knowledge-reranker
+  namespace: models
+spec:
+  interval: 30m
+  timeout: 30m
+  install:
+    remediation:
+      retries: -1
+  upgrade:
+    remediation:
+      retries: -1
+  chart:
+    spec:
+      chart: vllm-stack
+      version: 0.1.11
+      sourceRef:
+        kind: HelmRepository
+        name: vllm
+        namespace: flux-system
+  values:
+    routerSpec:
+      enableRouter: false
+    cacheserverSpec:
+      enabled: false
+    sharedPvcStorage:
+      enabled: false
+    loraController:
+      enableLoraController: false
+    grafanaDashboards:
+      enabled: false
+    kube-prometheus-stack:
+      enabled: false
+    prometheus-adapter:
+      enabled: false
+    servingEngineSpec:
+      enableEngine: true
+      runtimeClassName: ""
+      imagePullPolicy: IfNotPresent
+      labels:
+        environment: knowledge-reranker
+        release: knowledge-reranker
+      serviceMonitor:
+        enabled: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containerSecurityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        allowPrivilegeEscalation: false
+        readOnlyRootFilesystem: true
+        capabilities:
+          drop:
+            - ALL
+      modelSpec:
+        - name: bge-reranker-v2-m3
+          enabled: true
+          serviceAccountName: knowledge-embeddings
+          runtimeClassName: ""
+          repository: vllm/vllm-openai-cpu
+          tag: v0.24.0@sha256:b0e6f8604413a8bfcca8836bb4b57b47f1aa653957e07f8903ece531309981a1
+          modelURL: /models/bge-reranker-v2-m3
+          replicaCount: 1
+          enableLoRA: false
+          lmcacheConfig:
+            enabled: false
+          keda:
+            enabled: false
+          resources:
+            requests:
+              cpu: "1"
+              memory: 3Gi
+            limits:
+              cpu: "3"
+              memory: 5Gi
+          shmSize: 1Gi
+          initContainer:
+            name: wait-for-model
+            image: vllm/vllm-openai-cpu:v0.24.0@sha256:b0e6f8604413a8bfcca8836bb4b57b47f1aa653957e07f8903ece531309981a1
+            command:
+              - python3
+              - -c
+            args:
+              - |
+                from pathlib import Path
+                from time import sleep
+
+                marker = Path("/models/bge-reranker-v2-m3/.ready")
+                for _ in range(900):
+                    if marker.is_file():
+                        raise SystemExit(0)
+                    sleep(2)
+                raise SystemExit("model download did not complete")
+            resources:
+              requests:
+                cpu: 10m
+                memory: 64Mi
+              limits:
+                memory: 128Mi
+            mountPvcStorage: false
+            extraVolumeMounts:
+              - name: model-cache
+                mountPath: /models
+                readOnly: true
+              - name: runtime-tmp
+                mountPath: /tmp
+          vllmConfig:
+            enablePrefixCaching: false
+            enableChunkedPrefill: false
+            maxModelLen: 8192
+            dtype: float32
+            tensorParallelSize: 1
+            maxNumSeqs: 4
+            extraArgs:
+              # The pooling runner auto-detects this cross-encoder (num_labels == 1) and exposes the
+              # /score and /rerank endpoints (vLLM v0.24.0 replaced the removed --task flag with
+              # --runner). The served name matches the governed catalog entry so retrieval callers
+              # never see the local path.
+              - --runner
+              - pooling
+              - --served-model-name
+              - BAAI/bge-reranker-v2-m3
+              - --no-enable-log-requests
+          env:
+            - name: HOME
+              value: /tmp
+            - name: VLLM_CPU_KVCACHE_SPACE
+              value: "1"
+            - name: VLLM_CPU_OMP_THREADS_BIND
+              value: nobind
+            - name: OMP_NUM_THREADS
+              value: "3"
+            - name: VLLM_NO_USAGE_STATS
+              value: "1"
+            - name: HF_HUB_DISABLE_TELEMETRY
+              value: "1"
+            - name: HF_HUB_OFFLINE
+              value: "1"
+            - name: TRANSFORMERS_OFFLINE
+              value: "1"
+          extraVolumes:
+            - name: model-cache
+              persistentVolumeClaim:
+                claimName: bge-reranker-v2-m3-model
+            - name: runtime-tmp
+              emptyDir:
+                sizeLimit: 2Gi
+          extraVolumeMounts:
+            - name: model-cache
+              mountPath: /models
+              readOnly: true
+            - name: runtime-tmp
+              mountPath: /tmp

@@ -1,0 +1,5 @@
+# Default state: the sovereign embeddings/reranker runtime is out of the reconciled DAG. Renders
+# zero objects so `prune` leaves no footprint until a cluster overlay selects the enabled profile.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources: []

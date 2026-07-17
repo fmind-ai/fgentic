@@ -1,0 +1,42 @@
+# Stable, contract-owned Services decoupled from the chart's generated `<release>-<model>-engine`
+# name. The #332 consumer backend pins knowledge-embeddings.models.svc.cluster.local:8000; retrieval
+# (#333) reaches the reranker the same way. Both target the serving container port 8000 directly.
+apiVersion: v1
+kind: Service
+metadata:
+  name: knowledge-embeddings
+  namespace: models
+  labels:
+    app.kubernetes.io/part-of: vllm-stack
+    app.kubernetes.io/component: embeddings
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: knowledge-embeddings
+    app.kubernetes.io/component: serving-engine
+    app.kubernetes.io/part-of: vllm-stack
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8000
+      targetPort: 8000
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: knowledge-reranker
+  namespace: models
+  labels:
+    app.kubernetes.io/part-of: vllm-stack
+    app.kubernetes.io/component: reranker
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/instance: knowledge-reranker
+    app.kubernetes.io/component: serving-engine
+    app.kubernetes.io/part-of: vllm-stack
+  ports:
+    - name: http
+      protocol: TCP
+      port: 8000
+      targetPort: 8000

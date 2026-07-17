@@ -1,0 +1,209 @@
+# Model acquisition is separate from serving: only these short-lived, prompt-free Jobs may reach
+# public HTTPS. Each serving Pod later mounts its completed cache read-only with no egress allowance.
+# bge-m3 (MIT) is the embedding model; bge-reranker-v2-m3 (Apache-2.0) is the cross-encoder reranker.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bge-m3-model
+  namespace: models
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: bge-reranker-v2-m3-model
+  namespace: models
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: 5Gi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bge-m3-model-loader
+  namespace: models
+  annotations:
+    # Job pod templates are immutable; let Flux replace this Job when the pinned revision changes.
+    kustomize.toolkit.fluxcd.io/force: enabled
+  labels:
+    app.kubernetes.io/name: bge-m3
+    app.kubernetes.io/component: model-loader
+    app.kubernetes.io/part-of: vllm-stack
+spec:
+  activeDeadlineSeconds: 1800
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bge-m3
+        app.kubernetes.io/component: model-loader
+        app.kubernetes.io/part-of: vllm-stack
+    spec:
+      serviceAccountName: knowledge-embeddings
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: model-loader
+          image: vllm/vllm-openai-cpu:v0.24.0@sha256:b0e6f8604413a8bfcca8836bb4b57b47f1aa653957e07f8903ece531309981a1
+          imagePullPolicy: IfNotPresent
+          command:
+            - python3
+            - -c
+          args:
+            - |
+              from pathlib import Path
+
+              from huggingface_hub import snapshot_download
+
+              revision = "5617a9f61b028005a4858fdac845db406aefb181"
+              target = Path("/models/bge-m3")
+              marker = target / ".ready"
+
+              if not marker.is_file() or marker.read_text(encoding="utf-8").strip() != revision:
+                  snapshot_download(
+                      repo_id="BAAI/bge-m3",
+                      revision=revision,
+                      local_dir=target,
+                      max_workers=4,
+                  )
+                  marker.write_text(f"{revision}\n", encoding="utf-8")
+          env:
+            - name: HOME
+              value: /tmp
+            - name: HF_HUB_DISABLE_TELEMETRY
+              value: "1"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: bge-m3-model
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: bge-reranker-v2-m3-model-loader
+  namespace: models
+  annotations:
+    kustomize.toolkit.fluxcd.io/force: enabled
+  labels:
+    app.kubernetes.io/name: bge-reranker-v2-m3
+    app.kubernetes.io/component: model-loader
+    app.kubernetes.io/part-of: vllm-stack
+spec:
+  activeDeadlineSeconds: 1800
+  backoffLimit: 3
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: bge-reranker-v2-m3
+        app.kubernetes.io/component: model-loader
+        app.kubernetes.io/part-of: vllm-stack
+    spec:
+      serviceAccountName: knowledge-embeddings
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        fsGroupChangePolicy: OnRootMismatch
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: model-loader
+          image: vllm/vllm-openai-cpu:v0.24.0@sha256:b0e6f8604413a8bfcca8836bb4b57b47f1aa653957e07f8903ece531309981a1
+          imagePullPolicy: IfNotPresent
+          command:
+            - python3
+            - -c
+          args:
+            - |
+              from pathlib import Path
+
+              from huggingface_hub import snapshot_download
+
+              revision = "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+              target = Path("/models/bge-reranker-v2-m3")
+              marker = target / ".ready"
+
+              if not marker.is_file() or marker.read_text(encoding="utf-8").strip() != revision:
+                  snapshot_download(
+                      repo_id="BAAI/bge-reranker-v2-m3",
+                      revision=revision,
+                      local_dir=target,
+                      max_workers=4,
+                  )
+                  marker.write_text(f"{revision}\n", encoding="utf-8")
+          env:
+            - name: HOME
+              value: /tmp
+            - name: HF_HUB_DISABLE_TELEMETRY
+              value: "1"
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            runAsGroup: 1000
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: model-cache
+              mountPath: /models
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: model-cache
+          persistentVolumeClaim:
+            claimName: bge-reranker-v2-m3-model
+        - name: tmp
+          emptyDir:
+            sizeLimit: 256Mi
