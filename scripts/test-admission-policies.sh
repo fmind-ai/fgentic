@@ -1437,17 +1437,17 @@ EOF
 
     expect_denied "inline provider substitution must equal the frozen provider identity" \
       "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
-      --type=merge --dry-run=server \
-      --patch "{\"spec\":{\"postBuild\":{\"substitute\":{\"llm_provider\":\"${alternate_provider}\"}}}}"
-    expect_denied "inline provider substitution must equal the frozen provider identity" \
+      --type=json --dry-run=server \
+      --patch "[{\"op\":\"replace\",\"path\":\"/spec/postBuild/substitute/llm_provider\",\"value\":\"${alternate_provider}\"}]"
+    expect_denied "provider Kustomizations cannot redirect their guarded render inputs" \
       "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
       --type=json --dry-run=server \
       --patch='[{"op":"remove","path":"/spec/postBuild/substitute/llm_provider"}]'
     expect_denied "inline model substitution must equal the frozen model identity" \
       "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
-      --type=merge --dry-run=server \
-      --patch "{\"spec\":{\"postBuild\":{\"substitute\":{\"llm_model\":\"${alternate_model}\"}}}}"
-    expect_denied "inline model substitution must equal the frozen model identity" \
+      --type=json --dry-run=server \
+      --patch "[{\"op\":\"replace\",\"path\":\"/spec/postBuild/substitute/llm_model\",\"value\":\"${alternate_model}\"}]"
+    expect_denied "provider Kustomizations cannot redirect their guarded render inputs" \
       "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
       --type=json --dry-run=server \
       --patch='[{"op":"remove","path":"/spec/postBuild/substitute/llm_model"}]'
