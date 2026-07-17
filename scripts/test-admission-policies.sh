@@ -1379,7 +1379,7 @@ EOF
       alternate_path=./infra/agentgateway/providers/profiles/demo
 
     expect_denied \
-      "provider Kustomization identity is frozen while the model-residency handoff is guarded" \
+      "provider Kustomizations must retain the locked selected-provider identity" \
       "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
       --type=merge --dry-run=server \
       --patch "{\"metadata\":{\"labels\":{\"fgentic.dev/llm-provider\":\"${alternate_provider}\"}}}"
@@ -1389,7 +1389,7 @@ EOF
       --type=merge --dry-run=server \
       --patch '{"metadata":{"labels":{"fgentic.dev/llm-provider":null}}}'
     expect_denied \
-      "model Kustomization identity is frozen while the model-residency handoff is guarded" \
+      "provider Kustomizations must retain the locked selected-model identity" \
       "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
       --type=merge --dry-run=server \
       --patch "{\"metadata\":{\"annotations\":{\"fgentic.dev/llm-model\":\"${alternate_model}\"}}}"
