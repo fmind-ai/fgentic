@@ -124,10 +124,12 @@ spec:
             tensorParallelSize: 1
             maxNumSeqs: 4
             extraArgs:
-              # Scoring runner exposes /rerank and /score for cross-encoder reranking; the served
-              # name matches the governed catalog entry so retrieval callers never see the path.
-              - --task
-              - score
+              # The pooling runner auto-detects this cross-encoder (num_labels == 1) and exposes the
+              # /score and /rerank endpoints (vLLM v0.24.0 replaced the removed --task flag with
+              # --runner). The served name matches the governed catalog entry so retrieval callers
+              # never see the local path.
+              - --runner
+              - pooling
               - --served-model-name
               - BAAI/bge-reranker-v2-m3
               - --no-enable-log-requests

@@ -125,10 +125,12 @@ spec:
             tensorParallelSize: 1
             maxNumSeqs: 4
             extraArgs:
-              # Pooling runner exposes /v1/embeddings and /tokenize; the served name matches the
-              # #332 consumer backend (model: BAAI/bge-m3) so callers never see the local path.
-              - --task
-              - embed
+              # The pooling runner auto-detects the embedding architecture and exposes /v1/embeddings
+              # and /tokenize (vLLM v0.24.0 replaced the removed --task flag with --runner). The
+              # served name matches the #332 consumer backend (model: BAAI/bge-m3) so callers never
+              # see the local path.
+              - --runner
+              - pooling
               - --served-model-name
               - BAAI/bge-m3
               - --no-enable-log-requests

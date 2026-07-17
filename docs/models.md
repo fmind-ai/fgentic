@@ -208,12 +208,16 @@ patches:
         value: ./infra/agentgateway/providers/profiles/embeddings/enabled
 ```
 
+Enabling the profile alongside an **external** chat provider (Vertex/Anthropic/OpenAI/Azure/Mistral) requires operator care: those providers ship no proxy egress policy, so the additive `agentgateway-embeddings-egress` policy flips the proxy to default-deny egress. Pair it with a self-hosted chat provider (`vllm`) or extend the provider-egress inventory (#339) to permit the external chat endpoint too. See "Fail-closed reachability" below.
+
 The enabled profile deploys the vLLM Production Stack chart `0.1.11` and CPU runtime `v0.24.0` (both Apache-2.0) as two engines under `infra/models/embeddings/`:
 
-| Engine                 | Model                     | Revision                                   | License    | vLLM task | Endpoints                     |
-| ---------------------- | ------------------------- | ------------------------------------------ | ---------- | --------- | ----------------------------- |
-| `knowledge-embeddings` | `BAAI/bge-m3`             | `5617a9f61b028005a4858fdac845db406aefb181` | MIT        | `embed`   | `/v1/embeddings`, `/tokenize` |
-| `knowledge-reranker`   | `BAAI/bge-reranker-v2-m3` | `953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e` | Apache-2.0 | `score`   | `/rerank`, `/score`           |
+| Engine                 | Model                     | Revision                                   | License    | vLLM runner       | Endpoints                     |
+| ---------------------- | ------------------------- | ------------------------------------------ | ---------- | ----------------- | ----------------------------- |
+| `knowledge-embeddings` | `BAAI/bge-m3`             | `5617a9f61b028005a4858fdac845db406aefb181` | MIT        | `pooling` (embed) | `/v1/embeddings`, `/tokenize` |
+| `knowledge-reranker`   | `BAAI/bge-reranker-v2-m3` | `953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e` | Apache-2.0 | `pooling` (score) | `/rerank`, `/score`           |
+
+vLLM v0.24.0 removed the top-level `--task` flag; `--runner pooling` auto-detects the embedding architecture (bge-m3) and the cross-encoder scorer (bge-reranker-v2-m3, `num_labels == 1` → `/score` + `/rerank`).
 
 Each engine's one-shot, prompt-free loader Job writes its pinned snapshot (~5 GiB PVC) and is the only Pod allowed public HTTPS; the serving Pods mount the cache read-only, run Hugging Face and vLLM offline/telemetry-off, and receive no egress allowance. Stable Services `knowledge-embeddings.models.svc.cluster.local:8000` and `knowledge-reranker.models…:8000` honour the #332 ingestion consumer contract (`bge-m3-1024-v1`, 1024 dimensions, `max_model_len=8192`) so callers never see the local model path.
 
