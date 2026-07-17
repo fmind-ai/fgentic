@@ -995,6 +995,25 @@ EOF
     }
   }
 
+  wait_manifest_denied() {
+    local expected="$1"
+    local manifest="$2"
+    local deadline=$((SECONDS + 30)) output="" status
+    while ((SECONDS < deadline)); do
+      set +e
+      output="$("${kube[@]}" create --dry-run=server --filename=- \
+        <<<"${manifest}" 2>&1)"
+      status=$?
+      set -e
+      if [[ "${status}" -ne 0 ]] && grep -Fq "${expected}" <<<"${output}"; then
+        return
+      fi
+      sleep 1
+    done
+    printf '%s\n' "${output}" >&2
+    fail "admission binding was not observed denying: ${expected}"
+  }
+
   expect_apply_manifest_denied() {
     local expected="$1"
     local output status
@@ -1013,9 +1032,11 @@ EOF
     # A pre-existing selection override must block every provider CREATE. Remove only the owned
     # conflicting key, preserve unrelated data, then mirror clean demo/Flux bootstrap with
     # admission active before the exact selected legacy provider is created.
-    selected_legacy_provider_kustomization_manifest |
-      expect_manifest_denied \
-        "remove the llm_model override before projecting the guarded model tuple"
+    local legacy_provider_manifest
+    legacy_provider_manifest="$(selected_legacy_provider_kustomization_manifest)"
+    wait_manifest_denied \
+      "remove the llm_model override before projecting the guarded model tuple" \
+      "${legacy_provider_manifest}"
     selected_provider_kustomizations_manifest |
       expect_apply_manifest_denied \
         "remove the llm_model override before projecting the guarded model tuple"
