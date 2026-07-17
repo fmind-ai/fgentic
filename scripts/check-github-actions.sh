@@ -44,6 +44,16 @@ for workflow in "${workflows[@]}"; do
 	done < <(rg '^[[:space:]]*uses:' "${workflow}")
 done
 
+# Runners must be pinned to an explicit Ubuntu image. `ubuntu-latest` silently re-points over a
+# 1-2 month rollout when a new LTS goes GA, which is exactly the unplanned OS flip the host-sensitive
+# smoke/policy jobs (Docker/k3d/kind/Calico, kernel-dependent NetworkPolicy tests) cannot absorb (#480).
+for workflow in "${workflows[@]}"; do
+	if rg -q 'runs-on:[[:space:]]*ubuntu-latest' "${workflow}"; then
+		echo "error: ${workflow#"${root_dir}/"}: pin the runner to an explicit ubuntu-<version>, not ubuntu-latest (#480)" >&2
+		failed=true
+	fi
+done
+
 if ! mise --cd "${root_dir}" tasks info install:apps --json | jq -e '
   .depends == [] and
   .run == [

@@ -360,7 +360,7 @@ description = "Validate nightly demo, policy conformance, diagnostics, and issue
 run = "bash scripts/test-smoke-workflow.sh"
 
 [tasks."check:github-actions"]
-description = "Require every remote GitHub Action to use an immutable commit with a version hint"
+description = "Require immutable action pins with a version hint and explicit (non-latest) Ubuntu runners"
 run = "bash scripts/check-github-actions.sh"
 
 [tasks."check:mautrix-bridges"]

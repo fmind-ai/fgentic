@@ -9,7 +9,7 @@ concurrency:
 jobs:
   conformance:
     name: kind and Calico policy enforcement
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:
       - name: Checkout repository
