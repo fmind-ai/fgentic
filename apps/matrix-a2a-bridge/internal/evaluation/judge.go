@@ -71,7 +71,10 @@ func ParseJudgeResult(raw string) (JudgeResult, error) {
 	decoder.DisallowUnknownFields()
 	var wire judgeWireResult
 	if err := decoder.Decode(&wire); err != nil {
-		return JudgeResult{}, fmt.Errorf("decode judge result: %w", err)
+		// The raw json error can embed judge-authored content (an unknown field name, an offending
+		// character), so it is deliberately dropped: every error this function returns must be
+		// content-free so a caller can log it without leaking model output (#355 payload-free invariant).
+		return JudgeResult{}, fmt.Errorf("judge result is not the expected JSON contract")
 	}
 	if decoder.More() {
 		return JudgeResult{}, fmt.Errorf("judge result carries trailing content after the JSON object")
@@ -97,7 +100,9 @@ func ParseJudgeResult(raw string) (JudgeResult, error) {
 
 func validateScore(field string, value float64) error {
 	if value < 0 || value > 1 {
-		return fmt.Errorf("judge %s score %.3f is outside [0,1]", field, value)
+		// The field name is a fixed identifier; the offending value is omitted to keep the error
+		// content-free (it is a judge-emitted number).
+		return fmt.Errorf("judge %s score is outside [0,1]", field)
 	}
 	return nil
 }

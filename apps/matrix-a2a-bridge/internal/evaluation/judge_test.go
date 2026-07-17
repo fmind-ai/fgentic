@@ -41,6 +41,27 @@ func TestParseJudgeResultFailsClosed(t *testing.T) {
 	}
 }
 
+func TestParseJudgeResultErrorsAreContentFree(t *testing.T) {
+	// A judge answer influenced by scenario content must not smuggle model-authored text into the
+	// error the caller logs. Inject a distinctive marker as a field name and a score value and assert
+	// neither reaches the returned error message (#355 payload-free invariant).
+	const marker = "EXFIL-marker-73"
+	cases := []string{
+		`{"groundedness":1,"task_success":1,"rationale":"x","` + marker + `":0}`, // unknown field name
+		`{"groundedness": 4273, "task_success": 1, "rationale": "x"}`,            // out-of-range value
+		`prose ` + marker + ` not json`,                                          // offending characters
+	}
+	for _, raw := range cases {
+		_, err := ParseJudgeResult(raw)
+		if err == nil {
+			t.Fatalf("expected an error for %q", raw)
+		}
+		if strings.Contains(err.Error(), marker) || strings.Contains(err.Error(), "4273") {
+			t.Fatalf("judge parse error leaked model content: %q", err.Error())
+		}
+	}
+}
+
 func TestJudgeResultScoreAgainstThresholds(t *testing.T) {
 	thresholds := JudgeThresholds{MinGroundedness: 0.7, MinTaskSuccess: 0.6}
 	if err := thresholds.Validate(); err != nil {
