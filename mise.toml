@@ -138,6 +138,7 @@ description = "Run every static check (config, Terraform, manifests, scans, work
 depends = [
   "check:format",
   "check:terraform",
+  "check:terraform-hermetic",
   "check:manifests",
   "check:charts",
   "check:overlays",
@@ -199,16 +200,12 @@ run = "go run ./cmd/check-model-catalog --repo-root ../.."
 
 [tasks."check:terraform"]
 alias = "ct"
-description = "Terraform fmt-check + validate + mocked contracts (no backend/creds needed)"
-run = """
-terraform fmt -check -recursive infra
-for dir in infra/terraform infra/terraform/bootstrap; do
-  [ -d "$dir" ] || continue
-  terraform -chdir="$dir" init -backend=false -input=false >/dev/null
-  terraform -chdir="$dir" validate
-done
-terraform -chdir=infra/terraform test
-"""
+description = "Terraform fmt-check + validate + mocked contracts (hermetic; no backend/creds needed)"
+run = "bash scripts/check-terraform.sh"
+
+[tasks."check:terraform-hermetic"]
+description = "Prove check:terraform survives a poisoned GCS backend cache with no credentials"
+run = "bash scripts/test-terraform-hermetic.sh"
 
 [tasks."check:manifests"]
 alias = "cm"
