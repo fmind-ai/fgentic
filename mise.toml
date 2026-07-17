@@ -352,8 +352,11 @@ description = "Validate the offline federation topology, room policy, and denied
 run = "bash scripts/test-federation.sh"
 
 [tasks."check:federation-onboarding"]
-description = "Test the read-only partner federation preflight with offline fixtures"
-run = "bash scripts/test-fed-check.sh"
+description = "Test the read-only partner federation preflight and onboarding conformance with offline fixtures"
+run = [
+  "bash scripts/test-fed-check.sh",
+  "bash scripts/test-fed-onboard.sh",
+]
 
 [tasks."check:smoke-workflow"]
 description = "Validate nightly demo, policy conformance, diagnostics, and issue tracking"

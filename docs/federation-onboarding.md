@@ -63,6 +63,26 @@ The script uses HTTPS only, follows no redirects, reads no credentials or `.netr
 
 The output deliberately sets `trust_level` to `public_unauthenticated_probe` and `governance_verified` to `false`. Store it in the private onboarding record, not in Git. A probe failure blocks activation until the owner explains and fixes the public boundary; bypassing TLS verification is not an accepted workaround.
 
+When the partner will also export an A2A agent (section 6), run the staged onboarding preflight, which adds an opt-in AgentCard **conformance** stage on top of the same connectivity probe. Pin the partner's public P-256 signing JWK out of band first — a complete JOSE public JWK (`kty: EC`, `crv: P-256`, `alg: ES256`, `use: sig`, `key_ops: ["verify"]`, and the exported `kid`), never a bare-coordinate key — then:
+
+```bash
+scripts/fed-onboard.sh --expect-server matrix.partner.example:443 \
+  --a2a-url https://a2a.partner.example/api/a2a/kagent/docs-qa \
+  --public-jwk partner-agent-card.jwk.json \
+  partner.example > partner-onboarding-preflight.json
+```
+
+The conformance stage fetches `<a2a-url>/.well-known/agent-card.json` under the same HTTPS-only, no-redirect, no-credential, size-bounded rules, then verifies the card's ES256/JCS JWS with the exact verifier the bridge uses (`scripts/sign-agent-card.sh` → `agentcardjws.Verify`), and checks that the card advertises the JSONRPC A2A v1.0 interface it is served at plus the required token-budget extension. It fails closed on an unsigned, tampered, wrong-key, wrong-interface, or missing-token-budget card. Each self-serve check maps to the operator-evidence gate it satisfies:
+
+| Self-serve check (fed-onboard.sh)          | Evidence field                                 | Gate it feeds                           |
+| ------------------------------------------ | ---------------------------------------------- | --------------------------------------- |
+| Matrix delegation + federation version     | `connectivity`                                 | Section 4 DNS/TLS and closed-federation |
+| Signed AgentCard verifies under pinned JWK | `agentcard_conformance.signature_verified`     | Section 6 Exported identity             |
+| Advertised JSONRPC A2A v1.0 interface      | `agentcard_conformance.interface_url`          | Section 6 Route and Authorization       |
+| Required token-budget extension            | `agentcard_conformance.token_budget_extension` | Section 6 Quota                         |
+
+The record sets `governance_verified` to `false` throughout and `eligible_for_registry_review` to `true` only when both connectivity and conformance pass. That flag is evidence that the technical gates are satisfied; it is not a grant. Trust is granted only by an explicit, reviewed registry admission (the partner trust registry, [#349](https://github.com/fmind-ai/fgentic/issues/349)), and the contractual and privacy gates in section 7 remain human steps that no script can pass. A conformant public card proves the declared identity and route shape, never that the partner is governed, authorized, or contractually bound.
+
 ## 4. Matrix technical controls
 
 Each operator supplies authenticated or local evidence for the following controls. Hash or link to the reviewed evidence rather than copying secrets or room content.
