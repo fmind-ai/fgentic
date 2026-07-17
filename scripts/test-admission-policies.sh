@@ -36,10 +36,10 @@ static_contract() {
   binding_count="$(grep -c '^kind: ValidatingAdmissionPolicyBinding$' <<<"${rendered}")"
   failure_policy_count="$(yq -r 'select(.kind == "ValidatingAdmissionPolicy" and
     .spec.failurePolicy != "Fail") | .metadata.name' <<<"${rendered}" | wc -l)"
-  [[ "${policy_count}" -eq 7 ]] ||
-    fail "expected exactly seven admission policies"
-  [[ "${binding_count}" -eq 8 ]] ||
-    fail "expected exactly eight admission policy bindings"
+  [[ "${policy_count}" -eq 8 ]] ||
+    fail "expected exactly eight admission policies"
+  [[ "${binding_count}" -eq 9 ]] ||
+    fail "expected exactly nine admission policy bindings"
   [[ "${failure_policy_count}" -eq 0 ]] ||
     fail "every admission policy must fail closed on CEL errors"
 
@@ -114,7 +114,7 @@ static_contract() {
     "platform-helper must use only its reviewed MCP Authorization Secret reference" \
     "!has(h.value)"
   require_validation_fragment "model-provider-handoff-freeze.fgentic.dev" \
-    "model-selection overrides cannot be introduced while the model-residency handoff is guarded" \
+    "model-selection and topology overrides cannot be introduced while the model-residency handoff is guarded" \
     'object.metadata.name != "platform-settings-overrides"'
   require_validation_fragment "model-provider-handoff-freeze.fgentic.dev" \
     "llm_provider is frozen while the model-residency handoff is guarded" \
@@ -123,20 +123,74 @@ static_contract() {
     "llm_model is frozen while the model-residency handoff is guarded" \
     'object.data["llm_model"] == oldObject.data["llm_model"]'
   require_validation_fragment "model-provider-handoff-freeze.fgentic.dev" \
-    "model-selection-bearing platform settings cannot be deleted while the model-residency handoff is guarded" \
+    "federation topology is frozen while the model-residency handoff is guarded" \
+    'object.data["federation_partner_server_name"] == oldObject.data["federation_partner_server_name"]'
+  require_validation_fragment "model-provider-handoff-freeze.fgentic.dev" \
+    "cluster issuer is frozen while the model-residency handoff is guarded" \
+    'object.data["cluster_issuer"] == oldObject.data["cluster_issuer"]'
+  require_validation_fragment "model-provider-handoff-freeze.fgentic.dev" \
+    "handoff-bearing platform settings cannot be deleted while the model-residency handoff is guarded" \
     'request.operation != "DELETE"'
   require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
     "provider Kustomization identity is frozen while the model-residency handoff is guarded" \
     'object.metadata.labels["fgentic.dev/llm-provider"] == oldObject.metadata.labels["fgentic.dev/llm-provider"]'
   require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "guarded provider Kustomizations require the complete platform model selection" \
+    '"llm_model" in params.data'
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "provider Kustomizations must retain the locked selected-provider identity" \
+    'object.metadata.labels["fgentic.dev/llm-provider"] == params.data["llm_provider"]'
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "provider Kustomizations must retain the locked selected-model identity" \
+    'object.metadata.annotations["fgentic.dev/llm-model"] == params.data["llm_model"]'
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "model Kustomization identity is frozen while the model-residency handoff is guarded" \
+    'object.metadata.annotations["fgentic.dev/llm-model"] == oldObject.metadata.annotations["fgentic.dev/llm-model"]'
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
     "provider Kustomization paths are frozen while the model-residency handoff is guarded" \
     "object.spec.path == oldObject.spec.path"
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "provider Kustomizations must retain their exact source and ownership contract" \
+    'object.spec.sourceRef.name == "flux-system"'
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "provider Kustomizations cannot redirect their guarded render inputs" \
+    "size(object.spec.postBuild.substituteFrom) == 2"
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "provider Kustomizations cannot redirect their guarded render inputs" \
+    "object.spec.patches[0].patch == variables.localADCBackendPatch"
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "provider Kustomizations must retain their exact current-generation dependency chain" \
+    "object.spec.dependsOn[0].readyExpr == variables.modelTupleReadyExpr"
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "federation must not recreate the deleted local admission inventory" \
+    'object.metadata.name != "agentgateway-admission"'
   require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
     "inline provider substitution must equal the frozen provider identity" \
     'object.spec.postBuild.substitute["llm_provider"] == object.metadata.labels["fgentic.dev/llm-provider"]'
   require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
-    "inline model substitution is frozen after its first guarded projection" \
-    'object.spec.postBuild.substitute["llm_model"] == oldObject.spec.postBuild.substitute["llm_model"]'
+    "inline model substitution must equal the frozen model identity" \
+    'object.spec.postBuild.substitute["llm_model"] == object.metadata.annotations["fgentic.dev/llm-model"]'
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "provider Kustomization patches cannot change during the exact handoff projection" \
+    "object.spec.patches == oldObject.spec.patches"
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "provider Kustomization substitution sources cannot change during the exact handoff projection" \
+    "object.spec.postBuild.substituteFrom == oldObject.spec.postBuild.substituteFrom"
+  require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "provider Kustomization specs are frozen after the exact handoff projection" \
+    "object.spec == oldObject.spec"
+  require_validation_fragment "model-provider-override-conflict.fgentic.dev" \
+    "remove the llm_provider override before projecting the guarded model tuple" \
+    '!("llm_provider" in params.data)'
+  require_validation_fragment "model-provider-override-conflict.fgentic.dev" \
+    "remove the llm_model override before projecting the guarded model tuple" \
+    '!("llm_model" in params.data)'
+  require_validation_fragment "model-provider-override-conflict.fgentic.dev" \
+    "remove the federation topology override before projecting the guarded model tuple" \
+    '!("federation_partner_server_name" in params.data)'
+  require_validation_fragment "model-provider-override-conflict.fgentic.dev" \
+    "remove the cluster_issuer override before projecting the guarded model tuple" \
+    '!("cluster_issuer" in params.data)'
   require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
     "provider Kustomizations cannot be deleted while the model-residency handoff is guarded" \
     'request.operation != "DELETE"'
@@ -174,17 +228,33 @@ static_contract() {
       .metadata.name == "model-provider-kustomization-freeze.fgentic.dev") |
     ((.spec.matchConstraints.resourceRules[0].operations | sort | join(",")) ==
       "CREATE,DELETE,UPDATE" and
-      .spec.matchConditions[0].name == "model-provider-kustomizations")
+      .spec.matchConditions[0].name == "model-provider-kustomizations" and
+      .spec.paramKind.apiVersion == "v1" and
+      .spec.paramKind.kind == "ConfigMap")
   ' <<<"${rendered}" >/dev/null ||
     fail "the temporary provider freeze must cover rendered Flux provider Kustomizations"
   yq -e '
     select(.kind == "ValidatingAdmissionPolicyBinding" and
       .metadata.name == "model-provider-kustomization-freeze.fgentic.dev") |
     ((.spec.validationActions | join(",")) == "Deny,Audit" and
+      .spec.paramRef.name == "platform-settings" and
+      .spec.paramRef.namespace == "flux-system" and
+      .spec.paramRef.parameterNotFoundAction == "Deny" and
       .spec.matchResources.namespaceSelector.matchLabels."kubernetes.io/metadata.name" ==
         "flux-system")
   ' <<<"${rendered}" >/dev/null ||
     fail "the rendered-provider freeze must fail closed in flux-system"
+  yq -e '
+    select(.kind == "ValidatingAdmissionPolicyBinding" and
+      .metadata.name == "model-provider-override-conflict.fgentic.dev") |
+    ((.spec.validationActions | join(",")) == "Deny,Audit" and
+      .spec.paramRef.name == "platform-settings-overrides" and
+      .spec.paramRef.namespace == "flux-system" and
+      .spec.paramRef.parameterNotFoundAction == "Allow" and
+      .spec.matchResources.namespaceSelector.matchLabels."kubernetes.io/metadata.name" ==
+        "flux-system")
+  ' <<<"${rendered}" >/dev/null ||
+    fail "legacy model-selection overrides must block the exact tuple projection"
 
   local guarded_resource
   for guarded_resource in \
@@ -314,14 +384,50 @@ metadata:
   namespace: flux-system
   labels:
     fgentic.dev/llm-provider: demo
+  annotations:
+    fgentic.dev/llm-model: fixture-model-a
 spec:
-  suspend: true
-  interval: 1h
+  interval: 30m
+  retryInterval: 2m
   path: ./infra/agentgateway/providers/profiles/demo
-  prune: false
+  prune: true
+  wait: true
+  timeout: 45m
+  dependsOn:
+    - name: agentgateway
+      readyExpr: >-
+        dep.metadata.labels['fgentic.dev/agentgateway-layout'] == 'split-v1' &&
+        dep.status.observedGeneration == dep.metadata.generation &&
+        dep.status.conditions.exists(
+        e,
+        e.type == 'Ready' && e.status == 'True'
+        )
+    - name: platform-secrets
   sourceRef:
     kind: GitRepository
-    name: fgentic-admission-test
+    name: flux-system
+  postBuild:
+    substitute:
+      llm_model: fixture-model-a
+      llm_provider: demo
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true
+  patches:
+    - patch: |-
+        - op: add
+          path: /spec/policies/auth/gcp/secretRef
+          value:
+            name: gcp-adc
+      target:
+        group: agentgateway.dev
+        version: v1alpha1
+        kind: AgentgatewayBackend
+        name: llm-vertex
+        namespace: agentgateway-system
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -330,14 +436,44 @@ metadata:
   namespace: flux-system
   labels:
     fgentic.dev/llm-provider: demo
+  annotations:
+    fgentic.dev/llm-model: fixture-model-a
 spec:
-  suspend: true
-  interval: 1h
+  interval: 30m
+  retryInterval: 2m
   path: ./infra/agentgateway/admission
-  prune: false
+  prune: true
+  wait: true
+  timeout: 10m
+  dependsOn:
+    - name: agentgateway-provider
+      readyExpr: >-
+        dep.metadata.labels['fgentic.dev/llm-provider'] ==
+        self.metadata.labels['fgentic.dev/llm-provider'] &&
+        dep.metadata.annotations['fgentic.dev/llm-model'] ==
+        self.metadata.annotations['fgentic.dev/llm-model'] &&
+        dep.spec.postBuild.substitute['llm_provider'] ==
+        self.spec.postBuild.substitute['llm_provider'] &&
+        dep.spec.postBuild.substitute['llm_model'] ==
+        self.spec.postBuild.substitute['llm_model'] &&
+        dep.status.observedGeneration == dep.metadata.generation &&
+        dep.status.conditions.exists(
+        e,
+        e.type == 'Ready' && e.status == 'True'
+        )
   sourceRef:
     kind: GitRepository
-    name: fgentic-admission-test
+    name: flux-system
+  postBuild:
+    substitute:
+      llm_model: fixture-model-a
+      llm_provider: demo
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true
 ---
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
@@ -346,14 +482,79 @@ metadata:
   namespace: flux-system
   labels:
     fgentic.dev/llm-provider: demo
+  annotations:
+    fgentic.dev/llm-model: fixture-model-a
 spec:
-  suspend: true
-  interval: 1h
+  interval: 30m
+  retryInterval: 2m
   path: ./infra/agentgateway/providers/egress/demo
-  prune: false
+  prune: true
+  wait: true
+  dependsOn:
+    - name: agentgateway-admission
+      readyExpr: >-
+        dep.metadata.labels['fgentic.dev/llm-provider'] ==
+        self.metadata.labels['fgentic.dev/llm-provider'] &&
+        dep.metadata.annotations['fgentic.dev/llm-model'] ==
+        self.metadata.annotations['fgentic.dev/llm-model'] &&
+        dep.spec.postBuild.substitute['llm_provider'] ==
+        self.spec.postBuild.substitute['llm_provider'] &&
+        dep.spec.postBuild.substitute['llm_model'] ==
+        self.spec.postBuild.substitute['llm_model'] &&
+        dep.status.observedGeneration == dep.metadata.generation &&
+        dep.status.conditions.exists(
+        e,
+        e.type == 'Ready' && e.status == 'True'
+        )
   sourceRef:
     kind: GitRepository
-    name: fgentic-admission-test
+    name: flux-system
+  postBuild:
+    substitute:
+      llm_model: fixture-model-a
+      llm_provider: demo
+EOF
+  }
+
+  legacy_provider_kustomization_manifest() {
+    cat <<'EOF'
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: agentgateway-provider
+  namespace: flux-system
+spec:
+  interval: 30m
+  retryInterval: 2m
+  path: ./infra/agentgateway/providers/profiles/demo
+  prune: true
+  wait: true
+  timeout: 45m
+  dependsOn:
+    - name: agentgateway
+    - name: platform-secrets
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true
+  patches:
+    - patch: |-
+        - op: add
+          path: /spec/policies/auth/gcp/secretRef
+          value:
+            name: gcp-adc
+      target:
+        group: agentgateway.dev
+        version: v1alpha1
+        kind: AgentgatewayBackend
+        name: llm-vertex
+        namespace: agentgateway-system
 EOF
   }
 
@@ -365,6 +566,7 @@ EOF
   ADMISSION_TEST_POLICIES_OWNED=false
   ADMISSION_TEST_CRD_OWNED=false
   ADMISSION_TEST_PLATFORM_SETTINGS_OWNED=false
+  ADMISSION_TEST_PLATFORM_SETTINGS_OVERRIDE_OWNED=false
   ADMISSION_TEST_FLUX_NAMESPACE_OWNED=false
   ADMISSION_TEST_FLUX_CRD_OWNED=false
   ADMISSION_TEST_PROVIDER_KUSTOMIZATIONS_OWNED=false
@@ -399,6 +601,10 @@ EOF
       "${cleanup_kube[@]}" delete configmap platform-settings --namespace flux-system \
         --ignore-not-found --wait=false >/dev/null 2>&1 || true
     fi
+    if [[ "${ADMISSION_TEST_PLATFORM_SETTINGS_OVERRIDE_OWNED}" == true ]]; then
+      "${cleanup_kube[@]}" delete configmap platform-settings-overrides --namespace flux-system \
+        --ignore-not-found --wait=false >/dev/null 2>&1 || true
+    fi
     if [[ "${ADMISSION_TEST_FLUX_CRD_OWNED}" == true ]]; then
       "${cleanup_kube[@]}" delete --filename "${FLUX_CRD_FIXTURE}" \
         --ignore-not-found --wait=false >/dev/null 2>&1 || true
@@ -421,7 +627,7 @@ EOF
     grep -c '\.fgentic\.dev$' || true)"
   if [[ "${existing_policies}" -eq 0 && "${existing_bindings}" -eq 0 ]]; then
     fresh_policy_install=true
-  elif [[ "${existing_policies}" -ne 7 || "${existing_bindings}" -ne 8 ]]; then
+  elif [[ "${existing_policies}" -ne 8 || "${existing_bindings}" -ne 9 ]]; then
     fail "found a partial fgentic.dev admission installation; refusing to mutate it"
   fi
 
@@ -441,24 +647,89 @@ EOF
       customresourcedefinition/kustomizations.kustomize.toolkit.fluxcd.io \
       --timeout=30s >/dev/null
   fi
+  local platform_settings_json
+  if ! platform_settings_json="$("${kube[@]}" get configmap platform-settings \
+    --namespace flux-system -o json 2>/dev/null)"; then
+    [[ "${fresh_policy_install}" == true ]] ||
+      fail "pre-installed policies require platform-settings as their fail-closed parameter"
+    ADMISSION_TEST_PLATFORM_SETTINGS_OWNED=true
+    printf '%s\n' \
+      'apiVersion: v1' \
+      'kind: ConfigMap' \
+      'metadata:' \
+      '  name: platform-settings' \
+      '  namespace: flux-system' \
+      'data:' \
+      '  cluster_issuer: local-ca' \
+      '  llm_model: fixture-model-a' \
+      '  llm_provider: demo' \
+      '  server_name: fgentic.localhost' |
+      "${kube[@]}" create --filename=- >/dev/null
+    platform_settings_json="$("${kube[@]}" get configmap platform-settings \
+      --namespace flux-system -o json)"
+  fi
+  if [[ "${fresh_policy_install}" == true ]] &&
+    "${kube[@]}" get configmap platform-settings-overrides --namespace flux-system \
+      >/dev/null 2>&1; then
+    fail "fresh provider fixtures require no pre-existing platform-settings-overrides"
+  fi
+  if [[ "${fresh_policy_install}" == true ]]; then
+    ADMISSION_TEST_PLATFORM_SETTINGS_OVERRIDE_OWNED=true
+    printf '%s\n' \
+      'apiVersion: v1' \
+      'kind: ConfigMap' \
+      'metadata:' \
+      '  name: platform-settings-overrides' \
+      '  namespace: flux-system' \
+      'data:' \
+      '  llm_model: fixture-model-b' |
+      "${kube[@]}" create --filename=- >/dev/null
+  fi
 
+  local -a expected_provider_kustomizations=(
+    agentgateway-provider
+    agentgateway-admission
+    agentgateway-provider-egress
+  )
+  if yq -e '.data | has("federation_partner_server_name")' \
+    <<<"${platform_settings_json}" >/dev/null; then
+    expected_provider_kustomizations=(
+      agentgateway-provider
+      agentgateway-provider-egress
+    )
+  fi
   local provider_kustomization_count=0 provider_kustomization
-  for provider_kustomization in \
-    agentgateway-provider \
-    agentgateway-admission \
-    agentgateway-provider-egress; do
+  local -a all_provider_kustomizations=(
+    agentgateway-provider
+    agentgateway-admission
+    agentgateway-provider-egress
+  )
+  for provider_kustomization in "${all_provider_kustomizations[@]}"; do
     if "${kube[@]}" get kustomization --namespace flux-system \
       "${provider_kustomization}" >/dev/null 2>&1; then
       provider_kustomization_count=$((provider_kustomization_count + 1))
+      if [[ ! " ${expected_provider_kustomizations[*]} " =~ [[:space:]]${provider_kustomization}[[:space:]] ]]; then
+        fail "found unexpected ${provider_kustomization} in the guarded topology"
+      fi
     fi
   done
   if [[ "${provider_kustomization_count}" -ne 0 &&
-    "${provider_kustomization_count}" -ne 3 ]]; then
+    "${provider_kustomization_count}" -ne "${#expected_provider_kustomizations[@]}" ]]; then
     fail "found a partial provider Kustomization installation; refusing to mutate it"
   fi
   if [[ "${provider_kustomization_count}" -eq 0 &&
     "${fresh_policy_install}" != true ]]; then
-    fail "pre-installed policies require all three provider Kustomizations"
+    fail "pre-installed policies require the complete provider Kustomization topology"
+  fi
+  if [[ "${provider_kustomization_count}" -eq 0 ]]; then
+    if "${kube[@]}" get gitrepository --namespace flux-system flux-system \
+      >/dev/null 2>&1 ||
+      "${kube[@]}" get deployment --namespace flux-system kustomize-controller \
+        >/dev/null 2>&1; then
+      fail "fresh provider fixtures require a controller-free disposable context"
+    fi
+    ADMISSION_TEST_PROVIDER_KUSTOMIZATIONS_OWNED=true
+    legacy_provider_kustomization_manifest | "${kube[@]}" apply --filename=- >/dev/null
   fi
 
   if [[ "${fresh_policy_install}" == true ]]; then
@@ -474,22 +745,17 @@ EOF
       [.items[] | select(.metadata.name | test("\\.fgentic\\.dev$")) |
         select(.status.observedGeneration == .metadata.generation)] | length
     ' <<<"${policy_json}")"
-    if [[ "${observed_policy_count}" -eq 7 ]]; then
+    if [[ "${observed_policy_count}" -eq 8 ]]; then
       break
     fi
     sleep 1
   done
-  [[ "${observed_policy_count}" -eq 7 ]] ||
+  [[ "${observed_policy_count}" -eq 8 ]] ||
     fail "admission policies were not observed within 30 seconds"
   warning_count="$(yq -r '[.items[].status.typeChecking.expressionWarnings[]?] | length' \
     <<<"${policy_json}")"
   [[ "${warning_count}" -eq 0 ]] ||
     fail "admission policy type checking reported warnings"
-
-  if [[ "${provider_kustomization_count}" -eq 0 ]]; then
-    ADMISSION_TEST_PROVIDER_KUSTOMIZATIONS_OWNED=true
-    provider_kustomizations_manifest | "${kube[@]}" apply --filename=- >/dev/null
-  fi
 
   if ! "${kube[@]}" get customresourcedefinition agents.kagent.dev >/dev/null 2>&1; then
     ADMISSION_TEST_CRD_OWNED=true
@@ -526,6 +792,36 @@ EOF
       fail "denial did not include: ${expected}"
     }
   }
+
+  expect_apply_manifest_denied() {
+    local expected="$1"
+    local output status
+    set +e
+    output="$("${kube[@]}" apply --dry-run=server --filename=- 2>&1)"
+    status=$?
+    set -e
+    [[ "${status}" -ne 0 ]] || fail "admission unexpectedly allowed: ${expected}"
+    grep -Fq "${expected}" <<<"${output}" || {
+      echo "${output}" >&2
+      fail "denial did not include: ${expected}"
+    }
+  }
+
+  if [[ "${provider_kustomization_count}" -eq 0 ]]; then
+    expect_denied "provider Kustomizations must retain the locked selected-model identity" \
+      "${kube[@]}" patch kustomization --namespace flux-system agentgateway-provider \
+      --type=merge --dry-run=server \
+      --patch '{"metadata":{"annotations":{"fgentic.dev/llm-model":"fixture-model-b"},"labels":{"fgentic.dev/llm-provider":"demo"}},"spec":{"postBuild":{"substitute":{"llm_model":"fixture-model-b","llm_provider":"demo"}}}}'
+    provider_kustomizations_manifest |
+      expect_apply_manifest_denied \
+        "remove the llm_model override before projecting the guarded model tuple"
+    [[ "${ADMISSION_TEST_PLATFORM_SETTINGS_OVERRIDE_OWNED}" == true ]] ||
+      fail "refusing to remove a platform-settings override not owned by this test"
+    "${kube[@]}" delete configmap platform-settings-overrides --namespace flux-system \
+      --wait=true >/dev/null
+    ADMISSION_TEST_PLATFORM_SETTINGS_OVERRIDE_OWNED=false
+    provider_kustomizations_manifest | "${kube[@]}" apply --filename=- >/dev/null
+  fi
 
   expect_agent_denied() {
     local expected="$1"
@@ -627,34 +923,15 @@ spec:
 EOF
   }
 
-  local platform_settings_json
-  if ! platform_settings_json="$("${kube[@]}" get configmap platform-settings \
-    --namespace flux-system -o json 2>/dev/null)"; then
-    printf '%s\n' \
-      'apiVersion: v1' \
-      'kind: ConfigMap' \
-      'metadata:' \
-      '  name: platform-settings' \
-      '  namespace: flux-system' \
-      'data:' \
-      '  llm_provider: demo' |
-      "${kube[@]}" create --dry-run=server --filename=- >/dev/null
-    ADMISSION_TEST_PLATFORM_SETTINGS_OWNED=true
-    printf '%s\n' \
-      'apiVersion: v1' \
-      'kind: ConfigMap' \
-      'metadata:' \
-      '  name: platform-settings' \
-      '  namespace: flux-system' \
-      'data:' \
-      '  server_name: admission.invalid' |
-      "${kube[@]}" create --filename=- >/dev/null
-    platform_settings_json="$("${kube[@]}" get configmap platform-settings \
-      --namespace flux-system -o json)"
-  fi
+  platform_settings_json="$("${kube[@]}" get configmap platform-settings \
+    --namespace flux-system -o json)"
 
-  local frozen_provider alternate_provider frozen_model alternate_model
-  frozen_provider="$(yq -r '.data.llm_provider // ""' <<<"${platform_settings_json}")"
+  local locked_provider locked_model frozen_provider alternate_provider frozen_model alternate_model
+  locked_provider="$(yq -r '.data.llm_provider // ""' <<<"${platform_settings_json}")"
+  locked_model="$(yq -r '.data.llm_model // ""' <<<"${platform_settings_json}")"
+  [[ -n "${locked_provider}" && -n "${locked_model}" ]] ||
+    fail "platform-settings must carry the complete guarded model tuple"
+  frozen_provider="${locked_provider}"
   alternate_provider=openai
   [[ "${frozen_provider}" != "${alternate_provider}" ]] || alternate_provider=demo
   expect_denied "llm_provider is frozen while the model-residency handoff is guarded" \
@@ -664,7 +941,7 @@ EOF
   "${kube[@]}" patch configmap platform-settings --namespace flux-system \
     --type=merge --dry-run=server --patch '{"data":{"handoff_probe":"unchanged-provider"}}' \
     >/dev/null
-  frozen_model="$(yq -r '.data.llm_model // ""' <<<"${platform_settings_json}")"
+  frozen_model="${locked_model}"
   alternate_model=fixture-model-b
   [[ "${frozen_model}" != "${alternate_model}" ]] || alternate_model=fixture-model-c
   expect_denied "llm_model is frozen while the model-residency handoff is guarded" \
@@ -683,12 +960,38 @@ EOF
       "${kube[@]}" patch configmap platform-settings --namespace flux-system \
       --type=merge --dry-run=server --patch '{"data":{"llm_model":null}}'
   fi
+  if yq -e 'has("data") and (.data | has("federation_partner_server_name"))' \
+    <<<"${platform_settings_json}" >/dev/null; then
+    expect_denied "federation topology is frozen while the model-residency handoff is guarded" \
+      "${kube[@]}" patch configmap platform-settings --namespace flux-system \
+      --type=merge --dry-run=server \
+      --patch '{"data":{"federation_partner_server_name":"changed.invalid"}}'
+    expect_denied "federation topology is frozen while the model-residency handoff is guarded" \
+      "${kube[@]}" patch configmap platform-settings --namespace flux-system \
+      --type=merge --dry-run=server \
+      --patch '{"data":{"federation_partner_server_name":null}}'
+  else
+    expect_denied "federation topology is frozen while the model-residency handoff is guarded" \
+      "${kube[@]}" patch configmap platform-settings --namespace flux-system \
+      --type=merge --dry-run=server \
+      --patch '{"data":{"federation_partner_server_name":"introduced.invalid"}}'
+  fi
+  expect_denied "cluster issuer is frozen while the model-residency handoff is guarded" \
+    "${kube[@]}" patch configmap platform-settings --namespace flux-system \
+    --type=merge --dry-run=server \
+    --patch '{"data":{"cluster_issuer":"changed"}}'
+  expect_denied "cluster issuer is frozen while the model-residency handoff is guarded" \
+    "${kube[@]}" patch configmap platform-settings --namespace flux-system \
+    --type=merge --dry-run=server --patch '{"data":{"cluster_issuer":null}}'
   if yq -e '
     has("data") and
-    ((.data | has("llm_provider")) or (.data | has("llm_model")))
+    ((.data | has("llm_provider")) or
+    (.data | has("llm_model")) or
+    (.data | has("federation_partner_server_name")) or
+    (.data | has("cluster_issuer")))
   ' <<<"${platform_settings_json}" >/dev/null; then
     expect_denied \
-      "model-selection-bearing platform settings cannot be deleted while the model-residency handoff is guarded" \
+      "handoff-bearing platform settings cannot be deleted while the model-residency handoff is guarded" \
       "${kube[@]}" delete configmap platform-settings --namespace flux-system --dry-run=server
   fi
 
@@ -701,6 +1004,22 @@ EOF
     local provider_override_json
     provider_override_json="$("${kube[@]}" get configmap platform-settings-overrides \
       --namespace flux-system -o json)"
+    if yq -e 'has("data") and (.data | has("llm_provider"))' \
+      <<<"${provider_override_json}" >/dev/null; then
+      fail "remove llm_provider from platform-settings-overrides before the guarded handoff"
+    fi
+    if yq -e 'has("data") and (.data | has("llm_model"))' \
+      <<<"${provider_override_json}" >/dev/null; then
+      fail "remove llm_model from platform-settings-overrides before the guarded handoff"
+    fi
+    if yq -e 'has("data") and (.data | has("federation_partner_server_name"))' \
+      <<<"${provider_override_json}" >/dev/null; then
+      fail "platform-settings-overrides cannot carry the guarded federation topology"
+    fi
+    if yq -e 'has("data") and (.data | has("cluster_issuer"))' \
+      <<<"${provider_override_json}" >/dev/null; then
+      fail "platform-settings-overrides cannot carry the guarded cluster issuer"
+    fi
     frozen_provider="$(yq -r '.data.llm_provider // ""' <<<"${provider_override_json}")"
     alternate_provider=openai
     [[ "${frozen_provider}" != "${alternate_provider}" ]] || alternate_provider=demo
@@ -715,27 +1034,6 @@ EOF
       "${kube[@]}" patch configmap platform-settings-overrides --namespace flux-system \
       --type=merge --dry-run=server \
       --patch "{\"data\":{\"llm_model\":\"${alternate_model}\"}}"
-    if yq -e 'has("data") and (.data | has("llm_provider"))' \
-      <<<"${provider_override_json}" >/dev/null; then
-      expect_denied "llm_provider is frozen while the model-residency handoff is guarded" \
-        "${kube[@]}" patch configmap platform-settings-overrides --namespace flux-system \
-        --type=merge --dry-run=server --patch '{"data":{"llm_provider":null}}'
-    fi
-    if yq -e 'has("data") and (.data | has("llm_model"))' \
-      <<<"${provider_override_json}" >/dev/null; then
-      expect_denied "llm_model is frozen while the model-residency handoff is guarded" \
-        "${kube[@]}" patch configmap platform-settings-overrides --namespace flux-system \
-        --type=merge --dry-run=server --patch '{"data":{"llm_model":null}}'
-    fi
-    if yq -e '
-      has("data") and
-      ((.data | has("llm_provider")) or (.data | has("llm_model")))
-    ' <<<"${provider_override_json}" >/dev/null; then
-      expect_denied \
-        "model-selection-bearing platform settings cannot be deleted while the model-residency handoff is guarded" \
-        "${kube[@]}" delete configmap platform-settings-overrides --namespace flux-system \
-        --dry-run=server
-    fi
   else
     printf '%s\n' \
       'apiVersion: v1' \
@@ -746,7 +1044,7 @@ EOF
       'data:' \
       '  llm_model: fixture-model-b' |
       expect_manifest_denied \
-        "model-selection overrides cannot be introduced while the model-residency handoff is guarded"
+        "model-selection and topology overrides cannot be introduced while the model-residency handoff is guarded"
     printf '%s\n' \
       'apiVersion: v1' \
       'kind: ConfigMap' \
@@ -758,20 +1056,42 @@ EOF
       "${kube[@]}" create --dry-run=server --filename=- >/dev/null
   fi
 
-  local provider_kustomization provider_kustomization_json provider_label provider_path alternate_path
-  local inline_model
-  for provider_kustomization in \
-    agentgateway-provider \
-    agentgateway-admission \
-    agentgateway-provider-egress; do
+  if [[ "${#expected_provider_kustomizations[@]}" -eq 2 ]]; then
+    provider_kustomizations_manifest |
+      yq 'select(.metadata.name == "agentgateway-admission")' |
+      expect_manifest_denied \
+        "federation must not recreate the deleted local admission inventory"
+  fi
+
+  local provider_kustomization provider_kustomization_json provider_label model_annotation
+  local provider_path alternate_path inline_provider inline_model
+  for provider_kustomization in "${expected_provider_kustomizations[@]}"; do
     provider_kustomization_json="$("${kube[@]}" get kustomization \
       --namespace flux-system "${provider_kustomization}" -o json)"
     provider_label="$(yq -r '.metadata.labels."fgentic.dev/llm-provider"' \
       <<<"${provider_kustomization_json}")"
     [[ -n "${provider_label}" && "${provider_label}" != "null" ]] ||
       fail "${provider_kustomization} has no selected-provider identity"
+    [[ "${provider_label}" == "${locked_provider}" ]] ||
+      fail "${provider_kustomization} provider identity differs from platform-settings"
+    model_annotation="$(yq -r '.metadata.annotations."fgentic.dev/llm-model"' \
+      <<<"${provider_kustomization_json}")"
+    [[ -n "${model_annotation}" && "${model_annotation}" != "null" ]] ||
+      fail "${provider_kustomization} has no selected-model identity"
+    [[ "${model_annotation}" == "${locked_model}" ]] ||
+      fail "${provider_kustomization} model identity differs from platform-settings"
+    inline_provider="$(yq -r '.spec.postBuild.substitute.llm_provider' \
+      <<<"${provider_kustomization_json}")"
+    [[ "${inline_provider}" == "${provider_label}" ]] ||
+      fail "${provider_kustomization} inline provider does not match its identity"
+    inline_model="$(yq -r '.spec.postBuild.substitute.llm_model' \
+      <<<"${provider_kustomization_json}")"
+    [[ "${inline_model}" == "${model_annotation}" ]] ||
+      fail "${provider_kustomization} inline model does not match its identity"
     alternate_provider=openai
     [[ "${provider_label}" != "${alternate_provider}" ]] || alternate_provider=demo
+    alternate_model=fixture-model-b
+    [[ "${model_annotation}" != "${alternate_model}" ]] || alternate_model=fixture-model-c
     provider_path="$(yq -r '.spec.path' <<<"${provider_kustomization_json}")"
     alternate_path=./infra/agentgateway/providers/profiles/openai
     [[ "${provider_path}" != "${alternate_path}" ]] ||
@@ -783,44 +1103,74 @@ EOF
       --type=merge --dry-run=server \
       --patch "{\"metadata\":{\"labels\":{\"fgentic.dev/llm-provider\":\"${alternate_provider}\"}}}"
     expect_denied \
+      "provider Kustomizations must retain the locked selected-provider identity" \
+      "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
+      --type=merge --dry-run=server \
+      --patch '{"metadata":{"labels":{"fgentic.dev/llm-provider":null}}}'
+    expect_denied \
+      "model Kustomization identity is frozen while the model-residency handoff is guarded" \
+      "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
+      --type=merge --dry-run=server \
+      --patch "{\"metadata\":{\"annotations\":{\"fgentic.dev/llm-model\":\"${alternate_model}\"}}}"
+    expect_denied \
+      "provider Kustomizations must retain the locked selected-model identity" \
+      "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
+      --type=merge --dry-run=server \
+      --patch '{"metadata":{"annotations":{"fgentic.dev/llm-model":null}}}'
+    expect_denied \
       "provider Kustomization paths are frozen while the model-residency handoff is guarded" \
       "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
       --type=merge --dry-run=server \
       --patch "{\"spec\":{\"path\":\"${alternate_path}\"}}"
     expect_denied \
+      "provider Kustomizations must retain their exact source and ownership contract" \
+      "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
+      --type=merge --dry-run=server \
+      --patch '{"spec":{"wait":false}}'
+    expect_denied \
+      "provider Kustomizations must retain their exact source and ownership contract" \
+      "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
+      --type=merge --dry-run=server \
+      --patch '{"spec":{"sourceRef":{"kind":"GitRepository","name":"alternate-source"}}}'
+    expect_denied \
+      "provider Kustomizations must retain their exact current-generation dependency chain" \
+      "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
+      --type=json --dry-run=server \
+      --patch='[{"op":"remove","path":"/spec/dependsOn/0/readyExpr"}]'
+    expect_denied \
+      "provider Kustomizations cannot redirect their guarded render inputs" \
+      "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
+      --type=merge --dry-run=server \
+      --patch '{"spec":{"postBuild":{"substituteFrom":[{"kind":"ConfigMap","name":"alternate-settings"}]}}}'
+    if yq -e '.spec | has("patches")' <<<"${provider_kustomization_json}" >/dev/null; then
+      expect_denied \
+        "provider Kustomization patches cannot change during the exact handoff projection" \
+        "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
+        --type=json --dry-run=server \
+        --patch='[{"op":"remove","path":"/spec/patches"}]'
+    fi
+    expect_denied \
       "provider Kustomizations cannot be deleted while the model-residency handoff is guarded" \
       "${kube[@]}" delete kustomization --namespace flux-system "${provider_kustomization}" \
       --dry-run=server
 
-    inline_model="$(yq -r '.spec.postBuild.substitute.llm_model // ""' \
-      <<<"${provider_kustomization_json}")"
-    if [[ -n "${inline_model}" ]]; then
-      alternate_model=fixture-model-b
-      [[ "${inline_model}" != "${alternate_model}" ]] || alternate_model=fixture-model-c
-      expect_denied "inline model substitution is frozen after its first guarded projection" \
-        "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
-        --type=merge --dry-run=server \
-        --patch "{\"spec\":{\"postBuild\":{\"substitute\":{\"llm_model\":\"${alternate_model}\"}}}}"
-    else
+    expect_denied "inline provider substitution must equal the frozen provider identity" \
       "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
-        --type=merge --dry-run=server \
-        --patch '{"spec":{"postBuild":{"substitute":{"llm_model":"first-guarded-projection"}}}}' \
-        >/dev/null
-    fi
+      --type=merge --dry-run=server \
+      --patch "{\"spec\":{\"postBuild\":{\"substitute\":{\"llm_provider\":\"${alternate_provider}\"}}}}"
+    expect_denied "inline provider substitution must equal the frozen provider identity" \
+      "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
+      --type=json --dry-run=server \
+      --patch='[{"op":"remove","path":"/spec/postBuild/substitute/llm_provider"}]'
+    expect_denied "inline model substitution must equal the frozen model identity" \
+      "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
+      --type=merge --dry-run=server \
+      --patch "{\"spec\":{\"postBuild\":{\"substitute\":{\"llm_model\":\"${alternate_model}\"}}}}"
+    expect_denied "inline model substitution must equal the frozen model identity" \
+      "${kube[@]}" patch kustomization --namespace flux-system "${provider_kustomization}" \
+      --type=json --dry-run=server \
+      --patch='[{"op":"remove","path":"/spec/postBuild/substitute/llm_model"}]'
   done
-
-  provider_label="$("${kube[@]}" get kustomization --namespace flux-system \
-    agentgateway-provider -o jsonpath='{.metadata.labels.fgentic\.dev/llm-provider}')"
-  alternate_provider=openai
-  [[ "${provider_label}" != "${alternate_provider}" ]] || alternate_provider=demo
-  expect_denied "inline provider substitution must equal the frozen provider identity" \
-    "${kube[@]}" patch kustomization --namespace flux-system agentgateway-provider \
-    --type=merge --dry-run=server \
-    --patch "{\"spec\":{\"postBuild\":{\"substitute\":{\"llm_provider\":\"${alternate_provider}\"}}}}"
-  "${kube[@]}" patch kustomization --namespace flux-system agentgateway-provider \
-    --type=merge --dry-run=server \
-    --patch "{\"spec\":{\"postBuild\":{\"substitute\":{\"llm_provider\":\"${provider_label}\"}}}}" \
-    >/dev/null
 
   expect_denied "managed namespaces must declare a valid Pod Security enforce level" \
     bash -c "printf '%s\n' 'apiVersion: v1' 'kind: Namespace' 'metadata:' \

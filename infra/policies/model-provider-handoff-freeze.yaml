@@ -6,7 +6,7 @@ kind: ValidatingAdmissionPolicy
 metadata:
   name: model-provider-handoff-freeze.fgentic.dev
   annotations:
-    fgentic.dev/cel-cost: constant; exact operation, namespace, name, and two map-key comparisons
+    fgentic.dev/cel-cost: constant; exact operation, namespace, name, and four map-key comparisons
 spec:
   failurePolicy: Fail
   matchConstraints:
@@ -19,17 +19,97 @@ spec:
     - name: platform-settings
       expression: 'request.operation == "DELETE" ? oldObject.metadata.name in ["platform-settings", "platform-settings-overrides"] : object.metadata.name in ["platform-settings", "platform-settings-overrides"]'
   validations:
-    - expression: 'request.operation != "CREATE" || object.metadata.name != "platform-settings-overrides" || !has(object.data) || (!("llm_provider" in object.data) && !("llm_model" in object.data))'
-      message: model-selection overrides cannot be introduced while the model-residency handoff is guarded
+    - expression: 'request.operation != "CREATE" || object.metadata.name != "platform-settings-overrides" || !has(object.data) || (!("llm_provider" in object.data) && !("llm_model" in object.data) && !("federation_partner_server_name" in object.data) && !("cluster_issuer" in object.data))'
+      message: model-selection and topology overrides cannot be introduced while the model-residency handoff is guarded
       reason: Forbidden
-    - expression: 'request.operation != "UPDATE" || (((!has(oldObject.data) || !("llm_provider" in oldObject.data)) && (!has(object.data) || !("llm_provider" in object.data))) || (has(oldObject.data) && "llm_provider" in oldObject.data && has(object.data) && "llm_provider" in object.data && object.data["llm_provider"] == oldObject.data["llm_provider"]))'
+    - expression: >-
+        request.operation != "UPDATE" ||
+        (
+        object.metadata.name == "platform-settings-overrides" ?
+        (
+        ((!has(oldObject.data) || !("llm_provider" in oldObject.data)) &&
+        (!has(object.data) || !("llm_provider" in object.data))) ||
+        (has(oldObject.data) && "llm_provider" in oldObject.data &&
+        ((!has(object.data) || !("llm_provider" in object.data)) ||
+        object.data["llm_provider"] == oldObject.data["llm_provider"]))
+        ) :
+        (
+        ((!has(oldObject.data) || !("llm_provider" in oldObject.data)) &&
+        (!has(object.data) || !("llm_provider" in object.data))) ||
+        (has(oldObject.data) && "llm_provider" in oldObject.data &&
+        has(object.data) && "llm_provider" in object.data &&
+        object.data["llm_provider"] == oldObject.data["llm_provider"])
+        )
+        )
       message: llm_provider is frozen while the model-residency handoff is guarded
       reason: Forbidden
-    - expression: 'request.operation != "UPDATE" || (((!has(oldObject.data) || !("llm_model" in oldObject.data)) && (!has(object.data) || !("llm_model" in object.data))) || (has(oldObject.data) && "llm_model" in oldObject.data && has(object.data) && "llm_model" in object.data && object.data["llm_model"] == oldObject.data["llm_model"]))'
+    - expression: >-
+        request.operation != "UPDATE" ||
+        (
+        object.metadata.name == "platform-settings-overrides" ?
+        (
+        ((!has(oldObject.data) || !("llm_model" in oldObject.data)) &&
+        (!has(object.data) || !("llm_model" in object.data))) ||
+        (has(oldObject.data) && "llm_model" in oldObject.data &&
+        ((!has(object.data) || !("llm_model" in object.data)) ||
+        object.data["llm_model"] == oldObject.data["llm_model"]))
+        ) :
+        (
+        ((!has(oldObject.data) || !("llm_model" in oldObject.data)) &&
+        (!has(object.data) || !("llm_model" in object.data))) ||
+        (has(oldObject.data) && "llm_model" in oldObject.data &&
+        has(object.data) && "llm_model" in object.data &&
+        object.data["llm_model"] == oldObject.data["llm_model"])
+        )
+        )
       message: llm_model is frozen while the model-residency handoff is guarded
       reason: Forbidden
-    - expression: 'request.operation != "DELETE" || !has(oldObject.data) || (!("llm_provider" in oldObject.data) && !("llm_model" in oldObject.data))'
-      message: model-selection-bearing platform settings cannot be deleted while the model-residency handoff is guarded
+    - expression: >-
+        request.operation != "UPDATE" ||
+        (
+        object.metadata.name == "platform-settings-overrides" ?
+        (
+        ((!has(oldObject.data) || !("federation_partner_server_name" in oldObject.data)) &&
+        (!has(object.data) || !("federation_partner_server_name" in object.data))) ||
+        (has(oldObject.data) && "federation_partner_server_name" in oldObject.data &&
+        ((!has(object.data) || !("federation_partner_server_name" in object.data)) ||
+        object.data["federation_partner_server_name"] ==
+        oldObject.data["federation_partner_server_name"]))
+        ) :
+        (
+        ((!has(oldObject.data) || !("federation_partner_server_name" in oldObject.data)) &&
+        (!has(object.data) || !("federation_partner_server_name" in object.data))) ||
+        (has(oldObject.data) && "federation_partner_server_name" in oldObject.data &&
+        has(object.data) && "federation_partner_server_name" in object.data &&
+        object.data["federation_partner_server_name"] ==
+        oldObject.data["federation_partner_server_name"])
+        )
+        )
+      message: federation topology is frozen while the model-residency handoff is guarded
+      reason: Forbidden
+    - expression: >-
+        request.operation != "UPDATE" ||
+        (
+        object.metadata.name == "platform-settings-overrides" ?
+        (
+        ((!has(oldObject.data) || !("cluster_issuer" in oldObject.data)) &&
+        (!has(object.data) || !("cluster_issuer" in object.data))) ||
+        (has(oldObject.data) && "cluster_issuer" in oldObject.data &&
+        ((!has(object.data) || !("cluster_issuer" in object.data)) ||
+        object.data["cluster_issuer"] == oldObject.data["cluster_issuer"]))
+        ) :
+        (
+        ((!has(oldObject.data) || !("cluster_issuer" in oldObject.data)) &&
+        (!has(object.data) || !("cluster_issuer" in object.data))) ||
+        (has(oldObject.data) && "cluster_issuer" in oldObject.data &&
+        has(object.data) && "cluster_issuer" in object.data &&
+        object.data["cluster_issuer"] == oldObject.data["cluster_issuer"])
+        )
+        )
+      message: cluster issuer is frozen while the model-residency handoff is guarded
+      reason: Forbidden
+    - expression: 'request.operation != "DELETE" || oldObject.metadata.name == "platform-settings-overrides" || !has(oldObject.data) || (!("llm_provider" in oldObject.data) && !("llm_model" in oldObject.data) && !("federation_partner_server_name" in oldObject.data) && !("cluster_issuer" in oldObject.data))'
+      message: handoff-bearing platform settings cannot be deleted while the model-residency handoff is guarded
       reason: Forbidden
 ---
 apiVersion: admissionregistration.k8s.io/v1
@@ -44,18 +124,20 @@ spec:
       matchLabels:
         kubernetes.io/metadata.name: flux-system
 ---
-# A Flux root apply is staged across objects, not atomic. Freeze the rendered provider identity,
-# model identity, and inventory paths as well as their ConfigMap input so a rejected settings
-# update cannot partially advance one of the three provider-sensitive Kustomizations. Revision C
-# may add the initially absent inline model once; after that, it is immutable under this guard.
+# A Flux root apply is staged across objects, not atomic. Freeze the rendered provider/model tuple
+# and inventory paths as well as their ConfigMap input so a rejected settings update cannot
+# partially advance one of the three provider-sensitive Kustomizations.
 apiVersion: admissionregistration.k8s.io/v1
 kind: ValidatingAdmissionPolicy
 metadata:
   name: model-provider-kustomization-freeze.fgentic.dev
   annotations:
-    fgentic.dev/cel-cost: constant; exact operation, name, label, path, and map-key comparisons
+    fgentic.dev/cel-cost: linear in the bounded Kustomization spec; exact identity and render comparisons
 spec:
   failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
   matchConstraints:
     resourceRules:
       - apiGroups: [kustomize.toolkit.fluxcd.io]
@@ -65,23 +147,187 @@ spec:
   matchConditions:
     - name: model-provider-kustomizations
       expression: 'request.operation == "DELETE" ? oldObject.metadata.name in ["agentgateway-provider", "agentgateway-admission", "agentgateway-provider-egress"] : object.metadata.name in ["agentgateway-provider", "agentgateway-admission", "agentgateway-provider-egress"]'
+  variables:
+    - name: stableBaseReadyExpr
+      expression: >-
+        "dep.metadata.labels['fgentic.dev/agentgateway-layout'] == 'split-v1' &&
+        dep.status.observedGeneration == dep.metadata.generation &&
+        dep.status.conditions.exists( e, e.type == 'Ready' && e.status == 'True' )"
+    - name: modelTupleReadyExpr
+      expression: >-
+        "dep.metadata.labels['fgentic.dev/llm-provider'] ==
+        self.metadata.labels['fgentic.dev/llm-provider'] &&
+        dep.metadata.annotations['fgentic.dev/llm-model'] ==
+        self.metadata.annotations['fgentic.dev/llm-model'] &&
+        dep.spec.postBuild.substitute['llm_provider'] ==
+        self.spec.postBuild.substitute['llm_provider'] &&
+        dep.spec.postBuild.substitute['llm_model'] ==
+        self.spec.postBuild.substitute['llm_model'] &&
+        dep.status.observedGeneration == dep.metadata.generation &&
+        dep.status.conditions.exists( e, e.type == 'Ready' && e.status == 'True' )"
+    - name: localADCBackendPatch
+      expression: '"- op: add\n  path: /spec/policies/auth/gcp/secretRef\n  value:\n    name: gcp-adc"'
   validations:
-    - expression: 'request.operation == "DELETE" || (has(object.metadata.labels) && "fgentic.dev/llm-provider" in object.metadata.labels)'
-      message: provider Kustomizations must retain their selected-provider identity
+    - expression: 'request.operation == "DELETE" || (has(params.data) && "llm_provider" in params.data && "llm_model" in params.data)'
+      message: guarded provider Kustomizations require the complete platform model selection
       reason: Forbidden
-    - expression: 'request.operation != "UPDATE" || (has(oldObject.metadata.labels) && "fgentic.dev/llm-provider" in oldObject.metadata.labels && has(object.metadata.labels) && "fgentic.dev/llm-provider" in object.metadata.labels && object.metadata.labels["fgentic.dev/llm-provider"] == oldObject.metadata.labels["fgentic.dev/llm-provider"])'
+    - expression: 'request.operation == "DELETE" || (has(object.metadata.labels) && "fgentic.dev/llm-provider" in object.metadata.labels && object.metadata.labels["fgentic.dev/llm-provider"] == params.data["llm_provider"])'
+      message: provider Kustomizations must retain the locked selected-provider identity
+      reason: Forbidden
+    - expression: 'request.operation == "DELETE" || (has(object.metadata.annotations) && "fgentic.dev/llm-model" in object.metadata.annotations && object.metadata.annotations["fgentic.dev/llm-model"] == params.data["llm_model"])'
+      message: provider Kustomizations must retain the locked selected-model identity
+      reason: Forbidden
+    - expression: 'request.operation != "UPDATE" || !has(oldObject.metadata.labels) || !("fgentic.dev/llm-provider" in oldObject.metadata.labels) || object.metadata.labels["fgentic.dev/llm-provider"] == oldObject.metadata.labels["fgentic.dev/llm-provider"]'
       message: provider Kustomization identity is frozen while the model-residency handoff is guarded
+      reason: Forbidden
+    - expression: 'request.operation != "UPDATE" || !has(oldObject.metadata.annotations) || !("fgentic.dev/llm-model" in oldObject.metadata.annotations) || object.metadata.annotations["fgentic.dev/llm-model"] == oldObject.metadata.annotations["fgentic.dev/llm-model"]'
+      message: model Kustomization identity is frozen while the model-residency handoff is guarded
       reason: Forbidden
     - expression: 'request.operation != "UPDATE" || object.spec.path == oldObject.spec.path'
       message: provider Kustomization paths are frozen while the model-residency handoff is guarded
       reason: Forbidden
-    - expression: 'request.operation == "DELETE" || !has(object.spec.postBuild) || !has(object.spec.postBuild.substitute) || !("llm_provider" in object.spec.postBuild.substitute) || object.spec.postBuild.substitute["llm_provider"] == object.metadata.labels["fgentic.dev/llm-provider"]'
+    - expression: >-
+        request.operation == "DELETE" ||
+        (
+        has(object.spec.path) &&
+        has(object.spec.interval) && object.spec.interval == "30m" &&
+        has(object.spec.retryInterval) && object.spec.retryInterval == "2m" &&
+        has(object.spec.prune) && object.spec.prune &&
+        has(object.spec.wait) && object.spec.wait &&
+        has(object.spec.sourceRef) &&
+        object.spec.sourceRef.kind == "GitRepository" &&
+        object.spec.sourceRef.name == "flux-system" &&
+        !has(object.spec.sourceRef.apiVersion) &&
+        !has(object.spec.sourceRef.namespace) &&
+        (
+        (object.metadata.name == "agentgateway-provider" &&
+        object.spec.path ==
+        "./infra/agentgateway/providers/profiles/" + params.data["llm_provider"] &&
+        has(object.spec.timeout) && object.spec.timeout == "45m") ||
+        (object.metadata.name == "agentgateway-admission" &&
+        object.spec.path == "./infra/agentgateway/admission" &&
+        has(object.spec.timeout) && object.spec.timeout == "10m") ||
+        (object.metadata.name == "agentgateway-provider-egress" &&
+        object.spec.path ==
+        "./infra/agentgateway/providers/egress/" + params.data["llm_provider"] &&
+        !has(object.spec.timeout))
+        )
+        )
+      message: provider Kustomizations must retain their exact source and ownership contract
+      reason: Forbidden
+    - expression: >-
+        request.operation == "DELETE" ||
+        (
+        has(object.spec.postBuild) &&
+        has(object.spec.postBuild.substitute) &&
+        size(object.spec.postBuild.substitute) == 2 &&
+        "llm_provider" in object.spec.postBuild.substitute &&
+        "llm_model" in object.spec.postBuild.substitute &&
+        (
+        (object.metadata.name == "agentgateway-provider-egress" &&
+        !has(object.spec.postBuild.substituteFrom)) ||
+        (object.metadata.name in ["agentgateway-provider", "agentgateway-admission"] &&
+        has(object.spec.postBuild.substituteFrom) &&
+        size(object.spec.postBuild.substituteFrom) == 2 &&
+        object.spec.postBuild.substituteFrom[0].kind == "ConfigMap" &&
+        object.spec.postBuild.substituteFrom[0].name == "platform-settings" &&
+        (!has(object.spec.postBuild.substituteFrom[0].optional) ||
+        !object.spec.postBuild.substituteFrom[0].optional) &&
+        object.spec.postBuild.substituteFrom[1].kind == "ConfigMap" &&
+        object.spec.postBuild.substituteFrom[1].name == "platform-settings-overrides" &&
+        has(object.spec.postBuild.substituteFrom[1].optional) &&
+        object.spec.postBuild.substituteFrom[1].optional)
+        ) &&
+        !has(object.spec.components) &&
+        (
+        !has(object.spec.patches) ||
+        (object.metadata.name == "agentgateway-provider" &&
+        size(object.spec.patches) == 1 &&
+        has(params.data) && "cluster_issuer" in params.data &&
+        params.data["cluster_issuer"] == "local-ca" &&
+        !("federation_partner_server_name" in params.data) &&
+        has(object.spec.patches[0].patch) &&
+        object.spec.patches[0].patch == variables.localADCBackendPatch &&
+        has(object.spec.patches[0].target) &&
+        object.spec.patches[0].target.group == "agentgateway.dev" &&
+        object.spec.patches[0].target.version == "v1alpha1" &&
+        object.spec.patches[0].target.kind == "AgentgatewayBackend" &&
+        object.spec.patches[0].target.name == "llm-vertex" &&
+        object.spec.patches[0].target.namespace == "agentgateway-system" &&
+        !has(object.spec.patches[0].target.labelSelector) &&
+        !has(object.spec.patches[0].target.annotationSelector))
+        ) &&
+        !has(object.spec.images) &&
+        !has(object.spec.targetNamespace) &&
+        !has(object.spec.serviceAccountName) &&
+        !has(object.spec.kubeConfig) &&
+        !has(object.spec.namePrefix) &&
+        !has(object.spec.nameSuffix) &&
+        !has(object.spec.commonMetadata) &&
+        !has(object.spec.buildMetadata) &&
+        !has(object.spec.decryption) &&
+        !has(object.spec.deletionPolicy) &&
+        !has(object.spec.healthCheckExprs) &&
+        !has(object.spec.healthChecks) &&
+        !has(object.spec.ignore) &&
+        !has(object.spec.ignoreMissingComponents) &&
+        !has(object.spec.postBuild.substituteStrategy) &&
+        (!has(object.spec.force) || !object.spec.force) &&
+        (!has(object.spec.suspend) || !object.spec.suspend)
+        )
+      message: provider Kustomizations cannot redirect their guarded render inputs
+      reason: Forbidden
+    - expression: >-
+        request.operation == "DELETE" ||
+        (
+        has(object.spec.dependsOn) &&
+        (
+        (object.metadata.name == "agentgateway-provider" &&
+        size(object.spec.dependsOn) == 2 &&
+        object.spec.dependsOn[0].name == "agentgateway" &&
+        !has(object.spec.dependsOn[0].namespace) &&
+        has(object.spec.dependsOn[0].readyExpr) &&
+        object.spec.dependsOn[0].readyExpr == variables.stableBaseReadyExpr &&
+        object.spec.dependsOn[1].name == "platform-secrets" &&
+        !has(object.spec.dependsOn[1].namespace) &&
+        !has(object.spec.dependsOn[1].readyExpr)) ||
+        (object.metadata.name == "agentgateway-admission" &&
+        size(object.spec.dependsOn) == 1 &&
+        object.spec.dependsOn[0].name == "agentgateway-provider" &&
+        !has(object.spec.dependsOn[0].namespace) &&
+        has(object.spec.dependsOn[0].readyExpr) &&
+        object.spec.dependsOn[0].readyExpr == variables.modelTupleReadyExpr) ||
+        (object.metadata.name == "agentgateway-provider-egress" &&
+        size(object.spec.dependsOn) == 1 &&
+        object.spec.dependsOn[0].name ==
+        ("federation_partner_server_name" in params.data ?
+        "agentgateway-provider" : "agentgateway-admission") &&
+        !has(object.spec.dependsOn[0].namespace) &&
+        has(object.spec.dependsOn[0].readyExpr) &&
+        object.spec.dependsOn[0].readyExpr == variables.modelTupleReadyExpr)
+        )
+        )
+      message: provider Kustomizations must retain their exact current-generation dependency chain
+      reason: Forbidden
+    - expression: 'request.operation == "DELETE" || !("federation_partner_server_name" in params.data) || object.metadata.name != "agentgateway-admission"'
+      message: federation must not recreate the deleted local admission inventory
+      reason: Forbidden
+    - expression: 'request.operation == "DELETE" || (has(object.metadata.labels) && "fgentic.dev/llm-provider" in object.metadata.labels && has(object.spec.postBuild) && has(object.spec.postBuild.substitute) && "llm_provider" in object.spec.postBuild.substitute && object.spec.postBuild.substitute["llm_provider"] == object.metadata.labels["fgentic.dev/llm-provider"])'
       message: inline provider substitution must equal the frozen provider identity
       reason: Forbidden
-    - expression: 'request.operation != "UPDATE" || !has(oldObject.spec.postBuild) || !has(oldObject.spec.postBuild.substitute) || !("llm_model" in oldObject.spec.postBuild.substitute) || (has(object.spec.postBuild) && has(object.spec.postBuild.substitute) && "llm_model" in object.spec.postBuild.substitute && object.spec.postBuild.substitute["llm_model"] == oldObject.spec.postBuild.substitute["llm_model"])'
-      message: inline model substitution is frozen after its first guarded projection
+    - expression: 'request.operation == "DELETE" || (has(object.metadata.annotations) && "fgentic.dev/llm-model" in object.metadata.annotations && has(object.spec.postBuild) && has(object.spec.postBuild.substitute) && "llm_model" in object.spec.postBuild.substitute && object.spec.postBuild.substitute["llm_model"] == object.metadata.annotations["fgentic.dev/llm-model"])'
+      message: inline model substitution must equal the frozen model identity
       reason: Forbidden
-    - expression: 'request.operation != "DELETE"'
+    - expression: 'request.operation != "UPDATE" || ((!has(oldObject.spec.patches) && !has(object.spec.patches)) || (has(oldObject.spec.patches) && has(object.spec.patches) && object.spec.patches == oldObject.spec.patches))'
+      message: provider Kustomization patches cannot change during the exact handoff projection
+      reason: Forbidden
+    - expression: 'request.operation != "UPDATE" || ((!has(oldObject.spec.postBuild) || !has(oldObject.spec.postBuild.substituteFrom)) ? !has(object.spec.postBuild.substituteFrom) : (has(object.spec.postBuild.substituteFrom) && object.spec.postBuild.substituteFrom == oldObject.spec.postBuild.substituteFrom))'
+      message: provider Kustomization substitution sources cannot change during the exact handoff projection
+      reason: Forbidden
+    - expression: 'request.operation != "UPDATE" || !has(oldObject.metadata.labels) || !("fgentic.dev/llm-provider" in oldObject.metadata.labels) || !has(oldObject.metadata.annotations) || !("fgentic.dev/llm-model" in oldObject.metadata.annotations) || object.spec == oldObject.spec'
+      message: provider Kustomization specs are frozen after the exact handoff projection
+      reason: Forbidden
+    - expression: 'request.operation != "DELETE" || ("federation_partner_server_name" in params.data && oldObject.metadata.name == "agentgateway-admission")'
       message: provider Kustomizations cannot be deleted while the model-residency handoff is guarded
       reason: Forbidden
 ---
@@ -91,6 +337,63 @@ metadata:
   name: model-provider-kustomization-freeze.fgentic.dev
 spec:
   policyName: model-provider-kustomization-freeze.fgentic.dev
+  paramRef:
+    name: platform-settings
+    namespace: flux-system
+    parameterNotFoundAction: Deny
+  validationActions: [Deny, Audit]
+  matchResources:
+    namespaceSelector:
+      matchLabels:
+        kubernetes.io/metadata.name: flux-system
+---
+# A legacy optional override may already carry a model-selection key before the tracked-only
+# handoff contract is installed. Keep the next exact projection denied until an operator removes
+# that key; a missing or unrelated override remains a no-op.
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicy
+metadata:
+  name: model-provider-override-conflict.fgentic.dev
+  annotations:
+    fgentic.dev/cel-cost: constant; four optional parameter map-key comparisons
+spec:
+  failurePolicy: Fail
+  paramKind:
+    apiVersion: v1
+    kind: ConfigMap
+  matchConstraints:
+    resourceRules:
+      - apiGroups: [kustomize.toolkit.fluxcd.io]
+        apiVersions: [v1]
+        operations: [CREATE, UPDATE]
+        resources: [kustomizations]
+  matchConditions:
+    - name: model-provider-kustomizations
+      expression: 'object.metadata.name in ["agentgateway-provider", "agentgateway-admission", "agentgateway-provider-egress"]'
+  validations:
+    - expression: '!has(params.data) || !("llm_provider" in params.data)'
+      message: remove the llm_provider override before projecting the guarded model tuple
+      reason: Forbidden
+    - expression: '!has(params.data) || !("llm_model" in params.data)'
+      message: remove the llm_model override before projecting the guarded model tuple
+      reason: Forbidden
+    - expression: '!has(params.data) || !("federation_partner_server_name" in params.data)'
+      message: remove the federation topology override before projecting the guarded model tuple
+      reason: Forbidden
+    - expression: '!has(params.data) || !("cluster_issuer" in params.data)'
+      message: remove the cluster_issuer override before projecting the guarded model tuple
+      reason: Forbidden
+---
+apiVersion: admissionregistration.k8s.io/v1
+kind: ValidatingAdmissionPolicyBinding
+metadata:
+  name: model-provider-override-conflict.fgentic.dev
+spec:
+  policyName: model-provider-override-conflict.fgentic.dev
+  paramRef:
+    name: platform-settings-overrides
+    namespace: flux-system
+    parameterNotFoundAction: Allow
   validationActions: [Deny, Audit]
   matchResources:
     namespaceSelector:

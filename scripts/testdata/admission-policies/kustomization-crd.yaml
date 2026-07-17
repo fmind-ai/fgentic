@@ -22,14 +22,109 @@ spec:
               type: object
               required: [interval, prune, sourceRef]
               properties:
-                suspend:
-                  type: boolean
                 interval:
                   type: string
+                retryInterval:
+                  type: string
+                force:
+                  type: boolean
+                  default: false
+                suspend:
+                  type: boolean
                 path:
                   type: string
                 prune:
                   type: boolean
+                wait:
+                  type: boolean
+                timeout:
+                  type: string
+                dependsOn:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                    properties:
+                      name:
+                        type: string
+                      namespace:
+                        type: string
+                      readyExpr:
+                        type: string
+                buildMetadata:
+                  type: array
+                  items:
+                    type: string
+                components:
+                  type: array
+                  items:
+                    type: string
+                commonMetadata:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                decryption:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                deletionPolicy:
+                  type: string
+                healthCheckExprs:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                healthChecks:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                ignore:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                ignoreMissingComponents:
+                  type: boolean
+                images:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                kubeConfig:
+                  type: object
+                  x-kubernetes-preserve-unknown-fields: true
+                namePrefix:
+                  type: string
+                nameSuffix:
+                  type: string
+                patches:
+                  type: array
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                    properties:
+                      patch:
+                        type: string
+                      target:
+                        type: object
+                        properties:
+                          annotationSelector:
+                            type: string
+                          group:
+                            type: string
+                          kind:
+                            type: string
+                          labelSelector:
+                            type: string
+                          name:
+                            type: string
+                          namespace:
+                            type: string
+                          version:
+                            type: string
+                serviceAccountName:
+                  type: string
+                targetNamespace:
+                  type: string
                 sourceRef:
                   type: object
                   required: [kind, name]
@@ -38,6 +133,10 @@ spec:
                       type: string
                     name:
                       type: string
+                    apiVersion:
+                      type: string
+                    namespace:
+                      type: string
                 postBuild:
                   type: object
                   properties:
@@ -45,3 +144,18 @@ spec:
                       type: object
                       additionalProperties:
                         type: string
+                    substituteStrategy:
+                      type: string
+                    substituteFrom:
+                      type: array
+                      items:
+                        type: object
+                        x-kubernetes-preserve-unknown-fields: true
+                        properties:
+                          kind:
+                            type: string
+                          name:
+                            type: string
+                          optional:
+                            type: boolean
+                            default: false
