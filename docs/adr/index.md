@@ -21,3 +21,4 @@ Settled designs (including the D1–D20 register) are revisited by proposing a n
 - [0017 — Permission-Aware Retrieval Identity Binding](0017-permission-aware-identity-binding.md) - gateway-projected identity and complete output-audience ACL prefiltering
 - [0018 — Content-Bounded Matrix Identity Audit](0018-content-bounded-identity-audit.md) - opt-in authentication/event evidence from exact pinned source records, never generic logs
 - [0019 — Snapshot-Backed Synapse Media PVC](0019-synapse-media-store.md) - retained local PVC and explicit CSI snapshot recovery for the GKE reference
+- [0020 — Partner Trust Registry Trust-Domain Model](0020-partner-trust-registry-domain-model.md) - directional trust graph with local-identity separation and room-instance reconciliation, Proposed (M29)
