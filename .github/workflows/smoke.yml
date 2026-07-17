@@ -20,7 +20,7 @@ concurrency:
 jobs:
   demo:
     name: Small-profile mention to reply
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 19
     env:
       FGENTIC_DEMO_CLUSTER: fgentic-demo-smoke
@@ -136,7 +136,7 @@ jobs:
 
   policy:
     name: Authorization, API audit, traces, and NetworkPolicy conformance
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 19
     env:
       NETWORK_POLICY_DIAGNOSTICS_DIR: ${{ github.workspace }}/.agents/tmp/policy-diagnostics
@@ -208,7 +208,7 @@ jobs:
 
   scanner:
     name: Continuous image vulnerability scan
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # Keep the job deadline outside the bounded test deadline so TERM-triggered cleanup and the
     # failure-artifact step still run when a registry or vulnerability feed stalls.
     timeout-minutes: 35
@@ -249,7 +249,7 @@ jobs:
       - demo
       - policy
       - scanner
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 5
     permissions:
       contents: read

@@ -27,7 +27,7 @@ concurrency:
 jobs:
   bridge-image:
     if: github.event_name == 'push'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
@@ -243,7 +243,7 @@ jobs:
 
   release-sbom:
     if: github.event_name == 'release'
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - name: Set lower-case release image path
         run: echo "IMAGE_REPOSITORY=$(echo "ghcr.io/${{ github.repository_owner }}/matrix-a2a-bridge" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
