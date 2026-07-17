@@ -1,0 +1,45 @@
+# Exact A namespace layer. It also owns peer DNS and public trust before any controller or
+# workload layer can reconcile, because every retained Flux dependency descends from namespaces.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../namespaces
+  - coredns.yaml
+  - trust.yaml
+components:
+  - ../../../namespaces
+patches:
+  - target:
+      version: v1
+      kind: Namespace
+      name: (knowledge|keycloak|bridge|bridges|monitoring|trivy-system|matrix-b)
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: unused
+  - target:
+      version: v1
+      kind: ResourceQuota
+      name: compute-budget
+      namespace: (knowledge|keycloak|bridge|bridges|monitoring|trivy-system|matrix-b)
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: ResourceQuota
+      metadata:
+        name: compute-budget
+        namespace: unused
+  - target:
+      version: v1
+      kind: LimitRange
+      name: container-defaults
+      namespace: (knowledge|keycloak|bridge|bridges|monitoring|trivy-system|matrix-b)
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: LimitRange
+      metadata:
+        name: container-defaults
+        namespace: unused

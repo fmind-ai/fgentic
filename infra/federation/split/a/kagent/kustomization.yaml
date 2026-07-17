@@ -1,0 +1,7 @@
+# Keep only the canonical provider-free docs-qa Agent behind the A control plane's agentgateway.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../kagent
+components:
+  - ../../../delegation/kagent

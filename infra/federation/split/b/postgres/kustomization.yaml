@@ -1,0 +1,84 @@
+# B's independent CNPG cluster owns only Matrix B and its Keycloak machine-client issuer.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../postgres
+components:
+  - ../../../postgres
+patches:
+  - target: { group: postgresql.cnpg.io, version: v1, kind: Cluster, name: platform-pg, namespace: postgres }
+    patch: |
+      - op: replace
+        path: /spec/managed/roles
+        value:
+          - name: synapse_b
+            login: true
+            passwordSecret:
+              name: pg-synapse-b
+          - name: keycloak
+            login: true
+            passwordSecret:
+              name: pg-keycloak
+      - op: replace
+        path: /spec/postgresql/pg_hba
+        value:
+          - hostssl synapse_b synapse_b all scram-sha-256
+          - hostssl keycloak keycloak all scram-sha-256
+          - hostssl all all all reject
+          - hostnossl all all all reject
+  - target:
+      group: postgresql.cnpg.io
+      version: v1
+      kind: Database
+      name: (synapse|kagent|knowledge|synapse-c)
+      namespace: postgres
+    patch: |
+      $patch: delete
+      apiVersion: postgresql.cnpg.io/v1
+      kind: Database
+      metadata:
+        name: unused
+        namespace: postgres
+  - target:
+      group: postgresql.cnpg.io
+      version: v1
+      kind: DatabaseRole
+      name: (knowledge-owner|knowledge-retrieval)
+      namespace: postgres
+    patch: |
+      $patch: delete
+      apiVersion: postgresql.cnpg.io/v1
+      kind: DatabaseRole
+      metadata:
+        name: unused
+        namespace: postgres
+  - target: { version: v1, kind: ConfigMap, name: knowledge-schema-v1, namespace: postgres }
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: ConfigMap
+      metadata:
+        name: knowledge-schema-v1
+        namespace: postgres
+  - target: { group: batch, version: v1, kind: Job, name: knowledge-schema-v1, namespace: postgres }
+    patch: |
+      $patch: delete
+      apiVersion: batch/v1
+      kind: Job
+      metadata:
+        name: knowledge-schema-v1
+        namespace: postgres
+  - target: {
+      group: networking.k8s.io,
+      version: v1,
+      kind: NetworkPolicy,
+      name: knowledge-schema-v1,
+      namespace: postgres,
+    }
+    patch: |
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: knowledge-schema-v1
+        namespace: postgres

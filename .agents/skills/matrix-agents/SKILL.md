@@ -38,6 +38,14 @@ Run `mise run fed:policy-reload` to exercise policy projection separately. The d
 
 Inspect the lab after running `export KUBECONFIG="$(k3d kubeconfig write fgentic-fed)"`; the installer deliberately does not switch the default context. When finished, run `mise run fed:down`. Teardown verifies ownership, atomically records exact identities, and deletes only the federation cluster and its locally built images. If interrupted, rerun the same command; do not broadly prune same-named resources. The canonical topology, recovery boundary, and acceptance contract are in [docs/federation.md](../../../docs/federation.md#85-disposable-federation-hardening-lab).
 
+### Two-control-plane pre-partner drill
+
+Use `mise run fed:split:up` only when the acceptance boundary must include separate Kubernetes APIs, ingress, Docker networks, CA private keys, trust stores, and organization-shaped Flux entrypoints. It leaves canonical `fgentic-fed` untouched and owns `fgentic-fed-a`, `fgentic-fed-b`, two exact raw-TLS relays, and their retryable parent teardown receipt.
+
+The split identities are `org-a.fgentic.test`, `org-b.fgentic.test`, and denied `org-c.fgentic.test`. A owns Matrix A/C, agentgateway, docs-qa/kagent, the deterministic model, card signer, and receipt signer. B owns Matrix B and the Keycloak issuer/client. Exact CoreDNS records and the two relays cross the Docker-network boundary; no cluster node or load balancer joins both networks. Each CA private key stays in its owning lifecycle directory, while only public roots enter the peer trust bundles. The host driver receives distinct A/B kubeconfigs and obtains B's short-lived JWT without copying B's client secret into A.
+
+The proof must reject reused API endpoints, namespace UIDs, network/load-balancer identities, or CA fingerprints. It then repeats bidirectional A/B Matrix through both relays, local C→A denial, a host-delivered C-signed denial at B's distinct ingress, and B-JWT→A Signed AgentCard/delegation/quota/receipt checks. It does not claim that the negative C→B request traverses a relay or that A2A originates inside B. `mise run fed:split:status` is inspect-only, `fed:split:stop` preserves both exact clusters while releasing resources, and `fed:split:down` removes relays before child networks and resumes an interrupted exact-identity teardown. Never substitute this synthetic one-host drill for partner onboarding: it does not prove WAN, public DNS/ACME, clock skew, independent operators, or independent failure domains. The full topology and limits are in [federation §8.5.3](../../../docs/federation.md#853-opt-in-two-control-plane-drill).
+
 ## Runbook: onboard a federation partner
 
 Follow the bilateral [partner onboarding runbook](../../../docs/federation-onboarding.md) before enabling a real organization. Both operators complete the same owner, technical, contractual, activation, rotation, and offboarding gates; a unilateral test is insufficient.

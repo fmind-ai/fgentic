@@ -1,0 +1,11 @@
+# Opt-in half A of the two-control-plane federation drill. Canonical clusters/federation is
+# intentionally unchanged; this profile owns org A, denied org C, and the complete agent plane.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+  - platform-settings.yaml
+  - secrets.yaml
+components:
+  - ../base/provider-selection
+  - ../../infra/federation/split/a/cluster

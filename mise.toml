@@ -168,6 +168,7 @@ depends = [
   "check:agent-new",
   "check:demo",
   "check:federation",
+  "check:federation-split",
   "check:federation-onboarding",
   "check:smoke-workflow",
   "check:mautrix-bridges",
@@ -349,6 +350,13 @@ run = "bash scripts/test-demo.sh"
 [tasks."check:federation"]
 description = "Validate the offline federation topology, room policy, and denied control"
 run = "bash scripts/test-federation.sh"
+
+[tasks."check:federation-split"]
+description = "Validate the opt-in two-control-plane federation drill offline"
+run = [
+  "bash scripts/test-federation-split-manifests.sh",
+  "bash scripts/test-federation-split-seed.sh",
+]
 
 [tasks."check:federation-onboarding"]
 description = "Test the read-only partner federation preflight with offline fixtures"
@@ -634,6 +642,22 @@ run = "bash scripts/reload-federation-policy.sh"
 [tasks."fed:tck"]
 description = "Run the pinned A2A MUST/JSONRPC TCK against the authenticated federation route"
 run = "bash scripts/fed-tck.sh"
+
+[tasks."fed:split:up"]
+description = "Reconcile and prove the opt-in two-control-plane federation drill"
+run = "bash scripts/federation-split.sh up"
+
+[tasks."fed:split:status"]
+description = "Show both owned split-federation control planes and relay state"
+run = "bash scripts/federation-split.sh status"
+
+[tasks."fed:split:stop"]
+description = "Stop both split-federation control planes while preserving owned state"
+run = "bash scripts/federation-split.sh stop"
+
+[tasks."fed:split:down"]
+description = "Delete only the owned split-federation control planes and relays"
+run = "bash scripts/federation-split.sh down"
 
 [tasks."bridge:load"]
 description = "Build and side-load the bridge into the optional full local k3d cluster"

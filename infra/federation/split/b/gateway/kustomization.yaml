@@ -1,0 +1,40 @@
+# Matrix B owns its exact Gateway and certificate in the matrix-b layer. This prerequisite keeps
+# only B's local CA issuer; no dormant base listener or ACME surface is reconciled.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../gateway/base
+patches:
+  - target:
+      group: cert-manager.io
+      version: v1
+      kind: ClusterIssuer
+      name: (letsencrypt-staging|letsencrypt-prod)
+    patch: |
+      $patch: delete
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: unused
+  - target: { group: gateway.networking.k8s.io, version: v1, kind: Gateway, name: fgentic-gateway, namespace: gateway }
+    patch: |
+      $patch: delete
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: Gateway
+      metadata:
+        name: fgentic-gateway
+        namespace: gateway
+  - target: {
+      group: gateway.networking.k8s.io,
+      version: v1,
+      kind: HTTPRoute,
+      name: http-to-https-redirect,
+      namespace: gateway,
+    }
+    patch: |
+      $patch: delete
+      apiVersion: gateway.networking.k8s.io/v1
+      kind: HTTPRoute
+      metadata:
+        name: http-to-https-redirect
+        namespace: gateway

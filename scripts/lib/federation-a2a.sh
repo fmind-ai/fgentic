@@ -73,11 +73,11 @@ expect_a2a_status() {
 
 agentgateway_token_total() {
 	local pod metrics
-	pod="$(kubectl --namespace agentgateway-system get pods \
+	pod="$(federation_kubectl A --namespace agentgateway-system get pods \
 		--selector app.kubernetes.io/name=agentgateway-proxy \
 		--output jsonpath='{.items[0].metadata.name}')"
 	[ -n "${pod}" ] || die "agentgateway proxy pod was not found"
-	metrics="$(kubectl get --raw \
+	metrics="$(federation_kubectl A get --raw \
 		"/api/v1/namespaces/agentgateway-system/pods/${pod}:15020/proxy/metrics")"
 	awk '$1 ~ /^agentgateway_gen_ai_client_token_usage_sum([{]|$)/ {total += $2} END {print total + 0}' \
 		<<<"${metrics}"
@@ -91,11 +91,11 @@ verify_public_agent_card() {
 	USAGE_RECEIPT_PUBLIC_JWK="${WORK_DIR}/usage-receipt-public-jwk.json"
 	status="$(request_status "${served_card}" "${A2A_URL}${A2A_AGENT_PATH}/.well-known/agent-card.json")"
 	[ "${status}" = "200" ] || die "public AgentCard returned HTTP ${status}"
-	kubectl --namespace agentgateway-system get configmap "${AGENT_CARD_CONFIGMAP}" \
+	federation_kubectl A --namespace agentgateway-system get configmap "${AGENT_CARD_CONFIGMAP}" \
 		--output 'go-template={{index .data "agent-card.json"}}' >"${expected_card}"
-	kubectl --namespace agentgateway-system get configmap "${AGENT_CARD_CONFIGMAP}" \
+	federation_kubectl A --namespace agentgateway-system get configmap "${AGENT_CARD_CONFIGMAP}" \
 		--output 'go-template={{index .data "public-jwk.json"}}' >"${public_jwk}"
-	kubectl --namespace agentgateway-system get configmap "${AGENT_CARD_CONFIGMAP}" \
+	federation_kubectl A --namespace agentgateway-system get configmap "${AGENT_CARD_CONFIGMAP}" \
 		--output 'go-template={{index .data "usage-receipt-public-jwk.json"}}' \
 		>"${USAGE_RECEIPT_PUBLIC_JWK}"
 	cmp --silent "${served_card}" "${expected_card}" ||
@@ -135,14 +135,15 @@ verify_public_agent_card() {
 }
 
 usage_receipt_archive_count() {
-	kubectl --namespace agentgateway-system exec deployment/federation-usage-receipt -- \
+	federation_kubectl A --namespace agentgateway-system \
+		exec deployment/federation-usage-receipt -- \
 		/usr/local/bin/usage-receipt archive-count \
 		--archive=/var/lib/usage-receipts/receipts.jsonl
 }
 
 verify_kagent_not_public() {
 	local services routes
-	services="$(kubectl --namespace kagent get services --output json)"
+	services="$(federation_kubectl A --namespace kagent get services --output json)"
 	jq -e '
     (.items | length) > 0 and
     any(.items[]; .metadata.name == "kagent-controller") and
@@ -152,7 +153,8 @@ verify_kagent_not_public() {
       all(.spec.ports[]; has("nodePort") | not))
   ' <<<"${services}" >/dev/null ||
 		die "kagent exposes a non-ClusterIP, external IP, or node port"
-	routes="$(kubectl get httproutes.gateway.networking.k8s.io --all-namespaces --output json)"
+	routes="$(federation_kubectl A get httproutes.gateway.networking.k8s.io \
+		--all-namespaces --output json)"
 	jq -e '
     all(.items[];
       all(.spec.rules[]?.backendRefs[]?;
@@ -165,10 +167,12 @@ reset_delegation_quota_fixture() {
 	# This Redis exists only in the disposable acceptance lab. Resetting its transient counters
 	# makes repeated `fed:up` and the policy-reload drill deterministic; production quotas must
 	# never be reset as part of deployment or health checking.
-	flushed="$(kubectl --namespace agentgateway-system exec deployment/federation-redis -- \
+	flushed="$(federation_kubectl A --namespace agentgateway-system \
+		exec deployment/federation-redis -- \
 		redis-cli FLUSHDB)"
 	[ "${flushed}" = "OK" ] || die "failed to reset the disposable delegation quota"
-	size="$(kubectl --namespace agentgateway-system exec deployment/federation-redis -- \
+	size="$(federation_kubectl A --namespace agentgateway-system \
+		exec deployment/federation-redis -- \
 		redis-cli DBSIZE)"
 	[ "${size}" = "0" ] || die "disposable delegation quota did not reset to zero"
 }
@@ -182,9 +186,9 @@ verify_cross_org_delegation() {
 	verify_public_agent_card
 	verify_kagent_not_public
 
-	org_b_secret="$(bootstrap_secret_value org-b-a2a-client-secret)"
-	untrusted_secret="$(bootstrap_secret_value untrusted-a2a-client-secret)"
-	wrong_audience_secret="$(bootstrap_secret_value wrong-audience-a2a-client-secret)"
+	org_b_secret="$(federation_secret_value B org-b-a2a-client-secret)"
+	untrusted_secret="$(federation_secret_value B untrusted-a2a-client-secret)"
+	wrong_audience_secret="$(federation_secret_value B wrong-audience-a2a-client-secret)"
 	client_credentials_token org-b-a2a "${org_b_secret}" ORG_B_A2A_TOKEN
 	client_credentials_token untrusted-a2a "${untrusted_secret}" UNTRUSTED_A2A_TOKEN
 	client_credentials_token wrong-audience-a2a "${wrong_audience_secret}" \

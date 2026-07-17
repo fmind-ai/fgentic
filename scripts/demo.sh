@@ -7,7 +7,11 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly ROOT_DIR
 readonly DEFAULT_CLUSTER_NAME="fgentic-demo"
 readonly FEDERATION_CLUSTER_NAME="fgentic-fed"
-readonly FEDERATION_LOOPBACK="127.0.0.2"
+readonly FEDERATION_SPLIT_A_CLUSTER_NAME="fgentic-fed-a"
+readonly FEDERATION_SPLIT_B_CLUSTER_NAME="fgentic-fed-b"
+readonly FEDERATION_CANONICAL_LOOPBACK="127.0.0.2"
+readonly FEDERATION_SPLIT_A_LOOPBACK="127.0.0.2"
+readonly FEDERATION_SPLIT_B_LOOPBACK="127.0.0.3"
 readonly FEDERATION_POLICY_PATH="apps/synapse-federation-policy/policy/policy.json"
 readonly FEDERATION_POLICY_EVENT_TYPE="com.fgentic.blocked"
 readonly FEDERATION_AGENT_CARD_TEMPLATE_PATH="infra/federation/delegation/agent-card.json"
@@ -36,6 +40,8 @@ Environment:
   FGENTIC_DEMO_TIMEOUT       reconciliation timeout (default: 15m)
   FGENTIC_DEMO_CACHE_DIR     optional persistent BuildKit cache directory
   FGENTIC_DEMO_STATE_DIR     optional lifecycle-state root; defaults to the user state directory
+  FGENTIC_FED_LAYOUT         internal split coordinator layout: canonical (default), split-a,
+                             or split-b; split layouts require the guarded coordinator phase
   FGENTIC_FED_CONSTRAINED    federation profile only: yes enables the opt-in laptop budget
   FGENTIC_FED_NO_PROGRESS_TIMEOUT
                              constrained federation no-progress timeout (default: 20m)
@@ -78,8 +84,15 @@ if (($# != 1)); then
 fi
 
 PROFILE="${FGENTIC_DEMO_PROFILE:-demo}"
+FEDERATION_LAYOUT="${FGENTIC_FED_LAYOUT:-canonical}"
+FEDERATION_CHILD_PHASE="${FGENTIC_FED_CHILD_PHASE:-full}"
+FEDERATION_LOOPBACK="${FEDERATION_CANONICAL_LOOPBACK}"
 case "${PROFILE}" in
 demo)
+	[ "${FEDERATION_LAYOUT}" = canonical ] ||
+		die "FGENTIC_FED_LAYOUT is valid only for the federation profile"
+	[ "${FEDERATION_CHILD_PHASE}" = full ] ||
+		die "FGENTIC_FED_CHILD_PHASE is internal to split federation"
 	CLUSTER_NAME="${FGENTIC_DEMO_CLUSTER:-${DEFAULT_CLUSTER_NAME}}"
 	OVERLAY_PATH="clusters/demo"
 	PLATFORM_SETTINGS_PATH="${OVERLAY_PATH}/platform-settings.yaml"
@@ -87,13 +100,45 @@ demo)
 	OWNER_LABEL="true"
 	;;
 federation)
-	CLUSTER_NAME="${FGENTIC_DEMO_CLUSTER:-${FEDERATION_CLUSTER_NAME}}"
 	FEDERATION_CONSTRAINED="${FGENTIC_FED_CONSTRAINED:-no}"
-	OVERLAY_PATH="clusters/federation"
-	[ "${FEDERATION_CONSTRAINED}" = "yes" ] && OVERLAY_PATH="clusters/federation-constrained"
-	PLATFORM_SETTINGS_PATH="clusters/federation/platform-settings.yaml"
+	case "${FEDERATION_LAYOUT}" in
+	canonical)
+		[ "${FEDERATION_CHILD_PHASE}" = full ] ||
+			die "canonical federation does not accept a child phase"
+		CLUSTER_NAME="${FGENTIC_DEMO_CLUSTER:-${FEDERATION_CLUSTER_NAME}}"
+		OVERLAY_PATH="clusters/federation"
+		[ "${FEDERATION_CONSTRAINED}" = "yes" ] &&
+			OVERLAY_PATH="clusters/federation-constrained"
+		PLATFORM_SETTINGS_PATH="clusters/federation/platform-settings.yaml"
+		OWNER_LABEL="federation"
+		;;
+	split-a)
+		case "${FEDERATION_CHILD_PHASE}" in prepare | reconcile | lifecycle) ;;
+		*) die "split-a requires an internal prepare, reconcile, or lifecycle phase" ;;
+		esac
+		[ "${FEDERATION_CONSTRAINED}" = no ] ||
+			die "constrained capacity is not supported by split federation"
+		CLUSTER_NAME="${FGENTIC_DEMO_CLUSTER:-${FEDERATION_SPLIT_A_CLUSTER_NAME}}"
+		OVERLAY_PATH="clusters/federation-split-a"
+		PLATFORM_SETTINGS_PATH="${OVERLAY_PATH}/platform-settings.yaml"
+		OWNER_LABEL="federation-split-a"
+		FEDERATION_LOOPBACK="${FEDERATION_SPLIT_A_LOOPBACK}"
+		;;
+	split-b)
+		case "${FEDERATION_CHILD_PHASE}" in prepare | reconcile | lifecycle) ;;
+		*) die "split-b requires an internal prepare, reconcile, or lifecycle phase" ;;
+		esac
+		[ "${FEDERATION_CONSTRAINED}" = no ] ||
+			die "constrained capacity is not supported by split federation"
+		CLUSTER_NAME="${FGENTIC_DEMO_CLUSTER:-${FEDERATION_SPLIT_B_CLUSTER_NAME}}"
+		OVERLAY_PATH="clusters/federation-split-b"
+		PLATFORM_SETTINGS_PATH="${OVERLAY_PATH}/platform-settings.yaml"
+		OWNER_LABEL="federation-split-b"
+		FEDERATION_LOOPBACK="${FEDERATION_SPLIT_B_LOOPBACK}"
+		;;
+	*) die "FGENTIC_FED_LAYOUT must be canonical, split-a, or split-b" ;;
+	esac
 	SEED_SCRIPT="scripts/seed-federation.sh"
-	OWNER_LABEL="federation"
 	;;
 *) die "unsupported internal evaluation profile: ${PROFILE}" ;;
 esac
@@ -117,8 +162,11 @@ if [ "${PROFILE}" = "demo" ]; then
 	fgentic-demo | fgentic-demo-*) ;;
 	*) die "FGENTIC_DEMO_CLUSTER must be fgentic-demo or start with fgentic-demo-" ;;
 	esac
-elif [ "${CLUSTER_NAME}" != "${FEDERATION_CLUSTER_NAME}" ]; then
-	die "the federation profile cluster must be ${FEDERATION_CLUSTER_NAME}"
+else
+	case "${FEDERATION_LAYOUT}:${CLUSTER_NAME}" in
+	"canonical:${FEDERATION_CLUSTER_NAME}" | "split-a:${FEDERATION_SPLIT_A_CLUSTER_NAME}" | "split-b:${FEDERATION_SPLIT_B_CLUSTER_NAME}") ;;
+	*) die "the ${FEDERATION_LAYOUT} federation cluster name is fixed" ;;
+	esac
 fi
 [[ "${DEMO_TIMEOUT}" =~ ^[1-9][0-9]*[smh]$ ]] || die "invalid FGENTIC_DEMO_TIMEOUT"
 if [ "${PROFILE}" = "federation" ]; then
@@ -134,6 +182,12 @@ if [ "${PROFILE}" = "federation" ]; then
 	yes | no) ;;
 	*) die "FGENTIC_FED_TRACE must be yes or no" ;;
 	esac
+	if [ "${FEDERATION_LAYOUT}" != canonical ]; then
+		[ "${FGENTIC_FED_TRACE:-no}" = no ] ||
+			die "resource tracing is not supported by split federation"
+		[ "${FEDERATION_POLICY_PROBE}" = deny ] ||
+			die "split federation accepts only the canonical deny policy"
+	fi
 	[[ "${FEDERATION_NO_PROGRESS_TIMEOUT}" =~ ^[1-9][0-9]*[smh]$ ]] ||
 		die "invalid FGENTIC_FED_NO_PROGRESS_TIMEOUT"
 	[[ "${FEDERATION_MAX_TIMEOUT}" =~ ^[1-9][0-9]*[smh]$ ]] ||
@@ -147,10 +201,29 @@ if [ "${PROFILE}" = "federation" ]; then
 fi
 
 case "$1" in
-up) demo_up ;;
-status) demo_status ;;
-stop) demo_stop ;;
-down) demo_down ;;
+up)
+	case "${FEDERATION_CHILD_PHASE}" in
+	prepare)
+		demo_prepare_split
+		;;
+	full | reconcile)
+		demo_up
+		;;
+	*) die "the lifecycle child phase cannot reconcile a split cluster" ;;
+	esac
+	;;
+status | stop | down)
+	if [ "${FEDERATION_LAYOUT}" != canonical ] &&
+		[ "${FEDERATION_CHILD_PHASE}" != lifecycle ]; then
+		die "split federation lifecycle actions require the coordinator"
+	fi
+	case "$1" in
+	status) demo_status ;;
+	stop) demo_stop ;;
+	down) demo_down ;;
+	*) die "unsupported lifecycle action" ;;
+	esac
+	;;
 -h | --help)
 	usage
 	;;

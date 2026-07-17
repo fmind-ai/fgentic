@@ -1,5 +1,10 @@
 #!/usr/bin/env bash
 # Definition-only cluster lifecycle helpers sourced by scripts/demo.sh.
+federation_seller_runtime_enabled() {
+	[ "${PROFILE}" = federation ] || return 1
+	[ "${FEDERATION_LAYOUT:-canonical}" != split-b ]
+}
+
 configure_ephemeral_flux_controllers() {
 	local deployment
 	local deployment_output
@@ -805,7 +810,7 @@ ENTRYPOINT ["httpd", "-f", "-v", "-p", "8080", "-h", "/www"]
 EOF
 
 	build_image "${SOURCE_IMAGE}" "${SOURCE_CONTEXT}/Dockerfile" "${SOURCE_CONTEXT}" source
-	if [ "${PROFILE}" = "demo" ] || [ "${PROFILE}" = "federation" ]; then
+	if [ "${PROFILE}" = demo ] || federation_seller_runtime_enabled; then
 		build_image "${BRIDGE_IMAGE}" "${ROOT_DIR}/apps/matrix-a2a-bridge/Dockerfile" \
 			"${ROOT_DIR}/apps/matrix-a2a-bridge" bridge
 	fi
@@ -829,6 +834,7 @@ load_bridge_image_if_requested() {
 		)" || return 1
 		;;
 	federation)
+		federation_seller_runtime_enabled || return 1
 		requested_image="$(
 			kubectl --namespace agentgateway-system get deployment \
 				federation-usage-receipt --output json 2>/dev/null |
@@ -1048,7 +1054,8 @@ deadline_diagnostic_timeout() {
 
 bridge_image_wait_required() {
 	case "${PROFILE}" in
-	demo | federation) return 0 ;;
+	demo) return 0 ;;
+	federation) federation_seller_runtime_enabled ;;
 	*) return 1 ;;
 	esac
 }
@@ -1232,7 +1239,12 @@ wait_for_platform() {
 render_bootstrap_namespaces() {
 	local namespace_layer="${SNAPSHOT_DIR}/infra/namespaces"
 	if [ "${PROFILE}" = "federation" ]; then
-		namespace_layer="${SNAPSHOT_DIR}/infra/federation/namespace-layer"
+		case "${FEDERATION_LAYOUT:-canonical}" in
+		canonical) namespace_layer="${SNAPSHOT_DIR}/infra/federation/namespace-layer" ;;
+		split-a) namespace_layer="${SNAPSHOT_DIR}/infra/federation/split/a/namespaces" ;;
+		split-b) namespace_layer="${SNAPSHOT_DIR}/infra/federation/split/b/namespaces" ;;
+		*) die "unsupported federation namespace layout: ${FEDERATION_LAYOUT}" ;;
+		esac
 	fi
 
 	# Secrets and the local CA need their target Namespaces before Flux starts. Apply only those
@@ -1243,39 +1255,11 @@ render_bootstrap_namespaces() {
       (strenv(PROFILE) != "demo" or .metadata.name != "trivy-system"))'
 }
 
-demo_up() {
+prepare_evaluation_control_plane() {
+	local allow_create="$1"
 	local actual_capacity_mode artifact_status cluster_present=no container_output current_container_ids
 	local current_volume_identity reused_container_ids="" reused_volume_identity="" running_status
 	local runtime_labels=()
-	for command in base64 curl docker git jq k3d kubectl flux yq openssl rg tar; do
-		require_command "${command}"
-	done
-	docker info >/dev/null 2>&1 || die "Docker daemon is not running"
-	require_no_pending_teardown up
-	if [ -n "${FGENTIC_DEMO_CACHE_DIR:-}" ]; then
-		docker buildx version >/dev/null 2>&1 ||
-			die "FGENTIC_DEMO_CACHE_DIR requires Docker buildx"
-	fi
-	if [ "${PROFILE}" = "demo" ]; then
-		configure_provider
-	else
-		LLM_PROVIDER="demo"
-		LLM_MODEL="fgentic-demo"
-		GCP_PROJECT="not-configured"
-		VERTEX_REGION="europe-west1"
-		OPENAI_HOST="api.openai.com"
-		AZURE_OPENAI_RESOURCE="not-configured"
-		MODEL_SECRET_NAME=""
-		MODEL_SECRET_VALUE=""
-	fi
-
-	WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo.XXXXXX")"
-	KUBECONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/fgentic-demo-kubeconfig.XXXXXX")"
-	cleanup() {
-		resource_trace_finish || true
-		rm -rf "${WORK_DIR}" "${KUBECONFIG_FILE}"
-	}
-	trap cleanup EXIT INT TERM
 
 	# Refuse foreign or interrupted same-name state before tracing or mutation. In particular, do
 	# not let k3d silently adopt a retained image volume from a previously interrupted deletion.
@@ -1296,6 +1280,8 @@ demo_up() {
 		reused_volume_identity="$(cluster_volume_identity)" ||
 			die "refusing to reuse ${CLUSTER_NAME}: its image volume is missing or foreign"
 	else
+		[ "${allow_create}" = yes ] ||
+			die "split federation control plane ${CLUSTER_NAME} is absent; prepare both children first"
 		if cluster_artifacts_exist; then
 			die "refusing orphan reuse for ${CLUSTER_NAME}: owner-labelled server evidence is unavailable"
 		else
@@ -1319,6 +1305,17 @@ demo_up() {
 		k3d cluster create --config "${WORK_DIR}/k3d-config.yaml" \
 			"${runtime_labels[@]}" \
 			--kubeconfig-update-default=false --kubeconfig-switch-context=false
+		cluster_owned_by_demo ||
+			die "${CLUSTER_NAME} was created without the expected ownership label"
+		cluster_running || die "${CLUSTER_NAME} did not become ready after k3d create"
+		cluster_volume_identity >/dev/null ||
+			die "${CLUSTER_NAME} was created without its owned image volume"
+		if [ "${PROFILE}" = federation ]; then
+			actual_capacity_mode="$(cluster_capacity_mode)" ||
+				die "could not inspect ${CLUSTER_NAME} capacity mode after create"
+			[ "${actual_capacity_mode}" = "${FEDERATION_CAPACITY_MODE}" ] ||
+				die "${CLUSTER_NAME} was created with an unexpected capacity mode"
+		fi
 	else
 		if cluster_running; then
 			:
@@ -1342,12 +1339,87 @@ demo_up() {
 	fi
 	k3d kubeconfig get "${CLUSTER_NAME}" >"${KUBECONFIG_FILE}"
 	export KUBECONFIG="${KUBECONFIG_FILE}"
+}
+
+configure_evaluation_provider() {
+	if [ "${PROFILE}" = demo ]; then
+		configure_provider
+		return
+	fi
+	# These globals are consumed by the separately sourced snapshot and Secret helpers.
+	LLM_PROVIDER="demo"
+	LLM_MODEL="fgentic-demo"
+	GCP_PROJECT="not-configured"
+	VERTEX_REGION="europe-west1"
+	OPENAI_HOST="api.openai.com"
+	AZURE_OPENAI_RESOURCE="not-configured"
+	MODEL_SECRET_NAME=""
+	MODEL_SECRET_VALUE=""
+	: "${LLM_PROVIDER}" "${LLM_MODEL}" "${GCP_PROJECT}" "${VERTEX_REGION}" \
+		"${OPENAI_HOST}" "${AZURE_OPENAI_RESOURCE}" "${MODEL_SECRET_NAME}" \
+		"${MODEL_SECRET_VALUE}"
+}
+
+demo_prepare_split() {
+	local command
+	[ "${PROFILE}" = federation ] && [ "${FEDERATION_LAYOUT}" != canonical ] ||
+		die "the prepare phase is reserved for split federation"
+	for command in docker jq k3d yq; do
+		require_command "${command}"
+	done
+	docker info >/dev/null 2>&1 || die "Docker daemon is not running"
+	require_no_pending_teardown up
+	WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo-prepare.XXXXXX")"
+	KUBECONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/fgentic-demo-kubeconfig.XXXXXX")"
+	cleanup_split_prepare() {
+		rm -rf "${WORK_DIR}" "${KUBECONFIG_FILE}"
+	}
+	trap cleanup_split_prepare EXIT INT TERM
+	prepare_evaluation_control_plane yes
+	echo "Prepared owned split federation control plane ${CLUSTER_NAME}; Flux, images, secrets, admission runtime, and seed were not run."
+}
+
+demo_up() {
+	local allow_create=yes command local_gateway_ip
+	for command in base64 curl docker git jq k3d kubectl flux yq openssl rg tar; do
+		require_command "${command}"
+	done
+	docker info >/dev/null 2>&1 || die "Docker daemon is not running"
+	require_no_pending_teardown up
+	if [ -n "${FGENTIC_DEMO_CACHE_DIR:-}" ]; then
+		docker buildx version >/dev/null 2>&1 ||
+			die "FGENTIC_DEMO_CACHE_DIR requires Docker buildx"
+	fi
+	configure_evaluation_provider
+	WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo.XXXXXX")"
+	KUBECONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/fgentic-demo-kubeconfig.XXXXXX")"
+	cleanup() {
+		resource_trace_finish || true
+		rm -rf "${WORK_DIR}" "${KUBECONFIG_FILE}"
+	}
+	trap cleanup EXIT INT TERM
+	[ "${FEDERATION_CHILD_PHASE}" != reconcile ] || allow_create=no
+	prepare_evaluation_control_plane "${allow_create}"
 	configure_federation_metrics_server
 	if [ "${PROFILE}" = "federation" ]; then
-		FEDERATION_GATEWAY_IP="$(docker inspect "k3d-${CLUSTER_NAME}-serverlb" |
+		local_gateway_ip="$(docker inspect "k3d-${CLUSTER_NAME}-serverlb" |
 			jq -er --arg network "k3d-${CLUSTER_NAME}" \
 				'.[0].NetworkSettings.Networks[$network].IPAddress')"
-		prepare_federation_agent_card_key
+		if [ "${FEDERATION_LAYOUT}" = canonical ]; then
+			# Consumed by snapshot_source from the separately sourced federation helper.
+			FEDERATION_GATEWAY_IP="${local_gateway_ip}"
+			: "${FEDERATION_GATEWAY_IP}"
+		else
+			FEDERATION_LOCAL_GATEWAY_IP="${FGENTIC_FED_LOCAL_GATEWAY_IP:-}"
+			FEDERATION_REMOTE_GATEWAY_IP="${FGENTIC_FED_REMOTE_GATEWAY_IP:-}"
+			[ "${FEDERATION_LOCAL_GATEWAY_IP}" = "${local_gateway_ip}" ] ||
+				die "split federation local gateway does not match ${CLUSTER_NAME} ingress"
+			[ -n "${FEDERATION_REMOTE_GATEWAY_IP}" ] ||
+				die "split federation remote gateway is missing"
+		fi
+		if federation_seller_runtime_enabled; then
+			prepare_federation_agent_card_key
+		fi
 	fi
 
 	snapshot_source
@@ -1382,15 +1454,19 @@ demo_up() {
 	fi
 	wait_for_platform
 	prune_stale_node_images "${SOURCE_IMAGE}"
-	if [ "${PROFILE}" = demo ] || [ "${PROFILE}" = federation ]; then
+	if [ "${PROFILE}" = demo ] || federation_seller_runtime_enabled; then
 		prune_stale_node_images "${BRIDGE_IMAGE}"
 	fi
-	local admission_context
-	admission_context="$(kubectl config current-context)"
-	ADMISSION_POLICY_CONTEXT="${admission_context}" \
-		"${ROOT_DIR}/scripts/test-admission-policies.sh" --runtime
-	resource_trace_set_phase proof
-	"${ROOT_DIR}/${SEED_SCRIPT}"
+	if [ "${PROFILE}" = demo ] || federation_seller_runtime_enabled; then
+		local admission_context
+		admission_context="$(kubectl config current-context)"
+		ADMISSION_POLICY_CONTEXT="${admission_context}" \
+			"${ROOT_DIR}/scripts/test-admission-policies.sh" --runtime
+	fi
+	if [ "${FEDERATION_LAYOUT:-canonical}" = canonical ]; then
+		resource_trace_set_phase proof
+		"${ROOT_DIR}/${SEED_SCRIPT}"
+	fi
 	if [ "${PROFILE}" = "federation" ]; then
 		resource_trace_collect_idle
 		resource_trace_finish

@@ -1,0 +1,52 @@
+# B needs only ingress/PKI, CNPG, ESS, and the Keycloak chart. Agent-plane CRDs and sources are
+# intentionally absent, so this independent control plane cannot accidentally host an A agent.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../flux
+components:
+  - ../../../controllers
+patches:
+  - target:
+      group: source.toolkit.fluxcd.io
+      version: v1
+      kind: OCIRepository
+      name: (agentgateway|agentgateway-crds)
+      namespace: flux-system
+    patch: |
+      $patch: delete
+      apiVersion: source.toolkit.fluxcd.io/v1
+      kind: OCIRepository
+      metadata:
+        name: unused
+        namespace: flux-system
+  - target: {
+      group: helm.toolkit.fluxcd.io,
+      version: v2,
+      kind: HelmRelease,
+      name: agentgateway-crds,
+      namespace: agentgateway-system,
+    }
+    patch: |
+      $patch: delete
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: agentgateway-crds
+        namespace: agentgateway-system
+  - target: { group: source.toolkit.fluxcd.io, version: v1, kind: HelmRepository, name: kagent, namespace: flux-system }
+    patch: |
+      $patch: delete
+      apiVersion: source.toolkit.fluxcd.io/v1
+      kind: HelmRepository
+      metadata:
+        name: kagent
+        namespace: flux-system
+  - target: { group: helm.toolkit.fluxcd.io, version: v2, kind: HelmRelease, name: kagent-crds, namespace: kagent }
+    patch: |
+      $patch: delete
+      apiVersion: helm.toolkit.fluxcd.io/v2
+      kind: HelmRelease
+      metadata:
+        name: kagent-crds
+        namespace: kagent

@@ -67,6 +67,13 @@ for key in federation_partner_server_name federation_denied_server_name federati
   value="$(yq -er ".data.${key}" clusters/federation/platform-settings.yaml)"
   export "${key}=${value}"
 done
+# The opt-in split drill has two organization-shaped overlays and therefore two directional
+# gateway values. One offline fixture is sufficient for raw schema validation; the dedicated
+# split contract renders both overlays and proves that their local/remote values are reversed.
+for key in federation_local_gateway_ip federation_remote_gateway_ip; do
+  value="$(yq -er ".data.${key}" clusters/federation-split-a/platform-settings.yaml)"
+  export "${key}=${value}"
+done
 
 echo "==> Rendering + validating the pinned vLLM profile chart"
 VLLM_RELEASE=infra/models/vllm/helmrelease.yaml

@@ -1,5 +1,62 @@
 #!/usr/bin/env bash
 # Definition-only federation snapshot, signing, and secret helpers sourced by scripts/demo.sh.
+replace_split_ca_marker() {
+	local marker="$1"
+	local certificate="$2"
+	local marker_files=()
+	local marker_count marker_output path pem
+	[ -f "${certificate}" ] && [ ! -L "${certificate}" ] && [ -r "${certificate}" ] ||
+		die "split federation CA certificate is not a readable regular file: ${certificate}"
+	openssl x509 -in "${certificate}" -noout >/dev/null 2>&1 ||
+		die "split federation CA certificate is invalid: ${certificate}"
+	marker_output="$(rg --files-with-matches --fixed-strings --glob '*.yaml' \
+		"${marker}" "${SNAPSHOT_DIR}" || true)"
+	while IFS= read -r path; do
+		[ -z "${path}" ] || marker_files[${#marker_files[@]}]="${path}"
+	done <<<"${marker_output}"
+	((${#marker_files[@]} > 0)) || die "split federation CA marker is missing: ${marker}"
+	marker_count="$(rg --only-matching --fixed-strings "${marker}" \
+		"${marker_files[@]}" | wc -l | tr -d ' ')"
+	[[ "${marker_count}" =~ ^[1-9][0-9]*$ ]] ||
+		die "split federation CA marker inventory is invalid: ${marker}"
+	pem="$(<"${certificate}")"
+	for path in "${marker_files[@]}"; do
+		CA_MARKER="${marker}" CA_PEM="${pem}" yq --inplace \
+			'(... | select(tag == "!!str" and contains(strenv(CA_MARKER)))) |=
+        sub(strenv(CA_MARKER); strenv(CA_PEM))' \
+			"${path}"
+	done
+	if rg --fixed-strings --glob '*.yaml' "${marker}" "${SNAPSHOT_DIR}" >/dev/null; then
+		die "split federation CA marker remained after snapshot injection: ${marker}"
+	fi
+}
+
+assert_no_split_ca_markers() {
+	if rg --fixed-strings --glob '*.yaml' '__FGENTIC_SPLIT_ORG_' \
+		"${SNAPSHOT_DIR}" >/dev/null; then
+		die "split federation public-root marker remained in the YAML snapshot"
+	fi
+}
+
+configure_split_snapshot() {
+	local ca_a="${FGENTIC_FED_CA_DIR_A:?}/ca.crt"
+	local ca_b="${FGENTIC_FED_CA_DIR_B:?}/ca.crt"
+	local settings="${SNAPSHOT_DIR}/${PLATFORM_SETTINGS_PATH}"
+	[ -f "${settings}" ] || die "split federation platform settings not found"
+	[[ "${FEDERATION_LOCAL_GATEWAY_IP}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+		die "split federation local gateway IP is invalid"
+	[[ "${FEDERATION_REMOTE_GATEWAY_IP}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]] ||
+		die "split federation remote gateway IP is invalid"
+	FED_LOCAL_GATEWAY_IP="${FEDERATION_LOCAL_GATEWAY_IP}" \
+		FED_REMOTE_GATEWAY_IP="${FEDERATION_REMOTE_GATEWAY_IP}" yq --inplace '
+      .data.federation_local_gateway_ip = strenv(FED_LOCAL_GATEWAY_IP) |
+      .data.federation_remote_gateway_ip = strenv(FED_REMOTE_GATEWAY_IP)
+    ' "${settings}"
+	replace_split_ca_marker '__FGENTIC_SPLIT_ORG_A_CA_PEM__' "${ca_a}"
+	replace_split_ca_marker '__FGENTIC_SPLIT_ORG_B_CA_PEM__' "${ca_b}"
+	assert_no_split_ca_markers
+}
+
 snapshot_source() {
 	SNAPSHOT_DIR="${WORK_DIR}/snapshot"
 	mkdir -p "${SNAPSHOT_DIR}"
@@ -7,7 +64,7 @@ snapshot_source() {
 		echo "Note: the ephemeral demo snapshot includes the current uncommitted working tree."
 	fi
 	(
-		cd "${ROOT_DIR}"
+		cd "${ROOT_DIR}" || exit
 		git ls-files --cached --others --exclude-standard -z |
 			while IFS= read -r -d '' path; do
 				[ -e "${path}" ] || [ -L "${path}" ] || continue
@@ -29,11 +86,17 @@ snapshot_source() {
       .data.demo_bridge_tag = strenv(BRIDGE_TAG)
     ' "${SNAPSHOT_DIR}/${PLATFORM_SETTINGS_PATH}"
 	if [ "${PROFILE}" = "federation" ]; then
-		FED_GATEWAY_IP="${FEDERATION_GATEWAY_IP}" yq --inplace \
-			'.data.federation_gateway_ip = strenv(FED_GATEWAY_IP)' \
-			"${SNAPSHOT_DIR}/${PLATFORM_SETTINGS_PATH}"
+		if [ "${FEDERATION_LAYOUT:-canonical}" = canonical ]; then
+			FED_GATEWAY_IP="${FEDERATION_GATEWAY_IP}" yq --inplace \
+				'.data.federation_gateway_ip = strenv(FED_GATEWAY_IP)' \
+				"${SNAPSHOT_DIR}/${PLATFORM_SETTINGS_PATH}"
+		else
+			configure_split_snapshot
+		fi
 		configure_federation_policy_snapshot
-		sign_federation_agent_card_snapshot
+		if federation_seller_runtime_enabled; then
+			sign_federation_agent_card_snapshot
+		fi
 	fi
 
 	# Flux reports Git artifacts as `sha1:<40 hex>` in the pinned source-controller contract.
@@ -274,7 +337,7 @@ configure_federation_policy_snapshot() {
 	esac
 }
 
-create_federation_secrets() {
+create_canonical_federation_secrets() {
 	local ca_cert="${FGENTIC_CA_DIR:-${HOME}/.local/share/fgentic/local-ca}/ca.crt"
 	[ -r "${ca_cert}" ] || die "local CA certificate not found: ${ca_cert}"
 	local bootstrap_json key value
@@ -362,4 +425,100 @@ create_federation_secrets() {
 			kubectl apply --filename - >/dev/null
 	done
 	publish_federation_agent_card_artifacts
+}
+
+create_split_federation_secrets() {
+	local bootstrap_json key value
+	local bootstrap_arguments=()
+	local keys=()
+	bootstrap_json="$(kubectl --namespace flux-system get secret fgentic-demo-bootstrap \
+		--output json 2>/dev/null || printf '{}')"
+	case "${FEDERATION_LAYOUT}" in
+	split-a)
+		keys=(pg-synapse pg-synapse-c pg-kagent alice-password charlie-password)
+		;;
+	split-b)
+		keys=(
+			pg-synapse-b pg-keycloak bob-password keycloak-admin-password
+			fgentic-client-secret fgentic-alice-password fgentic-bob-password
+			org-b-a2a-client-secret untrusted-a2a-client-secret
+			wrong-audience-a2a-client-secret
+		)
+		;;
+	*) die "split federation secret dispatch requires split-a or split-b" ;;
+	esac
+	for key in "${keys[@]}"; do
+		value="$(jq -r --arg key "${key}" '.data[$key] // "" | @base64d' \
+			<<<"${bootstrap_json}")"
+		[ -n "${value}" ] || value="$(random_hex 24)"
+		bootstrap_arguments+=("--from-literal=${key}=${value}")
+	done
+	if [ "${FEDERATION_LAYOUT}" = split-a ]; then
+		bootstrap_arguments+=(
+			"--from-file=agent-card-private-key=${AGENT_CARD_PRIVATE_KEY}"
+			"--from-literal=agent-card-key-id=${AGENT_CARD_KEY_ID}"
+			"--from-file=usage-receipt-private-key=${USAGE_RECEIPT_PRIVATE_KEY}"
+			"--from-literal=usage-receipt-key-id=${USAGE_RECEIPT_KEY_ID}"
+		)
+	fi
+	apply_secret flux-system fgentic-demo-bootstrap "${bootstrap_arguments[@]}"
+	bootstrap_json=""
+	value=""
+
+	case "${FEDERATION_LAYOUT}" in
+	split-a)
+		local pg_synapse pg_synapse_c pg_kagent
+		pg_synapse="$(bootstrap_secret_value pg-synapse)"
+		pg_synapse_c="$(bootstrap_secret_value pg-synapse-c)"
+		pg_kagent="$(bootstrap_secret_value pg-kagent)"
+		apply_secret agentgateway-system federated-usage-receipt-signing \
+			--from-file="private-key.pem=${USAGE_RECEIPT_PRIVATE_KEY}" \
+			--from-literal="key-id=${USAGE_RECEIPT_KEY_ID}"
+		apply_secret postgres pg-synapse --type=kubernetes.io/basic-auth \
+			--from-literal=username=synapse --from-literal=password="${pg_synapse}"
+		apply_secret matrix pg-synapse --type=kubernetes.io/basic-auth \
+			--from-literal=username=synapse --from-literal=password="${pg_synapse}"
+		apply_secret postgres pg-synapse-c --type=kubernetes.io/basic-auth \
+			--from-literal=username=synapse_c --from-literal=password="${pg_synapse_c}"
+		apply_secret matrix-c pg-synapse-c --type=kubernetes.io/basic-auth \
+			--from-literal=username=synapse_c --from-literal=password="${pg_synapse_c}"
+		apply_secret postgres pg-kagent --type=kubernetes.io/basic-auth \
+			--from-literal=username=kagent --from-literal=password="${pg_kagent}"
+		apply_secret kagent kagent-db \
+			--from-literal=url="postgresql://kagent:${pg_kagent}@platform-pg-rw.postgres.svc.cluster.local:5432/kagent?sslmode=require"
+		apply_secret kagent kagent-model-auth \
+			--from-literal=OPENAI_API_KEY=sk-not-used-agentgateway-holds-the-real-key
+		publish_federation_agent_card_artifacts
+		;;
+	split-b)
+		local pg_synapse_b pg_keycloak
+		pg_synapse_b="$(bootstrap_secret_value pg-synapse-b)"
+		pg_keycloak="$(bootstrap_secret_value pg-keycloak)"
+		apply_secret postgres pg-synapse-b --type=kubernetes.io/basic-auth \
+			--from-literal=username=synapse_b --from-literal=password="${pg_synapse_b}"
+		apply_secret matrix-b pg-synapse-b --type=kubernetes.io/basic-auth \
+			--from-literal=username=synapse_b --from-literal=password="${pg_synapse_b}"
+		apply_secret postgres pg-keycloak --type=kubernetes.io/basic-auth \
+			--from-literal=username=keycloak --from-literal=password="${pg_keycloak}"
+		apply_secret keycloak pg-keycloak --type=kubernetes.io/basic-auth \
+			--from-literal=username=keycloak --from-literal=password="${pg_keycloak}"
+		apply_secret keycloak keycloak-credentials \
+			--from-literal=KC_BOOTSTRAP_ADMIN_USERNAME=admin \
+			--from-literal=KC_BOOTSTRAP_ADMIN_PASSWORD="$(bootstrap_secret_value keycloak-admin-password)" \
+			--from-literal=FGENTIC_CLIENT_SECRET="$(bootstrap_secret_value fgentic-client-secret)" \
+			--from-literal=FGENTIC_ALICE_PASSWORD="$(bootstrap_secret_value fgentic-alice-password)" \
+			--from-literal=FGENTIC_BOB_PASSWORD="$(bootstrap_secret_value fgentic-bob-password)" \
+			--from-literal=ORG_B_A2A_CLIENT_SECRET="$(bootstrap_secret_value org-b-a2a-client-secret)" \
+			--from-literal=UNTRUSTED_A2A_CLIENT_SECRET="$(bootstrap_secret_value untrusted-a2a-client-secret)" \
+			--from-literal=WRONG_AUDIENCE_A2A_CLIENT_SECRET="$(bootstrap_secret_value wrong-audience-a2a-client-secret)"
+		;;
+	esac
+}
+
+create_federation_secrets() {
+	case "${FEDERATION_LAYOUT:-canonical}" in
+	canonical) create_canonical_federation_secrets ;;
+	split-a | split-b) create_split_federation_secrets ;;
+	*) die "unsupported federation secret layout: ${FEDERATION_LAYOUT}" ;;
+	esac
 }

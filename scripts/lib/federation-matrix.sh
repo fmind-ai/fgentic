@@ -1,30 +1,75 @@
 #!/usr/bin/env bash
 # Definition-only Matrix federation proof helpers sourced by scripts/seed-federation.sh.
+matrix_auth_document() {
+	local mode="$1"
+	local nonce="$2"
+	local username="$3"
+	local display_name="$4"
+	local password="$5"
+	local registration_secret="$6"
+	case "${mode}" in
+	login | register) ;;
+	*) die "unsupported Matrix authentication document mode: ${mode}" ;;
+	esac
+	# Secrets stay on stdin: neither the registration HMAC key nor a bootstrap password may appear
+	# in the process arguments of Python, jq, openssl, or curl.
+	printf '%s\0%s\0%s\0%s\0%s' \
+		"${nonce}" "${username}" "${display_name}" "${password}" "${registration_secret}" |
+		mise exec -- python -c '
+import hashlib
+import hmac
+import json
+import sys
+
+mode = sys.argv[1]
+fields = sys.stdin.buffer.read().split(b"\0")
+if len(fields) != 5:
+    raise SystemExit("invalid Matrix authentication input")
+nonce, username, display_name, password, registration_secret = fields
+if mode == "register":
+    message = b"\0".join((nonce, username, password, b"notadmin"))
+    document = {
+        "nonce": nonce.decode(),
+        "username": username.decode(),
+        "displayname": display_name.decode(),
+        "password": password.decode(),
+        "admin": False,
+        "mac": hmac.new(registration_secret, message, hashlib.sha1).hexdigest(),
+    }
+elif mode == "login":
+    document = {
+        "type": "m.login.password",
+        "identifier": {"type": "m.id.user", "user": username.decode()},
+        "password": password.decode(),
+        "initial_device_display_name": "Fgentic federation proof",
+    }
+else:
+    raise SystemExit("unsupported Matrix authentication document mode")
+json.dump(document, sys.stdout, ensure_ascii=False, separators=(",", ":"))
+' "${mode}"
+}
+
 register_user() {
 	local namespace="$1"
 	local matrix_url="$2"
 	local username="$3"
 	local display_name="$4"
 	local password="$5"
-	local secret nonce mac digest document status registration_token
+	local secret nonce document status registration_token
 	local response="${WORK_DIR}/register-${username}.json"
 
-	secret="$(kubectl --namespace "${namespace}" get secret ess-generated \
+	secret="$(federation_matrix_kubectl "${namespace}" get secret ess-generated \
 		--output 'go-template={{index .data "SYNAPSE_REGISTRATION_SHARED_SECRET" | base64decode}}')"
 	nonce="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 		"${matrix_url}/_synapse/admin/v1/register" | jq -er '.nonce')"
-	digest="$(printf '%s\0%s\0%s\0%s' "${nonce}" "${username}" "${password}" notadmin |
-		openssl sha1 -hmac "${secret}")"
-	mac="${digest##* }"
-	document="$(jq --null-input --compact-output \
-		--arg nonce "${nonce}" --arg username "${username}" --arg displayname "${display_name}" \
-		--arg password "${password}" --arg mac "${mac}" \
-		'{nonce: $nonce, username: $username, displayname: $displayname, password: $password,
-      admin: false, mac: $mac}')"
-	status="$(request_status "${response}" --request POST \
-		--header 'Content-Type: application/json' --data "${document}" \
-		"${matrix_url}/_synapse/admin/v1/register")"
+	document="$(matrix_auth_document register "${nonce}" "${username}" "${display_name}" \
+		"${password}" "${secret}")"
 	secret=""
+	password=""
+	status="$(printf '%s' "${document}" |
+		request_status "${response}" --request POST \
+			--header 'Content-Type: application/json' --data-binary @- \
+			"${matrix_url}/_synapse/admin/v1/register")"
 	document=""
 	case "${status}" in
 	200)
@@ -50,16 +95,12 @@ login_user() {
 	local password="$3"
 	local token_variable="$4"
 	local document response token
-	document="$(jq --null-input --compact-output --arg username "${username}" \
-		--arg password "${password}" '{
-      type: "m.login.password",
-      identifier: {type: "m.id.user", user: $username},
-      password: $password,
-      initial_device_display_name: "Fgentic federation proof"
-    }')"
-	response="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
-		--header 'Content-Type: application/json' --data "${document}" \
-		"${matrix_url}/_matrix/client/v3/login")"
+	document="$(matrix_auth_document login '' "${username}" '' "${password}" '')"
+	password=""
+	response="$(printf '%s' "${document}" |
+		curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
+			--header 'Content-Type: application/json' --data-binary @- \
+			"${matrix_url}/_matrix/client/v3/login")"
 	token="$(jq -er '.access_token | select(type == "string" and length > 0)' <<<"${response}")"
 	printf -v "${token_variable}" '%s' "${token}"
 }
@@ -104,7 +145,7 @@ wait_for_mounted_policy_mode() {
 	local deadline=$((SECONDS + 180))
 	local policy
 	while ((SECONDS < deadline)); do
-		policy="$(kubectl --namespace "${namespace}" exec statefulset/ess-synapse-main -- \
+		policy="$(federation_matrix_kubectl "${namespace}" exec statefulset/ess-synapse-main -- \
 			cat /etc/fgentic/federation-policy/policy.json 2>/dev/null || true)"
 		if jq -e --arg type "${POLICY_EVENT_TYPE}" --arg mode "${POLICY_PROBE_MODE}" '
 	      .version == 1 and
@@ -309,7 +350,7 @@ wait_for_policy_violation() {
 	local deadline=$((SECONDS + 180))
 	local logs payload
 	while ((SECONDS < deadline)); do
-		logs="$(kubectl --namespace matrix logs statefulset/ess-synapse-main \
+		logs="$(federation_kubectl A --namespace matrix logs statefulset/ess-synapse-main \
 			--since=10m 2>/dev/null || true)"
 		# Parse the module's structured record instead of matching a Matrix event ID as shell text.
 		# Event IDs are opaque and commonly begin with `$`.
@@ -386,7 +427,7 @@ wait_for_remote_policy_event() {
 		        .content.probe_id == $marker
 		      ' "${response}" >/dev/null ||
 				die "homeserver A returned an invalid allowed policy probe"
-			logs="$(kubectl --namespace matrix logs statefulset/ess-synapse-main \
+			logs="$(federation_kubectl A --namespace matrix logs statefulset/ess-synapse-main \
 				--since=10m 2>/dev/null || true)"
 			if printf '%s\n' "${logs}" | rg --fixed-strings "${POLICY_LOG_PREFIX}" |
 				rg --fixed-strings "\"event\":\"${event_id}\"" >/dev/null; then

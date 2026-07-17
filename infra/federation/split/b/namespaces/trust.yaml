@@ -1,0 +1,11 @@
+# B's Synapse validates peers under two independent public roots. Private CA material is never
+# represented in Git; the lifecycle replaces these exact public marker values before Flux starts.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fgentic-federation-ca-bundle
+  namespace: matrix-b
+data:
+  ca.crt: |
+    __FGENTIC_SPLIT_ORG_A_CA_PEM__
+    __FGENTIC_SPLIT_ORG_B_CA_PEM__

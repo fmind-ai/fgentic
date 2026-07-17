@@ -24,11 +24,12 @@ Delivery is Flux v2, pull-based. **Never `kubectl apply` / `helm upgrade` by han
 
 1. Environment values live in ONE place: the `platform-settings` ConfigMap (`clusters/<env>/platform-settings.yaml` — server_name, cluster_issuer, gcp_project, llm_model, …), injected into every manifest by Flux **postBuild substitution** (`${server_name}` style). Manifests carry no environment specifics. Ad-hoc override without editing git: create a `platform-settings-overrides` ConfigMap in `flux-system`.
 1. Structural differences are patches in `clusters/<env>/kustomization.yaml` (e.g. local strips CNPG GCS backups, swaps the bridge image for the side-loaded one, points agentgateway at the ADC secret).
+1. `clusters/federation-split-a` and `clusters/federation-split-b` are one drill split across two independent Flux sources, not one overlay to apply twice. Their platform settings carry exact local/remote ingress addresses; the lifecycle replaces only the reviewed public-CA markers in each ephemeral source and fails if any marker remains. Never place either CA private key in Git or a peer snapshot.
 1. Real SOPS secrets are per-cluster in `clusters/<env>/secrets/` — see the `sops-secrets` skill.
 
 ## Validate before committing
 
-1. During development, run only the focused checks for the changed surface, such as `mise run check:manifests`, `check:overlays`, or `check:charts`. The installed commit/push hooks serialize the complete warning-free gates across worktrees; in a hookless environment, run `mise run agent:gate` once near PR readiness. The aggregate check includes dprint, terraform validate, **kubeconform** (`scripts/kubeconform.sh` — schema-validates the chart render + raw manifests), **trivy config**, gitleaks, and actionlint.
+1. During development, run only the focused checks for the changed surface, such as `mise run check:manifests`, `check:overlays`, or `check:charts`; split-federation changes also require `mise run check:federation-split`. The installed commit/push hooks serialize the complete warning-free gates across worktrees; in a hookless environment, run `mise run agent:gate` once near PR readiness. The aggregate check includes dprint, terraform validate, **kubeconform** (`scripts/kubeconform.sh` — schema-validates the chart render + raw manifests), **trivy config**, gitleaks, and actionlint.
 1. To preview a Helm render locally: `helm template <release> <chart> -f <values>` — remember Flux substitution variables stay unexpanded outside the cluster.
 
 ## Debug reconciliation

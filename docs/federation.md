@@ -147,3 +147,35 @@ Set `FGENTIC_FED_TRACE=yes` on either `fed:up` command to write one timestamped 
 For a successful comparison, tracing starts after ownership preflight but before cluster create/resume, samples boot and reconciliation at two-second intervals, then stops after the proof, waits a fixed 300 seconds for controller and workload caches to settle, and records twelve idle samples at ten-second intervals over two minutes. Run the default and constrained traces on the same idle reference host without changing unrelated workloads between them. The constrained two-minute median must be at most 3.3 GiB and at most 85% of the default median; its boot peak must be no higher than the default boot peak; and its owned-disk upper-bound peak must remain at most 10 GiB.
 
 `fed:stop` preserves only the existing owned cluster and its exact k3d image volume; the next same-mode `fed:up` starts it and verifies the retained container IDs, volume identity, and capacity label before reuse, so the pinned upstream images do not need a cold repull. Switching between canonical and constrained capacity requires `fed:down`. Successful reconciliation also prunes obsolete random-tagged source images from the host and node runtime. The constrained mode does not create a second repo-managed persistent cache. Setting `FGENTIC_DEMO_CACHE_DIR` is a separate explicit operator choice, and `fed:down` does not delete that caller-owned directory or the reusable local CA. Every federation command leaves the user's default kubeconfig context untouched; `fed:up` creates a process-scoped temporary kubeconfig and removes it on exit.
+
+#### 8.5.3 Opt-in two-control-plane drill
+
+`mise run fed:split:up` is the pre-partner infrastructure drill. It does not replace, compose, or weaken canonical `fed:up`: it creates two separately owned k3d clusters, reconciles one organization-shaped Flux entrypoint into each, and runs only the federation acceptance subset that crosses their boundary.
+
+| Control plane | Owned identity and workloads                                                                                  | Host ingress |
+| ------------- | ------------------------------------------------------------------------------------------------------------- | ------------ |
+| A             | `org-a.fgentic.test`, denied `org-c.fgentic.test`, public docs-qa route, agentgateway, kagent, and model stub | `127.0.0.2`  |
+| B             | `org-b.fgentic.test` and its `id.org-b.fgentic.test` Keycloak issuer                                          | `127.0.0.3`  |
+
+The `.test` identities are split-drill-only. They avoid special `.localhost` resolver behavior while remaining reserved for testing. The lifecycle never edits the workstation resolver: host probes pin each exact name to its owning loopback address, while each cluster receives exact CoreDNS records for the local ingress and the remote boundary. Two pinned raw-TLS relay containers carry only the named cross-cluster routes. Each relay joins the two otherwise distinct Docker networks; no k3d node or load balancer does. The lifecycle records the exact cluster, network, load-balancer, relay, and image-volume identities before destructive work, refuses foreign or conflicting resources, and removes relays before either child network.
+
+Each control plane generates its own CA and keeps that CA's private key in its own lifecycle directory. Only public roots cross the boundary. The required peer roots are projected into the Matrix trust stores, and org A's agentgateway validates org B's live JWKS over TLS with org B's root and exact server name. Org B's client secret remains in B: the host-side driver obtains a short-lived token from B, then presents it to A's public route, matching the bilateral partner boundary rather than copying an issuer credential into A.
+
+The acceptance proof fails unless the Kubernetes API endpoints, `kube-system` namespace UIDs, Docker network IDs, server/load-balancer identities, and CA fingerprints differ. It also verifies that B's Matrix and Keycloak workloads exist only on B while A's exported Agent workloads exist only on A. It then requires:
+
+1. Alice on A and Bob on B to exchange Matrix messages in both directions under room v12 and the participant-only server ACL.
+1. Charlie on A's denied server C to fail both a local C→A federation send and a host-delivered, C-signed request at B's distinct ingress. The signature is generated inside C on A; this negative request itself does not traverse the relay.
+1. Org B's JWT to authorize only A's signed docs-qa AgentCard route, reach the deterministic model, return the seller-signed task receipt, and hit the same reservation ceiling as the canonical lab.
+
+The canonical `fgentic-fed` lab and control plane A both reserve `127.0.0.2:80/443`, so `fed:split:up` requires canonical `fed:down` to have completed first; a merely stopped canonical cluster is refused rather than adopted or deleted. Run and inspect the drill independently:
+
+```bash
+mise run fed:split:up
+mise run fed:split:status
+mise run fed:split:stop
+mise run fed:split:down
+```
+
+`status` is inspect-only. `stop` releases active CPU and RAM while preserving both exact owned clusters and their image volumes. `down` is the retryable, receipt-backed teardown and must remove both clusters, both relays, their networks and image volumes, and the drill's locally built images without touching canonical `fgentic-fed`.
+
+This is stronger evidence than §8.5's single-control-plane rig, but it is still a synthetic one-workstation drill. The bidirectional Matrix exchange proves relay routing in both directions; the host-driven A2A and signed-denial probes prove the distinct ingress and trust decisions but do not claim workload-origin traffic from B. The two clusters share one Docker daemon, host kernel, physical network, filesystem, and clock. The relays prove routed TLS and explicit trust distribution, not WAN latency, packet loss, public reachability, real DNS/ACME, clock skew, independent operators, independent failure domains, backup/restore, or disaster recovery. A successful run is therefore a pre-partner gate, not evidence of a production two-organization deployment.

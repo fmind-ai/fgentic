@@ -1,0 +1,20 @@
+# A exposes only A well-known/Matrix and the exact public A2A route. Org C adds its own Gateway
+# from the matrix-c layer; all certificates chain to A's independently generated local root.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../gateway/base
+components:
+  - ../../../gateway
+patches:
+  - target:
+      group: cert-manager.io
+      version: v1
+      kind: ClusterIssuer
+      name: (letsencrypt-staging|letsencrypt-prod)
+    patch: |
+      $patch: delete
+      apiVersion: cert-manager.io/v1
+      kind: ClusterIssuer
+      metadata:
+        name: unused

@@ -124,6 +124,8 @@ check_federation_constrained_lifecycle_guards() {
 	awk '/^demo_status\(\)/,/^}/' "${DEMO_CLUSTER}" >"${WORK_DIR}/demo-status.sh"
 	awk '/^demo_stop\(\)/,/^}/' "${DEMO_CLUSTER}" >"${WORK_DIR}/demo-stop.sh"
 	awk '/^demo_up\(\)/,/^}/' "${DEMO_CLUSTER}" >"${WORK_DIR}/demo-up.sh"
+	awk '/^prepare_evaluation_control_plane\(\)/,/^}/' "${DEMO_CLUSTER}" \
+		>"${WORK_DIR}/prepare-control-plane.sh"
 	awk '/^configure_federation_flux_controllers\(\)/,/^}/' "${DEMO_CLUSTER}" \
 		>"${WORK_DIR}/federation-flux.sh"
 	awk '/^configure_federation_metrics_server\(\)/,/^}/' "${DEMO_CLUSTER}" \
@@ -165,17 +167,20 @@ check_federation_constrained_lifecycle_guards() {
 	done
 	rg --fixed-strings 'configure_federation_metrics_server' "${WORK_DIR}/demo-up.sh" >/dev/null ||
 		fail 'federation up does not apply the metrics-server profile lifecycle'
+	rg --fixed-strings 'prepare_evaluation_control_plane "${allow_create}"' \
+		"${WORK_DIR}/demo-up.sh" >/dev/null ||
+		fail 'federation up does not prepare the ownership-guarded control plane'
 	rg --fixed-strings 'prune_stale_node_images "${SOURCE_IMAGE}"' \
 		"${WORK_DIR}/demo-up.sh" >/dev/null ||
 		fail 'federation reuse does not prune stale node-side source images after rollout'
 	trace_line="$(rg --line-number --fixed-strings 'resource_trace_start' \
-		"${WORK_DIR}/demo-up.sh" | cut -d: -f1)"
+		"${WORK_DIR}/prepare-control-plane.sh" | cut -d: -f1 | head -n 1)"
 	artifact_line="$(rg --line-number --fixed-strings 'cluster_artifacts_exist' \
-		"${WORK_DIR}/demo-up.sh" | cut -d: -f1)"
+		"${WORK_DIR}/prepare-control-plane.sh" | cut -d: -f1 | head -n 1)"
 	ownership_line="$(rg --line-number --fixed-strings 'cluster_owned_by_demo' \
-		"${WORK_DIR}/demo-up.sh" | cut -d: -f1)"
+		"${WORK_DIR}/prepare-control-plane.sh" | cut -d: -f1 | head -n 1)"
 	create_line="$(rg --line-number --fixed-strings 'k3d cluster create' \
-		"${WORK_DIR}/demo-up.sh" | cut -d: -f1)"
+		"${WORK_DIR}/prepare-control-plane.sh" | cut -d: -f1 | head -n 1)"
 	((artifact_line < trace_line && ownership_line < trace_line && trace_line < create_line)) ||
 		fail 'federation boot does not preflight ownership and orphans before tracing and creation'
 	for contract in '--request-timeout="${request_timeout}"' 'deadline_timeout' \
@@ -357,7 +362,8 @@ check_federation_constrained_state_transitions() {
 
 	local constrained_wait_helpers="${WORK_DIR}/constrained-wait-image.sh"
 	extract_demo_functions "${constrained_wait_helpers}" \
-		bridge_image_wait_required load_bridge_image_for_platform wait_for_platform_constrained
+		federation_seller_runtime_enabled bridge_image_wait_required \
+		load_bridge_image_for_platform wait_for_platform_constrained
 	(
 		# shellcheck disable=SC1090
 		source "${constrained_wait_helpers}"
@@ -596,7 +602,8 @@ check_federation_constrained_failure_guards() {
 	fi
 
 	extract_demo_functions "${image_helpers}" \
-		prune_owned_host_images build_and_load_images load_bridge_image_if_requested
+		federation_seller_runtime_enabled prune_owned_host_images build_and_load_images \
+		load_bridge_image_if_requested
 	: >"${image_events}"
 	(
 		# shellcheck disable=SC1090

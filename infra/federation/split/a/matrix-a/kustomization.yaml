@@ -1,0 +1,55 @@
+# Reuse the canonical hardened A homeserver while replacing the one-cluster host alias and CA
+# assumptions with split DNS and an explicit two-root trust bundle.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../matrix
+components:
+  - ../../../matrix-a
+patches:
+  - target: { version: v1, kind: ConfigMap, name: fgentic-federation-policy, namespace: matrix }
+    patch: |
+      - op: replace
+        path: /data/policy.json
+        value: |
+          {
+            "version": 1,
+            "allowed_servers": [
+              "${server_name}",
+              "${federation_partner_server_name}"
+            ],
+            "allowed_event_types": [
+              "m.room.create",
+              "m.room.guest_access",
+              "m.room.history_visibility",
+              "m.room.join_rules",
+              "m.room.member",
+              "m.room.message",
+              "m.room.name",
+              "m.room.power_levels",
+              "m.room.server_acl"
+            ],
+            "invite_rule": "allow_from_allowed_servers"
+          }
+  - target: { group: helm.toolkit.fluxcd.io, version: v2, kind: HelmRelease, name: matrix-stack, namespace: matrix }
+    patch: |
+      - op: remove
+        path: /spec/values/synapse/hostAliases
+      - op: replace
+        path: /spec/values/synapse/extraVolumes/0/configMap/name
+        value: fgentic-federation-ca-bundle
+      - op: replace
+        path: /spec/values/synapse/additional/10-federation/config
+        value: |
+          default_room_version: "12"
+          federation_domain_whitelist:
+            - ${server_name}
+            - ${federation_partner_server_name}
+          federation_custom_ca_list:
+            - /etc/fgentic-ca/ca.crt
+          ip_range_whitelist:
+            - ${federation_local_gateway_ip}/32
+            - ${federation_remote_gateway_ip}/32
+          trusted_key_servers:
+            - server_name: ${federation_partner_server_name}
+          federation_whitelist_endpoint_enabled: true

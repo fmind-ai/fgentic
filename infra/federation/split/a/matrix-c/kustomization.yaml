@@ -1,0 +1,30 @@
+# Denied C stays on A's control plane but resolves B across the same real network boundary. Its
+# permissive local whitelist makes C a valid signed probe; A/B policy remains the denial control.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../matrix-c
+patches:
+  - target: { group: helm.toolkit.fluxcd.io, version: v2, kind: HelmRelease, name: matrix-stack-c, namespace: matrix-c }
+    patch: |
+      - op: remove
+        path: /spec/values/synapse/hostAliases
+      - op: replace
+        path: /spec/values/synapse/extraVolumes/0/configMap/name
+        value: fgentic-federation-ca-bundle
+      - op: replace
+        path: /spec/values/synapse/additional/10-federation/config
+        value: |
+          default_room_version: "12"
+          federation_domain_whitelist:
+            - ${server_name}
+            - ${federation_partner_server_name}
+            - ${federation_denied_server_name}
+          federation_custom_ca_list:
+            - /etc/fgentic-ca/ca.crt
+          ip_range_whitelist:
+            - ${federation_local_gateway_ip}/32
+            - ${federation_remote_gateway_ip}/32
+          trusted_key_servers:
+            - server_name: ${server_name}
+          federation_whitelist_endpoint_enabled: true

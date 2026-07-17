@@ -1,0 +1,18 @@
+# agentgateway v1.3.1 applies backend TLS under `spec.policies.tls`. Pin all three independent
+# checks: B's public root, the TLS SNI, and the exact certificate SAN.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayBackend
+metadata:
+  name: org-b-jwks
+  namespace: agentgateway-system
+spec:
+  static:
+    host: id.${federation_partner_server_name}
+    port: 443
+  policies:
+    tls:
+      caCertificateRefs:
+        - name: fgentic-org-b-jwks-ca
+      sni: id.${federation_partner_server_name}
+      verifySubjectAltNames:
+        - id.${federation_partner_server_name}

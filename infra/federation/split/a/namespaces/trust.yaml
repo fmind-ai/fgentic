@@ -1,0 +1,30 @@
+# The lifecycle replaces public-only markers in its ephemeral Git snapshot. Both Synapse trust
+# stores contain the two independent roots; agentgateway trusts only B for the remote JWKS edge.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fgentic-federation-ca-bundle
+  namespace: matrix
+data:
+  ca.crt: |
+    __FGENTIC_SPLIT_ORG_A_CA_PEM__
+    __FGENTIC_SPLIT_ORG_B_CA_PEM__
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fgentic-federation-ca-bundle
+  namespace: matrix-c
+data:
+  ca.crt: |
+    __FGENTIC_SPLIT_ORG_A_CA_PEM__
+    __FGENTIC_SPLIT_ORG_B_CA_PEM__
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fgentic-org-b-jwks-ca
+  namespace: agentgateway-system
+data:
+  ca.crt: |
+    __FGENTIC_SPLIT_ORG_B_CA_PEM__

@@ -1,0 +1,13 @@
+# B owns the sole issuer. Keep the canonical federation client-credentials realm and remove the
+# unrelated human-login realm so the split drill cannot imply MAS or local-user coverage.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../keycloak
+components:
+  - ../../../delegation/keycloak
+patches:
+  - target: { version: v1, kind: ConfigMap, name: keycloak-realm, namespace: keycloak }
+    patch: |
+      - op: remove
+        path: /data/fgentic-realm.json

@@ -1,0 +1,45 @@
+# Exact B namespace layer. CoreDNS and the bilateral public trust bundle reconcile before B's
+# controllers, homeserver, or issuer, while agent-plane namespaces remain absent.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../namespaces
+  - coredns.yaml
+  - trust.yaml
+components:
+  - ../../../namespaces
+patches:
+  - target:
+      version: v1
+      kind: Namespace
+      name: (knowledge|matrix|agentgateway-system|kagent|bridge|bridges|monitoring|trivy-system|models|matrix-c)
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: Namespace
+      metadata:
+        name: unused
+  - target:
+      version: v1
+      kind: ResourceQuota
+      name: compute-budget
+      namespace: (knowledge|matrix|agentgateway-system|kagent|bridge|bridges|monitoring|trivy-system|models|matrix-c)
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: ResourceQuota
+      metadata:
+        name: compute-budget
+        namespace: unused
+  - target:
+      version: v1
+      kind: LimitRange
+      name: container-defaults
+      namespace: (knowledge|matrix|agentgateway-system|kagent|bridge|bridges|monitoring|trivy-system|models|matrix-c)
+    patch: |
+      $patch: delete
+      apiVersion: v1
+      kind: LimitRange
+      metadata:
+        name: container-defaults
+        namespace: unused

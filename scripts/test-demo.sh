@@ -8,6 +8,7 @@ WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo-check.XXXXXX")"
 readonly WORK_DIR
 readonly DEMO="${ROOT_DIR}/scripts/demo.sh"
 readonly DEV="${ROOT_DIR}/scripts/dev.sh"
+readonly SPLIT="${ROOT_DIR}/scripts/federation-split.sh"
 readonly DEMO_SETTINGS_FILE="${ROOT_DIR}/clusters/demo/platform-settings.yaml"
 readonly REPLY_FILTER="${ROOT_DIR}/scripts/lib/demo-reply.jq"
 readonly SEED_STATE_FILTER="${ROOT_DIR}/scripts/lib/demo-seed-state.jq"
@@ -24,6 +25,7 @@ readonly -a DEMO_SOURCES=(
 	"${ROOT_DIR}/scripts/lib/demo-cluster.sh"
 	"${ROOT_DIR}/scripts/lib/demo-secrets.sh"
 	"${ROOT_DIR}/scripts/lib/demo-federation.sh"
+	"${SPLIT}"
 )
 readonly -a SHARED_HELPER_ENTRYPOINTS=(
 	"${ROOT_DIR}/scripts/demo.sh"
@@ -376,11 +378,22 @@ rg --fixed-strings 'local CA certificate not found' "${WORK_DIR}/seed-startup.tx
 	PROFILE=demo
 	render_k3d_config "${WORK_DIR}/demo-k3d.yaml"
 	PROFILE=federation
+	FEDERATION_LAYOUT=canonical
 	FEDERATION_CONSTRAINED=no
 	render_k3d_config "${WORK_DIR}/federation-k3d.yaml"
 	FEDERATION_CONSTRAINED=yes
 	render_k3d_config "${WORK_DIR}/federation-constrained-k3d.yaml"
-	for config in demo-k3d.yaml federation-k3d.yaml federation-constrained-k3d.yaml; do
+	FEDERATION_CONSTRAINED=no
+	FEDERATION_LAYOUT=split-a
+	CLUSTER_NAME=fgentic-fed-a
+	FEDERATION_LOOPBACK=127.0.0.2
+	render_k3d_config "${WORK_DIR}/federation-split-a-k3d.yaml"
+	FEDERATION_LAYOUT=split-b
+	CLUSTER_NAME=fgentic-fed-b
+	FEDERATION_LOOPBACK=127.0.0.3
+	render_k3d_config "${WORK_DIR}/federation-split-b-k3d.yaml"
+	for config in demo-k3d.yaml federation-k3d.yaml federation-constrained-k3d.yaml \
+		federation-split-a-k3d.yaml federation-split-b-k3d.yaml; do
 		assert_yq \
 			'.options.k3s.extraArgs[] |
         select(.arg == "--kubelet-arg=eviction-hard=memory.available<100Mi,nodefs.available<1Gi,imagefs.available<1Gi,nodefs.inodesFree<5%,imagefs.inodesFree<5%") |
@@ -418,7 +431,12 @@ rg --fixed-strings 'local CA certificate not found' "${WORK_DIR}/seed-startup.tx
 	assert_yq '.ports[0].port == "127.0.0.2:80:80" and .ports[1].port == "127.0.0.2:443:443"' \
 		"${WORK_DIR}/federation-constrained-k3d.yaml" \
 		'constrained federation ingress ports changed'
-	for config in demo-k3d.yaml federation-k3d.yaml; do
+	assert_yq '.metadata.name == "fgentic-fed-a" and .ports[0].port == "127.0.0.2:80:80" and .ports[1].port == "127.0.0.2:443:443"' \
+		"${WORK_DIR}/federation-split-a-k3d.yaml" 'split A cluster identity or ingress changed'
+	assert_yq '.metadata.name == "fgentic-fed-b" and .ports[0].port == "127.0.0.3:80:80" and .ports[1].port == "127.0.0.3:443:443"' \
+		"${WORK_DIR}/federation-split-b-k3d.yaml" 'split B cluster identity or ingress changed'
+	for config in demo-k3d.yaml federation-k3d.yaml federation-split-a-k3d.yaml \
+		federation-split-b-k3d.yaml; do
 		assert_yq \
 			'[.env[]? | select((.envVar == "GOGC=50") or (.envVar == "GOMEMLIMIT=1GiB"))] | length == 0' \
 			"${WORK_DIR}/${config}" "${config} unexpectedly tunes the k3s Go runtime"
@@ -476,6 +494,42 @@ if FGENTIC_DEMO_CLUSTER=fgentic "${DEMO}" down \
 fi
 rg --fixed-strings 'must be fgentic-demo' "${WORK_DIR}/reserved-cluster.txt" >/dev/null
 
+"${SPLIT}" --help >"${WORK_DIR}/split-help.txt"
+rg --fixed-strings 'fgentic-fed-a' "${WORK_DIR}/split-help.txt" >/dev/null
+rg --fixed-strings 'fgentic-fed-b' "${WORK_DIR}/split-help.txt" >/dev/null
+rg --fixed-strings \
+	'ghcr.io/k3d-io/k3d-proxy:5.9.0@sha256:7be40abfeb6ac9a81d0d4157a7cbf3aacc68a64a1780ca2efb160f1aea915177' \
+	"${SPLIT}" >/dev/null || {
+	echo 'error: split federation relay image is not pinned to the reviewed OCI index' >&2
+	exit 1
+}
+if FGENTIC_DEMO_PROFILE=federation FGENTIC_FED_LAYOUT=split-a \
+	FGENTIC_FED_CHILD_PHASE=lifecycle FGENTIC_DEMO_CLUSTER=fgentic-fed-a \
+	FGENTIC_FED_CONSTRAINED=yes "${DEMO}" status \
+	>"${WORK_DIR}/split-constrained.txt" 2>&1; then
+	echo 'error: split federation accepted constrained capacity' >&2
+	exit 1
+fi
+rg --fixed-strings 'constrained capacity is not supported by split federation' \
+	"${WORK_DIR}/split-constrained.txt" >/dev/null
+if FGENTIC_DEMO_PROFILE=federation FGENTIC_FED_LAYOUT=split-a \
+	FGENTIC_FED_CHILD_PHASE=lifecycle FGENTIC_DEMO_CLUSTER=fgentic-fed-arbitrary \
+	FGENTIC_FED_CONSTRAINED=no "${DEMO}" status \
+	>"${WORK_DIR}/split-cluster-override.txt" 2>&1; then
+	echo 'error: split federation accepted an arbitrary cluster name' >&2
+	exit 1
+fi
+rg --fixed-strings 'federation cluster name is fixed' \
+	"${WORK_DIR}/split-cluster-override.txt" >/dev/null
+if FGENTIC_DEMO_PROFILE=federation FGENTIC_FED_LAYOUT=split-b \
+	FGENTIC_DEMO_CLUSTER=fgentic-fed-b FGENTIC_FED_CONSTRAINED=no "${DEMO}" status \
+	>"${WORK_DIR}/split-direct-child.txt" 2>&1; then
+	echo 'error: split federation accepted a direct uncoordinated child action' >&2
+	exit 1
+fi
+rg --fixed-strings 'requires an internal prepare, reconcile, or lifecycle phase' \
+	"${WORK_DIR}/split-direct-child.txt" >/dev/null
+
 dev_fake_bin="${WORK_DIR}/dev-fake-bin"
 dev_fake_state="${WORK_DIR}/dev-fake-state"
 mkdir -p "${dev_fake_bin}" "${dev_fake_state}"
@@ -523,6 +577,38 @@ chmod +x "${dev_fake_bin}/docker" "${dev_fake_bin}/k3d" "${dev_fake_bin}/kubectl
 : >"${dev_fake_state}/commands"
 PATH="${dev_fake_bin}:${PATH}" \
 	FAKE_DEV_COMMANDS="${dev_fake_state}/commands" \
+	FGENTIC_CA_DIR="${WORK_DIR}/split-ca-a" \
+	"${ROOT_DIR}/scripts/local-ca.sh" --generate-only \
+	>"${dev_fake_state}/split-ca-a.txt" 2>&1
+PATH="${dev_fake_bin}:${PATH}" \
+	FAKE_DEV_COMMANDS="${dev_fake_state}/commands" \
+	FGENTIC_CA_DIR="${WORK_DIR}/split-ca-b" \
+	"${ROOT_DIR}/scripts/local-ca.sh" --generate-only \
+	>"${dev_fake_state}/split-ca-b.txt" 2>&1
+[ ! -s "${dev_fake_state}/commands" ] || {
+	echo 'error: local CA generate-only mode mutated Kubernetes or Docker' >&2
+	exit 1
+}
+[ "$(openssl x509 -in "${WORK_DIR}/split-ca-a/ca.crt" -noout -fingerprint -sha256)" != \
+	"$(openssl x509 -in "${WORK_DIR}/split-ca-b/ca.crt" -noout -fingerprint -sha256)" ] || {
+	echo 'error: split CA fixtures generated the same trust root' >&2
+	exit 1
+}
+mkdir -p "${WORK_DIR}/mismatched-ca"
+cp "${WORK_DIR}/split-ca-a/ca.crt" "${WORK_DIR}/mismatched-ca/ca.crt"
+cp "${WORK_DIR}/split-ca-b/ca.key" "${WORK_DIR}/mismatched-ca/ca.key"
+if FGENTIC_CA_DIR="${WORK_DIR}/mismatched-ca" \
+	"${ROOT_DIR}/scripts/local-ca.sh" --generate-only \
+	>"${dev_fake_state}/mismatched-ca.txt" 2>&1; then
+	echo 'error: local CA accepted a mismatched certificate/private-key pair' >&2
+	exit 1
+fi
+rg --fixed-strings 'certificate and private key do not match' \
+	"${dev_fake_state}/mismatched-ca.txt" >/dev/null
+
+: >"${dev_fake_state}/commands"
+PATH="${dev_fake_bin}:${PATH}" \
+	FAKE_DEV_COMMANDS="${dev_fake_state}/commands" \
 	FGENTIC_CA_DIR="${WORK_DIR}/portable-ca" \
 	"${ROOT_DIR}/scripts/local-ca.sh" >"${dev_fake_state}/local-ca.txt" 2>&1
 openssl x509 --in "${WORK_DIR}/portable-ca/ca.crt" --noout --text |
@@ -532,6 +618,231 @@ openssl x509 --in "${WORK_DIR}/portable-ca/ca.crt" --noout --text |
 }
 rg --fixed-strings 'update-ca-certificates' "${dev_fake_state}/local-ca.txt" >/dev/null
 rg --fixed-strings 'security add-trusted-cert' "${ROOT_DIR}/scripts/local-ca.sh" >/dev/null
+
+split_snapshot="${WORK_DIR}/split-snapshot"
+mkdir -p \
+	"${split_snapshot}/clusters/federation-split-a" \
+	"${split_snapshot}/infra/federation/split/a/namespaces" \
+	"${split_snapshot}/infra/federation/split/b/namespaces"
+cp "${ROOT_DIR}/clusters/federation-split-a/platform-settings.yaml" \
+	"${split_snapshot}/clusters/federation-split-a/platform-settings.yaml"
+cp "${ROOT_DIR}/infra/federation/split/a/namespaces/trust.yaml" \
+	"${split_snapshot}/infra/federation/split/a/namespaces/trust.yaml"
+cp "${ROOT_DIR}/infra/federation/split/b/namespaces/trust.yaml" \
+	"${split_snapshot}/infra/federation/split/b/namespaces/trust.yaml"
+printf '%s\n' '__FGENTIC_SPLIT_ORG_A_CA_PEM__ is a non-manifest test reference.' \
+	>"${split_snapshot}/marker-reference.txt"
+(
+	# Exercise replacement inside combined multiline CA bundles, not only whole-scalar markers.
+	# shellcheck source=scripts/lib.sh
+	source "${ROOT_DIR}/scripts/lib.sh"
+	# shellcheck source=scripts/lib/demo-federation.sh
+	source "${ROOT_DIR}/scripts/lib/demo-federation.sh"
+	SNAPSHOT_DIR="${split_snapshot}"
+	PLATFORM_SETTINGS_PATH=clusters/federation-split-a/platform-settings.yaml
+	FEDERATION_LOCAL_GATEWAY_IP=172.18.0.2
+	FEDERATION_REMOTE_GATEWAY_IP=172.19.0.3
+	FGENTIC_FED_CA_DIR_A="${WORK_DIR}/split-ca-a"
+	FGENTIC_FED_CA_DIR_B="${WORK_DIR}/split-ca-b"
+	configure_split_snapshot
+)
+if rg --fixed-strings --glob '*.yaml' '__FGENTIC_SPLIT_' "${split_snapshot}" >/dev/null; then
+	echo 'error: split snapshot retained a public-root marker' >&2
+	exit 1
+fi
+rg --fixed-strings '__FGENTIC_SPLIT_ORG_A_CA_PEM__' \
+	"${split_snapshot}/marker-reference.txt" >/dev/null || {
+	echo 'error: split snapshot rewrote a non-YAML marker reference' >&2
+	exit 1
+}
+if rg --fixed-strings 'PRIVATE KEY' "${split_snapshot}" >/dev/null; then
+	echo 'error: split snapshot contains private CA material' >&2
+	exit 1
+fi
+yq eval-all -o=json '[select(.kind == "ConfigMap") | .data["ca.crt"]]' \
+	"${split_snapshot}/infra/federation/split/a/namespaces/trust.yaml" |
+	jq -e '
+    length == 3 and
+    ([.[0], .[1]] | all(.[];
+      ([scan("-----BEGIN CERTIFICATE-----")] | length) == 2)) and
+    ([.[2] | scan("-----BEGIN CERTIFICATE-----")] | length) == 1
+  ' >/dev/null || {
+	echo 'error: split snapshot CA bundle cardinality is invalid' >&2
+	exit 1
+}
+assert_yq '.data.federation_local_gateway_ip == "172.18.0.2" and
+  .data.federation_remote_gateway_ip == "172.19.0.3"' \
+	"${split_snapshot}/clusters/federation-split-a/platform-settings.yaml" \
+	'split snapshot did not inject both concrete gateway IPs'
+printf 'data:\n  ca.crt: __FGENTIC_SPLIT_ORG_A_CA_PEM__\n' \
+	>"${split_snapshot}/residual-marker.yaml"
+if SNAPSHOT_DIR="${split_snapshot}" TEST_ROOT="${ROOT_DIR}" bash -c '
+  set -euo pipefail
+  source "${TEST_ROOT}/scripts/lib.sh"
+  source "${TEST_ROOT}/scripts/lib/demo-federation.sh"
+  assert_no_split_ca_markers
+' >"${WORK_DIR}/split-yaml-marker.txt" 2>&1; then
+	echo 'error: split snapshot accepted a residual YAML public-root marker' >&2
+	exit 1
+fi
+rg --fixed-strings 'public-root marker remained in the YAML snapshot' \
+	"${WORK_DIR}/split-yaml-marker.txt" >/dev/null
+rm -f "${split_snapshot}/residual-marker.yaml"
+
+split_ca_reuse_state="${WORK_DIR}/split-ca-reuse-state"
+FGENTIC_DEMO_STATE_DIR="${split_ca_reuse_state}" SPLIT_SCRIPT="${SPLIT}" bash -c '
+  set -euo pipefail
+  source "${SPLIT_SCRIPT}"
+  prepare_public_roots absent absent
+  validate_ca_receipt_file
+  jq -e ".schema == \"fgentic.federation-split-ca.v1\" and .roots.a != .roots.b" \
+    "${CA_RECEIPT}" >/dev/null
+'
+mv "${split_ca_reuse_state}/federation-split/ca/org-a" \
+	"${split_ca_reuse_state}/federation-split/ca/org-swap"
+mv "${split_ca_reuse_state}/federation-split/ca/org-b" \
+	"${split_ca_reuse_state}/federation-split/ca/org-a"
+mv "${split_ca_reuse_state}/federation-split/ca/org-swap" \
+	"${split_ca_reuse_state}/federation-split/ca/org-b"
+if FGENTIC_DEMO_STATE_DIR="${split_ca_reuse_state}" SPLIT_SCRIPT="${SPLIT}" bash -c '
+  set -euo pipefail
+  source "${SPLIT_SCRIPT}"
+  prepare_public_roots present present
+' >"${WORK_DIR}/split-ca-rotation.txt" 2>&1; then
+	echo 'error: retained split children accepted valid replacement CA pairs' >&2
+	exit 1
+fi
+rg --fixed-strings 'trust-root fingerprint changed' \
+	"${WORK_DIR}/split-ca-rotation.txt" >/dev/null
+
+split_relay_state="${WORK_DIR}/split-relay-state"
+FGENTIC_DEMO_STATE_DIR="${split_relay_state}" SPLIT_SCRIPT="${SPLIT}" bash -c '
+  set -euo pipefail
+  source "${SPLIT_SCRIPT}"
+  ensure_state_directory
+  network_document() {
+    case "$1" in
+    fgentic-fed-a) printf "%s\n" "{\"id\":\"network-a-id\",\"name\":\"k3d-fgentic-fed-a\",\"cluster\":\"fgentic-fed-a\"}" ;;
+    fgentic-fed-b) printf "%s\n" "{\"id\":\"network-b-id\",\"name\":\"k3d-fgentic-fed-b\",\"cluster\":\"fgentic-fed-b\"}" ;;
+    *) return 1 ;;
+    esac
+  }
+  write_creating_relay_receipt
+  validate_relay_receipt_file
+  [ "$(jq -r .phase "${RELAY_RECEIPT}")" = creating ]
+  [ "$(jq -r .image "${RELAY_RECEIPT}")" = "${RELAY_IMAGE}" ]
+  [ "$(jq -r ".relays | map(.direction) | sort | join(\",\")" "${RELAY_RECEIPT}")" = "a-to-b,b-to-a" ]
+' || {
+	echo 'error: split relay creating receipt fixture failed' >&2
+	exit 1
+}
+if FGENTIC_DEMO_STATE_DIR="${split_relay_state}" SPLIT_SCRIPT="${SPLIT}" bash -c '
+  set -euo pipefail
+  source "${SPLIT_SCRIPT}"
+  ensure_active_relays
+' >"${WORK_DIR}/split-relay-pending.txt" 2>&1; then
+	echo 'error: split up accepted a pending relay receipt' >&2
+	exit 1
+fi
+rg --fixed-strings 'split relay recovery is pending' \
+	"${WORK_DIR}/split-relay-pending.txt" >/dev/null
+FGENTIC_DEMO_STATE_DIR="${split_relay_state}" SPLIT_SCRIPT="${SPLIT}" bash -c '
+  set -euo pipefail
+  source "${SPLIT_SCRIPT}"
+  atomic_receipt_update "
+    .phase = \"active\" | .image_id = \"sha256:relay-image\" |
+    (.relays[] | select(.direction == \"a-to-b\").id) = \"relay-a-id\" |
+    (.relays[] | select(.direction == \"a-to-b\").local_ip) = \"172.18.0.10\" |
+    (.relays[] | select(.direction == \"b-to-a\").id) = \"relay-b-id\" |
+    (.relays[] | select(.direction == \"b-to-a\").local_ip) = \"172.19.0.10\"
+  "
+  fake_a_local_ip=172.18.0.10
+  docker() {
+    case "$1 $2" in
+    "network inspect")
+      case "$3" in
+      k3d-fgentic-fed-a)
+        printf "%s\n" "[{\"Containers\":{\"relay-a-id\":{},\"relay-b-id\":{},\"server-a-id\":{}}}]"
+        ;;
+      k3d-fgentic-fed-b)
+        printf "%s\n" "[{\"Containers\":{\"relay-a-id\":{},\"relay-b-id\":{},\"server-b-id\":{}}}]"
+        ;;
+      *) return 1 ;;
+      esac
+      ;;
+    "container inspect")
+      case "$3" in
+      relay-a-id)
+        id=relay-a-id name=fgentic-fed-a-to-b direction=a-to-b
+        config="${RELAY_CONFIG_A_TO_B}" ip_a="${fake_a_local_ip}" ip_b=172.19.0.11
+        ;;
+      relay-b-id)
+        id=relay-b-id name=fgentic-fed-b-to-a direction=b-to-a
+        config="${RELAY_CONFIG_B_TO_A}" ip_a=172.18.0.11 ip_b=172.19.0.10
+        ;;
+      *) return 1 ;;
+      esac
+      jq -cn --arg id "${id}" --arg name "${name}" --arg direction "${direction}" \
+        --arg image "${RELAY_IMAGE}" --arg owner "${RELAY_OWNER}" --arg config "${config}" \
+        --arg network_a "${NETWORK_A}" --arg network_b "${NETWORK_B}" \
+        --arg ip_a "${ip_a}" --arg ip_b "${ip_b}" "[{
+          Id: \$id, Image: \"sha256:relay-image\", Name: (\"/\" + \$name),
+          Config: {Image: \$image, Labels: {
+            \"dev.fgentic.federation-split\": \$owner,
+            \"dev.fgentic.federation-split.direction\": \$direction
+          }},
+          Mounts: [{Type: \"bind\", Source: \$config,
+            Destination: \"/etc/confd/values.yaml\", RW: false}],
+          State: {Running: true},
+          NetworkSettings: {Networks: {
+            (\$network_a): {NetworkID: \"network-a-id\", IPAddress: \$ip_a},
+            (\$network_b): {NetworkID: \"network-b-id\", IPAddress: \$ip_b}
+          }}
+        }]"
+      ;;
+    *) return 1 ;;
+    esac
+  }
+  owner_relay_ids() { printf "%s\n" "[\"relay-a-id\",\"relay-b-id\"]"; }
+  validate_relay_container a-to-b yes
+  validate_relay_container b-to-a yes
+  assert_only_relays_dual_attached
+  fake_a_local_ip=172.18.0.99
+  die() { return 1; }
+  if validate_relay_container a-to-b yes; then
+    echo "error: relay validator accepted a drifted recorded IP" >&2
+    exit 1
+  fi
+' || {
+	echo 'error: exact relay identity, address, or dual-network fixture failed' >&2
+	exit 1
+}
+if FGENTIC_DEMO_STATE_DIR="${WORK_DIR}/unreceipted-relay-state" \
+	SPLIT_SCRIPT="${SPLIT}" bash -c '
+  set -euo pipefail
+  source "${SPLIT_SCRIPT}"
+  docker() {
+    case "$1 $2" in
+    "container inspect")
+      case "$3" in
+      fgentic-fed-a-to-b|fgentic-fed-b-to-a) return 1 ;;
+      renamed-relay-id)
+        printf "%s\n" "[{\"Id\":\"renamed-relay-id\",\"Config\":{\"Labels\":{\"dev.fgentic.federation-split\":\"fgentic.federation-split-relay.v1\"}}}]"
+        ;;
+      *) return 1 ;;
+      esac
+      ;;
+    "container ls") printf "%s\n" renamed-relay-id ;;
+    *) return 1 ;;
+    esac
+  }
+  ensure_no_unreceipted_relays
+' >"${WORK_DIR}/unreceipted-relay.txt" 2>&1; then
+	echo 'error: renamed owner-labelled relay evaded the no-receipt guard' >&2
+	exit 1
+fi
+rg --fixed-strings 'unreceipted owner-labelled split relay containers' \
+	"${WORK_DIR}/unreceipted-relay.txt" >/dev/null
 
 run_dev_fixture() {
 	local action="$1"

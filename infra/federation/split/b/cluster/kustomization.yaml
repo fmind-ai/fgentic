@@ -1,0 +1,134 @@
+# Exact Flux DAG for control plane B. Matrix B and its issuer are the only application layers;
+# the agent plane, denied server, and every disabled base profile remain structurally absent.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - matrix-b-flux.yaml
+patches:
+  - target: {
+      group: kustomize.toolkit.fluxcd.io,
+      version: v1,
+      kind: Kustomization,
+      name: namespaces,
+      namespace: flux-system,
+    }
+    patch: |
+      - op: replace
+        path: /spec/path
+        value: ./infra/federation/split/b/namespaces
+  - target: {
+      group: kustomize.toolkit.fluxcd.io,
+      version: v1,
+      kind: Kustomization,
+      name: controllers,
+      namespace: flux-system,
+    }
+    patch: |
+      - op: replace
+        path: /spec/path
+        value: ./infra/federation/split/b/controllers
+      - op: replace
+        path: /spec/components
+        value: []
+      - op: replace
+        path: /spec/dependsOn
+        value:
+          - name: namespaces
+  - target: {
+      group: kustomize.toolkit.fluxcd.io,
+      version: v1,
+      kind: Kustomization,
+      name: gateway,
+      namespace: flux-system,
+    }
+    patch: |
+      - op: replace
+        path: /spec/path
+        value: ./infra/federation/split/b/gateway
+      - op: replace
+        path: /spec/dependsOn
+        value:
+          - name: controllers
+  - target: {
+      group: kustomize.toolkit.fluxcd.io,
+      version: v1,
+      kind: Kustomization,
+      name: postgres,
+      namespace: flux-system,
+    }
+    patch: |
+      - op: replace
+        path: /spec/path
+        value: ./infra/federation/split/b/postgres
+      - op: replace
+        path: /spec/components
+        value: []
+      - op: replace
+        path: /spec/dependsOn
+        value:
+          - name: controllers
+          - name: platform-secrets
+  - target: {
+      group: kustomize.toolkit.fluxcd.io,
+      version: v1,
+      kind: Kustomization,
+      name: matrix-b,
+      namespace: flux-system,
+    }
+    patch: |
+      - op: replace
+        path: /spec/path
+        value: ./infra/federation/split/b/matrix-b
+      - op: replace
+        path: /spec/dependsOn
+        value:
+          - name: postgres
+          - name: gateway
+  - target: {
+      group: kustomize.toolkit.fluxcd.io,
+      version: v1,
+      kind: Kustomization,
+      name: keycloak,
+      namespace: flux-system,
+    }
+    patch: |
+      - op: replace
+        path: /spec/path
+        value: ./infra/federation/split/b/keycloak
+      - op: replace
+        path: /spec/components
+        value: []
+      - op: replace
+        path: /spec/dependsOn
+        value:
+          - name: gateway
+          - name: postgres
+          - name: platform-secrets
+          - name: matrix-b
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: (observability|observability-monitors|trivy-operator|matrix|admin|agentgateway|agentgateway-provider|kagent|knowledge-ingestion)
+      namespace: flux-system
+    patch: |
+      $patch: delete
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: unused
+        namespace: flux-system
+  - target: {
+      group: kustomize.toolkit.fluxcd.io,
+      version: v1,
+      kind: Kustomization,
+      name: bridge,
+      namespace: flux-system,
+    }
+    patch: |
+      $patch: delete
+      apiVersion: kustomize.toolkit.fluxcd.io/v1
+      kind: Kustomization
+      metadata:
+        name: bridge
+        namespace: flux-system

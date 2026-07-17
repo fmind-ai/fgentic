@@ -1,0 +1,17 @@
+# B and its issuer resolve to B's ingress. A and denied C are reachable only through B's
+# directional TLS relay to A; the exact host inventory intentionally contains no wildcard.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+data:
+  fgentic-split.server: |
+    fgentic.test:53 {
+      hosts {
+        ${federation_local_gateway_ip} org-b.fgentic.test matrix.org-b.fgentic.test id.org-b.fgentic.test
+        ${federation_remote_gateway_ip} org-a.fgentic.test matrix.org-a.fgentic.test a2a.org-a.fgentic.test
+        ${federation_remote_gateway_ip} org-c.fgentic.test matrix.org-c.fgentic.test
+        fallthrough
+      }
+    }

@@ -1,0 +1,10 @@
+# Opt-in half B of the two-control-plane federation drill. It owns only org B's homeserver and
+# machine-client issuer; no agent runtime or denied-control homeserver is deployed here.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../base
+  - platform-settings.yaml
+  - secrets.yaml
+components:
+  - ../../infra/federation/split/b/cluster

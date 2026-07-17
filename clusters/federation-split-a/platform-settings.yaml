@@ -1,0 +1,44 @@
+# Role-stable federation names are shared by both control planes. The lifecycle replaces the two
+# RFC 5737 addresses with A's own ingress and A's local relay to B before publishing its snapshot.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platform-settings
+  namespace: flux-system
+data:
+  server_name: org-a.fgentic.test
+  admin_console: disabled
+  federation_partner_server_name: org-b.fgentic.test
+  federation_denied_server_name: org-c.fgentic.test
+  federation_local_gateway_ip: 192.0.2.10
+  federation_remote_gateway_ip: 192.0.2.11
+  cluster_issuer: local-ca
+  ingress_ip_name: unused-federation-split-a
+  llm_provider: demo
+  llm_model: fgentic-demo
+  demo_bridge_tag: local
+  bridge_dead_man_switch_delay: 0s
+  synapse_max_event_delay_duration: "null"
+  mcp_tool_burst_per_second: "2"
+  mcp_agent_calls_per_hour: "300"
+  quota_default_request_cpu: 25m
+  quota_default_request_memory: 64Mi
+  quota_default_limit_cpu: 500m
+  quota_default_limit_memory: 512Mi
+  quota_small_pods: "12"
+  quota_small_requests_cpu: "2"
+  quota_small_requests_memory: 4Gi
+  quota_small_limits_cpu: "8"
+  quota_small_limits_memory: 8Gi
+  quota_core_pods: "24"
+  quota_core_requests_cpu: "4"
+  quota_core_requests_memory: 8Gi
+  quota_core_limits_cpu: "16"
+  quota_core_limits_memory: 16Gi
+  quota_compute_pods: "8"
+  quota_compute_requests_cpu: "4"
+  quota_compute_requests_memory: 8Gi
+  quota_compute_limits_cpu: "8"
+  quota_compute_limits_memory: 12Gi
+  federation_a2a_max_budget_units: "4096"
+  federation_a2a_quota_budget_units_per_minute: "5000"

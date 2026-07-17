@@ -1,0 +1,17 @@
+# k3s imports `*.server` entries from coredns-custom. A and C resolve to this control plane's
+# ingress; B resolves only through A's directional TLS relay to B's independent ingress.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: coredns-custom
+  namespace: kube-system
+data:
+  fgentic-split.server: |
+    fgentic.test:53 {
+      hosts {
+        ${federation_local_gateway_ip} org-a.fgentic.test matrix.org-a.fgentic.test a2a.org-a.fgentic.test
+        ${federation_local_gateway_ip} org-c.fgentic.test matrix.org-c.fgentic.test
+        ${federation_remote_gateway_ip} org-b.fgentic.test matrix.org-b.fgentic.test id.org-b.fgentic.test
+        fallthrough
+      }
+    }

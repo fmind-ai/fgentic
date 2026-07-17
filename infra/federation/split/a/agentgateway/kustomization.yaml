@@ -1,0 +1,53 @@
+# A keeps the canonical public docs-qa surface, but discovers B's issuer through an explicitly
+# TLS-authenticated static backend. No local Service or cross-namespace grant can short-circuit
+# the independent ingress, DNS, and CA boundaries.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../../../../agentgateway
+  - remote-jwks.yaml
+components:
+  - ../../../delegation
+patches:
+  - target: {
+      group: gateway.networking.k8s.io,
+      version: v1beta1,
+      kind: ReferenceGrant,
+      name: agentgateway-keycloak-jwks,
+      namespace: keycloak,
+    }
+    patch: |
+      $patch: delete
+      apiVersion: gateway.networking.k8s.io/v1beta1
+      kind: ReferenceGrant
+      metadata:
+        name: agentgateway-keycloak-jwks
+        namespace: keycloak
+  - target: {
+      group: networking.k8s.io,
+      version: v1,
+      kind: NetworkPolicy,
+      name: keycloak-allow-agentgateway-jwks,
+      namespace: keycloak,
+    }
+    patch: |
+      $patch: delete
+      apiVersion: networking.k8s.io/v1
+      kind: NetworkPolicy
+      metadata:
+        name: keycloak-allow-agentgateway-jwks
+        namespace: keycloak
+  - target: {
+      group: agentgateway.dev,
+      version: v1alpha1,
+      kind: AgentgatewayPolicy,
+      name: federated-docs-qa,
+      namespace: agentgateway-system,
+    }
+    patch: |
+      - op: replace
+        path: /spec/traffic/jwtAuthentication/providers/0/jwks/remote/backendRef
+        value:
+          group: agentgateway.dev
+          kind: AgentgatewayBackend
+          name: org-b-jwks
