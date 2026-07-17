@@ -1,0 +1,29 @@
+name: Fuzz
+# Longer bounded mutation fuzzing over the owned untrusted-input parsers (#461). The deterministic
+# seed corpora and Hypothesis examples already run on every CI check via the normal test gate; this
+# scheduled job spends a larger per-target budget that would be too costly and nondeterministic to
+# put on the per-commit path. A discovered crash fails the job and is triaged as a real defect.
+on:
+  schedule:
+    - cron: "37 4 * * *"
+  workflow_dispatch: {}
+permissions:
+  contents: read
+concurrency:
+  group: fuzz
+  cancel-in-progress: false
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
+      - name: Install mise system
+        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+      - name: Install application toolchains
+        run: mise run install:apps
+      - name: Bounded fuzz smoke (extended budget)
+        env:
+          FGENTIC_FUZZTIME: 60s
+        run: mise run test:fuzz
