@@ -59,6 +59,22 @@ static_contract() {
     ' <<<"${rendered}" >/dev/null ||
       fail "${policy_name} no longer enforces: ${validation_message}"
   }
+  require_match_condition_fragment() {
+    local policy_name="$1"
+    local condition_name="$2"
+    local expression_fragment="$3"
+    export POLICY_NAME="${policy_name}"
+    export CONDITION_NAME="${condition_name}"
+    export EXPRESSION_FRAGMENT="${expression_fragment}"
+    yq -e '
+      select(.kind == "ValidatingAdmissionPolicy" and
+        .metadata.name == strenv(POLICY_NAME)) |
+      .spec.matchConditions[] |
+      select(.name == strenv(CONDITION_NAME)) |
+      .expression | contains(strenv(EXPRESSION_FRAGMENT))
+    ' <<<"${rendered}" >/dev/null ||
+      fail "${policy_name} no longer matches: ${condition_name}"
+  }
   require_validation_fragment "no-latest-images.fgentic.dev" \
     "init container images must not use the latest tag" "object.spec.initContainers.all"
   require_validation_fragment "no-latest-images.fgentic.dev" \
@@ -194,6 +210,46 @@ static_contract() {
   require_validation_fragment "model-provider-kustomization-freeze.fgentic.dev" \
     "provider Kustomizations cannot be deleted while the model-residency handoff is guarded" \
     'request.operation != "DELETE"'
+  require_match_condition_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "changed-or-projected-provider" \
+    'request.operation == "UPDATE"'
+  require_match_condition_fragment "model-provider-kustomization-freeze.fgentic.dev" \
+    "changed-or-projected-provider" \
+    "object.spec == oldObject.spec"
+  require_match_condition_fragment "model-provider-override-conflict.fgentic.dev" \
+    "changed-or-projected-provider" \
+    "object.spec == oldObject.spec"
+  local provider_noop_condition override_noop_condition condition_fragment
+  provider_noop_condition="$(yq -r '
+    select(.kind == "ValidatingAdmissionPolicy" and
+      .metadata.name == "model-provider-kustomization-freeze.fgentic.dev") |
+    .spec.matchConditions[] |
+    select(.name == "changed-or-projected-provider") |
+    .expression
+  ' <<<"${rendered}")"
+  override_noop_condition="$(yq -r '
+    select(.kind == "ValidatingAdmissionPolicy" and
+      .metadata.name == "model-provider-override-conflict.fgentic.dev") |
+    .spec.matchConditions[] |
+    select(.name == "changed-or-projected-provider") |
+    .expression
+  ' <<<"${rendered}")"
+  [[ "${provider_noop_condition}" == "${override_noop_condition}" ]] ||
+    fail "tuple and override policies must share the exact legacy no-op boundary"
+  for condition_fragment in \
+    'object.metadata.name == "agentgateway-provider"' \
+    '!has(oldObject.metadata.labels)' \
+    '!has(object.metadata.labels)' \
+    '!has(oldObject.metadata.annotations)' \
+    '!has(object.metadata.annotations)' \
+    '"llm_provider" in object.spec.postBuild.substitute' \
+    '"llm_model" in object.spec.postBuild.substitute' \
+    'object.spec == oldObject.spec'; do
+    grep -Fq "${condition_fragment}" <<<"${provider_noop_condition}" ||
+      fail "legacy provider no-op boundary lost: ${condition_fragment}"
+  done
+  [[ "${provider_noop_condition}" != *CREATE* ]] ||
+    fail "legacy provider CREATE must remain fail closed"
 
   yq -e '
     select(.kind == "ValidatingAdmissionPolicyBinding" and
@@ -229,10 +285,21 @@ static_contract() {
     ((.spec.matchConstraints.resourceRules[0].operations | sort | join(",")) ==
       "CREATE,DELETE,UPDATE" and
       .spec.matchConditions[0].name == "model-provider-kustomizations" and
+      (.spec.matchConditions | map(.name) | sort | join(",")) ==
+        "changed-or-projected-provider,model-provider-kustomizations" and
       .spec.paramKind.apiVersion == "v1" and
       .spec.paramKind.kind == "ConfigMap")
   ' <<<"${rendered}" >/dev/null ||
     fail "the temporary provider freeze must cover rendered Flux provider Kustomizations"
+  yq -e '
+    select(.kind == "ValidatingAdmissionPolicy" and
+      .metadata.name == "model-provider-override-conflict.fgentic.dev") |
+    ((.spec.matchConstraints.resourceRules[0].operations | sort | join(",")) ==
+      "CREATE,UPDATE" and
+      (.spec.matchConditions | map(.name) | sort | join(",")) ==
+        "changed-or-projected-provider,model-provider-kustomizations")
+  ' <<<"${rendered}" >/dev/null ||
+    fail "override conflicts must skip only an unchanged legacy provider"
   yq -e '
     select(.kind == "ValidatingAdmissionPolicyBinding" and
       .metadata.name == "model-provider-kustomization-freeze.fgentic.dev") |
@@ -371,12 +438,16 @@ runtime_contract() {
     fail "set ADMISSION_POLICY_CONTEXT to an explicitly approved disposable/local context"
 
   local -a kube=(kubectl --context "${ADMISSION_POLICY_CONTEXT}")
+  local fixture_provider=demo
+  local fixture_model=fixture-model-a
+  local fixture_conflicting_model=fixture-model-b
   "${kube[@]}" get --raw=/readyz >/dev/null || fail "Kubernetes API is not ready"
   "${kube[@]}" api-resources --api-group=admissionregistration.k8s.io \
     | grep -q '^validatingadmissionpolicies' || fail "ValidatingAdmissionPolicy v1 is unavailable"
 
   provider_kustomizations_manifest() {
-    cat <<'EOF'
+    local manifest
+    manifest="$(cat <<'EOF'
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -514,10 +585,36 @@ spec:
       llm_model: fixture-model-a
       llm_provider: demo
 EOF
+    )"
+    FIXTURE_PROVIDER="${fixture_provider}" FIXTURE_MODEL="${fixture_model}" yq '
+      (.metadata.labels."fgentic.dev/llm-provider") = strenv(FIXTURE_PROVIDER) |
+      (.metadata.annotations."fgentic.dev/llm-model") = strenv(FIXTURE_MODEL) |
+      (.spec.postBuild.substitute.llm_provider) = strenv(FIXTURE_PROVIDER) |
+      (.spec.postBuild.substitute.llm_model) = strenv(FIXTURE_MODEL) |
+      (select(.metadata.name == "agentgateway-provider") | .spec.path) =
+        "./infra/agentgateway/providers/profiles/" + strenv(FIXTURE_PROVIDER) |
+      (select(.metadata.name == "agentgateway-provider-egress") | .spec.path) =
+        "./infra/agentgateway/providers/egress/" + strenv(FIXTURE_PROVIDER)
+    ' <<<"${manifest}"
+  }
+
+  selected_provider_kustomizations_manifest() {
+    if [[ "${federation_topology}" == true ]]; then
+      provider_kustomizations_manifest |
+        yq '
+          select(.metadata.name != "agentgateway-admission") |
+          (select(.metadata.name == "agentgateway-provider") | .spec) |= del(.patches) |
+          (select(.metadata.name == "agentgateway-provider-egress") |
+            .spec.dependsOn[0].name) = "agentgateway-provider"
+        '
+      return
+    fi
+    provider_kustomizations_manifest
   }
 
   legacy_provider_kustomization_manifest() {
-    cat <<'EOF'
+    local manifest
+    manifest="$(cat <<'EOF'
 apiVersion: kustomize.toolkit.fluxcd.io/v1
 kind: Kustomization
 metadata:
@@ -556,6 +653,18 @@ spec:
         name: llm-vertex
         namespace: agentgateway-system
 EOF
+    )"
+    FIXTURE_PROVIDER="${fixture_provider}" yq \
+      '.spec.path = "./infra/agentgateway/providers/profiles/" + strenv(FIXTURE_PROVIDER)' \
+      <<<"${manifest}"
+  }
+
+  selected_legacy_provider_kustomization_manifest() {
+    if [[ "${federation_topology}" == true ]]; then
+      legacy_provider_kustomization_manifest | yq 'del(.spec.patches)'
+      return
+    fi
+    legacy_provider_kustomization_manifest
   }
 
   local namespace="fgentic-admission-probe-$$"
@@ -630,6 +739,17 @@ EOF
   elif [[ "${existing_policies}" -ne 8 || "${existing_bindings}" -ne 9 ]]; then
     fail "found a partial fgentic.dev admission installation; refusing to mutate it"
   fi
+  if [[ "${fresh_policy_install}" == true ]]; then
+    if "${kube[@]}" get deployment --all-namespaces -o json 2>/dev/null |
+      yq -e '.items[] | select(.metadata.name == "kustomize-controller")' \
+        >/dev/null; then
+      fail "fresh policy fixtures require a controller-free disposable context; reconcile policies through Flux first"
+    fi
+    if "${kube[@]}" get gitrepository --all-namespaces -o name 2>/dev/null |
+      grep -q .; then
+      fail "fresh policy fixtures require a controller-free disposable context; reconcile policies through Flux first"
+    fi
+  fi
 
   if ! "${kube[@]}" get namespace flux-system >/dev/null 2>&1; then
     [[ "${fresh_policy_install}" == true ]] ||
@@ -668,6 +788,12 @@ EOF
     platform_settings_json="$("${kube[@]}" get configmap platform-settings \
       --namespace flux-system -o json)"
   fi
+  fixture_provider="$(yq -r '.data.llm_provider // ""' <<<"${platform_settings_json}")"
+  fixture_model="$(yq -r '.data.llm_model // ""' <<<"${platform_settings_json}")"
+  [[ -n "${fixture_provider}" && -n "${fixture_model}" ]] ||
+    fail "platform-settings must carry the complete guarded model tuple"
+  [[ "${fixture_model}" != "${fixture_conflicting_model}" ]] ||
+    fixture_conflicting_model=fixture-model-c
   if [[ "${fresh_policy_install}" == true ]] &&
     "${kube[@]}" get configmap platform-settings-overrides --namespace flux-system \
       >/dev/null 2>&1; then
@@ -682,10 +808,11 @@ EOF
       '  name: platform-settings-overrides' \
       '  namespace: flux-system' \
       'data:' \
-      '  llm_model: fixture-model-b' |
+      "  llm_model: ${fixture_conflicting_model}" |
       "${kube[@]}" create --filename=- >/dev/null
   fi
 
+  local federation_topology=false
   local -a expected_provider_kustomizations=(
     agentgateway-provider
     agentgateway-admission
@@ -693,12 +820,15 @@ EOF
   )
   if yq -e '.data | has("federation_partner_server_name")' \
     <<<"${platform_settings_json}" >/dev/null; then
+    federation_topology=true
     expected_provider_kustomizations=(
       agentgateway-provider
       agentgateway-provider-egress
     )
   fi
+  local legacy_provider_topology=false
   local provider_kustomization_count=0 provider_kustomization
+  local legacy_provider_json expected_legacy_provider_spec live_legacy_provider_spec
   local -a all_provider_kustomizations=(
     agentgateway-provider
     agentgateway-admission
@@ -713,7 +843,38 @@ EOF
       fi
     fi
   done
-  if [[ "${provider_kustomization_count}" -ne 0 &&
+  if [[ "${provider_kustomization_count}" -eq 1 ]]; then
+    legacy_provider_json="$("${kube[@]}" get kustomization --namespace flux-system \
+      agentgateway-provider -o json 2>/dev/null)" ||
+      fail "the one-object legacy topology must contain agentgateway-provider"
+    yq -e '
+      (!has(.metadata.labels) or
+        (.metadata.labels | has("fgentic.dev/llm-provider") | not)) and
+      (!has(.metadata.annotations) or
+        (.metadata.annotations | has("fgentic.dev/llm-model") | not)) and
+      (!has(.spec.postBuild) or
+        !has(.spec.postBuild.substitute) or
+        ((.spec.postBuild.substitute | has("llm_provider") | not) and
+          (.spec.postBuild.substitute | has("llm_model") | not)))
+    ' <<<"${legacy_provider_json}" >/dev/null ||
+      fail "the one-object provider topology is neither exact legacy nor complete projected state"
+    expected_legacy_provider_spec="$(selected_legacy_provider_kustomization_manifest |
+      yq -o=json -I=0 '
+        del(.spec.force | select(. == false)) |
+        (.spec.postBuild.substituteFrom[] | select(.optional == false)) |= del(.optional) |
+        sort_keys(..) |
+        .spec
+      ')"
+    live_legacy_provider_spec="$(yq -o=json -I=0 '
+      del(.spec.force | select(. == false)) |
+      (.spec.postBuild.substituteFrom[] | select(.optional == false)) |= del(.optional) |
+      sort_keys(..) |
+      .spec
+    ' <<<"${legacy_provider_json}")"
+    [[ "${live_legacy_provider_spec}" == "${expected_legacy_provider_spec}" ]] ||
+      fail "the one-object legacy provider differs from the selected Stage-A contract"
+    legacy_provider_topology=true
+  elif [[ "${provider_kustomization_count}" -ne 0 &&
     "${provider_kustomization_count}" -ne "${#expected_provider_kustomizations[@]}" ]]; then
     fail "found a partial provider Kustomization installation; refusing to mutate it"
   fi
@@ -729,7 +890,13 @@ EOF
       fail "fresh provider fixtures require a controller-free disposable context"
     fi
     ADMISSION_TEST_PROVIDER_KUSTOMIZATIONS_OWNED=true
-    legacy_provider_kustomization_manifest | "${kube[@]}" apply --filename=- >/dev/null
+    selected_legacy_provider_kustomization_manifest |
+      "${kube[@]}" apply --filename=- >/dev/null
+    if [[ "${federation_topology}" == true ]]; then
+      provider_kustomizations_manifest |
+        yq 'select(.metadata.name == "agentgateway-admission")' |
+        "${kube[@]}" apply --filename=- >/dev/null
+    fi
   fi
 
   if [[ "${fresh_policy_install}" == true ]]; then
@@ -807,12 +974,42 @@ EOF
     }
   }
 
+  if [[ "${provider_kustomization_count}" -eq 0 ||
+    "${legacy_provider_topology}" == true ]]; then
+    "${kube[@]}" get kustomization agentgateway-provider --namespace flux-system -o json |
+      yq '{
+        "apiVersion": .apiVersion,
+        "kind": .kind,
+        "metadata": {
+          "name": .metadata.name,
+          "namespace": .metadata.namespace
+        },
+        "spec": .spec
+      }' |
+      "${kube[@]}" apply --server-side --field-manager=fgentic-admission-test \
+        --dry-run=server --filename=- >/dev/null
+    expect_denied "provider Kustomizations must retain the locked selected-provider identity" \
+      "${kube[@]}" patch kustomization agentgateway-provider --namespace flux-system \
+      --type=merge --dry-run=server \
+      --patch '{"spec":{"sourceRef":{"kind":"GitRepository","name":"alternate-source"}}}'
+  fi
+
+  if [[ "${provider_kustomization_count}" -eq 0 &&
+    "${federation_topology}" == true ]]; then
+    "${kube[@]}" delete kustomization agentgateway-admission --namespace flux-system \
+      --wait=true >/dev/null
+    provider_kustomizations_manifest |
+      yq 'select(.metadata.name == "agentgateway-admission")' |
+      expect_manifest_denied \
+        "federation must not recreate the deleted local admission inventory"
+  fi
+
   if [[ "${provider_kustomization_count}" -eq 0 ]]; then
     expect_denied "provider Kustomizations must retain the locked selected-model identity" \
       "${kube[@]}" patch kustomization --namespace flux-system agentgateway-provider \
       --type=merge --dry-run=server \
-      --patch '{"metadata":{"annotations":{"fgentic.dev/llm-model":"fixture-model-b"},"labels":{"fgentic.dev/llm-provider":"demo"}},"spec":{"postBuild":{"substitute":{"llm_model":"fixture-model-b","llm_provider":"demo"}}}}'
-    provider_kustomizations_manifest |
+      --patch "{\"metadata\":{\"annotations\":{\"fgentic.dev/llm-model\":\"${fixture_conflicting_model}\"},\"labels\":{\"fgentic.dev/llm-provider\":\"${fixture_provider}\"}},\"spec\":{\"postBuild\":{\"substitute\":{\"llm_model\":\"${fixture_conflicting_model}\",\"llm_provider\":\"${fixture_provider}\"}}}}"
+    selected_provider_kustomizations_manifest |
       expect_apply_manifest_denied \
         "remove the llm_model override before projecting the guarded model tuple"
     [[ "${ADMISSION_TEST_PLATFORM_SETTINGS_OVERRIDE_OWNED}" == true ]] ||
@@ -820,7 +1017,8 @@ EOF
     "${kube[@]}" delete configmap platform-settings-overrides --namespace flux-system \
       --wait=true >/dev/null
     ADMISSION_TEST_PLATFORM_SETTINGS_OVERRIDE_OWNED=false
-    provider_kustomizations_manifest | "${kube[@]}" apply --filename=- >/dev/null
+    selected_provider_kustomizations_manifest |
+      "${kube[@]}" apply --filename=- >/dev/null
   fi
 
   expect_agent_denied() {
@@ -1063,9 +1261,13 @@ EOF
         "federation must not recreate the deleted local admission inventory"
   fi
 
+  local -a projected_provider_kustomizations=("${expected_provider_kustomizations[@]}")
+  if [[ "${legacy_provider_topology}" == true ]]; then
+    projected_provider_kustomizations=()
+  fi
   local provider_kustomization provider_kustomization_json provider_label model_annotation
   local provider_path alternate_path inline_provider inline_model
-  for provider_kustomization in "${expected_provider_kustomizations[@]}"; do
+  for provider_kustomization in "${projected_provider_kustomizations[@]}"; do
     provider_kustomization_json="$("${kube[@]}" get kustomization \
       --namespace flux-system "${provider_kustomization}" -o json)"
     provider_label="$(yq -r '.metadata.labels."fgentic.dev/llm-provider"' \

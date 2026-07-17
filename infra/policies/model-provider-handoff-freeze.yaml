@@ -147,6 +147,11 @@ spec:
   matchConditions:
     - name: model-provider-kustomizations
       expression: 'request.operation == "DELETE" ? oldObject.metadata.name in ["agentgateway-provider", "agentgateway-admission", "agentgateway-provider-egress"] : object.metadata.name in ["agentgateway-provider", "agentgateway-admission", "agentgateway-provider-egress"]'
+    # Flux dry-runs every rendered object on each reconciliation. Admit only a guard-relevant spec
+    # no-op of the still-installed legacy provider; CREATE and every tuple/spec mutation continue
+    # into the fail-closed future-shape validations below.
+    - name: changed-or-projected-provider
+      expression: '!(request.operation == "UPDATE" && object.metadata.name == "agentgateway-provider" && (!has(oldObject.metadata.labels) || !("fgentic.dev/llm-provider" in oldObject.metadata.labels)) && (!has(object.metadata.labels) || !("fgentic.dev/llm-provider" in object.metadata.labels)) && (!has(oldObject.metadata.annotations) || !("fgentic.dev/llm-model" in oldObject.metadata.annotations)) && (!has(object.metadata.annotations) || !("fgentic.dev/llm-model" in object.metadata.annotations)) && (!has(object.spec.postBuild) || !has(object.spec.postBuild.substitute) || (!("llm_provider" in object.spec.postBuild.substitute) && !("llm_model" in object.spec.postBuild.substitute))) && object.spec == oldObject.spec)'
   variables:
     - name: stableBaseReadyExpr
       expression: >-
@@ -370,6 +375,11 @@ spec:
   matchConditions:
     - name: model-provider-kustomizations
       expression: 'object.metadata.name in ["agentgateway-provider", "agentgateway-admission", "agentgateway-provider-egress"]'
+    # Do not let an existing legacy override make Flux's unchanged Stage-A dry-run fail. The
+    # condition becomes true for the exact tuple projection, where the validations require the
+    # operator to remove every conflicting override first.
+    - name: changed-or-projected-provider
+      expression: '!(request.operation == "UPDATE" && object.metadata.name == "agentgateway-provider" && (!has(oldObject.metadata.labels) || !("fgentic.dev/llm-provider" in oldObject.metadata.labels)) && (!has(object.metadata.labels) || !("fgentic.dev/llm-provider" in object.metadata.labels)) && (!has(oldObject.metadata.annotations) || !("fgentic.dev/llm-model" in oldObject.metadata.annotations)) && (!has(object.metadata.annotations) || !("fgentic.dev/llm-model" in object.metadata.annotations)) && (!has(object.spec.postBuild) || !has(object.spec.postBuild.substitute) || (!("llm_provider" in object.spec.postBuild.substitute) && !("llm_model" in object.spec.postBuild.substitute))) && object.spec == oldObject.spec)'
   validations:
     - expression: '!has(params.data) || !("llm_provider" in params.data)'
       message: remove the llm_provider override before projecting the guarded model tuple
