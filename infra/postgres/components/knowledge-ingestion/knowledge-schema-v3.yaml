@@ -1,0 +1,1174 @@
+# Immutable opt-in v3 knowledge-store migration. It adds the Git connector's durable desired-vs-
+# applied state machine without granting the connector access to chunks, embeddings, or retrieval.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: knowledge-schema-v3
+  namespace: postgres
+immutable: true
+data:
+  schema.sql: |
+    BEGIN;
+
+    SELECT pg_advisory_xact_lock(hashtextextended('fgentic:knowledge-schema:v3', 0));
+
+    REVOKE ALL ON DATABASE knowledge FROM knowledge_connector;
+    -- connector-publish loads one bounded JSON file through a session-local staging table.
+    GRANT CONNECT, TEMPORARY ON DATABASE knowledge TO knowledge_connector;
+    REVOKE ALL ON SCHEMA public FROM knowledge_connector;
+    REVOKE ALL ON SCHEMA knowledge FROM knowledge_connector;
+    GRANT USAGE ON SCHEMA knowledge TO knowledge_connector;
+
+    REVOKE ALL ON ALL TABLES IN SCHEMA knowledge FROM knowledge_connector;
+    REVOKE ALL ON ALL SEQUENCES IN SCHEMA knowledge FROM knowledge_connector;
+    REVOKE ALL ON ALL FUNCTIONS IN SCHEMA knowledge FROM knowledge_connector;
+
+    -- One row is the connector's durable repository cursor. The desired cursor becomes
+    -- authoritative only after complete_connector_snapshot validates the complete inventory.
+    CREATE TABLE IF NOT EXISTS knowledge.connector_snapshots (
+      connector_id text PRIMARY KEY,
+      desired_revision text NOT NULL,
+      desired_inventory_digest text NOT NULL,
+      expected_source_count integer NOT NULL,
+      enumeration_complete boolean NOT NULL DEFAULT false,
+      enumeration_started_at timestamptz NOT NULL,
+      enumeration_completed_at timestamptz,
+      applied_revision text,
+      applied_inventory_digest text,
+      applied_at timestamptz,
+      blocked_revision text,
+      blocked_artifact_digest text,
+      blocked_at timestamptz,
+      CONSTRAINT connector_snapshots_identity_bounded CHECK (
+        connector_id = 'git-markdown'
+        AND knowledge.is_dns1123_label(connector_id)
+      ),
+      CONSTRAINT connector_snapshots_revision_bounded CHECK (
+        knowledge.is_bounded_clean_text(desired_revision, 255)
+      ),
+      CONSTRAINT connector_snapshots_digest_exact CHECK (
+        desired_inventory_digest ~ '^sha256:[0-9a-f]{64}$'
+      ),
+      CONSTRAINT connector_snapshots_count_bounded CHECK (
+        expected_source_count BETWEEN 0 AND 512
+      ),
+      CONSTRAINT connector_snapshots_enumeration_coherent CHECK (
+        enumeration_complete = (enumeration_completed_at IS NOT NULL)
+      ),
+      CONSTRAINT connector_snapshots_applied_coherent CHECK (
+        (applied_revision IS NULL
+          AND applied_inventory_digest IS NULL
+          AND applied_at IS NULL)
+        OR (
+          applied_revision IS NOT NULL
+          AND applied_inventory_digest IS NOT NULL
+          AND knowledge.is_bounded_clean_text(applied_revision, 255)
+          AND applied_inventory_digest ~ '^sha256:[0-9a-f]{64}$'
+          AND applied_at IS NOT NULL
+        )
+      ),
+      CONSTRAINT connector_snapshots_blocked_coherent CHECK (
+        (
+          blocked_revision IS NULL
+          AND blocked_artifact_digest IS NULL
+          AND blocked_at IS NULL
+        )
+        OR (
+          blocked_revision IS NOT NULL
+          AND blocked_artifact_digest IS NOT NULL
+          AND blocked_at IS NOT NULL
+          AND knowledge.is_bounded_clean_text(blocked_revision, 255)
+          AND blocked_artifact_digest ~ '^sha256:[0-9a-f]{64}$'
+        )
+      ),
+      UNIQUE (connector_id, desired_revision, desired_inventory_digest)
+    );
+    ALTER TABLE knowledge.connector_snapshots OWNER TO knowledge_owner;
+    REVOKE ALL ON knowledge.connector_snapshots FROM PUBLIC;
+
+    -- Staging is replaced at the start of an enumeration. Rows bind themselves to the exact
+    -- desired snapshot tuple, so a late writer from an older enumeration fails its foreign key.
+    CREATE TABLE IF NOT EXISTS knowledge.connector_inventory (
+      connector_id text NOT NULL,
+      snapshot_revision text NOT NULL,
+      inventory_digest text NOT NULL,
+      source_id text NOT NULL,
+      source_path text NOT NULL,
+      source_revision text NOT NULL,
+      content_digest text NOT NULL,
+      acl_digest text NOT NULL,
+      metadata jsonb NOT NULL,
+      PRIMARY KEY (connector_id, source_id),
+      UNIQUE (connector_id, source_path),
+      CONSTRAINT connector_inventory_snapshot_fk FOREIGN KEY (
+        connector_id,
+        snapshot_revision,
+        inventory_digest
+      ) REFERENCES knowledge.connector_snapshots (
+        connector_id,
+        desired_revision,
+        desired_inventory_digest
+      ) ON UPDATE RESTRICT ON DELETE CASCADE,
+      CONSTRAINT connector_inventory_source_owned CHECK (
+        knowledge.is_bounded_clean_text(source_id, 512)
+        AND knowledge.is_dns1123_label(split_part(source_id, '/', 1))
+        AND split_part(source_id, '/', 2) = connector_id
+        AND split_part(source_id, '/', 3) <> ''
+        AND source_id =
+          split_part(source_id, '/', 1) || '/' || connector_id || '/' || source_path
+        AND source_id !~ '(^/|/$|//|(^|/)\.{1,2}(/|$))'
+      ),
+      CONSTRAINT connector_inventory_path_bounded CHECK (
+        knowledge.is_bounded_clean_text(source_path, 1024)
+        AND source_path ~ '^docs/.+\.md$'
+        AND source_path !~ '(^/|/$|//|(^|/)\.{1,2}(/|$))'
+        AND position(chr(92) IN source_path) = 0
+      ),
+      CONSTRAINT connector_inventory_revision_bounded CHECK (
+        knowledge.is_bounded_clean_text(source_revision, 255)
+      ),
+      CONSTRAINT connector_inventory_digest_exact CHECK (
+        inventory_digest ~ '^sha256:[0-9a-f]{64}$'
+        AND content_digest ~ '^sha256:[0-9a-f]{64}$'
+        AND acl_digest ~ '^sha256:[0-9a-f]{64}$'
+      ),
+      CONSTRAINT connector_inventory_metadata_exact CHECK (
+        knowledge.is_valid_metadata(metadata)
+        AND metadata->'source' ?& ARRAY['id', 'locator', 'revision']
+        AND metadata #>> '{source,id}' IS NOT DISTINCT FROM source_id
+        AND metadata #>> '{source,revision}' IS NOT DISTINCT FROM source_revision
+        AND NOT (metadata #> '{source}' ? 'location')
+      )
+    );
+    ALTER TABLE knowledge.connector_inventory OWNER TO knowledge_owner;
+    REVOKE ALL ON knowledge.connector_inventory FROM PUBLIC;
+
+    -- Source IDs are globally unique ownership keys. Desired and applied states are separate so a
+    -- failed parse, embedding request, or tombstone never advances the durable repository cursor.
+    CREATE TABLE IF NOT EXISTS knowledge.connector_sources (
+      source_id text PRIMARY KEY,
+      connector_id text NOT NULL,
+      source_path text NOT NULL,
+      desired_action text NOT NULL,
+      desired_revision text NOT NULL,
+      desired_digest text NOT NULL,
+      desired_acl_digest text,
+      desired_metadata jsonb,
+      desired_snapshot_revision text NOT NULL,
+      desired_inventory_digest text NOT NULL,
+      desired_at timestamptz NOT NULL,
+      applied_action text,
+      applied_revision text,
+      applied_digest text,
+      applied_acl_digest text,
+      applied_metadata jsonb,
+      applied_snapshot_revision text,
+      applied_inventory_digest text,
+      applied_at timestamptz,
+      claim_holder uuid,
+      claimed_at timestamptz,
+      claim_expires_at timestamptz,
+      UNIQUE (connector_id, source_path),
+      CONSTRAINT connector_sources_owner_fk FOREIGN KEY (connector_id)
+        REFERENCES knowledge.connector_snapshots (connector_id)
+        ON UPDATE RESTRICT ON DELETE RESTRICT,
+      CONSTRAINT connector_sources_source_owned CHECK (
+        knowledge.is_bounded_clean_text(source_id, 512)
+        AND knowledge.is_dns1123_label(split_part(source_id, '/', 1))
+        AND split_part(source_id, '/', 2) = connector_id
+        AND split_part(source_id, '/', 3) <> ''
+        AND source_id =
+          split_part(source_id, '/', 1) || '/' || connector_id || '/' || source_path
+        AND source_id !~ '(^/|/$|//|(^|/)\.{1,2}(/|$))'
+      ),
+      CONSTRAINT connector_sources_path_bounded CHECK (
+        knowledge.is_bounded_clean_text(source_path, 1024)
+        AND source_path ~ '^docs/.+\.md$'
+        AND source_path !~ '(^/|/$|//|(^|/)\.{1,2}(/|$))'
+        AND position(chr(92) IN source_path) = 0
+      ),
+      CONSTRAINT connector_sources_desired_exact CHECK (
+        desired_action IN ('present', 'tombstone')
+        AND knowledge.is_bounded_clean_text(desired_revision, 255)
+        AND desired_digest ~ '^sha256:[0-9a-f]{64}$'
+        AND knowledge.is_bounded_clean_text(desired_snapshot_revision, 255)
+        AND desired_inventory_digest ~ '^sha256:[0-9a-f]{64}$'
+        AND (
+          (
+            desired_action = 'present'
+            AND desired_acl_digest IS NOT NULL
+            AND desired_acl_digest ~ '^sha256:[0-9a-f]{64}$'
+            AND desired_metadata IS NOT NULL
+            AND knowledge.is_valid_metadata(desired_metadata)
+            AND desired_metadata->'source' ?& ARRAY['id', 'locator', 'revision']
+            AND desired_metadata #>> '{source,id}' IS NOT DISTINCT FROM source_id
+            AND desired_metadata #>> '{source,revision}' IS NOT DISTINCT FROM desired_revision
+            AND NOT (desired_metadata #> '{source}' ? 'location')
+          )
+          OR (
+            desired_action = 'tombstone'
+            AND desired_acl_digest IS NULL
+            AND desired_metadata IS NULL
+          )
+        )
+      ),
+      CONSTRAINT connector_sources_applied_coherent CHECK (
+        (
+          applied_action IS NULL
+          AND applied_revision IS NULL
+          AND applied_digest IS NULL
+          AND applied_acl_digest IS NULL
+          AND applied_metadata IS NULL
+          AND applied_snapshot_revision IS NULL
+          AND applied_inventory_digest IS NULL
+          AND applied_at IS NULL
+        )
+        OR (
+          applied_action IS NOT NULL
+          AND applied_revision IS NOT NULL
+          AND applied_digest IS NOT NULL
+          AND applied_snapshot_revision IS NOT NULL
+          AND applied_inventory_digest IS NOT NULL
+          AND applied_action IN ('present', 'tombstone')
+          AND knowledge.is_bounded_clean_text(applied_revision, 255)
+          AND applied_digest ~ '^sha256:[0-9a-f]{64}$'
+          AND knowledge.is_bounded_clean_text(applied_snapshot_revision, 255)
+          AND applied_inventory_digest ~ '^sha256:[0-9a-f]{64}$'
+          AND applied_at IS NOT NULL
+          AND (
+            (
+              applied_action = 'present'
+              AND applied_acl_digest IS NOT NULL
+              AND applied_acl_digest ~ '^sha256:[0-9a-f]{64}$'
+              AND applied_metadata IS NOT NULL
+              AND knowledge.is_valid_metadata(applied_metadata)
+              AND applied_metadata->'source' ?& ARRAY['id', 'locator', 'revision']
+              AND applied_metadata #>> '{source,id}' IS NOT DISTINCT FROM source_id
+              AND applied_metadata #>> '{source,revision}' IS NOT DISTINCT FROM applied_revision
+              AND NOT (applied_metadata #> '{source}' ? 'location')
+            )
+            OR (
+              applied_action = 'tombstone'
+              AND applied_acl_digest IS NULL
+              AND applied_metadata IS NULL
+            )
+          )
+        )
+      ),
+      CONSTRAINT connector_sources_claim_coherent CHECK (
+        (
+          claim_holder IS NULL
+          AND claimed_at IS NULL
+          AND claim_expires_at IS NULL
+        )
+        OR (
+          claim_holder IS NOT NULL
+          AND claimed_at IS NOT NULL
+          AND claim_expires_at IS NOT NULL
+          AND claim_expires_at > claimed_at
+          AND claim_expires_at <= claimed_at + interval '35 minutes'
+        )
+      )
+    );
+    ALTER TABLE knowledge.connector_sources OWNER TO knowledge_owner;
+    REVOKE ALL ON knowledge.connector_sources FROM PUBLIC;
+    CREATE INDEX IF NOT EXISTS connector_sources_pending_idx
+      ON knowledge.connector_sources (connector_id, source_id)
+      WHERE claim_holder IS NULL;
+    CREATE UNIQUE INDEX IF NOT EXISTS connector_sources_claim_holder_idx
+      ON knowledge.connector_sources (claim_holder)
+      WHERE claim_holder IS NOT NULL;
+
+    -- Canonical JSON uses UTF-8, lexicographic object keys, array order, and no insignificant
+    -- whitespace. This deliberately matches the dependency-free connector serializer instead of
+    -- relying on jsonb::text's internal key order and spaces.
+    CREATE OR REPLACE FUNCTION knowledge.canonical_jsonb_text(value jsonb)
+    RETURNS text
+    LANGUAGE plpgsql
+    IMMUTABLE
+    STRICT
+    PARALLEL SAFE
+    SET search_path = pg_catalog, knowledge
+    AS $function$
+    DECLARE
+      kind text;
+      canonical text;
+    BEGIN
+      kind := jsonb_typeof(value);
+      CASE kind
+        WHEN 'object' THEN
+          SELECT '{' || COALESCE(
+            string_agg(
+              to_json(entry.key)::text || ':' ||
+                knowledge.canonical_jsonb_text(entry.value),
+              ',' ORDER BY entry.key COLLATE "C"
+            ),
+            ''
+          ) || '}'
+          INTO canonical
+          FROM jsonb_each(value) AS entry;
+        WHEN 'array' THEN
+          SELECT '[' || COALESCE(
+            string_agg(
+              knowledge.canonical_jsonb_text(entry.value),
+              ',' ORDER BY entry.ordinality
+            ),
+            ''
+          ) || ']'
+          INTO canonical
+          FROM jsonb_array_elements(value) WITH ORDINALITY AS entry(value, ordinality);
+        ELSE
+          canonical := value::text;
+      END CASE;
+      RETURN canonical;
+    END;
+    $function$;
+
+    -- The connector asks PostgreSQL to hash its parameterized JSON inventory before begin.
+    -- Complete rebuilds and hashes that same canonical array from stored rows, so serialization
+    -- differences cannot make an omission authoritative accidentally.
+    CREATE OR REPLACE FUNCTION knowledge.connector_inventory_json_digest(value jsonb)
+    RETURNS text
+    LANGUAGE sql
+    IMMUTABLE
+    STRICT
+    PARALLEL SAFE
+    SET search_path = pg_catalog
+    AS $function$
+      SELECT 'sha256:' || encode(
+        sha256(convert_to(knowledge.canonical_jsonb_text(value), 'UTF8')),
+        'hex'
+      );
+    $function$;
+
+    -- Hash the exact stored inventory in source-ID order, including source identity, revision,
+    -- content digest, ACL digest, and the complete source-level metadata mirrored to ingestion.
+    CREATE OR REPLACE FUNCTION knowledge.connector_inventory_digest(
+      requested_connector_id text,
+      requested_revision text,
+      requested_inventory_digest text
+    )
+    RETURNS text
+    LANGUAGE sql
+    STABLE
+    STRICT
+    PARALLEL SAFE
+    SET search_path = pg_catalog, knowledge
+    AS $function$
+      SELECT knowledge.connector_inventory_json_digest(
+        COALESCE(
+          jsonb_agg(
+            jsonb_build_object(
+              'source_id', inventory.source_id,
+              'source_path', inventory.source_path,
+              'source_revision', inventory.source_revision,
+              'content_digest', inventory.content_digest,
+              'acl_digest', inventory.acl_digest,
+              'metadata', inventory.metadata
+            ) ORDER BY inventory.source_id COLLATE "C"
+          ),
+          '[]'::jsonb
+        )
+      )
+      FROM knowledge.connector_inventory AS inventory
+      WHERE inventory.connector_id = requested_connector_id
+        AND inventory.snapshot_revision = requested_revision
+        AND inventory.inventory_digest = requested_inventory_digest;
+    $function$;
+
+    -- Connector inventory is immutable once its complete-snapshot gate closes. This trigger also
+    -- rejects a late insert from a stale enumeration even though the connector retains INSERT.
+    CREATE OR REPLACE FUNCTION knowledge.guard_connector_inventory()
+    RETURNS trigger
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, knowledge
+    AS $function$
+    DECLARE
+      guarded_connector_id text;
+      guarded_revision text;
+      guarded_digest text;
+    BEGIN
+      IF TG_OP = 'DELETE' THEN
+        guarded_connector_id := OLD.connector_id;
+        guarded_revision := OLD.snapshot_revision;
+        guarded_digest := OLD.inventory_digest;
+      ELSE
+        guarded_connector_id := NEW.connector_id;
+        guarded_revision := NEW.snapshot_revision;
+        guarded_digest := NEW.inventory_digest;
+      END IF;
+      IF NOT EXISTS (
+        SELECT 1
+        FROM knowledge.connector_snapshots AS snapshots
+        WHERE snapshots.connector_id = guarded_connector_id
+          AND snapshots.desired_revision = guarded_revision
+          AND snapshots.desired_inventory_digest = guarded_digest
+          AND NOT snapshots.enumeration_complete
+        FOR KEY SHARE
+      ) THEN
+        RAISE EXCEPTION 'connector inventory is stale or already complete';
+      END IF;
+      IF TG_OP = 'DELETE' THEN
+        RETURN OLD;
+      END IF;
+      RETURN NEW;
+    END;
+    $function$;
+    REVOKE ALL ON FUNCTION knowledge.guard_connector_inventory() FROM PUBLIC;
+    DROP TRIGGER IF EXISTS connector_inventory_incomplete_guard
+      ON knowledge.connector_inventory;
+    CREATE TRIGGER connector_inventory_incomplete_guard
+    BEFORE INSERT OR UPDATE OR DELETE ON knowledge.connector_inventory
+    FOR EACH ROW EXECUTE FUNCTION knowledge.guard_connector_inventory();
+
+    -- Serialize begin even before the connector row exists. A complete newer inventory preempts
+    -- older pending desired state; incomplete enumeration may also restart safely after a crash.
+    CREATE OR REPLACE FUNCTION knowledge.begin_connector_snapshot(
+      requested_connector_id text,
+      requested_revision text,
+      requested_inventory_digest text,
+      requested_source_count integer
+    )
+    RETURNS void
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, knowledge
+    AS $function$
+    DECLARE
+      current_snapshot knowledge.connector_snapshots%ROWTYPE;
+    BEGIN
+      IF requested_connector_id <> 'git-markdown'
+        OR NOT knowledge.is_dns1123_label(requested_connector_id)
+        OR NOT knowledge.is_bounded_clean_text(requested_revision, 255)
+        OR requested_inventory_digest !~ '^sha256:[0-9a-f]{64}$'
+        OR requested_source_count NOT BETWEEN 0 AND 512
+      THEN
+        RAISE EXCEPTION 'connector snapshot identity, revision, digest, or count is invalid';
+      END IF;
+
+      PERFORM pg_advisory_xact_lock(
+        hashtextextended('fgentic:knowledge-connector:' || requested_connector_id, 0)
+      );
+      SELECT * INTO current_snapshot
+      FROM knowledge.connector_snapshots
+      WHERE connector_id = requested_connector_id
+      FOR UPDATE;
+
+      IF FOUND THEN
+        -- Open the old inventory before deleting it; the guard refuses mutation of a complete
+        -- snapshot. Desired identity changes only after its referencing rows are gone.
+        UPDATE knowledge.connector_snapshots
+        SET enumeration_complete = false,
+            enumeration_completed_at = NULL
+        WHERE connector_id = requested_connector_id;
+        DELETE FROM knowledge.connector_inventory
+        WHERE connector_id = requested_connector_id;
+        UPDATE knowledge.connector_snapshots
+        SET desired_revision = requested_revision,
+            desired_inventory_digest = requested_inventory_digest,
+            expected_source_count = requested_source_count,
+            enumeration_started_at = clock_timestamp(),
+            blocked_revision = NULL,
+            blocked_artifact_digest = NULL,
+            blocked_at = NULL
+        WHERE connector_id = requested_connector_id;
+      ELSE
+        INSERT INTO knowledge.connector_snapshots (
+          connector_id,
+          desired_revision,
+          desired_inventory_digest,
+          expected_source_count,
+          enumeration_complete,
+          enumeration_started_at,
+          enumeration_completed_at
+        ) VALUES (
+          requested_connector_id,
+          requested_revision,
+          requested_inventory_digest,
+          requested_source_count,
+          false,
+          clock_timestamp(),
+          NULL
+        );
+      END IF;
+    END;
+    $function$;
+
+    -- A current Ready artifact that violates the connector or ACL contract is authoritative denial
+    -- evidence, not a reason to keep serving the last valid ACL indefinitely. Invalidate every
+    -- applied source tuple and quarantine its chunks; a later valid complete inventory must
+    -- explicitly reapply each source before retrieval can resume.
+    CREATE OR REPLACE FUNCTION knowledge.block_connector_snapshot(
+      requested_connector_id text,
+      requested_revision text,
+      requested_artifact_digest text
+    )
+    RETURNS void
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, knowledge
+    AS $function$
+    DECLARE
+      current_snapshot knowledge.connector_snapshots%ROWTYPE;
+    BEGIN
+      IF requested_connector_id <> 'git-markdown'
+        OR NOT knowledge.is_dns1123_label(requested_connector_id)
+        OR NOT knowledge.is_bounded_clean_text(requested_revision, 255)
+        OR requested_artifact_digest !~ '^sha256:[0-9a-f]{64}$'
+      THEN
+        RAISE EXCEPTION 'blocked connector snapshot evidence is invalid';
+      END IF;
+
+      PERFORM pg_advisory_xact_lock(
+        hashtextextended('fgentic:knowledge-connector:' || requested_connector_id, 0)
+      );
+      SELECT * INTO current_snapshot
+      FROM knowledge.connector_snapshots
+      WHERE connector_id = requested_connector_id
+      FOR UPDATE;
+      IF NOT FOUND THEN
+        RETURN;
+      END IF;
+
+      UPDATE knowledge.connector_snapshots
+      SET blocked_revision = requested_revision,
+          blocked_artifact_digest = requested_artifact_digest,
+          blocked_at = clock_timestamp()
+      WHERE connector_id = requested_connector_id;
+
+      UPDATE knowledge.chunks AS chunks
+      SET metadata = jsonb_set(
+        chunks.metadata,
+        '{classification}',
+        to_jsonb('authentication'::text),
+        false
+      )
+      FROM knowledge.connector_sources AS sources
+      WHERE sources.connector_id = requested_connector_id
+        AND chunks.metadata #>> '{source,id}' = sources.source_id
+        AND chunks.metadata->>'classification' <> 'authentication';
+
+      UPDATE knowledge.connector_sources
+      SET applied_action = NULL,
+          applied_revision = NULL,
+          applied_digest = NULL,
+          applied_acl_digest = NULL,
+          applied_metadata = NULL,
+          applied_snapshot_revision = NULL,
+          applied_inventory_digest = NULL,
+          applied_at = NULL,
+          claim_holder = NULL,
+          claimed_at = NULL,
+          claim_expires_at = NULL
+      WHERE connector_id = requested_connector_id;
+    END;
+    $function$;
+
+    -- Cursor advancement is derived, never asserted by the connector. Every current inventory row
+    -- must be applied exactly and no previously-live source may remain outside that inventory.
+    CREATE OR REPLACE FUNCTION knowledge.try_advance_connector_snapshot(
+      requested_connector_id text
+    )
+    RETURNS boolean
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, knowledge
+    AS $function$
+    DECLARE
+      current_snapshot knowledge.connector_snapshots%ROWTYPE;
+    BEGIN
+      SELECT * INTO current_snapshot
+      FROM knowledge.connector_snapshots
+      WHERE connector_id = requested_connector_id
+      FOR UPDATE;
+
+      IF NOT FOUND
+        OR NOT current_snapshot.enumeration_complete
+        OR current_snapshot.blocked_at IS NOT NULL
+      THEN
+        RETURN false;
+      END IF;
+
+      IF EXISTS (
+        SELECT 1
+        FROM knowledge.connector_inventory AS inventory
+        LEFT JOIN knowledge.connector_sources AS sources
+          ON sources.connector_id = inventory.connector_id
+          AND sources.source_id = inventory.source_id
+          AND sources.source_path = inventory.source_path
+        WHERE inventory.connector_id = current_snapshot.connector_id
+          AND inventory.snapshot_revision = current_snapshot.desired_revision
+          AND inventory.inventory_digest = current_snapshot.desired_inventory_digest
+          AND (
+            sources.source_id IS NULL
+            OR sources.applied_action IS DISTINCT FROM 'present'
+            OR sources.applied_revision IS DISTINCT FROM inventory.source_revision
+            OR sources.applied_digest IS DISTINCT FROM inventory.content_digest
+            OR sources.applied_acl_digest IS DISTINCT FROM inventory.acl_digest
+            OR sources.applied_metadata IS DISTINCT FROM inventory.metadata
+          )
+      ) OR EXISTS (
+        SELECT 1
+        FROM knowledge.connector_sources AS sources
+        WHERE sources.connector_id = current_snapshot.connector_id
+          AND sources.applied_action = 'present'
+          AND NOT EXISTS (
+            SELECT 1
+            FROM knowledge.connector_inventory AS inventory
+            WHERE inventory.connector_id = current_snapshot.connector_id
+              AND inventory.snapshot_revision = current_snapshot.desired_revision
+              AND inventory.inventory_digest = current_snapshot.desired_inventory_digest
+              AND inventory.source_id = sources.source_id
+          )
+      ) OR EXISTS (
+        SELECT 1
+        FROM knowledge.connector_sources AS sources
+        WHERE sources.connector_id = current_snapshot.connector_id
+          AND (
+            sources.applied_action IS DISTINCT FROM sources.desired_action
+            OR sources.applied_revision IS DISTINCT FROM sources.desired_revision
+            OR sources.applied_digest IS DISTINCT FROM sources.desired_digest
+            OR sources.applied_acl_digest IS DISTINCT FROM sources.desired_acl_digest
+            OR sources.applied_metadata IS DISTINCT FROM sources.desired_metadata
+            OR sources.applied_snapshot_revision
+              IS DISTINCT FROM sources.desired_snapshot_revision
+            OR sources.applied_inventory_digest
+              IS DISTINCT FROM sources.desired_inventory_digest
+          )
+      ) THEN
+        RETURN false;
+      END IF;
+
+      UPDATE knowledge.connector_snapshots
+      SET applied_revision = desired_revision,
+          applied_inventory_digest = desired_inventory_digest,
+          applied_at = clock_timestamp()
+      WHERE connector_id = current_snapshot.connector_id;
+      RETURN true;
+    END;
+    $function$;
+
+    CREATE OR REPLACE FUNCTION knowledge.complete_connector_snapshot(
+      requested_connector_id text,
+      requested_revision text,
+      requested_inventory_digest text
+    )
+    RETURNS void
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, knowledge
+    AS $function$
+    DECLARE
+      current_snapshot knowledge.connector_snapshots%ROWTYPE;
+      actual_source_count integer;
+      actual_inventory_digest text;
+      upserted_source_count integer;
+    BEGIN
+      PERFORM pg_advisory_xact_lock(
+        hashtextextended('fgentic:knowledge-connector:' || requested_connector_id, 0)
+      );
+      SELECT * INTO current_snapshot
+      FROM knowledge.connector_snapshots
+      WHERE connector_id = requested_connector_id
+      FOR UPDATE;
+
+      IF NOT FOUND
+        OR current_snapshot.enumeration_complete
+        OR (current_snapshot.desired_revision, current_snapshot.desired_inventory_digest)
+          IS DISTINCT FROM (requested_revision, requested_inventory_digest)
+      THEN
+        RAISE EXCEPTION 'connector snapshot is absent, stale, or already complete';
+      END IF;
+
+      SELECT count(*) INTO actual_source_count
+      FROM knowledge.connector_inventory
+      WHERE connector_id = requested_connector_id
+        AND snapshot_revision = requested_revision
+        AND inventory_digest = requested_inventory_digest;
+      actual_inventory_digest := knowledge.connector_inventory_digest(
+        requested_connector_id,
+        requested_revision,
+        requested_inventory_digest
+      );
+      IF actual_source_count <> current_snapshot.expected_source_count
+        OR actual_inventory_digest <> requested_inventory_digest
+        OR EXISTS (
+          SELECT 1
+          FROM knowledge.connector_inventory AS inventory
+          WHERE inventory.connector_id = requested_connector_id
+            AND inventory.snapshot_revision = requested_revision
+            AND inventory.inventory_digest = requested_inventory_digest
+            AND inventory.acl_digest IS DISTINCT FROM
+              knowledge.connector_inventory_json_digest(
+                jsonb_build_object(
+                  'classification', inventory.metadata->'classification',
+                  'allowed_principals', inventory.metadata->'allowed_principals',
+                  'allowed_groups', inventory.metadata->'allowed_groups'
+                )
+              )
+        )
+      THEN
+        RAISE EXCEPTION 'connector inventory source count, canonical digest, or ACL digest is invalid';
+      END IF;
+
+      INSERT INTO knowledge.connector_sources (
+        source_id,
+        connector_id,
+        source_path,
+        desired_action,
+        desired_revision,
+        desired_digest,
+        desired_acl_digest,
+        desired_metadata,
+        desired_snapshot_revision,
+        desired_inventory_digest,
+        desired_at
+      )
+      SELECT
+        inventory.source_id,
+        inventory.connector_id,
+        inventory.source_path,
+        'present',
+        inventory.source_revision,
+        inventory.content_digest,
+        inventory.acl_digest,
+        inventory.metadata,
+        current_snapshot.desired_revision,
+        current_snapshot.desired_inventory_digest,
+        clock_timestamp()
+      FROM knowledge.connector_inventory AS inventory
+      WHERE inventory.connector_id = current_snapshot.connector_id
+        AND inventory.snapshot_revision = current_snapshot.desired_revision
+        AND inventory.inventory_digest = current_snapshot.desired_inventory_digest
+      ORDER BY inventory.source_id
+      ON CONFLICT (source_id) DO UPDATE
+      SET desired_action = EXCLUDED.desired_action,
+          desired_revision = EXCLUDED.desired_revision,
+          desired_digest = EXCLUDED.desired_digest,
+          desired_acl_digest = EXCLUDED.desired_acl_digest,
+          desired_metadata = EXCLUDED.desired_metadata,
+          desired_snapshot_revision = EXCLUDED.desired_snapshot_revision,
+          desired_inventory_digest = EXCLUDED.desired_inventory_digest,
+          desired_at = EXCLUDED.desired_at,
+          claim_holder = NULL,
+          claimed_at = NULL,
+          claim_expires_at = NULL
+      WHERE connector_sources.connector_id = EXCLUDED.connector_id
+        AND connector_sources.source_path = EXCLUDED.source_path;
+      GET DIAGNOSTICS upserted_source_count = ROW_COUNT;
+      IF upserted_source_count <> actual_source_count THEN
+        RAISE EXCEPTION 'connector source ID or path is owned by another source';
+      END IF;
+
+      -- A repository-only commit may change the snapshot revision while leaving a source's exact
+      -- content, ACL, provenance, and action unchanged. Advance only that source's snapshot
+      -- binding in this complete-inventory transaction; no parser or model work is warranted.
+      UPDATE knowledge.connector_sources AS sources
+      SET applied_snapshot_revision = sources.desired_snapshot_revision,
+          applied_inventory_digest = sources.desired_inventory_digest,
+          applied_at = clock_timestamp()
+      WHERE sources.connector_id = current_snapshot.connector_id
+        AND sources.desired_action = 'present'
+        AND sources.applied_action = 'present'
+        AND sources.applied_revision IS NOT DISTINCT FROM sources.desired_revision
+        AND sources.applied_digest IS NOT DISTINCT FROM sources.desired_digest
+        AND sources.applied_acl_digest IS NOT DISTINCT FROM sources.desired_acl_digest
+        AND sources.applied_metadata IS NOT DISTINCT FROM sources.desired_metadata
+        AND NOT EXISTS (
+          SELECT 1
+          FROM knowledge.chunks AS chunks
+          WHERE chunks.metadata #>> '{source,id}' = sources.source_id
+            AND chunks.metadata->>'classification' = 'authentication'
+        )
+        AND (
+          sources.applied_snapshot_revision
+            IS DISTINCT FROM sources.desired_snapshot_revision
+          OR sources.applied_inventory_digest
+            IS DISTINCT FROM sources.desired_inventory_digest
+        );
+
+      -- Only a complete, digest-verified enumeration reaches this omission transition.
+      UPDATE knowledge.connector_sources AS sources
+      SET desired_action = 'tombstone',
+          desired_revision = current_snapshot.desired_revision,
+          desired_digest = current_snapshot.desired_inventory_digest,
+          desired_acl_digest = NULL,
+          desired_metadata = NULL,
+          desired_snapshot_revision = current_snapshot.desired_revision,
+          desired_inventory_digest = current_snapshot.desired_inventory_digest,
+          desired_at = clock_timestamp(),
+          claim_holder = NULL,
+          claimed_at = NULL,
+          claim_expires_at = NULL
+      WHERE sources.connector_id = current_snapshot.connector_id
+        AND (
+          sources.desired_action IS DISTINCT FROM 'tombstone'
+          OR sources.applied_action IS DISTINCT FROM 'tombstone'
+        )
+        AND NOT EXISTS (
+          SELECT 1
+          FROM knowledge.connector_inventory AS inventory
+          WHERE inventory.connector_id = current_snapshot.connector_id
+            AND inventory.snapshot_revision = current_snapshot.desired_revision
+            AND inventory.inventory_digest = current_snapshot.desired_inventory_digest
+            AND inventory.source_id = sources.source_id
+        );
+
+      -- A source-system ACL, content, or deletion change must stop stale chunks before ranking,
+      -- not after a later scheduled Job succeeds. `authentication` is valid stored metadata but
+      -- outside both classification arrays accepted by the secure search functions. Keeping the
+      -- content and source ID lets the ordinary plan reuse a sound embedding; the writer or
+      -- tombstone then replaces/deletes the quarantined rows in its atomic completion transaction.
+      UPDATE knowledge.chunks AS chunks
+      SET metadata = jsonb_set(
+        chunks.metadata,
+        '{classification}',
+        to_jsonb('authentication'::text),
+        false
+      )
+      FROM knowledge.connector_sources AS sources
+      WHERE sources.connector_id = current_snapshot.connector_id
+        AND chunks.metadata #>> '{source,id}' = sources.source_id
+        AND chunks.metadata->>'classification' <> 'authentication'
+        AND (
+          sources.applied_action IS DISTINCT FROM sources.desired_action
+          OR sources.applied_revision IS DISTINCT FROM sources.desired_revision
+          OR sources.applied_digest IS DISTINCT FROM sources.desired_digest
+          OR sources.applied_acl_digest IS DISTINCT FROM sources.desired_acl_digest
+          OR sources.applied_metadata IS DISTINCT FROM sources.desired_metadata
+        );
+
+      UPDATE knowledge.connector_snapshots
+      SET enumeration_complete = true,
+          enumeration_completed_at = clock_timestamp()
+      WHERE connector_id = current_snapshot.connector_id;
+      PERFORM knowledge.try_advance_connector_snapshot(current_snapshot.connector_id);
+    END;
+    $function$;
+
+    -- The existing writer calls this before its COMMIT only for a connector-backed run. The claim,
+    -- final source, ACL/provenance metadata, and current complete inventory must all still agree.
+    CREATE OR REPLACE FUNCTION knowledge.complete_connector_present(
+      requested_run_id uuid
+    )
+    RETURNS void
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, knowledge, public
+    AS $function$
+    DECLARE
+      claimed_source knowledge.connector_sources%ROWTYPE;
+    BEGIN
+      SELECT * INTO claimed_source
+      FROM knowledge.connector_sources
+      WHERE claim_holder = requested_run_id
+      FOR UPDATE;
+      IF NOT FOUND
+        OR claimed_source.claim_expires_at <= clock_timestamp()
+        OR claimed_source.desired_action <> 'present'
+      THEN
+        RAISE EXCEPTION 'connector present claim is absent, expired, or not present';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM knowledge.connector_snapshots AS snapshots
+        WHERE snapshots.connector_id = claimed_source.connector_id
+          AND snapshots.enumeration_complete
+          AND snapshots.desired_revision = claimed_source.desired_snapshot_revision
+          AND snapshots.desired_inventory_digest = claimed_source.desired_inventory_digest
+      ) THEN
+        RAISE EXCEPTION 'connector present claim is no longer in the complete desired snapshot';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1 FROM knowledge.ingestion_final
+        WHERE run_id = requested_run_id
+      ) OR EXISTS (
+        SELECT 1
+        FROM knowledge.ingestion_final AS final
+        WHERE final.run_id = requested_run_id
+          AND (
+            final.payload #>> '{metadata,source,id}'
+              IS DISTINCT FROM claimed_source.source_id
+            OR (final.payload->'metadata'->'source') - 'location'
+              IS DISTINCT FROM claimed_source.desired_metadata->'source'
+            OR final.payload #>> '{metadata,classification}'
+              IS DISTINCT FROM claimed_source.desired_metadata->>'classification'
+            OR final.payload #> '{metadata,allowed_principals}'
+              IS DISTINCT FROM claimed_source.desired_metadata->'allowed_principals'
+            OR final.payload #> '{metadata,allowed_groups}'
+              IS DISTINCT FROM claimed_source.desired_metadata->'allowed_groups'
+          )
+      ) THEN
+        RAISE EXCEPTION 'connector final chunks do not match the exact claimed source metadata';
+      END IF;
+
+      UPDATE knowledge.connector_sources
+      SET applied_action = desired_action,
+          applied_revision = desired_revision,
+          applied_digest = desired_digest,
+          applied_acl_digest = desired_acl_digest,
+          applied_metadata = desired_metadata,
+          applied_snapshot_revision = desired_snapshot_revision,
+          applied_inventory_digest = desired_inventory_digest,
+          applied_at = clock_timestamp(),
+          claim_holder = NULL,
+          claimed_at = NULL,
+          claim_expires_at = NULL
+      WHERE source_id = claimed_source.source_id
+        AND claim_holder = requested_run_id;
+      PERFORM knowledge.try_advance_connector_snapshot(claimed_source.connector_id);
+    END;
+    $function$;
+
+    -- Tombstoning and its cursor update happen in the caller's single transaction. The connector
+    -- can request only its exact, database-bound source ID; it never receives chunk privileges.
+    CREATE OR REPLACE FUNCTION knowledge.apply_connector_tombstone(
+      requested_run_id uuid
+    )
+    RETURNS void
+    LANGUAGE plpgsql
+    SECURITY DEFINER
+    SET search_path = pg_catalog, knowledge
+    AS $function$
+    DECLARE
+      claimed_source knowledge.connector_sources%ROWTYPE;
+    BEGIN
+      SELECT * INTO claimed_source
+      FROM knowledge.connector_sources
+      WHERE claim_holder = requested_run_id
+      FOR UPDATE;
+      IF NOT FOUND
+        OR claimed_source.claim_expires_at <= clock_timestamp()
+        OR claimed_source.desired_action <> 'tombstone'
+      THEN
+        RAISE EXCEPTION 'connector tombstone claim is absent, expired, or not a tombstone';
+      END IF;
+
+      IF NOT EXISTS (
+        SELECT 1
+        FROM knowledge.connector_snapshots AS snapshots
+        WHERE snapshots.connector_id = claimed_source.connector_id
+          AND snapshots.enumeration_complete
+          AND snapshots.desired_revision = claimed_source.desired_snapshot_revision
+          AND snapshots.desired_inventory_digest = claimed_source.desired_inventory_digest
+      ) THEN
+        RAISE EXCEPTION 'connector tombstone is no longer in the complete desired snapshot';
+      END IF;
+
+      DELETE FROM knowledge.chunks
+      WHERE metadata #>> '{source,id}' = claimed_source.source_id;
+      DELETE FROM knowledge.ingestion_embedding_cache
+      WHERE source_id = claimed_source.source_id;
+
+      UPDATE knowledge.connector_sources
+      SET applied_action = desired_action,
+          applied_revision = desired_revision,
+          applied_digest = desired_digest,
+          applied_acl_digest = NULL,
+          applied_metadata = NULL,
+          applied_snapshot_revision = desired_snapshot_revision,
+          applied_inventory_digest = desired_inventory_digest,
+          applied_at = clock_timestamp(),
+          claim_holder = NULL,
+          claimed_at = NULL,
+          claim_expires_at = NULL
+      WHERE source_id = claimed_source.source_id
+        AND claim_holder = requested_run_id;
+      PERFORM knowledge.try_advance_connector_snapshot(claimed_source.connector_id);
+    END;
+    $function$;
+
+    REVOKE ALL ON FUNCTION knowledge.canonical_jsonb_text(jsonb)
+      FROM PUBLIC;
+    REVOKE ALL ON FUNCTION knowledge.connector_inventory_json_digest(jsonb)
+      FROM PUBLIC;
+    REVOKE ALL ON FUNCTION knowledge.connector_inventory_digest(text, text, text)
+      FROM PUBLIC;
+    REVOKE ALL ON FUNCTION knowledge.guard_connector_inventory()
+      FROM PUBLIC;
+    REVOKE ALL ON FUNCTION knowledge.begin_connector_snapshot(text, text, text, integer)
+      FROM PUBLIC;
+    REVOKE ALL ON FUNCTION knowledge.block_connector_snapshot(text, text, text)
+      FROM PUBLIC;
+    REVOKE ALL ON FUNCTION knowledge.try_advance_connector_snapshot(text)
+      FROM PUBLIC;
+    REVOKE ALL ON FUNCTION knowledge.complete_connector_snapshot(text, text, text)
+      FROM PUBLIC;
+    REVOKE ALL ON FUNCTION knowledge.complete_connector_present(uuid)
+      FROM PUBLIC;
+    REVOKE ALL ON FUNCTION knowledge.apply_connector_tombstone(uuid)
+      FROM PUBLIC;
+
+    GRANT SELECT ON knowledge.connector_snapshots TO knowledge_connector;
+    GRANT INSERT ON knowledge.connector_inventory TO knowledge_connector;
+    GRANT EXECUTE ON FUNCTION knowledge.is_dns1123_label(text)
+      TO knowledge_connector;
+    GRANT EXECUTE ON FUNCTION knowledge.is_bounded_clean_text(text, integer)
+      TO knowledge_connector;
+    GRANT EXECUTE ON FUNCTION knowledge.is_full_mxid(text)
+      TO knowledge_connector;
+    GRANT EXECUTE ON FUNCTION knowledge.is_valid_principal_array(jsonb, integer)
+      TO knowledge_connector;
+    GRANT EXECUTE ON FUNCTION knowledge.is_valid_group_array(jsonb, integer)
+      TO knowledge_connector;
+    GRANT EXECUTE ON FUNCTION knowledge.is_valid_metadata(jsonb)
+      TO knowledge_connector;
+    GRANT EXECUTE ON FUNCTION knowledge.canonical_jsonb_text(jsonb)
+      TO knowledge_connector;
+    GRANT EXECUTE ON FUNCTION knowledge.connector_inventory_json_digest(jsonb)
+      TO knowledge_connector;
+    GRANT EXECUTE ON FUNCTION knowledge.begin_connector_snapshot(text, text, text, integer)
+      TO knowledge_connector;
+    GRANT EXECUTE ON FUNCTION knowledge.block_connector_snapshot(text, text, text)
+      TO knowledge_connector;
+    GRANT EXECUTE ON FUNCTION knowledge.complete_connector_snapshot(text, text, text)
+      TO knowledge_connector;
+
+    GRANT SELECT ON knowledge.connector_snapshots, knowledge.connector_inventory
+      TO knowledge_ingestion;
+    GRANT SELECT ON knowledge.connector_sources TO knowledge_ingestion;
+    GRANT UPDATE (claim_holder, claimed_at, claim_expires_at)
+      ON knowledge.connector_sources TO knowledge_ingestion;
+    GRANT EXECUTE ON FUNCTION knowledge.complete_connector_present(uuid)
+      TO knowledge_ingestion;
+    GRANT EXECUTE ON FUNCTION knowledge.apply_connector_tombstone(uuid)
+      TO knowledge_ingestion;
+
+    INSERT INTO knowledge.schema_migrations (version)
+    VALUES (3)
+    ON CONFLICT (version) DO NOTHING;
+
+    COMMIT;
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: knowledge-schema-v3
+  namespace: postgres
+  labels:
+    app.kubernetes.io/name: knowledge-schema
+    app.kubernetes.io/instance: v3
+    app.kubernetes.io/component: database-migration
+    app.kubernetes.io/part-of: fgentic
+spec:
+  backoffLimit: 2
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: knowledge-schema
+        app.kubernetes.io/instance: v3
+        app.kubernetes.io/component: database-migration
+        app.kubernetes.io/part-of: fgentic
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: schema
+          image: ghcr.io/cloudnative-pg/postgresql:17.10-202607130907-system-trixie@sha256:c141aec61cab8da3e215aebe0fa155e78442fbb41c982a86743915a967e12af9
+          imagePullPolicy: IfNotPresent
+          command:
+            - /bin/sh
+            - -ec
+          args:
+            - |
+              attempt=1
+              while true; do
+                if ready="$(
+                  psql --no-psqlrc --tuples-only --no-align --set=ON_ERROR_STOP=1 \
+                    --command="SELECT EXISTS (SELECT 1 FROM pg_roles WHERE rolname = 'knowledge_connector') AND EXISTS (SELECT 1 FROM knowledge.schema_migrations WHERE version = 2)" \
+                    2>/dev/null
+                )" && [ "$${ready}" = "t" ]; then
+                  exec psql --no-psqlrc --set=ON_ERROR_STOP=1 --file=/schema/schema.sql
+                fi
+                echo "waiting for knowledge schema v2 and the connector role (attempt $${attempt})" >&2
+                attempt=$((attempt + 1))
+                sleep 5
+              done
+          env:
+            - name: PGHOST
+              value: platform-pg-rw.postgres.svc.cluster.local
+            - name: PGPORT
+              value: "5432"
+            - name: PGDATABASE
+              value: knowledge
+            - name: PGUSER
+              valueFrom:
+                secretKeyRef:
+                  name: pg-knowledge-owner
+                  key: username
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: pg-knowledge-owner
+                  key: password
+            - name: PGSSLMODE
+              value: require
+            - name: PGCONNECT_TIMEOUT
+              value: "3"
+            - name: HOME
+              value: /tmp
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+              ephemeral-storage: 8Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+              ephemeral-storage: 32Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: schema
+              mountPath: /schema
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: schema
+          configMap:
+            name: knowledge-schema-v3
+        - name: tmp
+          emptyDir:
+            sizeLimit: 8Mi
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: knowledge-schema-v3
+  namespace: postgres
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: knowledge-schema
+      app.kubernetes.io/instance: v3
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: platform-pg
+      ports:
+        - protocol: TCP
+          port: 5432

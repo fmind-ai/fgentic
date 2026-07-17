@@ -1,0 +1,21 @@
+apiVersion: postgresql.cnpg.io/v1
+kind: DatabaseRole
+metadata:
+  name: knowledge-connector
+  namespace: postgres
+spec:
+  cluster:
+    name: platform-pg
+  name: knowledge_connector
+  ensure: present
+  login: true
+  inherit: false
+  superuser: false
+  createdb: false
+  createrole: false
+  replication: false
+  bypassrls: false
+  connectionLimit: 2
+  passwordSecret:
+    name: pg-knowledge-connector
+  databaseRoleReclaimPolicy: retain

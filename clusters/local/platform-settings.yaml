@@ -22,6 +22,10 @@ data:
   gcp_project: your-gcp-project
   pg_backups_bucket: unused-local
   ingress_ip_name: unused-local
+  # Fail-closed placeholder. Before enabling knowledge ingestion, override with the current
+  # Kubernetes API endpoint /32 observed after Service DNAT and prove it with the installed CNI.
+  kubernetes_api_egress_cidr: 192.0.2.1/32
+  kubernetes_api_egress_port: "6443"
   # Selects infra/agentgateway/providers/profiles/<llm_provider>; switching to an installed
   # profile needs only these settings plus that profile's per-cluster SOPS Secret.
   llm_provider: vertex

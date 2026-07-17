@@ -13,13 +13,14 @@ readonly CALICO_VERSION=v3.32.1
 readonly CALICO_MANIFEST_SHA256=a1df919d9721cf667accdc3e72848911b0cb25cfab7d2478ad0c996302c95744
 readonly FIXTURE_MANIFEST="${ROOT_DIR}/scripts/testdata/network-policy-conformance.yaml"
 readonly CONFORMANCE_SCRIPT="${ROOT_DIR}/scripts/test-network-policies.sh"
+readonly CONNECTOR_NETWORK_POLICY_SOURCE="${ROOT_DIR}/infra/knowledge/connectors/git-markdown-runtime/networkpolicy.yaml"
 readonly DIAGNOSTICS_DIR="${NETWORK_POLICY_DIAGNOSTICS_DIR:-${TMPDIR:-/tmp}/fgentic-network-policy-diagnostics}"
 readonly EGRESS_TARGET_HOST="egress-target.network-policy-target.svc.cluster.local"
 readonly EGRESS_TARGET_PORT=8443
 KUBECONFIG="$(mktemp -t fgentic-network-policy-kind.XXXXXX)"
 export KUBECONFIG
 
-for command in curl docker kind kubectl; do
+for command in curl docker flux jq kind kubectl; do
   if ! command -v "${command}" >/dev/null 2>&1; then
     echo "error: required command not found: ${command}" >&2
     exit 2
@@ -78,6 +79,7 @@ assert_connection() {
 
 mkdir -p "${DIAGNOSTICS_DIR}"
 readonly CALICO_MANIFEST="${DIAGNOSTICS_DIR}/calico-${CALICO_VERSION}.yaml"
+readonly CONNECTOR_NETWORK_POLICY="${DIAGNOSTICS_DIR}/knowledge-connector-networkpolicy.yaml"
 
 diagnose() {
   {
@@ -140,6 +142,17 @@ kind create cluster \
   --name "${CLUSTER_NAME}" \
   --image "${KIND_NODE_IMAGE}" \
   --config "${KIND_CONFIG}"
+api_endpoint_ip="$(
+  docker inspect "${CLUSTER_NAME}-control-plane" |
+    jq -er '
+      .[0].NetworkSettings.Networks
+      | to_entries
+      | map(select(.value.IPAddress != ""))
+      | if length == 1 then .[0].value.IPAddress else error("ambiguous API endpoint") end
+    '
+)"
+kubernetes_api_egress_cidr="${api_endpoint_ip}/32" kubernetes_api_egress_port=6443 \
+  flux envsubst --strict <"${CONNECTOR_NETWORK_POLICY_SOURCE}" >"${CONNECTOR_NETWORK_POLICY}"
 echo "==> Installing Calico ${CALICO_VERSION}"
 kubectl apply --filename "${CALICO_MANIFEST}"
 kubectl --namespace kube-system rollout status daemonset/calico-node --timeout=240s
@@ -154,6 +167,7 @@ kubectl apply --filename "${ROOT_DIR}/infra/models/vllm/networkpolicy.yaml"
 kubectl apply --filename \
   "${ROOT_DIR}/infra/agentgateway/providers/profiles/vllm/networkpolicy.yaml"
 kubectl apply --filename "${ROOT_DIR}/infra/knowledge/base/networkpolicy.yaml"
+kubectl apply --filename "${CONNECTOR_NETWORK_POLICY}"
 kubectl wait \
   --for=condition=Ready \
   pods \
@@ -196,31 +210,42 @@ assert_connection knowledge knowledge-ingestion \
 assert_connection bridge knowledge-unrelated-caller \
 	agentgateway-proxy.agentgateway-system.svc.cluster.local 8082 denied
 
-echo "==> Proving deletion of kagent-allow-platform turns conformance red"
+echo "==> Running knowledge Git/Markdown acquisition NetworkPolicy conformance"
+assert_dns_reachable knowledge knowledge-git-markdown-connector \
+	kubernetes.default.svc.cluster.local
+assert_connection knowledge knowledge-git-markdown-connector \
+	kubernetes.default.svc.cluster.local 443 reachable
+assert_connection knowledge knowledge-git-markdown-connector \
+	source-controller.flux-system.svc.cluster.local 80 reachable
+assert_connection knowledge knowledge-git-markdown-connector \
+	source-controller.flux-system.svc.cluster.local 8080 denied
+assert_connection knowledge knowledge-git-markdown-connector \
+	platform-pg-rw.postgres.svc.cluster.local 5432 denied
+assert_connection knowledge knowledge-git-markdown-connector \
+	agentgateway-proxy.agentgateway-system.svc.cluster.local 8082 denied
+assert_connection knowledge knowledge-git-markdown-connector \
+	knowledge-embeddings.models.svc.cluster.local 8000 denied
+assert_connection knowledge knowledge-git-markdown-connector \
+	"${EGRESS_TARGET_HOST}" "${EGRESS_TARGET_PORT}" denied
+
+echo "==> Proving deletion of the acquisition policy opens its denied external edge"
+kubectl --namespace knowledge delete networkpolicy knowledge-git-markdown-connector
+sleep 2
+assert_connection knowledge knowledge-git-markdown-connector \
+	"${EGRESS_TARGET_HOST}" "${EGRESS_TARGET_PORT}" reachable
+kubectl apply --filename "${CONNECTOR_NETWORK_POLICY}"
+sleep 2
+assert_connection knowledge knowledge-git-markdown-connector \
+	"${EGRESS_TARGET_HOST}" "${EGRESS_TARGET_PORT}" denied
+
+echo "==> Proving deletion of kagent-allow-platform opens the unauthorized path"
+assert_connection postgres unrelated-db \
+	kagent-controller.kagent.svc.cluster.local 8083 denied
 kubectl --namespace kagent delete networkpolicy kagent-allow-platform
 # NetworkPolicy has no deletion status; allow Calico one reconciliation interval before the
 # unauthorized probe so a stale rule cannot make the mutation look safe.
 sleep 2
-set +e
-NETWORK_POLICY_EGRESS_TARGET_HOST="${EGRESS_TARGET_HOST}" \
-  NETWORK_POLICY_EGRESS_TARGET_PORT="${EGRESS_TARGET_PORT}" \
-  NETWORK_POLICY_POD_TIMEOUT_SECONDS=15 \
-  NETWORK_POLICY_SKIP_KAGENT_POLICY_REQUIRE=true \
-  bash "${CONFORMANCE_SCRIPT}" --require-vllm \
-  2>&1 | tee "${DIAGNOSTICS_DIR}/deleted-policy.log"
-readonly mutation_status="${PIPESTATUS[0]}"
-set -e
-
-if [[ "${mutation_status}" -eq 0 ]]; then
-  echo "error: conformance unexpectedly passed after deleting kagent-allow-platform" >&2
-  exit 1
-fi
-if ! grep -Fq "unexpected connection succeeded" "${DIAGNOSTICS_DIR}/deleted-policy.log" \
-  || ! grep -Fq \
-    "expected kagent-controller.kagent.svc.cluster.local:8083 to be denied" \
-    "${DIAGNOSTICS_DIR}/deleted-policy.log"; then
-  echo "error: deletion did not open the unauthorized kagent path; inspect deleted-policy.log" >&2
-  exit 1
-fi
+assert_connection postgres unrelated-db \
+	kagent-controller.kagent.svc.cluster.local 8083 reachable
 
 echo "NetworkPolicy deletion guard passed"

@@ -1,6 +1,8 @@
-# Suspended by default: an operator provisions the knowledge-source-bundle PVC, keeps its reviewed
-# manifest and sole source immutable for a run, and enables the #340-owned in-cluster embedding
-# runtime before selecting a schedule. This profile deliberately owns no storage provisioning.
+# Suspended by default: the Git connector can publish a reviewed complete snapshot to the
+# knowledge-source-bundle PVC, while an operator may still place one immutable manual bundle.
+# Each run claims at most one connector delta before entering the unchanged one-source parser
+# boundary. The #340-owned in-cluster embedding runtime remains required before selecting a
+# schedule.
 # The sequential trust phases keep Docling text-only: a fresh minimal-Python binder reconstructs
 # IDs, ACLs, provenance, and deletion scope before the least-privilege database role sees data.
 apiVersion: batch/v1
@@ -13,10 +15,12 @@ metadata:
     app.kubernetes.io/component: ingestion
     app.kubernetes.io/part-of: fgentic
 spec:
-  schedule: "0 3 * * *"
+  # Offset from the acquisition schedule so a reconciled artifact normally publishes first.
+  # One source per Job preserves the parser boundary while draining this opt-in queue promptly.
+  schedule: "2-59/5 * * * *"
   suspend: true
   concurrencyPolicy: Forbid
-  startingDeadlineSeconds: 900
+  startingDeadlineSeconds: 300
   successfulJobsHistoryLimit: 1
   failedJobsHistoryLimit: 2
   jobTemplate:
@@ -42,24 +46,191 @@ spec:
             seccompProfile:
               type: RuntimeDefault
           initContainers:
+            # Acquisition is a separate Pod with no database credential. This first phase publishes
+            # its whole validated inventory or a current artifact-rejection marker into durable
+            # desired state. Newer complete state preempts and invalidates older pending work.
+            - name: connector-publish
+              image: ghcr.io/cloudnative-pg/postgresql:17.10-202607130907-system-trixie@sha256:c141aec61cab8da3e215aebe0fa155e78442fbb41c982a86743915a967e12af9
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/bash
+                - -ceu
+                - --
+              args:
+                - |
+                  if [[ ! -s /sources/.connector/git-markdown/current.json ]]; then
+                    touch /dispatch/manual
+                    exit 0
+                  fi
+                  exec psql --quiet --no-psqlrc --file=/runtime/connector-publish.sql
+              env:
+                - name: PGHOST
+                  value: platform-pg-rw.postgres.svc.cluster.local
+                - name: PGPORT
+                  value: "5432"
+                - name: PGDATABASE
+                  value: knowledge
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: pg-knowledge-connector
+                      key: username
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: pg-knowledge-connector
+                      key: password
+                - name: PGSSLMODE
+                  value: require
+                - name: PGCONNECT_TIMEOUT
+                  value: "3"
+                - name: HOME
+                  value: /tmp
+              resources: &postgres-resources
+                requests:
+                  cpu: 10m
+                  memory: 32Mi
+                  ephemeral-storage: 8Mi
+                limits:
+                  cpu: 100m
+                  memory: 64Mi
+                  ephemeral-storage: 64Mi
+              securityContext: &restricted-container
+                allowPrivilegeEscalation: false
+                capabilities:
+                  drop:
+                    - ALL
+                readOnlyRootFilesystem: true
+              volumeMounts:
+                - name: runtime
+                  mountPath: /runtime
+                  readOnly: true
+                - name: sources
+                  mountPath: /sources
+                  readOnly: true
+                - name: dispatch
+                  mountPath: /dispatch
+                - name: tmp
+                  mountPath: /tmp
+            - name: connector-claim
+              image: ghcr.io/cloudnative-pg/postgresql:17.10-202607130907-system-trixie@sha256:c141aec61cab8da3e215aebe0fa155e78442fbb41c982a86743915a967e12af9
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/bash
+                - -ceu
+                - --
+              args:
+                - |
+                  [[ ! -e /dispatch/manual ]] || exit 0
+                  exec psql --quiet --no-psqlrc --set=run_id="$POD_UID" \
+                    --file=/runtime/connector-claim.sql
+              env: &postgres-env
+                - name: PGHOST
+                  value: platform-pg-rw.postgres.svc.cluster.local
+                - name: PGPORT
+                  value: "5432"
+                - name: PGDATABASE
+                  value: knowledge
+                - name: PGUSER
+                  valueFrom:
+                    secretKeyRef:
+                      name: pg-knowledge-ingestion
+                      key: username
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: pg-knowledge-ingestion
+                      key: password
+                - name: PGSSLMODE
+                  value: require
+                - name: PGCONNECT_TIMEOUT
+                  value: "3"
+                - name: POD_UID
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.uid
+                - name: HOME
+                  value: /tmp
+              resources: *postgres-resources
+              securityContext: *restricted-container
+              volumeMounts:
+                - name: runtime
+                  mountPath: /runtime
+                  readOnly: true
+                - name: work
+                  mountPath: /work
+                - name: dispatch
+                  mountPath: /dispatch
+                  readOnly: true
+                - name: tmp
+                  mountPath: /tmp
+            # One dispatcher handles both action kinds. Tombstones commit here and make later
+            # phases no-ops; present actions continue through Docling and the existing writer.
+            - name: connector-dispatch
+              image: ghcr.io/cloudnative-pg/postgresql:17.10-202607130907-system-trixie@sha256:c141aec61cab8da3e215aebe0fa155e78442fbb41c982a86743915a967e12af9
+              imagePullPolicy: IfNotPresent
+              command:
+                - /bin/bash
+                - -ceu
+                - --
+              args:
+                - |
+                  [[ ! -e /dispatch/manual ]] || exit 0
+                  if [[ ! -s /work/connector-kind ]]; then
+                    touch /dispatch/noop
+                    exit 0
+                  fi
+                  IFS= read -r action </work/connector-kind
+                  case "$action" in
+                    present) exit 0 ;;
+                    tombstone)
+                      psql --quiet --no-psqlrc --set=run_id="$POD_UID" \
+                        --file=/runtime/connector-tombstone.sql
+                      touch /dispatch/noop
+                      ;;
+                    *) printf 'invalid connector action: %s\n' "$action" >&2; exit 1 ;;
+                  esac
+              env: *postgres-env
+              resources: *postgres-resources
+              securityContext: *restricted-container
+              volumeMounts:
+                - name: runtime
+                  mountPath: /runtime
+                  readOnly: true
+                - name: work
+                  mountPath: /work
+                  readOnly: true
+                - name: dispatch
+                  mountPath: /dispatch
+                - name: tmp
+                  mountPath: /tmp
             - name: snapshot
               image: python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
               imagePullPolicy: IfNotPresent
               command:
-                - python
+                - /bin/sh
+                - -ceu
+                - --
               args:
-                - /runtime/ingestion.py
-                - snapshot
-                - --manifest
-                - /sources/manifest.json
-                - --source-root
-                - /sources
-                - --output-root
-                - /snapshot
-                - --raw-root
-                - /work/raw
-                - --tmp-root
-                - /parser-tmp
+                - |
+                  [ ! -e /dispatch/noop ] || exit 0
+                  if [ -e /dispatch/manual ]; then
+                    manifest=/sources/manifest.json
+                    source_root=/sources
+                  else
+                    python /runtime/connector_runtime.py materialize \
+                      --action /work/connector-action.json \
+                      --source-root /sources/.connector/git-markdown \
+                      --output-root /selected/bundle
+                    manifest=/selected/bundle/manifest.json
+                    source_root=/selected/bundle
+                  fi
+                  exec python /runtime/ingestion.py snapshot \
+                    --manifest "$manifest" \
+                    --source-root "$source_root" \
+                    --output-root /snapshot \
+                    --raw-root /work/raw \
+                    --tmp-root /parser-tmp
               env: &python-env
                 - name: HOME
                   value: /tmp
@@ -94,10 +265,15 @@ spec:
                 - name: sources
                   mountPath: /sources
                   readOnly: true
+                - name: selected
+                  mountPath: /selected
                 - name: snapshot
                   mountPath: /snapshot
                 - name: work
                   mountPath: /work
+                - name: dispatch
+                  mountPath: /dispatch
+                  readOnly: true
                 - name: parser-tmp
                   mountPath: /parser-tmp
                 - name: tmp
@@ -108,14 +284,15 @@ spec:
               image: quay.io/docling-project/docling-serve-cpu:v1.26.0@sha256:7e07522e0240c1db3ff5b837ffa969c2ecd5a71664c0e0369f5a69fc169e30ba
               imagePullPolicy: IfNotPresent
               command:
-                - python
+                - /bin/sh
+                - -ceu
+                - --
               args:
-                - /runtime/ingestion.py
-                - parse-isolated
-                - --source-root
-                - /input
-                - --output
-                - /output/chunks.jsonl
+                - |
+                  [ ! -e /dispatch/noop ] || exit 0
+                  exec python /runtime/ingestion.py parse-isolated \
+                    --source-root /input \
+                    --output /output/chunks.jsonl
               env:
                 - name: HOME
                   value: /tmp
@@ -166,22 +343,24 @@ spec:
                   subPath: raw
                 - name: parser-tmp
                   mountPath: /tmp
+                - name: dispatch
+                  mountPath: /dispatch
+                  readOnly: true
             - name: bind
               image: python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
               imagePullPolicy: IfNotPresent
               command:
-                - python
+                - /bin/sh
+                - -ceu
+                - --
               args:
-                - /runtime/ingestion.py
-                - bind
-                - --manifest
-                - /snapshot/manifest.json
-                - --source-root
-                - /snapshot/sources
-                - --raw-root
-                - /work/raw
-                - --output
-                - /work/pending.jsonl
+                - |
+                  [ ! -e /dispatch/noop ] || exit 0
+                  exec python /runtime/ingestion.py bind \
+                    --manifest /snapshot/manifest.json \
+                    --source-root /snapshot/sources \
+                    --raw-root /work/raw \
+                    --output /work/pending.jsonl
               env: *python-env
               resources: *python-resources
               securityContext: *python-security
@@ -194,6 +373,9 @@ spec:
                   readOnly: true
                 - name: work
                   mountPath: /work
+                - name: dispatch
+                  mountPath: /dispatch
+                  readOnly: true
                 - name: tmp
                   mountPath: /tmp
             - name: plan
@@ -204,55 +386,22 @@ spec:
                 - -ceu
                 - --
               args:
-                - exec psql --quiet --no-psqlrc --set=run_id="$POD_UID" --file=/runtime/plan.sql
-              env: &postgres-env
-                - name: PGHOST
-                  value: platform-pg-rw.postgres.svc.cluster.local
-                - name: PGPORT
-                  value: "5432"
-                - name: PGDATABASE
-                  value: knowledge
-                - name: PGUSER
-                  valueFrom:
-                    secretKeyRef:
-                      name: pg-knowledge-ingestion
-                      key: username
-                - name: PGPASSWORD
-                  valueFrom:
-                    secretKeyRef:
-                      name: pg-knowledge-ingestion
-                      key: password
-                - name: PGSSLMODE
-                  value: require
-                - name: PGCONNECT_TIMEOUT
-                  value: "3"
-                - name: POD_UID
-                  valueFrom:
-                    fieldRef:
-                      fieldPath: metadata.uid
-                - name: HOME
-                  value: /tmp
-              resources: &postgres-resources
-                requests:
-                  cpu: 10m
-                  memory: 32Mi
-                  ephemeral-storage: 8Mi
-                limits:
-                  cpu: 100m
-                  memory: 64Mi
-                  ephemeral-storage: 64Mi
-              securityContext: &restricted-container
-                allowPrivilegeEscalation: false
-                capabilities:
-                  drop:
-                    - ALL
-                readOnlyRootFilesystem: true
+                - |
+                  [[ ! -e /dispatch/noop ]] || exit 0
+                  exec psql --quiet --no-psqlrc --set=run_id="$POD_UID" \
+                    --file=/runtime/plan.sql
+              env: *postgres-env
+              resources: *postgres-resources
+              securityContext: *restricted-container
               volumeMounts:
                 - name: runtime
                   mountPath: /runtime
                   readOnly: true
                 - name: work
                   mountPath: /work
+                - name: dispatch
+                  mountPath: /dispatch
+                  readOnly: true
                 - name: tmp
                   mountPath: /tmp
             # Native sidecar init: later init containers start after this process is running, while
@@ -268,6 +417,9 @@ spec:
                 - --
               args:
                 - |
+                  if [[ -e /dispatch/noop ]]; then
+                    while true; do sleep 60; done
+                  fi
                   while true; do
                     if [[ -e /checkpoint/checkpoint.ready ]]; then
                       [[ ! -e /checkpoint/checkpoint.acked ]]
@@ -312,26 +464,26 @@ spec:
                   readOnly: true
                 - name: checkpoint
                   mountPath: /checkpoint
+                - name: dispatch
+                  mountPath: /dispatch
+                  readOnly: true
             - name: embed
               image: python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
               imagePullPolicy: IfNotPresent
               command:
-                - python
+                - /bin/sh
+                - -ceu
+                - --
               args:
-                - /runtime/ingestion.py
-                - embed
-                - --plan
-                - /work/plan.jsonl
-                - --output
-                - /work/chunks.jsonl
-                - --url
-                - http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8082/v1/embeddings
-                - --model
-                - BAAI/bge-m3
-                - --authorization-file
-                - /credentials/authorization
-                - --checkpoint-root
-                - /checkpoint
+                - |
+                  [ ! -e /dispatch/noop ] || exit 0
+                  exec python /runtime/ingestion.py embed \
+                    --plan /work/plan.jsonl \
+                    --output /work/chunks.jsonl \
+                    --url http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8082/v1/embeddings \
+                    --model BAAI/bge-m3 \
+                    --authorization-file /credentials/authorization \
+                    --checkpoint-root /checkpoint
               env: *python-env
               resources:
                 requests:
@@ -354,6 +506,9 @@ spec:
                   readOnly: true
                 - name: checkpoint
                   mountPath: /checkpoint
+                - name: dispatch
+                  mountPath: /dispatch
+                  readOnly: true
                 - name: tmp
                   mountPath: /tmp
           containers:
@@ -365,7 +520,13 @@ spec:
                 - -ceu
                 - --
               args:
-                - exec psql --quiet --no-psqlrc --set=run_id="$POD_UID" --file=/runtime/write.sql
+                - |
+                  [[ ! -e /dispatch/noop ]] || exit 0
+                  set -- --quiet --no-psqlrc --set=run_id="$POD_UID"
+                  if [[ ! -e /dispatch/manual ]]; then
+                    set -- "$@" --set=connector_action=true
+                  fi
+                  exec psql "$@" --file=/runtime/write.sql
               env: *postgres-env
               resources: *postgres-resources
               securityContext: *restricted-container
@@ -375,6 +536,9 @@ spec:
                   readOnly: true
                 - name: work
                   mountPath: /work
+                - name: dispatch
+                  mountPath: /dispatch
+                  readOnly: true
                 - name: tmp
                   mountPath: /tmp
           volumes:
@@ -389,6 +553,9 @@ spec:
             - name: snapshot
               emptyDir:
                 sizeLimit: 128Mi
+            - name: selected
+              emptyDir:
+                sizeLimit: 32Mi
             - name: work
               emptyDir:
                 # Raw/pending are 64 MiB each; 512-vector plan/final stages are ~81 MiB each.
@@ -400,6 +567,9 @@ spec:
             - name: checkpoint
               emptyDir:
                 sizeLimit: 2Mi
+            - name: dispatch
+              emptyDir:
+                sizeLimit: 1Mi
             - name: credentials
               secret:
                 secretName: knowledge-ingestion-credential

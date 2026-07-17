@@ -11,9 +11,13 @@ configMapGenerator:
     namespace: knowledge
     files:
       - ingestion.py
+      - connector_runtime.py
       - plan.sql
       - checkpoint.sql
       - write.sql
+      - connector-publish.sql
+      - connector-claim.sql
+      - connector-tombstone.sql
   - name: knowledge-ingestion-cache-gc-runtime
     namespace: knowledge
     files:

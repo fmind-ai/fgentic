@@ -1,0 +1,15 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - git-markdown-runtime
+configMapGenerator:
+  - name: knowledge-git-markdown-connector-runtime
+    namespace: knowledge
+    files:
+      - git_markdown.py
+      - git-markdown-runtime/fetch.py
+generatorOptions:
+  labels:
+    app.kubernetes.io/name: knowledge-git-markdown-connector
+    app.kubernetes.io/component: source-connector
+    app.kubernetes.io/part-of: fgentic

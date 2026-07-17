@@ -93,8 +93,22 @@ knowledge_ingestion_password() {
 	secret_value knowledge-ingestion.sops.yaml postgres pg-knowledge-ingestion '.stringData.password'
 }
 
+knowledge_connector_password() {
+	secret_value knowledge-ingestion.sops.yaml postgres pg-knowledge-connector '.stringData.password'
+}
+
 knowledge_ingestion_authorization() {
 	secret_value knowledge-ingestion.sops.yaml knowledge knowledge-ingestion-credential '.stringData.authorization'
+}
+
+make_legacy_knowledge_ingestion() {
+	local target="${FIXTURE_ROOT}/clusters/local/secrets/knowledge-ingestion.sops.yaml"
+	local staged="${WORK_DIR}/knowledge-ingestion-legacy.sops.yaml"
+	sops --decrypt "${target}" |
+		yq eval-all 'select(.metadata.name != "pg-knowledge-connector")' - |
+		sops --config "${FIXTURE_ROOT}/.sops.yaml" \
+			--filename-override "${target}" --encrypt /dev/stdin >"${staged}"
+	mv "${staged}" "${target}"
 }
 
 exercise_db_role() { # exercise_db_role <role> <expected changed files...>
@@ -314,10 +328,35 @@ assert_equal "${NEW_MCP}" "Bearer ${GATEWAY_MCP}" "MCP credential copies differ"
 assert_changed_files mcp-authorization.sops.yaml
 commit_fixture "rotate MCP fixture"
 
+# Upgrade the real pre-#335 optional-set shape without ever writing plaintext to disk. The first
+# rotation must add the separate connector pair while still rotating every established credential.
+make_legacy_knowledge_ingestion
+expect_failure knowledge_connector_password
+commit_fixture "restore legacy knowledge ingestion fixture"
 OLD_KNOWLEDGE_INGESTION_DB="$(knowledge_ingestion_password)"
 OLD_KNOWLEDGE_INGESTION_AUTH="$(knowledge_ingestion_authorization)"
 "${ROTATOR}" fixture.localhost local knowledge-ingestion >/dev/null
 NEW_KNOWLEDGE_INGESTION_DB="$(knowledge_ingestion_password)"
+NEW_KNOWLEDGE_CONNECTOR_DB="$(knowledge_connector_password)"
+NEW_KNOWLEDGE_INGESTION_AUTH="$(knowledge_ingestion_authorization)"
+assert_changed "${OLD_KNOWLEDGE_INGESTION_DB}" "${NEW_KNOWLEDGE_INGESTION_DB}" \
+	"legacy knowledge ingestion database password"
+assert_changed "" "${NEW_KNOWLEDGE_CONNECTOR_DB}" \
+	"legacy knowledge connector database password"
+assert_changed "${OLD_KNOWLEDGE_INGESTION_AUTH}" "${NEW_KNOWLEDGE_INGESTION_AUTH}" \
+	"legacy knowledge ingestion workload key"
+assert_equal "${NEW_KNOWLEDGE_CONNECTOR_DB}" \
+	"$(secret_value knowledge-ingestion.sops.yaml knowledge pg-knowledge-connector '.stringData.password')" \
+	"upgraded knowledge connector database copies differ"
+assert_changed_files knowledge-ingestion.sops.yaml
+commit_fixture "upgrade legacy knowledge ingestion fixture"
+
+OLD_KNOWLEDGE_INGESTION_DB="$(knowledge_ingestion_password)"
+OLD_KNOWLEDGE_CONNECTOR_DB="$(knowledge_connector_password)"
+OLD_KNOWLEDGE_INGESTION_AUTH="$(knowledge_ingestion_authorization)"
+"${ROTATOR}" fixture.localhost local knowledge-ingestion >/dev/null
+NEW_KNOWLEDGE_INGESTION_DB="$(knowledge_ingestion_password)"
+NEW_KNOWLEDGE_CONNECTOR_DB="$(knowledge_connector_password)"
 NEW_KNOWLEDGE_INGESTION_AUTH="$(knowledge_ingestion_authorization)"
 GATEWAY_KNOWLEDGE_INGESTION="$(
 	secret_value knowledge-ingestion.sops.yaml agentgateway-system knowledge-ingestion-callers \
@@ -325,11 +364,16 @@ GATEWAY_KNOWLEDGE_INGESTION="$(
 )"
 assert_changed "${OLD_KNOWLEDGE_INGESTION_DB}" "${NEW_KNOWLEDGE_INGESTION_DB}" \
 	"knowledge ingestion database password"
+assert_changed "${OLD_KNOWLEDGE_CONNECTOR_DB}" "${NEW_KNOWLEDGE_CONNECTOR_DB}" \
+	"knowledge connector database password"
 assert_changed "${OLD_KNOWLEDGE_INGESTION_AUTH}" "${NEW_KNOWLEDGE_INGESTION_AUTH}" \
 	"knowledge ingestion workload key"
 assert_equal "${NEW_KNOWLEDGE_INGESTION_DB}" \
 	"$(secret_value knowledge-ingestion.sops.yaml knowledge pg-knowledge-ingestion '.stringData.password')" \
 	"knowledge ingestion database copies differ"
+assert_equal "${NEW_KNOWLEDGE_CONNECTOR_DB}" \
+	"$(secret_value knowledge-ingestion.sops.yaml knowledge pg-knowledge-connector '.stringData.password')" \
+	"knowledge connector database copies differ"
 assert_equal "${NEW_KNOWLEDGE_INGESTION_AUTH}" "Bearer ${GATEWAY_KNOWLEDGE_INGESTION}" \
 	"knowledge ingestion gateway copies differ"
 assert_changed_files knowledge-ingestion.sops.yaml

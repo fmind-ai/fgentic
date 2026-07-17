@@ -260,6 +260,13 @@ DELETE FROM knowledge.ingestion_embedding_cache AS cache
 USING committed_sources
 WHERE cache.source_id = committed_sources.source_id;
 
+-- Connector runs opt in explicitly. Completing the source here keeps the chunk replacement,
+-- source checkpoint, and repository cursor in this same transaction; ordinary #332 runs omit the
+-- variable and retain their original behavior.
+\if :{?connector_action}
+  SELECT knowledge.complete_connector_present(:'run_id'::uuid);
+\endif
+
 DELETE FROM knowledge.ingestion_pending
 WHERE run_id = :'run_id'::uuid;
 DELETE FROM knowledge.ingestion_final

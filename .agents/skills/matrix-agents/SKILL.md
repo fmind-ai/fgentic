@@ -14,7 +14,7 @@ An open-standard AI-agent collaboration platform: humans + agents share Matrix r
 
 1. Never `kubectl apply` / `helm upgrade` prod by hand — **commit to git, let Flux reconcile**.
 1. Never commit a plaintext secret — only `*.sops.yaml`. A gitleaks pre-commit hook enforces it.
-1. Never embed operational or non-public corpus bytes in this GitOps/deployment repository, including ConfigMaps or SOPS. An ingestion-enabled environment provisions the `knowledge-source-bundle` PVC under its own storage policy; the checked-in ConfigMaps are synthetic public offline fixtures only. A separately governed source Git repository may be input to the #335 reference connector.
+1. Never embed operational or non-public corpus bytes in this GitOps/deployment repository, including ConfigMaps or SOPS. An ingestion-enabled environment provisions the `knowledge-source-bundle` PVC under its own storage policy; the checked-in ConfigMaps are synthetic public offline fixtures only. The shipped #335 reference connector consumes only this repository's existing reconciled Flux source; a separate non-public source requires a future reviewed connector implementation.
 1. The appservice registration (`as_token`/`hs_token`) must be **identical** in the bridge and in Synapse — one SOPS Secret, referenced from both namespaces.
 1. Agent rooms are **unencrypted** by design (force-disabled server-side). Do not enable E2EE on agent rooms.
 
@@ -73,7 +73,7 @@ Use `scripts/fed-check.sh partner.example` only to observe public Matrix discove
 | `db-knowledge-owner`     | Knowledge schema-owner role in `postgres` only                  | No workload restart; wait for its `DatabaseRole`, then prove the new owner login cannot reach another database.  |
 | `db-knowledge-retrieval` | Retrieval role and identical `postgres`/`knowledge` copies      | Wait for its `DatabaseRole`; restart the retrieval consumer from #333 once that consumer exists.                 |
 | `knowledge-db`           | Both knowledge roles and the retrieval namespace copy           | Combined blast radius of the two knowledge rows; the owner credential remains absent from `knowledge`.           |
-| `knowledge-ingestion`    | Ingestion DB copies + scoped gateway caller copies              | Wait for its `DatabaseRole` and gateway policy; start no ingestion Job until both new copies are accepted.       |
+| `knowledge-ingestion`    | Connector + ingestion DB pairs and scoped gateway caller copies | Wait for both `DatabaseRole`s and gateway policy; start no ingestion Job until every new copy is accepted.       |
 | `provider`               | Selected Mistral/Anthropic/OpenAI/Azure OpenAI API key          | Model calls only; agentgateway consumes the Secret dynamically. Vertex and vLLM have no tracked provider key.    |
 | `keycloak-db`            | Keycloak role and both namespace copies                         | New SSO redirects pause during the Keycloak restart; existing Matrix sessions remain.                            |
 | `keycloak-client`        | The live `fgentic` OIDC client secret mirrored for MAS/recovery | SSO is unavailable between live Keycloak rotation and MAS reload; explicit acknowledgement is mandatory.         |
@@ -104,7 +104,7 @@ Use `scripts/fed-check.sh partner.example` only to observe public Matrix discove
 
 ### Database-role ordering
 
-CloudNativePG reports the exact `postgres`-namespace Secret resource version applied to each role. Wait for equality before restarting a consumer; `Cluster Ready=True` alone does not prove that the new password reached PostgreSQL. The five legacy roles report through the `Cluster`; the knowledge owner and retrieval roles report directly on their baseline `DatabaseRole` resources. The ingestion role exists only when the cluster composes `infra/knowledge/cluster`; wait for it only in an ingestion-enabled environment.
+CloudNativePG reports the exact `postgres`-namespace Secret resource version applied to each role. Wait for equality before restarting a consumer; `Cluster Ready=True` alone does not prove that the new password reached PostgreSQL. The five legacy roles report through the `Cluster`; the knowledge owner and retrieval roles report directly on their baseline `DatabaseRole` resources. The connector and ingestion roles exist only when the cluster composes `infra/knowledge/cluster`; wait for them only in an ingestion-enabled environment.
 
 ```bash
 wait_role() {
@@ -131,6 +131,7 @@ wait_database_role knowledge-owner pg-knowledge-owner
 wait_database_role knowledge-retrieval pg-knowledge-retrieval
 
 # In an ingestion-enabled environment only:
+wait_database_role knowledge-connector pg-knowledge-connector
 wait_database_role knowledge-ingestion pg-knowledge-ingestion
 ```
 
@@ -162,7 +163,7 @@ For `db-core`, wait for all four core roles before restarting Synapse, MAS, kage
 
 For a knowledge-role rotation, use `wait_database_role` for only the affected resource and prove the new login before retiring the old credential. The schema owner has no workload to restart and its Secret must remain absent from `knowledge`. The retrieval consumer is introduced by #333; once deployed, restart only that consumer after `knowledge-retrieval` reports the new Secret resource version.
 
-For `knowledge-ingestion`, wait for `knowledge-ingestion` to report the new database Secret and for `agentgatewaypolicy/knowledge-ingestion-authorization` to remain `Accepted`. The workload is a batch CronJob template, so do not start a run while either copy is mixed; no long-running Pod needs a restart.
+For `knowledge-ingestion`, wait for both `knowledge-connector` and `knowledge-ingestion` to report their new database Secrets and for `agentgatewaypolicy/knowledge-ingestion-authorization` to remain `Accepted`. The ingestion workload is a batch CronJob template, so do not start a run while any copy is mixed; the credential-free acquisition CronJob need not stop, and no long-running Pod needs a restart.
 
 ### Appservice, A2A, MCP, and provider ordering
 

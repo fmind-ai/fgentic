@@ -1,0 +1,7 @@
+{
+  "schema_version": 1,
+  "corpus": "reference-docs",
+  "classification": "public",
+  "allowed_principals": [],
+  "allowed_groups": ["partner/org-b/docs"]
+}

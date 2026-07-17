@@ -60,7 +60,11 @@ cmp -s "${tmp_dir}/root.yaml" "${tmp_dir}/disabled.yaml" ||
 [ ! -s "${tmp_dir}/disabled.yaml" ] ||
 	fail "disabled knowledge-ingestion profile must render zero objects"
 
-objects="$(yq eval-all -o=json '.' "${tmp_dir}/enabled.yaml" | jq --slurp '.')"
+objects="$(
+	yq eval-all -o=json '
+    select(.metadata.labels."app.kubernetes.io/component" != "source-connector")
+  ' "${tmp_dir}/enabled.yaml" | jq --slurp '.'
+)"
 cronjob="$(
 	yq eval-all -o=json 'select(.kind == "CronJob" and .metadata.name == "knowledge-ingestion")' \
 		"${tmp_dir}/enabled.yaml"
@@ -143,7 +147,16 @@ jq -e '
 	fail "ingestion must consume operator-owned source storage without rendering corpus storage"
 
 jq -e '
-  (.data | keys | sort) == ["checkpoint.sql", "ingestion.py", "plan.sql", "write.sql"]
+  (.data | keys | sort) == [
+    "checkpoint.sql",
+    "connector-claim.sql",
+    "connector-publish.sql",
+    "connector-tombstone.sql",
+    "connector_runtime.py",
+    "ingestion.py",
+    "plan.sql",
+    "write.sql"
+  ]
 ' <<<"${runtime_config}" >/dev/null ||
 	fail "ingestion runtime ConfigMap inventory drifted"
 jq -e --rawfile gc_sql "${KNOWLEDGE_DIR}/base/gc.sql" '
@@ -172,11 +185,21 @@ jq -e \
     "seccompProfile": {"type": "RuntimeDefault"}
   } and
   ([.spec.jobTemplate.spec.template.spec.initContainers[].name] ==
-    ["snapshot", "parse", "bind", "plan", "checkpoint", "embed"]) and
+    [
+      "connector-publish",
+      "connector-claim",
+      "connector-dispatch",
+      "snapshot",
+      "parse",
+      "bind",
+      "plan",
+      "checkpoint",
+      "embed"
+    ]) and
   ([.spec.jobTemplate.spec.template.spec.containers[].name] == ["write"]) and
   ([.spec.jobTemplate.spec.template.spec.initContainers[],
     .spec.jobTemplate.spec.template.spec.containers[]] |
-    length == 7 and
+    length == 10 and
     all(.[];
       (.resources.requests | keys | sort) ==
         ["cpu", "ephemeral-storage", "memory"] and
@@ -192,15 +215,56 @@ jq -e \
       .securityContext.readOnlyRootFilesystem == true and
       .securityContext.capabilities.drop == ["ALL"])) and
   (.spec.jobTemplate.spec.template.spec.initContainers[] |
+    select(.name == "connector-publish") |
+    .image == $postgres and
+    (.args[0] | contains("/sources/.connector/git-markdown/current.json") and
+      contains("--file=/runtime/connector-publish.sql") and
+      contains("/dispatch/manual")) and
+    ([.env[] | select(.valueFrom.secretKeyRef != null) |
+      .valueFrom.secretKeyRef.name] | unique) == ["pg-knowledge-connector"] and
+    ([.volumeMounts[].name] | sort) == ["dispatch", "runtime", "sources", "tmp"] and
+    [.volumeMounts[] | select(.name == "sources") | .readOnly] == [true]) and
+  (.spec.jobTemplate.spec.template.spec.initContainers[] |
+    select(.name == "connector-claim") |
+    .image == $postgres and
+    (.args[0] | contains("--file=/runtime/connector-claim.sql") and
+      contains("/dispatch/manual")) and
+    ([.env[] | select(.valueFrom.secretKeyRef != null) |
+      .valueFrom.secretKeyRef.name] | unique) == ["pg-knowledge-ingestion"] and
+    ([.volumeMounts[].name] | sort) == ["dispatch", "runtime", "tmp", "work"] and
+    [.volumeMounts[] | select(.name == "dispatch") | .readOnly] == [true]) and
+  (.spec.jobTemplate.spec.template.spec.initContainers[] |
+    select(.name == "connector-dispatch") |
+    .image == $postgres and
+    (.args[0] | contains("/work/connector-kind") and
+      contains("--file=/runtime/connector-tombstone.sql") and
+      contains("/dispatch/noop")) and
+    ([.env[] | select(.valueFrom.secretKeyRef != null) |
+      .valueFrom.secretKeyRef.name] | unique) == ["pg-knowledge-ingestion"] and
+    ([.volumeMounts[].name] | sort) == ["dispatch", "runtime", "tmp", "work"] and
+    [.volumeMounts[] | select(.name == "work") | .readOnly] == [true]) and
+  (.spec.jobTemplate.spec.template.spec.initContainers[] |
     select(.name == "snapshot") |
     .image == $python and
-    (.args | index("snapshot")) != null and
-    (.args | index("--raw-root")) != null and
-    (.args | index("/work/raw")) != null and
-    (.args | index("--tmp-root")) != null and
-    (.args | index("/parser-tmp")) != null and
+    (.args[0] | contains("/runtime/connector_runtime.py materialize") and
+      contains("--source-root /sources/.connector/git-markdown") and
+      contains("--output-root /selected/bundle") and
+      contains("manifest=/selected/bundle/manifest.json") and
+      contains("source_root=/selected/bundle") and
+      contains("/runtime/ingestion.py snapshot") and
+      contains("--raw-root /work/raw") and
+      contains("--tmp-root /parser-tmp")) and
     ([.volumeMounts[].name] | sort) ==
-      ["parser-tmp", "runtime", "snapshot", "sources", "tmp", "work"] and
+      [
+        "dispatch",
+        "parser-tmp",
+        "runtime",
+        "selected",
+        "snapshot",
+        "sources",
+        "tmp",
+        "work"
+      ] and
     ([.volumeMounts[] | select(.name == "sources")] == [{
       "name": "sources",
       "mountPath": "/sources",
@@ -209,14 +273,10 @@ jq -e \
   (.spec.jobTemplate.spec.template.spec.initContainers[] |
     select(.name == "parse") |
     .image == $docling and
-    .args == [
-      "/runtime/ingestion.py",
-      "parse-isolated",
-      "--source-root",
-      "/input",
-      "--output",
-      "/output/chunks.jsonl"
-    ] and
+    (.args[0] | contains("/dispatch/noop") and
+      contains("/runtime/ingestion.py parse-isolated") and
+      contains("--source-root /input") and
+      contains("--output /output/chunks.jsonl")) and
     .volumeMounts == [
       {"name": "runtime", "mountPath": "/runtime", "readOnly": true},
       {
@@ -226,7 +286,8 @@ jq -e \
         "subPath": "parser"
       },
       {"name": "work", "mountPath": "/output", "subPath": "raw"},
-      {"name": "parser-tmp", "mountPath": "/tmp"}
+      {"name": "parser-tmp", "mountPath": "/tmp"},
+      {"name": "dispatch", "mountPath": "/dispatch", "readOnly": true}
     ] and
     ([.env[] | select(.name == "HF_HUB_OFFLINE" or
       .name == "TRANSFORMERS_OFFLINE" or .name == "DOCLING_ARTIFACTS_PATH") |
@@ -238,38 +299,47 @@ jq -e \
   (.spec.jobTemplate.spec.template.spec.initContainers[] |
     select(.name == "bind") |
     .image == $python and
-    (.args | index("bind")) != null and
-    (.args | index("--raw-root")) != null and
-    (.args | index("/work/raw")) != null and
-    ([.volumeMounts[].name] | sort) == ["runtime", "snapshot", "tmp", "work"]) and
+    (.args[0] | contains("/dispatch/noop") and
+      contains("/runtime/ingestion.py bind") and
+      contains("--raw-root /work/raw")) and
+    ([.volumeMounts[].name] | sort) == ["dispatch", "runtime", "snapshot", "tmp", "work"]) and
   (.spec.jobTemplate.spec.template.spec.initContainers[] |
     select(.name == "plan") |
     .image == $postgres and
+    (.args[0] | contains("/dispatch/noop") and contains("--file=/runtime/plan.sql")) and
     ([.env[] | select(.valueFrom.secretKeyRef != null) |
-      .valueFrom.secretKeyRef.name] | unique) == ["pg-knowledge-ingestion"]) and
+      .valueFrom.secretKeyRef.name] | unique) == ["pg-knowledge-ingestion"] and
+    ([.volumeMounts[].name] | sort) == ["dispatch", "runtime", "tmp", "work"]) and
   (.spec.jobTemplate.spec.template.spec.initContainers[] |
     select(.name == "checkpoint") |
     .image == $postgres and
     .restartPolicy == "Always" and
     (.args[0] | contains("--file=/runtime/checkpoint.sql") and
       contains("/checkpoint/checkpoint.ready") and
-      contains("/checkpoint/checkpoint.acked")) and
+      contains("/checkpoint/checkpoint.acked") and
+      contains("/dispatch/noop")) and
     ([.env[] | select(.valueFrom.secretKeyRef != null) |
       .valueFrom.secretKeyRef.name] | unique) == ["pg-knowledge-ingestion"] and
-    ([.volumeMounts[].name] | sort) == ["checkpoint", "runtime"]) and
+    ([.volumeMounts[].name] | sort) == ["checkpoint", "dispatch", "runtime"]) and
   (.spec.jobTemplate.spec.template.spec.initContainers[] |
     select(.name == "embed") |
     .image == $python and
-    (.args | index("http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8082/v1/embeddings")) != null and
-    (.args | index("/credentials/authorization")) != null and
-    (.args | index("/checkpoint")) != null and
+    (.args[0] | contains("/dispatch/noop") and
+      contains("http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8082/v1/embeddings") and
+      contains("--authorization-file /credentials/authorization") and
+      contains("--checkpoint-root /checkpoint")) and
     ([.env[] | select(.valueFrom.secretKeyRef != null)] | length) == 0 and
-    ([.volumeMounts[].name] | sort) == ["checkpoint", "credentials", "runtime", "tmp", "work"]) and
+    ([.volumeMounts[].name] | sort) ==
+      ["checkpoint", "credentials", "dispatch", "runtime", "tmp", "work"]) and
   (.spec.jobTemplate.spec.template.spec.containers[] |
     select(.name == "write") |
     .image == $postgres and
+    (.args[0] | contains("/dispatch/noop") and
+      contains("--set=connector_action=true") and
+      contains("--file=/runtime/write.sql")) and
     ([.env[] | select(.valueFrom.secretKeyRef != null) |
-      .valueFrom.secretKeyRef.name] | unique) == ["pg-knowledge-ingestion"]) and
+      .valueFrom.secretKeyRef.name] | unique) == ["pg-knowledge-ingestion"] and
+    ([.volumeMounts[].name] | sort) == ["dispatch", "runtime", "tmp", "work"]) and
   ([.spec.jobTemplate.spec.template.spec.volumes[] |
     select(.secret != null) | [.name, .secret.secretName]] ==
     [["credentials", "knowledge-ingestion-credential"]]) and
@@ -286,7 +356,7 @@ jq -e \
   ([.spec.jobTemplate.spec.template.spec.initContainers[],
     .spec.jobTemplate.spec.template.spec.containers[] |
     select(any(.volumeMounts[]?; .name == "sources")) |
-    .name] == ["snapshot"]) and
+    .name] == ["connector-publish", "snapshot"]) and
   ([.spec.jobTemplate.spec.template.spec.volumes[] |
     select(.name == "parser-tmp")] == [{
       "name": "parser-tmp",
@@ -299,7 +369,11 @@ jq -e \
   ([.spec.jobTemplate.spec.template.spec.volumes[] |
     select(.name == "work") | .emptyDir.sizeLimit] == ["320Mi"]) and
   ([.spec.jobTemplate.spec.template.spec.volumes[] |
-    select(.name == "checkpoint") | .emptyDir.sizeLimit] == ["2Mi"])
+    select(.name == "checkpoint") | .emptyDir.sizeLimit] == ["2Mi"]) and
+  ([.spec.jobTemplate.spec.template.spec.volumes[] |
+    select(.name == "selected") | .emptyDir.sizeLimit] == ["32Mi"]) and
+  ([.spec.jobTemplate.spec.template.spec.volumes[] |
+    select(.name == "dispatch") | .emptyDir.sizeLimit] == ["1Mi"])
 ' <<<"${cronjob}" >/dev/null ||
 	fail "CronJob trust phases, images, credentials, or bounds drifted"
 

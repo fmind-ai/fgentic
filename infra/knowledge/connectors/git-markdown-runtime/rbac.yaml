@@ -1,0 +1,38 @@
+# The acquisition Pod reads only the exact Flux source already governing this cluster. It cannot
+# list/watch sources, mutate reconciliation, or read the Secret named by any GitRepository field.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: knowledge-git-markdown-connector
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/name: knowledge-git-markdown-connector
+    app.kubernetes.io/component: source-connector
+    app.kubernetes.io/part-of: fgentic
+rules:
+  - apiGroups:
+      - source.toolkit.fluxcd.io
+    resources:
+      - gitrepositories
+    resourceNames:
+      - flux-system
+    verbs:
+      - get
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: knowledge-git-markdown-connector
+  namespace: flux-system
+  labels:
+    app.kubernetes.io/name: knowledge-git-markdown-connector
+    app.kubernetes.io/component: source-connector
+    app.kubernetes.io/part-of: fgentic
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: knowledge-git-markdown-connector
+subjects:
+  - kind: ServiceAccount
+    name: knowledge-git-markdown-connector
+    namespace: knowledge

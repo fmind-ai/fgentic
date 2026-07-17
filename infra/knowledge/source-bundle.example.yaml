@@ -1,6 +1,6 @@
 # Offline public test fixture only. Never render or apply this ConfigMap, and never copy private,
-# regulated, or customer corpus bytes into Git. Production reads an operator-provisioned
-# knowledge-source-bundle PVC instead.
+# regulated, or customer corpus bytes into Git. Production reads the separately provisioned,
+# operator-owned knowledge-source-bundle PVC instead.
 apiVersion: v1
 kind: ConfigMap
 metadata:
