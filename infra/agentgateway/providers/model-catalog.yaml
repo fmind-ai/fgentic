@@ -28,3 +28,21 @@ models:
     capabilities:
       - chat
     costRef: fgentic.eval.pricing.v1
+  # Sovereign self-hosted embeddings + reranker runtime (#340), served OpenAI-compatible by vLLM
+  # behind agentgateway. Two governed models share one opt-in provider profile (dir:
+  # providers/profiles/embeddings). The classification ceiling is a routing ceiling, not compliance
+  # approval; the deployment must separately prove its NetworkPolicy, storage, and access controls.
+  - profile: embeddings
+    genAiSystem: openai
+    model: BAAI/bge-m3
+    residency: self-hosted
+    allowedClassification: regulated
+    capabilities:
+      - embeddings
+  - profile: embeddings
+    genAiSystem: openai
+    model: BAAI/bge-reranker-v2-m3
+    residency: self-hosted
+    allowedClassification: regulated
+    capabilities:
+      - rerank

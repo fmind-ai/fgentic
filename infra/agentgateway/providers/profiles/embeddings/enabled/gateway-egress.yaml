@@ -1,0 +1,53 @@
+# Proxy-to-model egress for the sovereign embeddings/reranker runtime (#340 owns this edge). This
+# is additive to the SELECTED chat provider's egress inventory (e.g. `agentgateway-vllm-egress`),
+# which #339 is centralizing into one provider-egress owner. It composes with a locked-down
+# self-hosted proxy egress posture: the sovereign grounding path (M25) runs self-hosted end to end.
+#
+# Caveat (documented in docs/models.md): with an EXTERNAL chat provider the proxy egress is
+# otherwise open; enabling this profile there requires the operator's provider-egress inventory to
+# permit both the external chat endpoint and this internal embeddings edge together (#339's remit).
+# The fail-closed "reachable only through agentgateway" guarantee is enforced on the models side by
+# `knowledge-embeddings-allow-platform-ingress`, which admits only the proxy on :8000.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: agentgateway-embeddings-egress
+  namespace: agentgateway-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: agentgateway-proxy
+  policyTypes:
+    - Egress
+  egress:
+    # DNS resolution for the in-cluster embeddings/reranker Service names.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # The two self-hosted serving engines only; no other models-namespace workload is reachable.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: models
+          podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/instance
+                operator: In
+                values:
+                  - knowledge-embeddings
+                  - knowledge-reranker
+            matchLabels:
+              app.kubernetes.io/component: serving-engine
+              app.kubernetes.io/part-of: vllm-stack
+      ports:
+        - protocol: TCP
+          port: 8000

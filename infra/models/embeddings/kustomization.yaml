@@ -1,0 +1,11 @@
+# CPU-only self-hosted BGE-M3 embeddings + reranker runtime (#340). Reachable only through
+# agentgateway; selected by the opt-in embeddings provider profile, not the default DAG.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - serviceaccount.yaml
+  - model-cache.yaml
+  - embeddings-helmrelease.yaml
+  - reranker-helmrelease.yaml
+  - service.yaml
+  - networkpolicy.yaml
