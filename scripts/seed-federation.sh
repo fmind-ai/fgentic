@@ -126,7 +126,16 @@ install_federation_bridge() {
 	local managed_room_id="$1"
 	local absent_room_id="$2"
 	local escaped_server as_token hs_token registration patch kustomization_suspended
+	local bridge_image bridge_repository bridge_tag
 	local existing_namespace
+	bridge_image="$(kubectl --namespace agentgateway-system get deployment federation-usage-receipt \
+		--output json | jq -er '
+      .spec.template.spec.containers[] |
+      select(.name == "usage-receipt") | .image |
+      select(test("^matrix-a2a-bridge:demo-[0-9]+-[0-9]+$"))
+    ')"
+	bridge_repository="${bridge_image%:*}"
+	bridge_tag="${bridge_image##*:}"
 	escaped_server="${SERVER_A//./\\.}"
 	as_token="$(openssl rand -hex 32)"
 	hs_token="$(openssl rand -hex 32)"
@@ -212,8 +221,8 @@ spec:
   values:
     fullnameOverride: matrix-a2a-bridge-acceptance
     image:
-      repository: matrix-a2a-bridge
-      tag: local
+      repository: ${bridge_repository}
+      tag: ${bridge_tag}
       pullPolicy: Never
     config:
       serverName: ${SERVER_A}
