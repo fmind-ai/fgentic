@@ -262,7 +262,7 @@ bash -n "${DEMO_SOURCES[@]}" "${DEV}" "${ROOT_DIR}/scripts/seed-demo.sh"
 	[ "${flux_calls}" -eq 2 ]
 )
 rg --fixed-strings \
-	'kubectl apply --server-side --force-conflicts \' \
+	"kubectl apply --server-side --force-conflicts \\" \
 	"${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null || {
 	echo 'error: demo bootstrap does not reclaim admission fields on cluster reuse' >&2
 	exit 1
@@ -850,8 +850,8 @@ rg --fixed-strings 'git-http-backend' "${DEMO_SOURCES[@]}" >/dev/null
 rg --fixed-strings 'http://fgentic-demo-source.flux-system.svc.cluster.local:8080/cgi-bin/git/repo.git' \
 	"${DEMO_SOURCES[@]}" >/dev/null
 for retry_contract in \
-	'if flux reconcile source git flux-system --timeout=2m >/dev/null \' \
-	'&& actual_revision="$(kubectl --namespace flux-system get gitrepository flux-system \' \
+	"if flux reconcile source git flux-system --timeout=2m >/dev/null \\" \
+	"&& actual_revision=\"\$(kubectl --namespace flux-system get gitrepository flux-system \\" \
 	"expected_revision=\"main@sha1:\${SOURCE_REVISION}\"" \
 	"! kustomizations=\"\$(kubectl --request-timeout=10s --namespace flux-system \\" \
 	"! helmreleases=\"\$(kubectl --request-timeout=10s get helmreleases \\"; do
