@@ -118,4 +118,8 @@ variable "master_authorized_networks" {
     condition     = length(var.master_authorized_networks) > 0
     error_message = "Provide at least one authorized CIDR for the control-plane endpoint."
   }
+  validation {
+    condition     = length(var.master_authorized_networks) <= 100
+    error_message = "GKE private clusters accept at most 100 master authorized networks."
+  }
 }
