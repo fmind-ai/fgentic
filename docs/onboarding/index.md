@@ -1,9 +1,3 @@
----
-type: Reference
-title: Persona Onboarding
-description: Role-specific starting points for evaluating, deploying, governing, building on, and using Fgentic.
----
-
 # Persona onboarding
 
 Choose the guide closest to the decision you own. Each is a short route into the authoritative specifications and manifests, not a substitute for them.
