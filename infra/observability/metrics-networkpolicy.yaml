@@ -77,3 +77,28 @@ spec:
           port: 9094
         - protocol: UDP
           port: 9094
+---
+# kube-state-metrics exposes cluster inventory only to the exact Prometheus scraper. Its separate
+# probe listener has no Pod client, so node-originated health checks need no additional peer rule.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: kube-state-metrics
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: kube-prometheus-stack
+      app.kubernetes.io/name: kube-state-metrics
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+              fgentic.dev/metrics-reader: prometheus
+              operator.prometheus.io/name: kube-prometheus-stack-prometheus
+      ports:
+        - protocol: TCP
+          port: 8080
