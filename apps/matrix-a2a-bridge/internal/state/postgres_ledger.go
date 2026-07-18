@@ -48,9 +48,19 @@ var jobColumnNames = []string{
 	"matrix_placeholder_event_id",
 	"matrix_edit_event_id",
 	"matrix_dead_man_delay_id",
+	"task_deadline_at",
+	"input_wait_started_at",
+	"input_wait_expires_at",
 	"created_at",
 	"updated_at",
 	"terminal_at",
+}
+
+var controlColumnNames = []string{
+	"control_id", "job_id", "appservice_transaction_id", "source_matrix_event_id", "intake_fingerprint",
+	"authorized_sender", "kind", "state",
+	"slot", "lease_generation", "recovery_count", "payload", "a2a_message_id", "matrix_txn_id", "matrix_event_id",
+	"error_code", "prepared_at", "created_at", "updated_at", "terminal_at",
 }
 
 const (
@@ -63,6 +73,7 @@ const (
 		FROM bridge_delegations
 		WHERE terminal_at IS NULL
 		GROUP BY room_id`
+	planControlParentSQL = `SELECT %s FROM bridge_delegations WHERE job_id = $1 FOR UPDATE`
 )
 
 // Claim uses one locking statement so concurrent workers cannot observe or claim the same row. The
@@ -137,12 +148,136 @@ func (p *Postgres) AdmitTransaction(ctx context.Context, admission TransactionAd
 				return fmt.Errorf("unknown delegation admission status %d", status)
 			}
 		}
+		for _, control := range admission.Controls {
+			controlID, status, err := insertAdmittedControl(txCtx, p, admission, control)
+			if err != nil {
+				return err
+			}
+			switch status {
+			case controlInserted:
+				result.InsertedControlIDs = append(result.InsertedControlIDs, controlID)
+			case controlExisting:
+				result.ExistingControlIDs = append(result.ExistingControlIDs, controlID)
+			case controlUnmatched:
+				result.UnmatchedControlIDs = append(result.UnmatchedControlIDs, controlID)
+			default:
+				return fmt.Errorf("unknown control admission status %d", status)
+			}
+		}
 		return nil
 	})
 	if err != nil {
 		return AdmissionResult{}, fmt.Errorf("admit appservice transaction %q: %w", admission.TransactionID, err)
 	}
 	return result, nil
+}
+
+type controlAdmissionStatus uint8
+
+const (
+	controlInserted controlAdmissionStatus = iota + 1
+	controlExisting
+	controlUnmatched
+)
+
+func insertAdmittedControl(
+	ctx context.Context,
+	p *Postgres,
+	admission TransactionAdmission,
+	input NewControl,
+) (string, controlAdmissionStatus, error) {
+	var jobID string
+	err := p.db.QueryRow(ctx, `
+		SELECT job_id
+		FROM bridge_delegations
+		WHERE matrix_placeholder_event_id = $1
+		  AND room_id = $2
+		  AND terminal_at IS NULL
+		FOR UPDATE`, input.TargetMatrixEventID, input.RoomID).Scan(&jobID)
+	if errors.Is(err, sql.ErrNoRows) {
+		unmatched := ControlIDFor("unmatched:"+input.TargetMatrixEventID, input.Kind, input.SourceMatrixEventID, input.Slot)
+		return unmatched, controlUnmatched, nil
+	}
+	if err != nil {
+		return "", 0, fmt.Errorf("resolve durable control target: %w", err)
+	}
+	controlID := ControlIDFor(jobID, input.Kind, input.SourceMatrixEventID, input.Slot)
+	var logicalDuplicate bool
+	if err := p.db.QueryRow(ctx, `
+		SELECT EXISTS (
+			SELECT 1
+			FROM bridge_delegation_controls
+			WHERE job_id = $1
+			  AND kind = $2
+			  AND slot = $3
+			  AND ((error_code <> 'control_sender_rejected') = $4)
+		)`, jobID, string(input.Kind), input.Slot, input.Authorized).Scan(&logicalDuplicate); err != nil {
+		return "", 0, fmt.Errorf("check durable control logical duplicate: %w", err)
+	}
+	if logicalDuplicate {
+		return controlID, controlUnmatched, nil
+	}
+	var count int
+	if err := p.db.QueryRow(ctx, `
+		SELECT COUNT(*) FROM bridge_delegation_controls WHERE job_id = $1`, jobID).Scan(&count); err != nil {
+		return "", 0, fmt.Errorf("count durable controls for job %q: %w", jobID, err)
+	}
+	if count >= controlCapacityLimit(admission.ControlCapacity, input.Kind) {
+		return controlID, controlUnmatched, nil
+	}
+	control := newControl(
+		controlID, jobID, admission.TransactionID, input.SourceMatrixEventID, input.SenderMXID,
+		input.Kind, input.Slot,
+		input.Payload, admission.CommittedAt,
+	)
+	control.IntakeFingerprint = controlFingerprint(input)
+	if !input.Authorized {
+		control.State = ControlDenied
+		control.ErrorCode = input.ErrorCode
+		control.Payload = nil
+		control.TerminalAt = admission.CommittedAt
+	}
+	result, err := p.db.Exec(
+		ctx, `
+		INSERT INTO bridge_delegation_controls (
+			control_id, job_id, appservice_transaction_id, source_matrix_event_id,
+			intake_fingerprint, authorized_sender, kind, state, slot, lease_generation, recovery_count, payload,
+			a2a_message_id, matrix_txn_id, matrix_event_id, error_code,
+			prepared_at, created_at, updated_at, terminal_at
+		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, 0, 0, $10, $11, $12, '', $13, NULL, $14, $14, $15)
+		ON CONFLICT (control_id) DO NOTHING`,
+		control.ControlID, control.JobID, admission.TransactionID, control.SourceMatrixEventID,
+		control.IntakeFingerprint[:], control.AuthorizedSender, string(control.Kind), string(control.State), control.Slot,
+		nonNilBytes(control.Payload), control.A2AMessageID, control.MatrixTxnID, control.ErrorCode,
+		control.CreatedAt, nullableTime(control.TerminalAt),
+	)
+	if err != nil {
+		return "", 0, fmt.Errorf("insert durable control %q: %w", controlID, err)
+	}
+	rows, err := result.RowsAffected()
+	if err != nil {
+		return "", 0, fmt.Errorf("read durable control insert count: %w", err)
+	}
+	if rows == 1 {
+		if input.Authorized {
+			if _, err := p.db.Exec(ctx, `
+				UPDATE bridge_delegations
+				SET next_attempt_at = LEAST(next_attempt_at, $2), updated_at = $2
+				WHERE job_id = $1 AND terminal_at IS NULL`, jobID, admission.CommittedAt); err != nil {
+				return "", 0, fmt.Errorf("wake durable control target: %w", err)
+			}
+		}
+		return controlID, controlInserted, nil
+	}
+	existing, found, err := loadControl(ctx, p, controlID)
+	if err != nil {
+		return "", 0, err
+	}
+	if !found || existing.JobID != control.JobID || existing.SourceMatrixEventID != control.SourceMatrixEventID ||
+		existing.IntakeFingerprint != control.IntakeFingerprint {
+		return "", 0, fmt.Errorf("%w: control_id=%q", ErrControlConflict, controlID)
+	}
+	return controlID, controlExisting, nil
 }
 
 // NonTerminalCount implements Ledger. The terminal timestamp is the same checked boundary used by
@@ -378,6 +513,247 @@ func (p *Postgres) Claim(ctx context.Context, request ClaimRequest) (Job, bool, 
 		return Job{}, false, fmt.Errorf("claim delegation: %w", err)
 	}
 	return job, true, nil
+}
+
+// ControlTarget resolves a live durable placeholder without returning recoverable content.
+func (p *Postgres) ControlTarget(ctx context.Context, matrixEventID string) (ControlTarget, bool, error) {
+	if matrixEventID == "" {
+		return ControlTarget{}, false, fmt.Errorf("control target Matrix event ID must not be empty")
+	}
+	var target ControlTarget
+	var stateValue string
+	err := p.db.QueryRow(ctx, `
+		SELECT jobs.job_id, jobs.room_id, jobs.sender_mxid, jobs.ghost_mxid, jobs.state,
+			COALESCE(MAX(controls.slot) FILTER (WHERE controls.kind = 'question'), 0)
+		FROM bridge_delegations AS jobs
+		LEFT JOIN bridge_delegation_controls AS controls ON controls.job_id = jobs.job_id
+		WHERE jobs.matrix_placeholder_event_id = $1
+		  AND jobs.terminal_at IS NULL
+		GROUP BY jobs.job_id`, matrixEventID).Scan(
+		&target.JobID, &target.RoomID, &target.OriginalSender, &target.GhostMXID, &stateValue,
+		&target.InputGeneration,
+	)
+	if errors.Is(err, sql.ErrNoRows) {
+		return ControlTarget{}, false, nil
+	}
+	if err != nil {
+		return ControlTarget{}, false, fmt.Errorf("resolve durable control target: %w", err)
+	}
+	target.State = DelegationState(stateValue)
+	if !target.State.Valid() {
+		return ControlTarget{}, false, fmt.Errorf("database returned unknown delegation state %q", stateValue)
+	}
+	return target, true, nil
+}
+
+// ClaimControl atomically persists the next control's external-attempt boundary under the job lease.
+func (p *Postgres) ClaimControl(
+	ctx context.Context,
+	lease LeaseToken,
+	at time.Time,
+) (Control, bool, error) {
+	if err := validateLease(lease); err != nil {
+		return Control{}, false, err
+	}
+	if at.IsZero() {
+		return Control{}, false, fmt.Errorf("control claim time must not be zero")
+	}
+	query := fmt.Sprintf(`
+		WITH candidate AS (
+			SELECT controls.control_id
+			FROM bridge_delegation_controls AS controls
+			JOIN bridge_delegations AS jobs ON jobs.job_id = controls.job_id
+			WHERE controls.job_id = $1
+			  AND controls.state IN ('pending', 'prepared')
+			  AND (controls.state = 'pending' OR controls.lease_generation < $3)
+			  AND jobs.lease_owner = $2
+			  AND jobs.lease_generation = $3
+			  AND jobs.lease_expires_at > $4
+			  AND jobs.terminal_at IS NULL
+			ORDER BY controls.created_at, controls.control_id
+			FOR UPDATE OF controls SKIP LOCKED
+			LIMIT 1
+		)
+		UPDATE bridge_delegation_controls AS claimed
+		SET state = 'prepared', lease_generation = $3,
+			recovery_count = claimed.recovery_count + CASE WHEN claimed.state = 'prepared' THEN 1 ELSE 0 END,
+			prepared_at = COALESCE(claimed.prepared_at, $4), updated_at = $4
+		FROM candidate
+		WHERE claimed.control_id = candidate.control_id
+		RETURNING %s`, qualifiedControlColumns("claimed"))
+	control, err := scanControl(p.db.QueryRow(
+		ctx, query, lease.JobID, lease.Owner, int64(lease.Generation), at,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		job, found, loadErr := p.Job(ctx, lease.JobID)
+		if loadErr != nil {
+			return Control{}, false, loadErr
+		}
+		if !found || !leaseCurrent(job, lease, at) {
+			return Control{}, false, &LeaseLostError{JobID: lease.JobID}
+		}
+		return Control{}, false, nil
+	}
+	if err != nil {
+		return Control{}, false, fmt.Errorf("claim durable control: %w", err)
+	}
+	return control, true, nil
+}
+
+// PlanControl creates or refreshes one deterministic worker-originated pending slot.
+func (p *Postgres) PlanControl(ctx context.Context, request PlanControlRequest) (Control, error) {
+	if err := validatePlanControl(request); err != nil {
+		return Control{}, err
+	}
+	var planned Control
+	err := p.db.DoTxn(ctx, nil, func(txCtx context.Context) error {
+		jobQuery := fmt.Sprintf(planControlParentSQL, qualifiedJobColumns(""))
+		job, err := scanJob(p.db.QueryRow(txCtx, jobQuery, request.Lease.JobID))
+		if errors.Is(err, sql.ErrNoRows) {
+			return &LeaseLostError{JobID: request.Lease.JobID}
+		}
+		if err != nil {
+			return fmt.Errorf("lock durable control parent: %w", err)
+		}
+		if !leaseCurrent(job, request.Lease, request.At) {
+			return &LeaseLostError{JobID: request.Lease.JobID}
+		}
+		controlID := ControlIDFor(request.Lease.JobID, request.Kind, "", request.Slot)
+		if existing, found, err := loadControl(txCtx, p, controlID); err != nil {
+			return err
+		} else if found {
+			if existing.State == ControlPending {
+				if _, err := p.db.Exec(
+					txCtx, `
+					UPDATE bridge_delegation_controls SET payload = $2, updated_at = $3
+					WHERE control_id = $1 AND state = 'pending'`,
+					controlID, nonNilBytes(request.Payload), request.At,
+				); err != nil {
+					return fmt.Errorf("refresh pending durable control: %w", err)
+				}
+				existing.Payload = append(existing.Payload[:0], request.Payload...)
+				existing.UpdatedAt = request.At
+			}
+			planned = existing
+			return nil
+		}
+		var count int
+		if err := p.db.QueryRow(txCtx, `
+			SELECT COUNT(*) FROM bridge_delegation_controls WHERE job_id = $1`, request.Lease.JobID).Scan(&count); err != nil {
+			return fmt.Errorf("count durable controls: %w", err)
+		}
+		if count >= controlCapacityLimit(request.Capacity, request.Kind) {
+			return fmt.Errorf("%w: job_id=%q", ErrControlCapacity, request.Lease.JobID)
+		}
+		planned = newControl(
+			controlID, request.Lease.JobID, job.AppserviceTransactionID, "", job.SenderMXID,
+			request.Kind, request.Slot,
+			request.Payload, request.At,
+		)
+		_, err = p.db.Exec(
+			txCtx, `
+			INSERT INTO bridge_delegation_controls (
+				control_id, job_id, appservice_transaction_id, source_matrix_event_id,
+				authorized_sender, kind, state, slot, lease_generation, recovery_count, payload,
+				a2a_message_id, matrix_txn_id, matrix_event_id, error_code,
+				prepared_at, created_at, updated_at, terminal_at
+			) VALUES ($1, $2, $3, '', $4, $5, 'pending', $6, 0, 0, $7, $8, $9, '', '', NULL, $10, $10, NULL)`,
+			planned.ControlID, planned.JobID, job.AppserviceTransactionID, planned.AuthorizedSender,
+			string(planned.Kind), planned.Slot, nonNilBytes(planned.Payload), planned.A2AMessageID,
+			planned.MatrixTxnID, request.At,
+		)
+		if err != nil {
+			return fmt.Errorf("plan durable control: %w", err)
+		}
+		return nil
+	})
+	if err != nil {
+		return Control{}, err
+	}
+	return planned, nil
+}
+
+// TransitionControl records one external acknowledgement or fixed failure under the job fence.
+func (p *Postgres) TransitionControl(ctx context.Context, request ControlTransitionRequest) error {
+	if err := validateControlTransition(request); err != nil {
+		return err
+	}
+	args := []any{string(request.To), request.At}
+	set := []string{"state = $1", "updated_at = $2"}
+	guards := make([]string, 0, 1)
+	add := func(column string, value any) int {
+		args = append(args, value)
+		set = append(set, fmt.Sprintf("%s = $%d", column, len(args)))
+		return len(args)
+	}
+	if request.Patch.Payload != nil {
+		add("payload", nonNilBytes(*request.Patch.Payload))
+	}
+	if request.Patch.MatrixEventID != nil {
+		position := add("matrix_event_id", *request.Patch.MatrixEventID)
+		guards = append(guards, fmt.Sprintf("(controls.matrix_event_id = '' OR controls.matrix_event_id = $%d)", position))
+	}
+	if request.Patch.ErrorCode != nil {
+		add("error_code", *request.Patch.ErrorCode)
+	}
+	if request.To.Terminal() {
+		set = append(set, "payload = '\\x'", "terminal_at = $2")
+	}
+	args = append(args, request.ControlID, request.Lease.JobID, request.Lease.Owner, int64(request.Lease.Generation))
+	start := len(args) - 3
+	guardSQL := ""
+	if len(guards) > 0 {
+		guardSQL = " AND " + strings.Join(guards, " AND ")
+	}
+	query := fmt.Sprintf(
+		`
+		UPDATE bridge_delegation_controls AS controls
+		SET %s
+		FROM bridge_delegations AS jobs
+		WHERE controls.control_id = $%d
+		  AND controls.job_id = $%d
+		  AND controls.state = $%d
+		  AND controls.lease_generation = $%d
+		  AND jobs.job_id = controls.job_id
+		  AND jobs.lease_owner = $%d
+		  AND jobs.lease_generation = $%d
+		  AND jobs.lease_expires_at > $2
+		  AND jobs.terminal_at IS NULL%s`,
+		strings.Join(set, ", "), start, start+1, len(args)+1, start+3, start+2, start+3, guardSQL,
+	)
+	args = append(args, string(request.From))
+	result, err := p.db.Exec(ctx, query, args...)
+	return requireFencedUpdate(result, err, request.Lease.JobID, "transition durable control")
+}
+
+// Controls returns one job's controls in deterministic order.
+func (p *Postgres) Controls(ctx context.Context, jobID string) (_ []Control, returnedErr error) {
+	if jobID == "" {
+		return nil, fmt.Errorf("job ID must not be empty")
+	}
+	query := fmt.Sprintf(`SELECT %s FROM bridge_delegation_controls WHERE job_id = $1 ORDER BY created_at, control_id`,
+		qualifiedControlColumns(""))
+	rows, err := p.db.Query(ctx, query, jobID)
+	if err != nil {
+		return nil, fmt.Errorf("list durable controls: %w", err)
+	}
+	defer func() {
+		if closeErr := rows.Close(); closeErr != nil {
+			returnedErr = errors.Join(returnedErr, fmt.Errorf("close durable control rows: %w", closeErr))
+		}
+	}()
+	controls := make([]Control, 0)
+	for rows.Next() {
+		control, err := scanControl(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan durable control: %w", err)
+		}
+		controls = append(controls, control)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate durable controls: %w", err)
+	}
+	return controls, nil
 }
 
 // Heartbeat implements Ledger.
@@ -686,12 +1062,35 @@ func (p *Postgres) Transition(ctx context.Context, request TransitionRequest) er
 		position := add("matrix_edit_event_id", *request.Patch.MatrixEditEventID)
 		guards = append(guards, fmt.Sprintf("(matrix_edit_event_id = '' OR matrix_edit_event_id = $%d)", position))
 	}
+	if request.Patch.TaskDeadlineAt != nil {
+		if request.Patch.TaskDeadlineAt.IsZero() {
+			add("task_deadline_at", nil)
+		} else {
+			add("task_deadline_at", *request.Patch.TaskDeadlineAt)
+		}
+	}
+	if request.Patch.InputWaitStartedAt != nil {
+		if request.Patch.InputWaitStartedAt.IsZero() {
+			add("input_wait_started_at", nil)
+		} else {
+			add("input_wait_started_at", *request.Patch.InputWaitStartedAt)
+		}
+	}
+	if request.Patch.InputWaitExpiresAt != nil {
+		if request.Patch.InputWaitExpiresAt.IsZero() {
+			add("input_wait_expires_at", nil)
+		} else {
+			add("input_wait_expires_at", *request.Patch.InputWaitExpiresAt)
+		}
+	}
 	if request.To.Terminal() {
 		set = append(
 			set,
 			"prompt = ''",
 			"payload = '\\x'",
 			"result_text = ''",
+			"input_wait_started_at = NULL",
+			"input_wait_expires_at = NULL",
 			"terminal_at = $2",
 			"lease_owner = NULL",
 			"lease_expires_at = NULL",
@@ -754,6 +1153,11 @@ func (p *Postgres) Transition(ctx context.Context, request TransitionRequest) er
 			}
 			return &LeaseLostError{JobID: request.Lease.JobID}
 		}
+		if request.To.Terminal() {
+			if err := p.terminalizeControls(txCtx, request.Lease.JobID, request.At); err != nil {
+				return err
+			}
+		}
 		if request.Patch.A2AContextID == nil || *request.Patch.A2AContextID == "" {
 			return nil
 		}
@@ -783,10 +1187,30 @@ func (p *Postgres) Transition(ctx context.Context, request TransitionRequest) er
 	}
 	eventPatch := request.Patch.MatrixReplyEventID != nil ||
 		request.Patch.MatrixPlaceholderEventID != nil || request.Patch.MatrixEditEventID != nil
-	if eventPatch || (request.Patch.A2AContextID != nil && *request.Patch.A2AContextID != "") {
+	if request.To.Terminal() || eventPatch ||
+		(request.Patch.A2AContextID != nil && *request.Patch.A2AContextID != "") {
 		return p.db.DoTxn(ctx, nil, transition)
 	}
 	return transition(ctx)
+}
+
+func (p *Postgres) terminalizeControls(ctx context.Context, jobID string, at time.Time) error {
+	_, err := p.db.Exec(
+		ctx, `
+		UPDATE bridge_delegation_controls
+		SET state = CASE WHEN terminal_at IS NULL THEN 'dead' ELSE state END,
+			error_code = CASE WHEN terminal_at IS NULL THEN $3 ELSE error_code END,
+			payload = '\x',
+			updated_at = $2,
+			terminal_at = COALESCE(terminal_at, $2)
+		WHERE job_id = $1
+		  AND (terminal_at IS NULL OR octet_length(payload) > 0)`,
+		jobID, at, parentTerminalControlError,
+	)
+	if err != nil {
+		return fmt.Errorf("terminalize durable controls: %w", err)
+	}
+	return nil
 }
 
 // ScheduleRetry implements Ledger.
@@ -856,6 +1280,29 @@ func (p *Postgres) CleanupTerminal(ctx context.Context, now time.Time) (CleanupR
 			return fmt.Errorf("read cleared terminal content count: %w", err)
 		}
 
+		result, err = p.db.Exec(
+			txCtx, `
+			UPDATE bridge_delegation_controls AS controls
+			SET state = CASE WHEN controls.terminal_at IS NULL THEN 'dead' ELSE controls.state END,
+				error_code = CASE WHEN controls.terminal_at IS NULL THEN $2 ELSE controls.error_code END,
+				payload = '\x',
+				updated_at = $1,
+				terminal_at = COALESCE(controls.terminal_at, $1)
+			FROM bridge_delegations AS delegations
+			WHERE controls.job_id = delegations.job_id
+			  AND delegations.terminal_at IS NOT NULL
+			  AND (controls.terminal_at IS NULL OR octet_length(controls.payload) > 0)`,
+			now, parentTerminalControlError,
+		)
+		if err != nil {
+			return fmt.Errorf("clear terminal control content: %w", err)
+		}
+		clearedControls, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read cleared terminal control count: %w", err)
+		}
+		cleanup.ContentCleared += clearedControls
+
 		result, err = p.db.Exec(txCtx, `
 			DELETE FROM bridge_delegations
 			WHERE state IN ('delivered', 'denied')
@@ -875,6 +1322,11 @@ func (p *Postgres) CleanupTerminal(ctx context.Context, now time.Time) (CleanupR
 				SELECT 1
 				FROM bridge_delegations AS delegations
 				WHERE delegations.appservice_transaction_id = transactions.transaction_id
+			  )
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM bridge_delegation_controls AS controls
+				WHERE controls.appservice_transaction_id = transactions.transaction_id
 			  )`, now.Add(-TerminalRetention))
 		if err != nil {
 			return fmt.Errorf("delete expired unreferenced appservice transactions: %w", err)
@@ -906,6 +1358,65 @@ type rowScanner interface {
 	Scan(...any) error
 }
 
+func loadControl(ctx context.Context, p *Postgres, controlID string) (Control, bool, error) {
+	query := fmt.Sprintf("SELECT %s FROM bridge_delegation_controls WHERE control_id = $1", qualifiedControlColumns(""))
+	control, err := scanControl(p.db.QueryRow(ctx, query, controlID))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Control{}, false, nil
+	}
+	if err != nil {
+		return Control{}, false, fmt.Errorf("load durable control %q: %w", controlID, err)
+	}
+	return control, true, nil
+}
+
+func scanControl(row rowScanner) (Control, error) {
+	var (
+		control           Control
+		intakeFingerprint []byte
+		kindValue         string
+		stateValue        string
+		leaseGeneration   int64
+		recoveryCount     int
+		terminalAt        sql.NullTime
+		preparedAt        sql.NullTime
+	)
+	if err := row.Scan(
+		&control.ControlID, &control.JobID, &control.AppserviceTransactionID,
+		&control.SourceMatrixEventID, &intakeFingerprint,
+		&control.AuthorizedSender, &kindValue, &stateValue, &control.Slot,
+		&leaseGeneration, &recoveryCount, &control.Payload, &control.A2AMessageID, &control.MatrixTxnID,
+		&control.MatrixEventID, &control.ErrorCode, &preparedAt, &control.CreatedAt, &control.UpdatedAt,
+		&terminalAt,
+	); err != nil {
+		return Control{}, err
+	}
+	control.Kind = ControlKind(kindValue)
+	control.State = ControlState(stateValue)
+	if !control.Kind.Valid() {
+		return Control{}, fmt.Errorf("database returned unknown control kind %q", kindValue)
+	}
+	if !control.State.Valid() {
+		return Control{}, fmt.Errorf("database returned unknown control state %q", stateValue)
+	}
+	if leaseGeneration < 0 {
+		return Control{}, fmt.Errorf("database returned negative control lease generation %d", leaseGeneration)
+	}
+	control.LeaseGeneration = uint64(leaseGeneration)
+	control.RecoveryCount = recoveryCount
+	if len(intakeFingerprint) != 0 && len(intakeFingerprint) != len(control.IntakeFingerprint) {
+		return Control{}, fmt.Errorf("database returned invalid control intake fingerprint length %d", len(intakeFingerprint))
+	}
+	copy(control.IntakeFingerprint[:], intakeFingerprint)
+	if terminalAt.Valid {
+		control.TerminalAt = terminalAt.Time
+	}
+	if preparedAt.Valid {
+		control.PreparedAt = preparedAt.Time
+	}
+	return control, nil
+}
+
 func scanJob(row rowScanner) (Job, error) {
 	var (
 		job               Job
@@ -915,6 +1426,9 @@ func scanJob(row rowScanner) (Job, error) {
 		leaseGeneration   int64
 		leaseExpiresAt    sql.NullTime
 		terminalAt        sql.NullTime
+		taskDeadlineAt    sql.NullTime
+		inputWaitStarted  sql.NullTime
+		inputWaitExpires  sql.NullTime
 	)
 	if err := row.Scan(
 		&job.JobID,
@@ -954,6 +1468,9 @@ func scanJob(row rowScanner) (Job, error) {
 		&job.MatrixPlaceholderEventID,
 		&job.MatrixEditEventID,
 		&job.MatrixDeadManDelayID,
+		&taskDeadlineAt,
+		&inputWaitStarted,
+		&inputWaitExpires,
 		&job.CreatedAt,
 		&job.UpdatedAt,
 		&terminalAt,
@@ -982,6 +1499,15 @@ func scanJob(row rowScanner) (Job, error) {
 	if terminalAt.Valid {
 		job.TerminalAt = terminalAt.Time
 	}
+	if taskDeadlineAt.Valid {
+		job.TaskDeadlineAt = taskDeadlineAt.Time
+	}
+	if inputWaitStarted.Valid {
+		job.InputWaitStartedAt = inputWaitStarted.Time
+	}
+	if inputWaitExpires.Valid {
+		job.InputWaitExpiresAt = inputWaitExpires.Time
+	}
 	return job, nil
 }
 
@@ -994,6 +1520,24 @@ func qualifiedJobColumns(alias string) string {
 		qualified[i] = alias + "." + column
 	}
 	return strings.Join(qualified, ", ")
+}
+
+func qualifiedControlColumns(alias string) string {
+	if alias == "" {
+		return strings.Join(controlColumnNames, ", ")
+	}
+	qualified := make([]string, len(controlColumnNames))
+	for i, column := range controlColumnNames {
+		qualified[i] = alias + "." + column
+	}
+	return strings.Join(qualified, ", ")
+}
+
+func nullableTime(value time.Time) any {
+	if value.IsZero() {
+		return nil
+	}
+	return value
 }
 
 func transactionHashFromBytes(encoded []byte) (TransactionHash, error) {

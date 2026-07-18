@@ -84,7 +84,7 @@ description = "Prove graceful in-flight drain and cross-pod persistent deduplica
 run = "bash test/integration/run-availability.sh"
 
 [tasks."test:crash-recovery"]
-description = "Prove durable delegation recovery across six hard process-loss boundaries"
+description = "Prove durable delegation recovery across twelve hard process-loss boundaries"
 run = "bash test/integration/run-crash-recovery.sh"
 
 [tasks."test:load"]

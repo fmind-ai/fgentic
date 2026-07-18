@@ -31,8 +31,17 @@ func (t faultTransport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 func (t faultTransport) matrixRoundTrip(req *http.Request) (*http.Response, error) {
 	isSend := req.Method == http.MethodPut && strings.Contains(req.URL.Path, "/send/")
+	controlMode, err := matrixControlMode(req)
+	if err != nil {
+		return nil, err
+	}
 	if isSend {
-		t.controller.observeMatrix(req.URL.Path)
+		t.controller.observeMatrix(req.URL.Path, faultMatrixRequest, faultMatrixResponse)
+	}
+	if controlMode != "" {
+		t.controller.observeMatrix(req.URL.Path, controlMode)
+	}
+	if isSend {
 		if t.controller.tryTrip(faultMatrixRequest, req.URL.Path) {
 			return waitForRequestDeath(req.Context(), faultMatrixRequest)
 		}
@@ -41,13 +50,22 @@ func (t faultTransport) matrixRoundTrip(req *http.Request) (*http.Response, erro
 	if err != nil {
 		return nil, err
 	}
-	if !isSend || !t.controller.tryTrip(faultMatrixResponse, req.URL.Path) {
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return response, nil
+	}
+	responseMode := faultMode("")
+	if isSend && t.controller.tryTrip(faultMatrixResponse, req.URL.Path) {
+		responseMode = faultMatrixResponse
+	} else if controlMode != "" && t.controller.tryTrip(controlMode, req.URL.Path) {
+		responseMode = controlMode
+	}
+	if responseMode == "" {
 		return response, nil
 	}
 	if err := drainAndClose(response.Body); err != nil {
 		return nil, fmt.Errorf("read accepted Matrix response before fault: %w", err)
 	}
-	return waitForRequestDeath(req.Context(), faultMatrixResponse)
+	return waitForRequestDeath(req.Context(), responseMode)
 }
 
 func (t faultTransport) a2aRoundTrip(req *http.Request) (*http.Response, error) {
@@ -65,7 +83,7 @@ func (t faultTransport) a2aRoundTrip(req *http.Request) (*http.Response, error) 
 	if err != nil {
 		return nil, err
 	}
-	if !isSendMessage(method) || !t.controller.tryTrip(faultA2AResponse, req.URL.Path) {
+	if !isAmbiguousA2AMutation(method) || !t.controller.tryTrip(faultA2AResponse, req.URL.Path) {
 		return response, nil
 	}
 	if err := drainAndClose(response.Body); err != nil {
@@ -113,8 +131,48 @@ func isSendMessage(method string) bool {
 	return method == "SendMessage"
 }
 
+func isAmbiguousA2AMutation(method string) bool {
+	return isSendMessage(method) || method == "CancelTask"
+}
+
 func isGetTask(method string) bool {
 	return method == "GetTask"
+}
+
+func matrixControlMode(req *http.Request) (faultMode, error) {
+	if req.Method != http.MethodPut {
+		return "", nil
+	}
+	if strings.Contains(req.URL.Path, "/state/m.room.pinned_events/") {
+		return faultMatrixPin, nil
+	}
+	if !strings.Contains(req.URL.Path, "/send/") || req.Body == nil {
+		return "", nil
+	}
+	body, err := io.ReadAll(io.LimitReader(req.Body, 2<<20))
+	if err != nil {
+		return "", fmt.Errorf("read Matrix request for fault routing: %w", err)
+	}
+	if err := req.Body.Close(); err != nil {
+		return "", fmt.Errorf("close Matrix request body for fault routing: %w", err)
+	}
+	req.Body = io.NopCloser(bytes.NewReader(body))
+	var content struct {
+		RelatesTo struct {
+			RelType string `json:"rel_type"`
+		} `json:"m.relates_to"`
+	}
+	if err := json.Unmarshal(body, &content); err != nil {
+		return "", nil
+	}
+	switch content.RelatesTo.RelType {
+	case "m.replace":
+		return faultMatrixQuestion, nil
+	case "m.thread":
+		return faultMatrixProgress, nil
+	default:
+		return "", nil
+	}
 }
 
 func newHTTPProxy(targetRaw, kind string, controller *faultController) (http.Handler, error) {

@@ -63,6 +63,9 @@ type stubStats struct {
 	TotalCompleted     int                 `json:"total_completed"`
 	LongStarted        int                 `json:"long_started"`
 	LongCompleted      int                 `json:"long_completed"`
+	InputStarted       int                 `json:"input_started"`
+	InputContinued     int                 `json:"input_continued"`
+	CancelRequests     int                 `json:"cancel_requests"`
 	Starts             []stubRequestRecord `json:"starts"`
 	Completions        []stubRequestRecord `json:"completions"`
 }

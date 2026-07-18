@@ -29,13 +29,19 @@ const (
 	crashLeaseProofError    = "lease_fence_proof"
 	crashWorkingText        = "⏳ working on it…"
 	crashLongReply          = "long reply room=98 seq=01"
-	crashAmbiguousReply     = "⚠️ agent \"agent-integration\" may have received this request, but its acknowledgement was lost; the bridge did not resend it."
+	crashAmbiguousReply     = "⚠️ Agent \"agent-integration\" may have received this request, but its acknowledgement was lost. The bridge did not resend it; check the agent before retrying."
 )
 
 var crashPhases = [...]string{
 	"ledger_committed_pre_ack",
 	"acknowledged_pre_claim",
 	"a2a_accepted_pre_record",
+	"control_intent_committed_pre_claim",
+	"cancel_accepted_pre_record",
+	"continuation_accepted_pre_record",
+	"question_accepted_pre_record",
+	"progress_accepted_pre_record",
+	"pin_accepted_pre_record",
 	"result_persisted_pre_matrix",
 	"matrix_accepted_pre_record",
 	"long_task_polling",
@@ -59,11 +65,14 @@ func (f fixture) runCrashRecovery(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	ghost := "@" + ghostLocalpart + ":" + f.server
 	roomID, err := f.createRoom(ctx, sess.AccessToken)
 	if err != nil {
 		return err
 	}
-	ghost := "@" + ghostLocalpart + ":" + f.server
+	if err := f.grantRoomPower(ctx, sess.AccessToken, roomID, ghost, 50); err != nil {
+		return err
+	}
 	if err := f.invite(ctx, sess.AccessToken, roomID, ghost); err != nil {
 		return err
 	}
@@ -78,6 +87,24 @@ func (f fixture) runCrashRecovery(ctx context.Context) error {
 		return err
 	}
 	if err := f.proveAmbiguousA2ARecovery(ctx, sess, roomID, ghost); err != nil {
+		return err
+	}
+	if err := f.proveControlIntentRecovery(ctx, sess, roomID, ghost); err != nil {
+		return err
+	}
+	if err := f.proveCancelControlRecovery(ctx, sess, roomID, ghost); err != nil {
+		return err
+	}
+	if err := f.proveContinuationControlRecovery(ctx, sess, roomID, ghost); err != nil {
+		return err
+	}
+	if err := f.proveQuestionProjectionRecovery(ctx, sess, roomID, ghost); err != nil {
+		return err
+	}
+	if err := f.proveProgressProjectionRecovery(ctx, sess, roomID, ghost); err != nil {
+		return err
+	}
+	if err := f.provePinProjectionRecovery(ctx, sess, roomID, ghost); err != nil {
 		return err
 	}
 	if err := f.provePreMatrixRecovery(ctx, sess, roomID, ghost); err != nil {
@@ -96,6 +123,43 @@ func (f fixture) runCrashRecovery(ctx context.Context) error {
 		"sigkill_boundaries", len(crashPhases),
 		"scenario_duration_ms", time.Since(startedAt).Milliseconds(),
 	)
+	return nil
+}
+
+func (f fixture) grantRoomPower(
+	ctx context.Context,
+	token, roomID, userID string,
+	level int,
+) error {
+	endpoint := fmt.Sprintf(
+		"%s/_matrix/client/v3/rooms/%s/state/m.room.power_levels",
+		f.matrixURL,
+		pathSegment(roomID),
+	)
+	status, body, err := f.request(ctx, http.MethodGet, endpoint, token, nil)
+	if err != nil {
+		return fmt.Errorf("read room power levels: %w", err)
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("read room power levels: status %d: %s", status, body)
+	}
+	var content map[string]any
+	if err := json.Unmarshal(body, &content); err != nil {
+		return fmt.Errorf("decode room power levels: %w", err)
+	}
+	users, ok := content["users"].(map[string]any)
+	if !ok {
+		users = make(map[string]any)
+		content["users"] = users
+	}
+	users[userID] = level
+	status, body, err = f.request(ctx, http.MethodPut, endpoint, token, content)
+	if err != nil {
+		return fmt.Errorf("grant room power to %s: %w", userID, err)
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("grant room power to %s: status %d: %s", userID, status, body)
+	}
 	return nil
 }
 
@@ -214,6 +278,9 @@ func provePostgresLeaseFencing(ctx context.Context) (returnedErr error) {
 		!persisted.TerminalAt.Equal(terminalAt) || persisted.ErrorCode != crashLeaseProofError {
 		return fmt.Errorf("terminal lease-proof evidence did not preserve the fresh fence and cleared lease")
 	}
+	if err := provePostgresControlFencing(ctx, store, committedAt.Add(time.Minute), runID); err != nil {
+		return err
+	}
 
 	slog.Info(
 		"postgres lease fencing scenario passed",
@@ -222,6 +289,206 @@ func provePostgresLeaseFencing(ctx context.Context) (returnedErr error) {
 		"stale_transition", "rejected",
 		"terminal_state", persisted.State,
 		"lease_generation", persisted.LeaseGeneration,
+	)
+	return nil
+}
+
+type crashControlClaimResult struct {
+	control state.Control
+	claimed bool
+	err     error
+}
+
+// provePostgresControlFencing exercises the interactive-control outbox against the same real
+// Postgres fixture. Concurrent callers share one job lease; only one may prepare the control, a
+// replacement lease recovers it with explicit ambiguity evidence, and the stale owner is fenced.
+func provePostgresControlFencing(
+	ctx context.Context,
+	store state.Store,
+	committedAt time.Time,
+	runID string,
+) error {
+	roomID := "!control-proof-" + runID + ":integration.test"
+	ghostMXID := "@agent-control-proof:integration.test"
+	eventID := "$control-proof-" + runID + ":integration.test"
+	placeholderID := "$control-placeholder-" + runID + ":integration.test"
+	jobID := state.JobIDFor(eventID, ghostMXID)
+	result, err := store.AdmitTransaction(ctx, state.TransactionAdmission{
+		TransactionID:  "control-job-proof-" + runID,
+		BodyHash:       state.HashTransaction([]byte("control-job-proof-" + runID)),
+		CommittedAt:    committedAt,
+		RoomCapacity:   crashLeaseProofCapacity,
+		GlobalCapacity: crashLeaseProofCapacity,
+		Delegations: []state.NewDelegation{{
+			MatrixEventID: eventID, GhostMXID: ghostMXID, GhostLocalpart: "agent-control-proof",
+			RoomID: roomID, SenderMXID: "@control-proof:integration.test",
+			SenderOriginKind: "matrix", SenderOriginNetwork: "matrix",
+			OriginServerTS: committedAt.UnixMilli(), TargetFingerprint: "control-proof-v1",
+		}},
+	})
+	if err != nil || len(result.InsertedJobIDs) != 1 || result.InsertedJobIDs[0] != jobID {
+		return fmt.Errorf("admit control-proof delegation: result=%+v: %w", result, err)
+	}
+	firstAt := committedAt.Add(time.Second)
+	first, claimed, err := store.Claim(ctx, state.ClaimRequest{
+		Owner: "control-proof-first", Now: firstAt, LeaseDuration: crashLeaseProofDuration,
+	})
+	if err != nil || !claimed || first.JobID != jobID {
+		return fmt.Errorf("claim control-proof delegation: claimed=%t job=%s: %w", claimed, first.JobID, err)
+	}
+	if err := store.RecordMatrixEvent(ctx, state.MatrixEventRequest{
+		Lease: first.LeaseToken(), At: firstAt.Add(time.Second),
+		Stage: state.MatrixEventPlaceholder, EventID: placeholderID,
+	}); err != nil {
+		return fmt.Errorf("record control-proof placeholder: %w", err)
+	}
+	if err := store.ScheduleRetry(ctx, state.RetryRequest{
+		Lease: first.LeaseToken(), At: firstAt.Add(2 * time.Second),
+		NextAttemptAt: firstAt.Add(time.Hour), ErrorCode: "control_proof_wait", Kind: state.RetryPoll,
+	}); err != nil {
+		return fmt.Errorf("release control-proof initial lease: %w", err)
+	}
+	controlAt := firstAt.Add(3 * time.Second)
+	controlResult, err := store.AdmitTransaction(ctx, state.TransactionAdmission{
+		TransactionID:   "control-intent-proof-" + runID,
+		BodyHash:        state.HashTransaction([]byte("control-intent-proof-" + runID)),
+		CommittedAt:     controlAt,
+		ControlCapacity: 8,
+		RoomCapacity:    crashLeaseProofCapacity, GlobalCapacity: crashLeaseProofCapacity,
+		Controls: []state.NewControl{{
+			TargetMatrixEventID: placeholderID, SourceMatrixEventID: "$control-cancel-" + runID,
+			RoomID: roomID, SenderMXID: "@control-proof:integration.test",
+			Kind: state.ControlCancel, Authorized: true,
+		}},
+	})
+	if err != nil || len(controlResult.InsertedControlIDs) != 1 {
+		return fmt.Errorf("admit control-proof intent: result=%+v: %w", controlResult, err)
+	}
+	controlID := controlResult.InsertedControlIDs[0]
+	owner, claimed, err := store.Claim(ctx, state.ClaimRequest{
+		Owner: "control-proof-owner", Now: controlAt.Add(time.Second), LeaseDuration: crashLeaseProofDuration,
+	})
+	if err != nil || !claimed || owner.JobID != jobID {
+		return fmt.Errorf("claim control-proof owner: claimed=%t job=%s: %w", claimed, owner.JobID, err)
+	}
+	start := make(chan struct{})
+	claims := make(chan crashControlClaimResult, 2)
+	for range 2 {
+		go func() {
+			<-start
+			control, ok, claimErr := store.ClaimControl(ctx, owner.LeaseToken(), controlAt.Add(2*time.Second))
+			claims <- crashControlClaimResult{control: control, claimed: ok, err: claimErr}
+		}()
+	}
+	close(start)
+	winners := 0
+	for range 2 {
+		claim := <-claims
+		if claim.err != nil {
+			return fmt.Errorf("race control-proof claims: %w", claim.err)
+		}
+		if claim.claimed {
+			winners++
+			if claim.control.ControlID != controlID || claim.control.State != state.ControlPrepared {
+				return fmt.Errorf("control-proof winner returned unexpected control %+v", claim.control)
+			}
+		}
+	}
+	if winners != 1 {
+		return fmt.Errorf("concurrent control-proof claims produced %d winners, want one", winners)
+	}
+	takeoverAt := owner.LeaseExpiresAt.Add(time.Second)
+	takeover, claimed, err := store.Claim(ctx, state.ClaimRequest{
+		Owner: "control-proof-takeover", Now: takeoverAt, LeaseDuration: crashLeaseProofDuration,
+	})
+	if err != nil || !claimed || takeover.JobID != jobID {
+		return fmt.Errorf("claim control-proof takeover: claimed=%t job=%s: %w", claimed, takeover.JobID, err)
+	}
+	recovered, claimed, err := store.ClaimControl(ctx, takeover.LeaseToken(), takeoverAt.Add(time.Second))
+	if err != nil || !claimed || recovered.ControlID != controlID || recovered.RecoveryCount != 1 {
+		return fmt.Errorf("recover prepared control: control=%+v claimed=%t: %w", recovered, claimed, err)
+	}
+	staleErr := store.TransitionControl(ctx, state.ControlTransitionRequest{
+		Lease: owner.LeaseToken(), ControlID: controlID, From: state.ControlPrepared,
+		To: state.ControlApplied, At: takeoverAt.Add(2 * time.Second),
+	})
+	if staleErr == nil {
+		return errors.New("stale control-proof transition unexpectedly succeeded")
+	}
+	if !errors.Is(staleErr, state.ErrLeaseLost) {
+		return fmt.Errorf("stale control-proof transition did not return ErrLeaseLost: %w", staleErr)
+	}
+	controlCode := "control_ack_ambiguous"
+	if err := store.TransitionControl(ctx, state.ControlTransitionRequest{
+		Lease: takeover.LeaseToken(), ControlID: controlID, From: state.ControlPrepared,
+		To: state.ControlAmbiguous, At: takeoverAt.Add(2 * time.Second),
+		Patch: state.ControlTransitionPatch{ErrorCode: &controlCode},
+	}); err != nil {
+		return fmt.Errorf("finish recovered control proof: %w", err)
+	}
+	controls, err := store.Controls(ctx, jobID)
+	if err != nil || len(controls) != 1 || controls[0].State != state.ControlAmbiguous ||
+		controls[0].RecoveryCount != 1 || len(controls[0].Payload) != 0 {
+		return fmt.Errorf("persisted control-proof evidence = %+v: %w", controls, err)
+	}
+	// Race worker planning against terminal takeover on the real database. Either the plan commits
+	// first and the terminal transition atomically scrubs it, or terminal wins and the stale planner
+	// is rejected. A pending or content-bearing control is never a valid outcome.
+	raceAt := takeoverAt.Add(3 * time.Second)
+	terminalCode := "control_proof_complete"
+	startRace := make(chan struct{})
+	planResult := make(chan error, 1)
+	terminalResult := make(chan error, 1)
+	go func() {
+		<-startRace
+		_, planErr := store.PlanControl(ctx, state.PlanControlRequest{
+			Lease: takeover.LeaseToken(), At: raceAt, Kind: state.ControlQuestion,
+			Slot: 0, Capacity: 8, Payload: []byte("content that must be scrubbed"),
+		})
+		planResult <- planErr
+	}()
+	go func() {
+		<-startRace
+		terminalResult <- store.Transition(ctx, state.TransitionRequest{
+			Lease: takeover.LeaseToken(), From: state.StatePending, To: state.StateDead,
+			At: raceAt, Patch: state.TransitionPatch{ErrorCode: &terminalCode},
+		})
+	}()
+	close(startRace)
+	if err := <-terminalResult; err != nil {
+		return fmt.Errorf("terminalize control-proof delegation during planner race: %w", err)
+	}
+	if err := <-planResult; err != nil && !errors.Is(err, state.ErrLeaseLost) {
+		return fmt.Errorf("planner race returned unexpected error: %w", err)
+	}
+	controls, err = store.Controls(ctx, jobID)
+	if err != nil {
+		return fmt.Errorf("load terminal controls after planner race: %w", err)
+	}
+	for _, control := range controls {
+		if !control.State.Terminal() || len(control.Payload) != 0 {
+			return fmt.Errorf("planner race retained pending or content-bearing control: %+v", control)
+		}
+	}
+	cleanup, err := store.CleanupTerminal(ctx, raceAt.Add(48*time.Hour))
+	if err != nil {
+		return fmt.Errorf("clean retained control transaction references: %w", err)
+	}
+	if cleanup.TombstonesDeleted != 1 || cleanup.TransactionsDeleted != 1 {
+		return fmt.Errorf("control retention cleanup = %+v, want one ordinary proof tombstone and transaction", cleanup)
+	}
+	retained, found, err := store.Job(ctx, jobID)
+	if err != nil || !found || retained.State != state.StateDead {
+		return fmt.Errorf("retained control-proof delegation = (%+v, %t): %w", retained, found, err)
+	}
+	slog.Info(
+		"postgres control fencing scenario passed",
+		"control_fencing", "passed",
+		"concurrent_claim_winners", winners,
+		"stale_transition", "rejected",
+		"stale_planner_race", "serialized",
+		"control_transaction_retention", "passed",
+		"recovery_count", recovered.RecoveryCount,
 	)
 	return nil
 }
@@ -408,12 +675,293 @@ func (f fixture) proveAmbiguousA2ARecovery(
 	return nil
 }
 
-func (f fixture) provePreMatrixRecovery(
+func (f fixture) proveControlIntentRecovery(
 	ctx context.Context,
 	sess session,
 	roomID, ghost string,
 ) error {
 	phase := crashPhases[3]
+	placeholderID, err := f.startCrashInputTask(ctx, sess, roomID, ghost, "control-intent", 1)
+	if err != nil {
+		return err
+	}
+	before, err := f.fetchStubStats(ctx)
+	if err != nil {
+		return err
+	}
+	baseline, err := f.prepareCrashBoundary(ctx, "postgres-claim")
+	if err != nil {
+		return err
+	}
+	cancelEvent, err := crashCancelEvent(
+		roomID, sess.UserID, "$crash-control-intent-cancel:integration.test", placeholderID,
+	)
+	if err != nil {
+		return err
+	}
+	status, err := f.pushCrashTransaction(ctx, "crash-control-intent-cancel", cancelEvent)
+	if err != nil || status != http.StatusOK {
+		return fmt.Errorf("push pre-claim control: status=%d: %w", status, err)
+	}
+	if err := f.waitForFault(ctx, "postgres-claim"); err != nil {
+		return err
+	}
+	if err := f.crossCrashBoundary(ctx, phase, baseline); err != nil {
+		return err
+	}
+	if err := f.waitForEditContaining(ctx, sess.AccessToken, roomID, ghost, placeholderID, "canceled by"); err != nil {
+		return err
+	}
+	after, err := f.fetchStubStats(ctx)
+	if err != nil {
+		return err
+	}
+	if after.CancelRequests != before.CancelRequests+1 {
+		return fmt.Errorf("pre-claim recovered cancellation requests = %d, want one after %d",
+			after.CancelRequests, before.CancelRequests)
+	}
+	return nil
+}
+
+func (f fixture) proveCancelControlRecovery(
+	ctx context.Context,
+	sess session,
+	roomID, ghost string,
+) error {
+	phase := crashPhases[4]
+	placeholderID, err := f.startCrashInputTask(ctx, sess, roomID, ghost, "cancel-control-task", 2)
+	if err != nil {
+		return err
+	}
+	before, err := f.fetchStubStats(ctx)
+	if err != nil {
+		return err
+	}
+	baseline, err := f.prepareCrashBoundary(ctx, "a2a-response")
+	if err != nil {
+		return err
+	}
+	cancelEvent, err := crashCancelEvent(
+		roomID, sess.UserID, "$crash-cancel-control:integration.test", placeholderID,
+	)
+	if err != nil {
+		return err
+	}
+	status, err := f.pushCrashTransaction(ctx, "crash-cancel-control", cancelEvent)
+	if err != nil || status != http.StatusOK {
+		return fmt.Errorf("push ambiguous cancel control: status=%d: %w", status, err)
+	}
+	if err := f.waitForFault(ctx, "a2a-response"); err != nil {
+		return err
+	}
+	if err := f.crossCrashBoundary(ctx, phase, baseline); err != nil {
+		return err
+	}
+	if err := f.waitForEditContaining(ctx, sess.AccessToken, roomID, ghost, placeholderID, "cancel requested by"); err != nil {
+		return err
+	}
+	after, err := f.fetchStubStats(ctx)
+	if err != nil {
+		return err
+	}
+	if after.CancelRequests != before.CancelRequests+1 {
+		return fmt.Errorf("ambiguous cancellation requests = %d, want one after %d",
+			after.CancelRequests, before.CancelRequests)
+	}
+	state, err := f.faultState(ctx)
+	if err != nil {
+		return err
+	}
+	if countA2AMethod(state.A2AMethods, "CancelTask") != 1 {
+		return fmt.Errorf("ambiguous cancellation methods = %v, want one CancelTask", state.A2AMethods)
+	}
+	return nil
+}
+
+func (f fixture) proveContinuationControlRecovery(
+	ctx context.Context,
+	sess session,
+	roomID, ghost string,
+) error {
+	phase := crashPhases[5]
+	placeholderID, err := f.startCrashInputTask(ctx, sess, roomID, ghost, "continuation-control-task", 3)
+	if err != nil {
+		return err
+	}
+	before, err := f.fetchStubStats(ctx)
+	if err != nil {
+		return err
+	}
+	baseline, err := f.prepareCrashBoundary(ctx, "a2a-response")
+	if err != nil {
+		return err
+	}
+	answerEvent, err := crashThreadEvent(
+		roomID, sess.UserID, "$crash-continuation-control:integration.test", placeholderID, "kube-system",
+	)
+	if err != nil {
+		return err
+	}
+	status, err := f.pushCrashTransaction(ctx, "crash-continuation-control", answerEvent)
+	if err != nil || status != http.StatusOK {
+		return fmt.Errorf("push ambiguous continuation control: status=%d: %w", status, err)
+	}
+	if err := f.waitForFault(ctx, "a2a-response"); err != nil {
+		return err
+	}
+	if err := f.crossCrashBoundary(ctx, phase, baseline); err != nil {
+		return err
+	}
+	if err := f.waitForEditContaining(ctx, sess.AccessToken, roomID, ghost, placeholderID, "continuation requested by"); err != nil {
+		return err
+	}
+	after, err := f.fetchStubStats(ctx)
+	if err != nil {
+		return err
+	}
+	if after.TotalRequests != before.TotalRequests+1 || after.InputContinued != before.InputContinued+1 {
+		return fmt.Errorf("ambiguous continuation requests/inputs = %d/%d, want one after %d/%d",
+			after.TotalRequests, after.InputContinued, before.TotalRequests, before.InputContinued)
+	}
+	state, err := f.faultState(ctx)
+	if err != nil {
+		return err
+	}
+	if countA2AMethod(state.A2AMethods, "SendMessage") != 1 {
+		return fmt.Errorf("ambiguous continuation methods = %v, want one SendMessage", state.A2AMethods)
+	}
+	return nil
+}
+
+func (f fixture) proveQuestionProjectionRecovery(
+	ctx context.Context,
+	sess session,
+	roomID, ghost string,
+) error {
+	phase := crashPhases[6]
+	baseline, err := f.prepareCrashBoundary(ctx, "matrix-question-response")
+	if err != nil {
+		return err
+	}
+	event, err := crashEvent(
+		roomID, sess.UserID, "$crash-question-control:integration.test",
+		messageContent{Body: ghost + " input room=97 seq=04", Mentions: mentions{UserIDs: []string{ghost}}, MsgType: "m.text"},
+	)
+	if err != nil {
+		return err
+	}
+	status, err := f.pushCrashTransaction(ctx, "crash-question-control", event)
+	if err != nil || status != http.StatusOK {
+		return fmt.Errorf("push question projection task: status=%d: %w", status, err)
+	}
+	if err := f.waitForFault(ctx, "matrix-question-response"); err != nil {
+		return err
+	}
+	if err := f.crossCrashBoundary(ctx, phase, baseline); err != nil {
+		return err
+	}
+	placeholderID, err := f.waitForCrashPlaceholder(ctx, sess.AccessToken, roomID, ghost, event.EventID)
+	if err != nil {
+		return err
+	}
+	if err := f.waitForEditContaining(ctx, sess.AccessToken, roomID, ghost, placeholderID, "which namespace?"); err != nil {
+		return err
+	}
+	if err := f.requireFirstDeterministicMatrixReplay(ctx); err != nil {
+		return err
+	}
+	return f.cancelCrashTask(ctx, sess, roomID, ghost, placeholderID, "question-control-cleanup")
+}
+
+func (f fixture) proveProgressProjectionRecovery(
+	ctx context.Context,
+	sess session,
+	roomID, ghost string,
+) error {
+	phase := crashPhases[7]
+	baseline, err := f.prepareCrashBoundary(ctx, "matrix-progress-response")
+	if err != nil {
+		return err
+	}
+	event, err := crashEvent(
+		roomID, sess.UserID, "$crash-progress-control:integration.test",
+		messageContent{Body: ghost + " long room=96 seq=02", Mentions: mentions{UserIDs: []string{ghost}}, MsgType: "m.text"},
+	)
+	if err != nil {
+		return err
+	}
+	status, err := f.pushCrashTransaction(ctx, "crash-progress-control", event)
+	if err != nil || status != http.StatusOK {
+		return fmt.Errorf("push progress projection task: status=%d: %w", status, err)
+	}
+	if err := f.waitForFault(ctx, "matrix-progress-response"); err != nil {
+		return err
+	}
+	if err := f.crossCrashBoundary(ctx, phase, baseline); err != nil {
+		return err
+	}
+	placeholderID, err := f.waitForCrashPlaceholder(ctx, sess.AccessToken, roomID, ghost, event.EventID)
+	if err != nil {
+		return err
+	}
+	if err := f.waitForThreadContaining(ctx, sess.AccessToken, roomID, ghost, placeholderID, "working"); err != nil {
+		return err
+	}
+	if err := f.requireFirstDeterministicMatrixReplay(ctx); err != nil {
+		return err
+	}
+	return f.cancelCrashTask(ctx, sess, roomID, ghost, placeholderID, "progress-control-cleanup")
+}
+
+func (f fixture) provePinProjectionRecovery(
+	ctx context.Context,
+	sess session,
+	roomID, ghost string,
+) error {
+	phase := crashPhases[8]
+	baseline, err := f.prepareCrashBoundary(ctx, "matrix-pin-response")
+	if err != nil {
+		return err
+	}
+	event, err := crashEvent(
+		roomID, sess.UserID, "$crash-pin-control:integration.test",
+		messageContent{Body: ghost + " long room=96 seq=03", Mentions: mentions{UserIDs: []string{ghost}}, MsgType: "m.text"},
+	)
+	if err != nil {
+		return err
+	}
+	status, err := f.pushCrashTransaction(ctx, "crash-pin-control", event)
+	if err != nil || status != http.StatusOK {
+		return fmt.Errorf("push pin projection task: status=%d: %w", status, err)
+	}
+	if err := f.waitForFault(ctx, "matrix-pin-response"); err != nil {
+		return err
+	}
+	if err := f.crossCrashBoundary(ctx, phase, baseline); err != nil {
+		return err
+	}
+	placeholderID, err := f.waitForCrashPlaceholder(ctx, sess.AccessToken, roomID, ghost, event.EventID)
+	if err != nil {
+		return err
+	}
+	if err := f.waitForPinned(ctx, sess.AccessToken, roomID, placeholderID, true); err != nil {
+		return err
+	}
+	if err := f.requireConvergentMatrixProjection(ctx); err != nil {
+		return err
+	}
+	if err := f.cancelCrashTask(ctx, sess, roomID, ghost, placeholderID, "pin-control-cleanup"); err != nil {
+		return err
+	}
+	return f.waitForPinned(ctx, sess.AccessToken, roomID, placeholderID, false)
+}
+
+func (f fixture) provePreMatrixRecovery(
+	ctx context.Context,
+	sess session,
+	roomID, ghost string,
+) error {
+	phase := crashPhases[9]
 	event, err := crashEvent(roomID, sess.UserID, "$crash-pre-matrix:integration.test", crashContent(ghost, phase))
 	if err != nil {
 		return err
@@ -443,7 +991,7 @@ func (f fixture) proveLostMatrixResponse(
 	sess session,
 	roomID, ghost string,
 ) error {
-	phase := crashPhases[4]
+	phase := crashPhases[10]
 	event, err := crashEvent(roomID, sess.UserID, "$crash-matrix-response:integration.test", crashContent(ghost, phase))
 	if err != nil {
 		return err
@@ -473,7 +1021,11 @@ func (f fixture) proveLongTaskRecovery(
 	sess session,
 	roomID, ghost string,
 ) error {
-	phase := crashPhases[5]
+	phase := crashPhases[11]
+	before, err := f.fetchStubStats(ctx)
+	if err != nil {
+		return err
+	}
 	event, err := crashEvent(
 		roomID,
 		sess.UserID,
@@ -514,10 +1066,227 @@ func (f fixture) proveLongTaskRecovery(
 	if err != nil {
 		return err
 	}
-	if stats.LongStarted != 1 || stats.LongCompleted != 1 {
-		return fmt.Errorf("long task started/completed = %d/%d, want 1/1", stats.LongStarted, stats.LongCompleted)
+	if stats.LongStarted != before.LongStarted+1 || stats.LongCompleted != before.LongCompleted+1 {
+		return fmt.Errorf("long task started/completed = %d/%d, want one after %d/%d",
+			stats.LongStarted, stats.LongCompleted, before.LongStarted, before.LongCompleted)
 	}
 	return nil
+}
+
+func (f fixture) startCrashInputTask(
+	ctx context.Context,
+	sess session,
+	roomID, ghost, name string,
+	sequence int,
+) (string, error) {
+	event, err := crashEvent(
+		roomID,
+		sess.UserID,
+		"$crash-"+name+":integration.test",
+		messageContent{
+			Body:     ghost + fmt.Sprintf(" input room=97 seq=%02d", sequence),
+			Mentions: mentions{UserIDs: []string{ghost}}, MsgType: "m.text",
+		},
+	)
+	if err != nil {
+		return "", err
+	}
+	status, err := f.pushCrashTransaction(ctx, "crash-"+name, event)
+	if err != nil || status != http.StatusOK {
+		return "", fmt.Errorf("push %s input task: status=%d: %w", name, status, err)
+	}
+	placeholderID, err := f.waitForCrashPlaceholder(ctx, sess.AccessToken, roomID, ghost, event.EventID)
+	if err != nil {
+		return "", err
+	}
+	if err := f.waitForEditContaining(
+		ctx, sess.AccessToken, roomID, ghost, placeholderID, "which namespace?",
+	); err != nil {
+		return "", err
+	}
+	return placeholderID, nil
+}
+
+func (f fixture) cancelCrashTask(
+	ctx context.Context,
+	sess session,
+	roomID, ghost, placeholderID, name string,
+) error {
+	event, err := crashCancelEvent(
+		roomID, sess.UserID, "$crash-"+name+":integration.test", placeholderID,
+	)
+	if err != nil {
+		return err
+	}
+	status, err := f.pushCrashTransaction(ctx, "crash-"+name, event)
+	if err != nil || status != http.StatusOK {
+		return fmt.Errorf("push %s cancellation: status=%d: %w", name, status, err)
+	}
+	return f.waitForEditContaining(ctx, sess.AccessToken, roomID, ghost, placeholderID, "canceled by")
+}
+
+func crashCancelEvent(roomID, sender, eventID, targetEventID string) (matrixEvent, error) {
+	content, err := json.Marshal(map[string]any{
+		"m.relates_to": map[string]any{
+			"rel_type": "m.annotation", "event_id": targetEventID, "key": "❌",
+		},
+	})
+	if err != nil {
+		return matrixEvent{}, fmt.Errorf("encode crash cancel event: %w", err)
+	}
+	return matrixEvent{
+		Content: content, EventID: eventID, OriginServerTS: 1_700_000_000_100,
+		RoomID: roomID, Sender: sender, Type: "m.reaction",
+	}, nil
+}
+
+func crashThreadEvent(roomID, sender, eventID, targetEventID, body string) (matrixEvent, error) {
+	content, err := json.Marshal(map[string]any{
+		"msgtype": "m.text", "body": body,
+		"m.relates_to": map[string]any{"rel_type": "m.thread", "event_id": targetEventID},
+	})
+	if err != nil {
+		return matrixEvent{}, fmt.Errorf("encode crash thread event: %w", err)
+	}
+	return matrixEvent{
+		Content: content, EventID: eventID, OriginServerTS: 1_700_000_000_200,
+		RoomID: roomID, Sender: sender, Type: "m.room.message",
+	}, nil
+}
+
+func (f fixture) waitForCrashPlaceholder(
+	ctx context.Context,
+	token, roomID, ghost, originalEventID string,
+) (string, error) {
+	for {
+		events, err := f.roomMessages(ctx, token, roomID)
+		if err == nil {
+			for _, evt := range events {
+				if evt.Type != "m.room.message" || evt.Sender != ghost {
+					continue
+				}
+				var content messageContent
+				if json.Unmarshal(evt.Content, &content) == nil && content.Body == crashWorkingText &&
+					content.RelatesTo.InReplyTo.EventID == originalEventID {
+					return evt.EventID, nil
+				}
+			}
+		}
+		if waitErr := wait(ctx, crashPollInterval); waitErr != nil {
+			if err != nil {
+				return "", errors.Join(err, waitErr)
+			}
+			return "", fmt.Errorf("wait for crash placeholder: %w", waitErr)
+		}
+	}
+}
+
+func (f fixture) waitForEditContaining(
+	ctx context.Context,
+	token, roomID, ghost, placeholderID, fragment string,
+) error {
+	return f.waitForRelatedControl(ctx, token, roomID, ghost, placeholderID, "m.replace", fragment, 1)
+}
+
+func (f fixture) waitForThreadContaining(
+	ctx context.Context,
+	token, roomID, ghost, placeholderID, fragment string,
+) error {
+	return f.waitForRelatedControl(ctx, token, roomID, ghost, placeholderID, "m.thread", fragment, 2)
+}
+
+func (f fixture) waitForRelatedControl(
+	ctx context.Context,
+	token, roomID, ghost, placeholderID, relation, fragment string,
+	maximum int,
+) error {
+	for {
+		events, err := f.roomMessages(ctx, token, roomID)
+		matches := 0
+		if err == nil {
+			for _, evt := range events {
+				if evt.Type != "m.room.message" || evt.Sender != ghost {
+					continue
+				}
+				var content struct {
+					Body      string `json:"body"`
+					RelatesTo struct {
+						RelType string `json:"rel_type"`
+						EventID string `json:"event_id"`
+					} `json:"m.relates_to"`
+					NewContent struct {
+						Body string `json:"body"`
+					} `json:"m.new_content"`
+				}
+				if decodeErr := json.Unmarshal(evt.Content, &content); decodeErr != nil {
+					return fmt.Errorf("decode durable control Matrix event %s: %w", evt.EventID, decodeErr)
+				}
+				body := content.Body
+				if relation == "m.replace" {
+					body = content.NewContent.Body
+				}
+				if content.RelatesTo.RelType == relation && content.RelatesTo.EventID == placeholderID &&
+					strings.Contains(body, fragment) {
+					matches++
+				}
+			}
+			if matches >= 1 && matches <= maximum {
+				return nil
+			}
+			if matches > maximum {
+				return fmt.Errorf("durable %s projections containing %q = %d, want at most %d",
+					relation, fragment, matches, maximum)
+			}
+		}
+		if waitErr := wait(ctx, crashPollInterval); waitErr != nil {
+			if err != nil {
+				return errors.Join(err, waitErr)
+			}
+			return fmt.Errorf("wait for durable %s projection containing %q: %w", relation, fragment, waitErr)
+		}
+	}
+}
+
+func (f fixture) waitForPinned(
+	ctx context.Context,
+	token, roomID, eventID string,
+	want bool,
+) error {
+	endpoint := fmt.Sprintf(
+		"%s/_matrix/client/v3/rooms/%s/state/m.room.pinned_events",
+		f.matrixURL,
+		pathSegment(roomID),
+	)
+	for {
+		status, body, err := f.request(ctx, http.MethodGet, endpoint, token, nil)
+		if err == nil && status == http.StatusOK {
+			var content struct {
+				Pinned []string `json:"pinned"`
+			}
+			if decodeErr := json.Unmarshal(body, &content); decodeErr != nil {
+				return fmt.Errorf("decode pinned-events state: %w", decodeErr)
+			}
+			found := false
+			for _, pinned := range content.Pinned {
+				if pinned == eventID {
+					found = true
+					break
+				}
+			}
+			if found == want {
+				return nil
+			}
+		}
+		if err == nil && status == http.StatusNotFound && !want {
+			return nil
+		}
+		if waitErr := wait(ctx, crashPollInterval); waitErr != nil {
+			if err != nil {
+				return errors.Join(err, waitErr)
+			}
+			return fmt.Errorf("wait for pinned=%t on %s (status %d): %w", want, eventID, status, waitErr)
+		}
+	}
 }
 
 func (f fixture) prepareCrashBoundary(ctx context.Context, mode string) (bridgeMetrics, error) {
@@ -668,6 +1437,45 @@ func (f fixture) requireDeterministicMatrixReplay(ctx context.Context) error {
 				return errors.Join(err, waitErr)
 			}
 			return fmt.Errorf("wait for deterministic Matrix replay: %w", waitErr)
+		}
+	}
+}
+
+func (f fixture) requireFirstDeterministicMatrixReplay(ctx context.Context) error {
+	for {
+		state, err := f.faultState(ctx)
+		if err == nil && len(state.MatrixPaths) >= 2 {
+			if state.MatrixPaths[0] != state.MatrixPaths[1] {
+				return fmt.Errorf("first Matrix replay paths = %v, want the accepted path twice", state.MatrixPaths)
+			}
+			return nil
+		}
+		if waitErr := wait(ctx, crashPollInterval); waitErr != nil {
+			if err != nil {
+				return errors.Join(err, waitErr)
+			}
+			return fmt.Errorf("wait for first deterministic Matrix replay: %w", waitErr)
+		}
+	}
+}
+
+func (f fixture) requireConvergentMatrixProjection(ctx context.Context) error {
+	for {
+		state, err := f.faultState(ctx)
+		if err == nil && len(state.MatrixPaths) >= 1 {
+			want := state.MatrixPaths[0]
+			for _, path := range state.MatrixPaths[1:] {
+				if path != want {
+					return fmt.Errorf("matrix convergence paths = %v, want one stable projection path", state.MatrixPaths)
+				}
+			}
+			return nil
+		}
+		if waitErr := wait(ctx, crashPollInterval); waitErr != nil {
+			if err != nil {
+				return errors.Join(err, waitErr)
+			}
+			return fmt.Errorf("wait for convergent Matrix projection: %w", waitErr)
 		}
 	}
 }

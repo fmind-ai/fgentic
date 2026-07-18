@@ -26,12 +26,16 @@ config:
   concurrency: 16 # max in-flight delegations across all rooms (per-room FIFO regardless)
   roomQueueCapacity: 32 # accepted running + queued jobs per room
   globalQueueCapacity: 256 # accepted running + queued jobs across all rooms
+  controlCapacityPerJob: 16 # durable cancel/input/progress/pin records retained per delegation
   appserviceTransactionMaxBytes: "16777216" # 16 MiB exact pre-ACK JSON body cap
   delegationClaimInterval: 1s # one idle coordinator query; intake wakes it immediately
   delegationLeaseDuration: 30s # fenced lease, heartbeated while a worker owns a job
   delegationRetryInitial: 1s
   delegationRetryMax: 30s
   delegationMaxAttempts: 5
+  cancelModeratorPowerLevel: 50 # original sender always allowed; other members need this room level
+  maxTaskProgressPosts: 3 # bounded durable progress controls; 0 disables progress projection
+  pinInFlightTasks: false # requires ghost power for m.room.pinned_events state
   # Token-bucket rate limits guarding LLM spend (SPEC §4 F7).
   senderRatePerMinute: 6
   senderRateBurst: 3

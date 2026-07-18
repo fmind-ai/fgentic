@@ -66,6 +66,11 @@ print_crash_delegation_state() {
   kubectl --request-timeout=5s --namespace "${NAMESPACE}" exec deployment/postgres -- \
     psql -U postgres -d bridge -At -F '|' -c \
     "SELECT matrix_event_id, state, lease_generation, COALESCE(lease_expires_at::text, ''), attempt_count, poll_count, next_attempt_at, error_code, admission_checked, admission_allowed, admission_reason, matrix_reply_event_id <> '', matrix_placeholder_event_id <> '', matrix_edit_event_id <> '', created_at, updated_at, COALESCE(terminal_at::text, '') FROM bridge_delegations WHERE appservice_transaction_id LIKE 'crash-%' ORDER BY intake_sequence;" || true
+  echo "==> Content-free crash control state"
+  echo "matrix_event_id|kind|state|slot|lease_generation|recovery_count|error_code|payload_bytes|terminal_at"
+  kubectl --request-timeout=5s --namespace "${NAMESPACE}" exec deployment/postgres -- \
+    psql -U postgres -d bridge -At -F '|' -c \
+    "SELECT jobs.matrix_event_id, controls.kind, controls.state, controls.slot, controls.lease_generation, controls.recovery_count, controls.error_code, octet_length(controls.payload), COALESCE(controls.terminal_at::text, '') FROM bridge_delegation_controls AS controls JOIN bridge_delegations AS jobs ON jobs.job_id = controls.job_id WHERE jobs.appservice_transaction_id LIKE 'crash-%' ORDER BY jobs.intake_sequence, controls.created_at, controls.control_id;" || true
 }
 
 crash_driver_terminal_status() {
@@ -451,7 +456,7 @@ hard_kill_bridge_process() {
   docker exec "${crash_runtime_node}" crictl logs "${old_container}" >>"${crash_log_file}" 2>&1 || true
   echo "==> SIGKILL bridge process ${pid} at ${phase}"
   docker exec "${crash_runtime_node}" kill -KILL "${pid}"
-  # The process boundary is complete once SIGKILL returns. Replace its dead pod so six
+  # The process boundary is complete once SIGKILL returns. Replace its dead pod so twelve
   # intentional crashes do not accumulate CrashLoopBackOff delays on constrained hosts.
   kubectl --request-timeout=5s --namespace "${NAMESPACE}" delete pod "${old_pod}" --wait=false
 
@@ -486,6 +491,12 @@ disrupt_crash_recovery() {
     ledger_committed_pre_ack
     acknowledged_pre_claim
     a2a_accepted_pre_record
+    control_intent_committed_pre_claim
+    cancel_accepted_pre_record
+    continuation_accepted_pre_record
+    question_accepted_pre_record
+    progress_accepted_pre_record
+    pin_accepted_pre_record
     result_persisted_pre_matrix
     matrix_accepted_pre_record
     long_task_polling
@@ -499,7 +510,7 @@ disrupt_crash_recovery() {
 
 verify_crash_recovery_evidence() {
   docker exec "${crash_runtime_node}" crictl logs "${crash_bridge_container}" >>"${crash_log_file}" 2>&1 || true
-  if rg -n 'crash boundary|long room=98' "${crash_log_file}"; then
+  if rg -n 'crash boundary|long room=(96|98)|input room=97|kube-system' "${crash_log_file}"; then
     echo "Error: bridge logs retained crash-scenario prompt content" >&2
     return 1
   fi
@@ -510,8 +521,8 @@ verify_crash_recovery_evidence() {
       psql -U postgres -d bridge -At -F '|' -c \
       "SELECT count(*), count(*) FILTER (WHERE state = 'delivered'), count(*) FILTER (WHERE state = 'ambiguous'), count(*) FILTER (WHERE prompt <> '' OR octet_length(payload) > 0 OR result_text <> '') FROM bridge_delegations WHERE matrix_event_id LIKE '\$crash-%';"
   )"
-  if [[ "${job_summary}" != "6|5|1|0" ]]; then
-    echo "Error: crash delegation summary ${job_summary}, want 6|5|1|0" >&2
+  if [[ "${job_summary}" != "12|9|3|0" ]]; then
+    echo "Error: crash delegation summary ${job_summary}, want 12|9|3|0" >&2
     return 1
   fi
   local transaction_count=""
@@ -520,8 +531,19 @@ verify_crash_recovery_evidence() {
       psql -U postgres -d bridge -Atc \
       "SELECT count(*) FROM bridge_appservice_transactions WHERE transaction_id LIKE 'crash-%';"
   )"
-  if [[ "${transaction_count}" != "6" ]]; then
-    echo "Error: crash appservice transactions = ${transaction_count}, want 6" >&2
+  if [[ "${transaction_count}" != "18" ]]; then
+    echo "Error: crash appservice transactions = ${transaction_count}, want 18" >&2
+    return 1
+  fi
+
+  local control_summary=""
+  control_summary="$(
+    kubectl --request-timeout=10s --namespace "${NAMESPACE}" exec deployment/postgres -- \
+      psql -U postgres -d bridge -At -F '|' -c \
+      "SELECT count(*), count(*) FILTER (WHERE terminal_at IS NULL), count(*) FILTER (WHERE octet_length(payload) > 0) FROM bridge_delegation_controls WHERE job_id IN (SELECT job_id FROM bridge_delegations WHERE matrix_event_id LIKE '\$crash-%');"
+  )"
+  if [[ "${control_summary}" != *"|0|0" ]]; then
+    echo "Error: crash control summary ${control_summary}, want every control terminal and content-free" >&2
     return 1
   fi
 }
@@ -645,7 +667,7 @@ if [[ "${SCENARIO}" == "availability" ]]; then
   disrupt_active_availability_call
 fi
 if [[ "${SCENARIO}" == "crash-recovery" ]]; then
-  echo "==> Injecting six hard bridge process failures"
+  echo "==> Injecting twelve hard bridge process failures"
   disrupt_crash_recovery
 fi
 kubectl --request-timeout=155s --namespace "${NAMESPACE}" wait \

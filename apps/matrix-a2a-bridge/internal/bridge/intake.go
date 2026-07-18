@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -153,18 +154,20 @@ func (b *Bridge) AdmitAppserviceTransaction(
 	if !ok {
 		return state.AdmissionResult{}, fmt.Errorf("bridge state does not support durable transaction admission")
 	}
-	delegations, err := b.delegationsFromTransaction(body)
+	delegations, controls, err := b.workFromTransaction(ctx, body)
 	if err != nil {
 		return state.AdmissionResult{}, err
 	}
 	committedAt := time.Now().UTC()
 	result, err := ledger.AdmitTransaction(ctx, state.TransactionAdmission{
-		TransactionID:  transactionID,
-		BodyHash:       state.HashTransaction(body),
-		CommittedAt:    committedAt,
-		RoomCapacity:   b.cfg.RoomQueueCapacity,
-		GlobalCapacity: b.cfg.GlobalQueueCapacity,
-		Delegations:    delegations,
+		TransactionID:   transactionID,
+		BodyHash:        state.HashTransaction(body),
+		CommittedAt:     committedAt,
+		RoomCapacity:    b.cfg.RoomQueueCapacity,
+		GlobalCapacity:  b.cfg.GlobalQueueCapacity,
+		ControlCapacity: b.durableControlCapacity(),
+		Delegations:     delegations,
+		Controls:        controls,
 	})
 	if err != nil {
 		if errors.Is(err, state.ErrTransactionHashConflict) {
@@ -308,21 +311,134 @@ func (b *Bridge) recordCapacityDenials(
 	}
 }
 
-func (b *Bridge) delegationsFromTransaction(body []byte) ([]state.NewDelegation, error) {
+func (b *Bridge) workFromTransaction(
+	ctx context.Context,
+	body []byte,
+) ([]state.NewDelegation, []state.NewControl, error) {
 	var transaction appservice.Transaction
 	if err := json.Unmarshal(body, &transaction); err != nil {
-		return nil, fmt.Errorf("parse appservice transaction: %w", err)
+		return nil, nil, fmt.Errorf("parse appservice transaction: %w", err)
 	}
 
 	delegations := make([]state.NewDelegation, 0)
+	controls := make([]state.NewControl, 0)
 	for index, evt := range transaction.Events {
+		control, matched, err := b.controlFromEvent(ctx, evt)
+		if err != nil {
+			return nil, nil, fmt.Errorf("classify appservice control event %d: %w", index, err)
+		}
+		if matched {
+			controls = append(controls, control)
+			continue
+		}
 		jobs, err := b.delegationsFromEvent(evt)
 		if err != nil {
-			return nil, fmt.Errorf("classify appservice event %d: %w", index, err)
+			return nil, nil, fmt.Errorf("classify appservice event %d: %w", index, err)
 		}
 		delegations = append(delegations, jobs...)
 	}
-	return delegations, nil
+	return delegations, controls, nil
+}
+
+func (b *Bridge) delegationsFromTransaction(body []byte) ([]state.NewDelegation, error) {
+	delegations, _, err := b.workFromTransaction(context.Background(), body)
+	return delegations, err
+}
+
+func (b *Bridge) controlFromEvent(
+	ctx context.Context,
+	evt *event.Event,
+) (state.NewControl, bool, error) {
+	if evt == nil || evt.StateKey != nil || b.isOwnUser(evt.Sender) || evt.ID == "" || evt.RoomID == "" || evt.Sender == "" {
+		return state.NewControl{}, false, nil
+	}
+	var (
+		targetEvent id.EventID
+		kind        state.ControlKind
+		payload     []byte
+	)
+	switch evt.Type.Type {
+	case event.EventReaction.Type:
+		evt.Type.Class = event.MessageEventType
+		if evt.Content.Parsed == nil {
+			if err := evt.Content.ParseRaw(evt.Type); err != nil {
+				return state.NewControl{}, false, nil
+			}
+		}
+		relation := evt.Content.AsReaction().GetRelatesTo()
+		if relation.GetAnnotationKey() != cancelReactionKey {
+			return state.NewControl{}, false, nil
+		}
+		targetEvent = relation.GetAnnotationID()
+		kind = state.ControlCancel
+	case event.EventMessage.Type:
+		evt.Type.Class = event.MessageEventType
+		if evt.Content.Parsed == nil {
+			if err := evt.Content.ParseRaw(evt.Type); err != nil {
+				return state.NewControl{}, false, nil
+			}
+		}
+		msg := evt.Content.AsMessage()
+		if msg == nil || msg.MsgType != event.MsgText {
+			return state.NewControl{}, false, nil
+		}
+		targetEvent = msg.RelatesTo.GetThreadParent()
+		kind = state.ControlContinuation
+		msg.RemoveReplyFallback()
+		answer := strings.TrimSpace(msg.Body)
+		if answer == "" {
+			answer = "(the sender replied with no text)"
+		}
+		payload = []byte(answer)
+	default:
+		return state.NewControl{}, false, nil
+	}
+	if targetEvent == "" {
+		return state.NewControl{}, false, nil
+	}
+	target, found, err := b.store.ControlTarget(ctx, targetEvent.String())
+	if err != nil {
+		return state.NewControl{}, false, fmt.Errorf("resolve control target: %w", err)
+	}
+	if !found || target.RoomID != evt.RoomID.String() {
+		return state.NewControl{}, false, nil
+	}
+	if kind == state.ControlContinuation && target.State != state.StateAwaitingInput {
+		return state.NewControl{}, false, nil
+	}
+	if kind == state.ControlCancel && target.State != state.StateAwaitingTask && target.State != state.StateAwaitingInput {
+		return state.NewControl{}, false, nil
+	}
+	authorized := evt.Sender.String() == target.OriginalSender
+	errorCode := ""
+	if kind == state.ControlCancel && !authorized {
+		authorized = b.mayCancelDurable(ctx, evt.Sender, target)
+	}
+	if !authorized {
+		errorCode = "control_sender_rejected"
+		payload = nil
+	}
+	slot := 0
+	if kind == state.ControlContinuation {
+		slot = target.InputGeneration
+	}
+	return state.NewControl{
+		TargetMatrixEventID: targetEvent.String(), SourceMatrixEventID: evt.ID.String(),
+		RoomID: evt.RoomID.String(), SenderMXID: evt.Sender.String(), Kind: kind,
+		Slot: slot, Payload: payload, Authorized: authorized, ErrorCode: errorCode,
+	}, true, nil
+}
+
+func (b *Bridge) mayCancelDurable(ctx context.Context, sender id.UserID, target state.ControlTarget) bool {
+	levels, err := b.as.StateStore.GetPowerLevels(ctx, id.RoomID(target.RoomID))
+	if err != nil || levels == nil {
+		b.log.Warn(
+			"durable cancel authorization: power levels unavailable",
+			"sender", sender, "room", target.RoomID, "reason", "power_levels_unavailable",
+		)
+		return false
+	}
+	return levels.GetUserLevel(sender) >= b.cfg.CancelModeratorPowerLevel
 }
 
 func (b *Bridge) delegationsFromEvent(evt *event.Event) ([]state.NewDelegation, error) {
@@ -333,11 +449,13 @@ func (b *Bridge) delegationsFromEvent(evt *event.Event) ([]state.NewDelegation, 
 	// mautrix parses Content only while dispatching the transaction. Durable classification runs
 	// before that point, so apply the same message-event class and parse the raw content here.
 	evt.Type.Class = event.MessageEventType
-	if err := evt.Content.ParseRaw(evt.Type); err != nil {
-		// Matrix transactions multiplex unrelated traffic. A malformed message that cannot be
-		// classified as an eligible delegation must not poison the whole transaction and force the
-		// homeserver into an infinite retry loop; mautrix will log and ignore it on normal dispatch.
-		return nil, nil
+	if evt.Content.Parsed == nil {
+		if err := evt.Content.ParseRaw(evt.Type); err != nil {
+			// Matrix transactions multiplex unrelated traffic. A malformed message that cannot be
+			// classified as an eligible delegation must not poison the whole transaction and force the
+			// homeserver into an infinite retry loop; mautrix will log and ignore it on normal dispatch.
+			return nil, nil
+		}
 	}
 	msg := evt.Content.AsMessage()
 	if msg == nil {

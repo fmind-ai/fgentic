@@ -60,7 +60,7 @@ Only `clusters/gcp` composes [`infra/production-ha/cluster`](../infra/production
 
 The Matrix-to-A2A bridge is intentionally one ready intake replica. Its chart rejects `replicaCount` values other than `1` to preserve per-room ordering. On graceful termination it stops intake and claims, closes transaction connections, and drains active leases for up to 25 seconds within a 45-second Pod grace period; nonterminal canceled work stays recoverable. `mise run test:availability` proves that graceful SIGTERM path and deduplication with a replacement process. It does not prove SIGKILL, node loss, automatic Synapse retry, or a production RTO.
 
-`mise run test:crash-recovery` separately exercises six persisted SIGKILL boundaries. If A2A transport may have started but returned no acknowledgement, recovery records `ambiguous` and does not resend: deterministic message IDs do not establish target idempotency. This is at-most-once recovery at the uncertain boundary, not distributed exactly-once delivery. Run target-specific drills before setting an SLO or RTO.
+`mise run test:crash-recovery` separately exercises twelve persisted job/control SIGKILL boundaries. If A2A send, cancel, or continuation transport may have started but returned no acknowledgement, recovery records `ambiguous` and does not resend: deterministic message IDs do not establish target idempotency. Matrix question/progress/pin projections instead converge through deterministic transaction IDs and current room state. This is at-most-once recovery at the uncertain A2A boundary, not distributed exactly-once delivery. Run target-specific drills before setting an SLO or RTO.
 
 ## 4. Back up and restore the state and its keys
 

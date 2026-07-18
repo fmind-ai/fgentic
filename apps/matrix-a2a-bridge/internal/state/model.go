@@ -14,8 +14,9 @@ import (
 const (
 	// TerminalRetention is the minimum non-content tombstone window for ordinary terminal jobs.
 	// Ambiguous and dead-letter evidence is never removed by ordinary cleanup.
-	TerminalRetention = 24 * time.Hour
-	maxErrorCodeLen   = 128
+	TerminalRetention          = 24 * time.Hour
+	maxErrorCodeLen            = 128
+	parentTerminalControlError = "parent_terminal"
 )
 
 var (
@@ -33,6 +34,10 @@ var (
 	ErrMatrixEventConflict = errors.New("delegation Matrix event conflict")
 	// ErrDeadManConflict reports an attempt to replace a persisted delayed-event identity.
 	ErrDeadManConflict = errors.New("delegation dead-man delayed event conflict")
+	// ErrControlConflict reports changed immutable evidence for a replayed control source.
+	ErrControlConflict = errors.New("delegation control identity conflict")
+	// ErrControlCapacity reports a bounded per-job control ledger that is already full.
+	ErrControlCapacity = errors.New("delegation control capacity exhausted")
 
 	errorCodePattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_.-]{0,127}$`)
 )
@@ -114,6 +119,8 @@ const (
 	StateA2APrepared DelegationState = "a2a_prepared"
 	// StateAwaitingTask has a known A2A task that must be resumed rather than reinvoked.
 	StateAwaitingTask DelegationState = "awaiting_task"
+	// StateAwaitingInput has a known task paused under a separately bounded human-response window.
+	StateAwaitingInput DelegationState = "awaiting_input"
 	// StateReplyPending has a durable Matrix result or notice waiting for projection.
 	StateReplyPending DelegationState = "reply_pending"
 	// StateDelivered is a terminal, successfully projected Matrix result.
@@ -130,6 +137,7 @@ var delegationStates = [...]DelegationState{
 	StatePending,
 	StateA2APrepared,
 	StateAwaitingTask,
+	StateAwaitingInput,
 	StateReplyPending,
 	StateDelivered,
 	StateDenied,
@@ -164,10 +172,13 @@ func CanTransition(from, to DelegationState) bool {
 	case StatePending:
 		return to == StateA2APrepared || to == StateReplyPending || to == StateDenied || to == StateDead
 	case StateA2APrepared:
-		return to == StateAwaitingTask || to == StateReplyPending || to == StateDenied ||
+		return to == StateAwaitingTask || to == StateAwaitingInput || to == StateReplyPending || to == StateDenied ||
 			to == StateAmbiguous || to == StateDead
 	case StateAwaitingTask:
-		return to == StateReplyPending || to == StateDenied || to == StateDead
+		return to == StateAwaitingInput || to == StateReplyPending || to == StateDenied || to == StateDead
+	case StateAwaitingInput:
+		return to == StateAwaitingInput || to == StateAwaitingTask || to == StateReplyPending ||
+			to == StateDenied || to == StateAmbiguous || to == StateDead
 	case StateReplyPending:
 		return to == StateDelivered || to == StateDenied || to == StateAmbiguous || to == StateDead
 	default:
@@ -188,12 +199,14 @@ const (
 
 // TransactionAdmission is one all-or-nothing appservice transaction plus its eligible jobs.
 type TransactionAdmission struct {
-	TransactionID  string
-	BodyHash       TransactionHash
-	CommittedAt    time.Time
-	RoomCapacity   int
-	GlobalCapacity int
-	Delegations    []NewDelegation
+	TransactionID   string
+	BodyHash        TransactionHash
+	CommittedAt     time.Time
+	RoomCapacity    int
+	GlobalCapacity  int
+	ControlCapacity int
+	Delegations     []NewDelegation
+	Controls        []NewControl
 }
 
 // NewDelegation is the immutable intake evidence persisted before the homeserver receives HTTP 200.
@@ -221,6 +234,9 @@ type AdmissionResult struct {
 	ExistingJobIDs         []string
 	LegacyTombstonedJobIDs []string
 	CapacityDenied         []CapacityDenial
+	InsertedControlIDs     []string
+	ExistingControlIDs     []string
+	UnmatchedControlIDs    []string
 }
 
 // CapacityDenial is the content-free terminal evidence for an eligible job refused before ACK
@@ -242,6 +258,165 @@ type LeaseToken struct {
 	JobID      string
 	Owner      string
 	Generation uint64
+}
+
+// ControlKind identifies one bounded durable interaction side effect.
+type ControlKind string
+
+const (
+	// ControlCancel requests one at-most-once A2A task cancellation.
+	ControlCancel ControlKind = "cancel"
+	// ControlContinuation carries one authorized answer into an input-required task.
+	ControlContinuation ControlKind = "continuation"
+	// ControlQuestion projects a persisted input-required question into Matrix.
+	ControlQuestion ControlKind = "question"
+	// ControlProgress projects one bounded task-status update into the placeholder thread.
+	ControlProgress ControlKind = "progress"
+	// ControlPin converges the active placeholder into the room's pinned-events state.
+	ControlPin ControlKind = "pin"
+	// ControlUnpin converges the terminal placeholder out of the room's pinned-events state.
+	ControlUnpin ControlKind = "unpin"
+)
+
+// Valid reports whether the control kind has a defined replay contract.
+func (kind ControlKind) Valid() bool {
+	switch kind {
+	case ControlCancel, ControlContinuation, ControlQuestion, ControlProgress, ControlPin, ControlUnpin:
+		return true
+	default:
+		return false
+	}
+}
+
+// ControlState is the checked workflow state for a durable interaction control.
+type ControlState string
+
+const (
+	// ControlPending has not crossed an external side-effect boundary.
+	ControlPending ControlState = "pending"
+	// ControlPrepared may have crossed its external side-effect boundary.
+	ControlPrepared ControlState = "prepared"
+	// ControlApplied has durable acknowledgement evidence.
+	ControlApplied ControlState = "applied"
+	// ControlAmbiguous may have reached a non-idempotent A2A target and is never resent.
+	ControlAmbiguous ControlState = "ambiguous"
+	// ControlDenied records a fixed authorization or policy refusal.
+	ControlDenied ControlState = "denied"
+	// ControlDead records an unusable or fixed-failure control.
+	ControlDead ControlState = "dead"
+)
+
+// Valid reports whether the control state participates in the checked workflow.
+func (state ControlState) Valid() bool {
+	switch state {
+	case ControlPending, ControlPrepared, ControlApplied, ControlAmbiguous, ControlDenied, ControlDead:
+		return true
+	default:
+		return false
+	}
+}
+
+// Terminal reports whether the control has no remaining worker action and no retained payload.
+func (state ControlState) Terminal() bool {
+	return state == ControlApplied || state == ControlAmbiguous || state == ControlDenied || state == ControlDead
+}
+
+// CanTransitionControl reports whether a control edge preserves at-most-once external effects.
+func CanTransitionControl(from, to ControlState) bool {
+	switch from {
+	case ControlPending:
+		return to == ControlPrepared || to == ControlDenied || to == ControlDead
+	case ControlPrepared:
+		return to == ControlApplied || to == ControlAmbiguous || to == ControlDenied || to == ControlDead
+	default:
+		return false
+	}
+}
+
+// ControlTarget is the content-free job identity resolved from a durable Matrix projection.
+type ControlTarget struct {
+	JobID           string
+	RoomID          string
+	OriginalSender  string
+	GhostMXID       string
+	State           DelegationState
+	InputGeneration int
+}
+
+// NewControl is immutable pre-ACK evidence derived from an inbound Matrix event.
+type NewControl struct {
+	TargetMatrixEventID string
+	SourceMatrixEventID string
+	RoomID              string
+	SenderMXID          string
+	Kind                ControlKind
+	Slot                int
+	Payload             []byte
+	Authorized          bool
+	ErrorCode           string
+}
+
+// Control is one replayable interaction intent or projection tied to an immutable job.
+type Control struct {
+	ControlID               string
+	JobID                   string
+	AppserviceTransactionID string
+	SourceMatrixEventID     string
+	IntakeFingerprint       TransactionHash
+	AuthorizedSender        string
+	Kind                    ControlKind
+	State                   ControlState
+	Slot                    int
+	LeaseGeneration         uint64
+	RecoveryCount           int
+	Payload                 []byte
+	A2AMessageID            string
+	MatrixTxnID             string
+	MatrixEventID           string
+	ErrorCode               string
+	PreparedAt              time.Time
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
+	TerminalAt              time.Time
+}
+
+// controlCapacityLimit reserves one slot from ordinary controls so terminal unpin can always
+// converge without exceeding the configured per-job bound.
+func controlCapacityLimit(capacity int, kind ControlKind) int {
+	if kind == ControlUnpin {
+		return capacity
+	}
+	if capacity <= 1 {
+		return 0
+	}
+	return capacity - 1
+}
+
+// PlanControlRequest creates a worker-originated control under the current delegation fence.
+type PlanControlRequest struct {
+	Lease    LeaseToken
+	At       time.Time
+	Kind     ControlKind
+	Slot     int
+	Capacity int
+	Payload  []byte
+}
+
+// ControlTransitionPatch carries acknowledged external evidence and scrubbable payload updates.
+type ControlTransitionPatch struct {
+	Payload       *[]byte
+	MatrixEventID *string
+	ErrorCode     *string
+}
+
+// ControlTransitionRequest advances one control under the parent delegation's current fence.
+type ControlTransitionRequest struct {
+	Lease     LeaseToken
+	ControlID string
+	From      ControlState
+	To        ControlState
+	At        time.Time
+	Patch     ControlTransitionPatch
 }
 
 // MatrixEventStage identifies the idempotent Matrix outbox transaction whose response is recorded.
@@ -313,6 +488,9 @@ type Job struct {
 	MatrixPlaceholderEventID string
 	MatrixEditEventID        string
 	MatrixDeadManDelayID     string
+	TaskDeadlineAt           time.Time
+	InputWaitStartedAt       time.Time
+	InputWaitExpiresAt       time.Time
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
 	TerminalAt               time.Time
@@ -338,6 +516,9 @@ type TransitionPatch struct {
 	MatrixReplyEventID       *string
 	MatrixPlaceholderEventID *string
 	MatrixEditEventID        *string
+	TaskDeadlineAt           *time.Time
+	InputWaitStartedAt       *time.Time
+	InputWaitExpiresAt       *time.Time
 }
 
 // TransitionRequest performs one legal, lease-fenced state transition.
@@ -425,6 +606,27 @@ func MatrixTransactionIDFor(jobID, stage string) string {
 	return hex.EncodeToString(sum[:])
 }
 
+// ControlIDFor derives a stable identity for an inbound event or worker-planned bounded slot.
+func ControlIDFor(jobID string, kind ControlKind, sourceMatrixEventID string, slot int) string {
+	sum := sha256.Sum256([]byte(fmt.Sprintf(
+		"fgentic-control-v1\x00%s\x00%s\x00%s\x00%d",
+		jobID, kind, sourceMatrixEventID, slot,
+	)))
+	return hex.EncodeToString(sum[:])
+}
+
+// ControlA2AMessageIDFor is the stable sender-controlled identity for a continuation attempt.
+func ControlA2AMessageIDFor(controlID string) string {
+	sum := sha256.Sum256([]byte("fgentic-control-a2a-v1\x00" + controlID))
+	return hex.EncodeToString(sum[:])
+}
+
+// ControlMatrixTransactionIDFor is the stable Matrix outbox identity for one control projection.
+func ControlMatrixTransactionIDFor(controlID string) string {
+	sum := sha256.Sum256([]byte("fgentic-control-matrix-v1\x00" + controlID))
+	return hex.EncodeToString(sum[:])
+}
+
 func intakeFingerprint(delegation NewDelegation) TransactionHash {
 	// Struct field order is stable, and encoding/json length-prefixes strings and base64-encodes the
 	// byte payload. The domain prefix keeps this immutable evidence hash distinct from request hashes.
@@ -447,6 +649,9 @@ func validateAdmission(admission TransactionAdmission) error {
 	if admission.RoomCapacity < 1 || admission.GlobalCapacity < 1 {
 		return fmt.Errorf("durable room and global capacities must be positive")
 	}
+	if len(admission.Controls) > 0 && admission.ControlCapacity < 1 {
+		return fmt.Errorf("durable control capacity must be positive when controls are admitted")
+	}
 	seen := make(map[[2]string]NewDelegation, len(admission.Delegations))
 	for i, delegation := range admission.Delegations {
 		if err := validateNewDelegation(delegation); err != nil {
@@ -460,6 +665,63 @@ func validateAdmission(admission TransactionAdmission) error {
 			return fmt.Errorf("delegation %d repeats event/ghost pair %q/%q", i, delegation.MatrixEventID, delegation.GhostMXID)
 		}
 		seen[key] = delegation
+	}
+	controlSources := make(map[[2]string]TransactionHash, len(admission.Controls))
+	for i, control := range admission.Controls {
+		if err := validateNewControl(control); err != nil {
+			return fmt.Errorf("control %d: %w", i, err)
+		}
+		key := [2]string{control.SourceMatrixEventID, string(control.Kind)}
+		fingerprint := controlFingerprint(control)
+		if previous, ok := controlSources[key]; ok {
+			if previous != fingerprint {
+				return fmt.Errorf("%w: source_matrix_event_id=%q kind=%q", ErrControlConflict, key[0], key[1])
+			}
+			return fmt.Errorf("control %d repeats source/kind pair %q/%q", i, key[0], key[1])
+		}
+		controlSources[key] = fingerprint
+	}
+	return nil
+}
+
+func controlFingerprint(control NewControl) TransactionHash {
+	control.Payload = nonNilBytes(control.Payload)
+	encoded, err := json.Marshal(control)
+	if err != nil {
+		panic(fmt.Sprintf("encode validated control evidence: %v", err))
+	}
+	return sha256.Sum256(append([]byte("fgentic-control-evidence-v1\x00"), encoded...))
+}
+
+func validateNewControl(control NewControl) error {
+	fields := []struct {
+		name  string
+		value string
+	}{
+		{"target Matrix event ID", control.TargetMatrixEventID},
+		{"source Matrix event ID", control.SourceMatrixEventID},
+		{"room ID", control.RoomID},
+		{"sender MXID", control.SenderMXID},
+	}
+	for _, field := range fields {
+		if field.value == "" {
+			return fmt.Errorf("%s must not be empty", field.name)
+		}
+	}
+	if !control.Kind.Valid() || (control.Kind != ControlCancel && control.Kind != ControlContinuation) {
+		return fmt.Errorf("inbound control kind must be cancel or continuation")
+	}
+	if control.Slot < 0 {
+		return fmt.Errorf("control slot must not be negative")
+	}
+	if control.ErrorCode != "" && !errorCodePattern.MatchString(control.ErrorCode) {
+		return fmt.Errorf("control error code must match %s", errorCodePattern)
+	}
+	if control.Authorized && control.ErrorCode != "" {
+		return fmt.Errorf("authorized control cannot carry a denial error code")
+	}
+	if !control.Authorized && control.ErrorCode == "" {
+		return fmt.Errorf("unauthorized control must carry a denial error code")
 	}
 	return nil
 }
@@ -509,6 +771,51 @@ func validateLease(lease LeaseToken) error {
 	}
 	if lease.Generation > math.MaxInt64 {
 		return fmt.Errorf("lease generation exceeds database range")
+	}
+	return nil
+}
+
+func validatePlanControl(request PlanControlRequest) error {
+	if err := validateLease(request.Lease); err != nil {
+		return err
+	}
+	if request.At.IsZero() {
+		return fmt.Errorf("control plan time must not be zero")
+	}
+	if !request.Kind.Valid() || request.Kind == ControlCancel || request.Kind == ControlContinuation {
+		return fmt.Errorf("planned control kind must be question, progress, pin, or unpin")
+	}
+	if request.Slot < 0 {
+		return fmt.Errorf("control slot must not be negative")
+	}
+	if request.Capacity < 1 {
+		return fmt.Errorf("control capacity must be positive")
+	}
+	return nil
+}
+
+func validateControlTransition(request ControlTransitionRequest) error {
+	if err := validateLease(request.Lease); err != nil {
+		return err
+	}
+	if request.ControlID == "" {
+		return fmt.Errorf("control ID must not be empty")
+	}
+	if request.At.IsZero() {
+		return fmt.Errorf("control transition time must not be zero")
+	}
+	if !request.From.Valid() || !request.To.Valid() || !CanTransitionControl(request.From, request.To) {
+		return fmt.Errorf("invalid control transition: %s -> %s", request.From, request.To)
+	}
+	if request.Patch.ErrorCode != nil && *request.Patch.ErrorCode != "" &&
+		!errorCodePattern.MatchString(*request.Patch.ErrorCode) {
+		return fmt.Errorf("control error code must match %s", errorCodePattern)
+	}
+	if request.Patch.MatrixEventID != nil && *request.Patch.MatrixEventID == "" {
+		return fmt.Errorf("control Matrix event ID must not be empty")
+	}
+	if request.To.Terminal() && request.Patch.Payload != nil {
+		return fmt.Errorf("terminal control transition cannot persist content")
 	}
 	return nil
 }

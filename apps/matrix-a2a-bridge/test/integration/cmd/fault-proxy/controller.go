@@ -16,12 +16,16 @@ const (
 	faultA2ATaskPoll    faultMode = "a2a-task-poll"
 	faultMatrixRequest  faultMode = "matrix-request"
 	faultMatrixResponse faultMode = "matrix-response"
+	faultMatrixQuestion faultMode = "matrix-question-response"
+	faultMatrixProgress faultMode = "matrix-progress-response"
+	faultMatrixPin      faultMode = "matrix-pin-response"
 )
 
 func (m faultMode) valid() bool {
 	switch m {
 	case faultPostgresCommit, faultPostgresClaim, faultA2AResponse, faultA2ATaskPoll,
-		faultMatrixRequest, faultMatrixResponse:
+		faultMatrixRequest, faultMatrixResponse, faultMatrixQuestion, faultMatrixProgress,
+		faultMatrixPin:
 		return true
 	default:
 		return false
@@ -77,9 +81,19 @@ func (c *faultController) tryTrip(mode faultMode, path string) bool {
 	return true
 }
 
-func (c *faultController) observeMatrix(path string) {
+func (c *faultController) observeMatrix(path string, modes ...faultMode) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	matched := false
+	for _, mode := range modes {
+		if c.mode == mode {
+			matched = true
+			break
+		}
+	}
+	if !matched {
+		return
+	}
 	c.matrixPaths = append(c.matrixPaths, path)
 }
 

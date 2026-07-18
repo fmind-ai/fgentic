@@ -4,7 +4,7 @@ metadata:
   name: crash-recovery-driver
   namespace: bridge-integration
 spec:
-  activeDeadlineSeconds: 360
+  activeDeadlineSeconds: 600
   backoffLimit: 0
   template:
     metadata:
@@ -28,7 +28,7 @@ spec:
             - name: DRIVER_SCENARIO
               value: crash-recovery
             - name: DRIVER_TIMEOUT
-              value: 330s
+              value: 570s
             - name: MATRIX_URL
               value: http://synapse:8008
             - name: BRIDGE_URL

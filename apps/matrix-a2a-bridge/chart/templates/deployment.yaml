@@ -78,6 +78,8 @@ spec:
               value: {{ .Values.config.roomQueueCapacity | quote }}
             - name: GLOBAL_QUEUE_CAPACITY
               value: {{ .Values.config.globalQueueCapacity | quote }}
+            - name: CONTROL_CAPACITY_PER_JOB
+              value: {{ .Values.config.controlCapacityPerJob | quote }}
             - name: APPSERVICE_TRANSACTION_MAX_BYTES
               value: {{ .Values.config.appserviceTransactionMaxBytes | quote }}
             - name: DELEGATION_CLAIM_INTERVAL
@@ -90,6 +92,12 @@ spec:
               value: {{ .Values.config.delegationRetryMax | quote }}
             - name: DELEGATION_MAX_ATTEMPTS
               value: {{ .Values.config.delegationMaxAttempts | quote }}
+            - name: CANCEL_MODERATOR_POWER_LEVEL
+              value: {{ .Values.config.cancelModeratorPowerLevel | quote }}
+            - name: MAX_TASK_PROGRESS_POSTS
+              value: {{ .Values.config.maxTaskProgressPosts | quote }}
+            - name: PIN_IN_FLIGHT_TASKS
+              value: {{ .Values.config.pinInFlightTasks | quote }}
             - name: SENDER_RATE_PER_MINUTE
               value: {{ .Values.config.senderRatePerMinute | quote }}
             - name: SENDER_RATE_BURST

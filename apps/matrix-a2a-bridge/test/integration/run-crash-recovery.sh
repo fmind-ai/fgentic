@@ -7,7 +7,7 @@ export INTEGRATION_SCENARIO=crash-recovery
 export FIXTURE_SETTINGS=crash-recovery-settings.yaml
 export DRIVER_MANIFEST=crash-recovery-driver-job.yaml
 export DRIVER_JOB_NAME=crash-recovery-driver
-export DRIVER_WAIT_TIMEOUT=360s
+export DRIVER_WAIT_TIMEOUT=600s
 
 SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly SCRIPT_DIR

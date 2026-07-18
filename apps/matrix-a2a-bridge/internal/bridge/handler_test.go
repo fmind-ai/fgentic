@@ -1268,6 +1268,15 @@ func (c *scriptedA2AClient) Continue(_ context.Context, _ a2aclient.Target, text
 	return c.continueResult, c.continueErr
 }
 
+func (c *scriptedA2AClient) ContinueWithMessageID(
+	ctx context.Context,
+	target a2aclient.Target,
+	messageID, text, contextID, taskID string,
+) (a2aclient.Result, error) {
+	c.callMessageIDs = append(c.callMessageIDs, messageID)
+	return c.Continue(ctx, target, text, contextID, taskID)
+}
+
 func (c *scriptedA2AClient) PollTask(_ context.Context, target a2aclient.Target, taskID string) (a2aclient.Result, error) {
 	c.pollPaths = append(c.pollPaths, target.String())
 	c.pollTasks = append(c.pollTasks, taskID)

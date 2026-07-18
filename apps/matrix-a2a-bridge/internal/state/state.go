@@ -28,10 +28,20 @@ type Ledger interface {
 	CleanupTerminal(context.Context, time.Time) (CleanupResult, error)
 }
 
+// ControlLedger is the crash-safe interactive-control outbox tied to durable delegation leases.
+type ControlLedger interface {
+	ControlTarget(context.Context, string) (ControlTarget, bool, error)
+	ClaimControl(context.Context, LeaseToken, time.Time) (Control, bool, error)
+	PlanControl(context.Context, PlanControlRequest) (Control, error)
+	TransitionControl(context.Context, ControlTransitionRequest) error
+	Controls(context.Context, string) ([]Control, error)
+}
+
 // Store persists bridge state. Context loss is benign (a conversation restarts fresh);
 // MarkEventProcessed loss risks duplicate agent invocations after a redelivery.
 type Store interface {
 	Ledger
+	ControlLedger
 	// Context returns the A2A contextId for a (room, ghost) thread, or "" for a fresh one.
 	Context(ctx context.Context, roomID, ghost string) (string, error)
 	// SetContext records the contextId returned by the agent for the next turn of the thread.
@@ -47,26 +57,31 @@ type Store interface {
 
 // Memory is the in-memory fallback used when no DATABASE_URL is configured (dev only).
 type Memory struct {
-	mu           sync.Mutex
-	contexts     map[[2]string]string
-	processed    map[string]time.Time
-	welcomeRooms map[string]struct{}
-	transactions map[string]memoryTransaction
-	jobs         map[string]Job
-	jobOrder     []string
-	jobByTarget  map[[2]string]string
-	nextSequence int64
+	mu              sync.Mutex
+	contexts        map[[2]string]string
+	processed       map[string]time.Time
+	welcomeRooms    map[string]struct{}
+	transactions    map[string]memoryTransaction
+	jobs            map[string]Job
+	jobOrder        []string
+	jobByTarget     map[[2]string]string
+	controls        map[string]Control
+	controlOrder    []string
+	controlBySource map[[3]string]string
+	nextSequence    int64
 }
 
 // NewMemory returns an empty in-memory Store.
 func NewMemory() *Memory {
 	return &Memory{
-		contexts:     make(map[[2]string]string),
-		processed:    make(map[string]time.Time),
-		welcomeRooms: make(map[string]struct{}),
-		transactions: make(map[string]memoryTransaction),
-		jobs:         make(map[string]Job),
-		jobByTarget:  make(map[[2]string]string),
+		contexts:        make(map[[2]string]string),
+		processed:       make(map[string]time.Time),
+		welcomeRooms:    make(map[string]struct{}),
+		transactions:    make(map[string]memoryTransaction),
+		jobs:            make(map[string]Job),
+		jobByTarget:     make(map[[2]string]string),
+		controls:        make(map[string]Control),
+		controlBySource: make(map[[3]string]string),
 	}
 }
 

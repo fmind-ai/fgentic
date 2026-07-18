@@ -322,3 +322,45 @@ func TestParseLongMarkerRejectsOrdinaryLoad(t *testing.T) {
 		t.Fatal("parseLongMarker accepted a load marker")
 	}
 }
+
+func TestInputTaskPausesAndCancellationIsCounted(t *testing.T) {
+	stats := &statsRecorder{}
+	executor := executor{stats: stats}
+	execCtx := &a2asrv.ExecutorContext{
+		Message: &a2a.Message{
+			ID: "input-message", Role: a2a.MessageRoleUser,
+			Parts: a2a.ContentParts{a2a.NewTextPart("input room=97 seq=01")},
+		},
+		TaskID: "input-task", ContextID: "input-context",
+	}
+	var events []a2a.Event
+	for event, err := range executor.Execute(t.Context(), execCtx) {
+		if err != nil {
+			t.Fatalf("Execute error = %v", err)
+		}
+		events = append(events, event)
+	}
+	if len(events) != 2 {
+		t.Fatalf("events = %d, want submitted and input-required", len(events))
+	}
+	input, ok := events[1].(*a2a.TaskStatusUpdateEvent)
+	if !ok || input.Status.State != a2a.TaskStateInputRequired ||
+		messageText(input.Status.Message) != "which namespace?" {
+		t.Fatalf("input event = %#v", events[1])
+	}
+	var canceled a2a.Event
+	for event, err := range executor.Cancel(t.Context(), execCtx) {
+		if err != nil {
+			t.Fatalf("Cancel error = %v", err)
+		}
+		canceled = event
+	}
+	cancelUpdate, ok := canceled.(*a2a.TaskStatusUpdateEvent)
+	if !ok || cancelUpdate.Status.State != a2a.TaskStateCanceled {
+		t.Fatalf("cancel event = %#v", canceled)
+	}
+	snapshot := stats.snapshot()
+	if snapshot.InputStarted != 1 || snapshot.CancelRequests != 1 {
+		t.Fatalf("stats = %+v", snapshot)
+	}
+}

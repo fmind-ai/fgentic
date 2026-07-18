@@ -352,6 +352,22 @@ func (b *Bridge) HandleMessage(ctx context.Context, evt *event.Event) {
 	)
 	switch {
 	case msg.MsgType == event.MsgText:
+		if b.durableIntake {
+			root := msg.RelatesTo.GetThreadParent()
+			if root != "" {
+				target, found, err := b.store.ControlTarget(ctx, root.String())
+				if err != nil {
+					b.log.Error("resolve durable continuation target", "room", evt.RoomID, "reason", "storage_error")
+					return
+				}
+				if found && target.RoomID == evt.RoomID.String() && target.State == state.StateAwaitingInput {
+					if evt.Sender.String() != target.OriginalSender {
+						b.postThreadContinuationDenied(ctx, evt)
+					}
+					return
+				}
+			}
+		}
 		// A threaded reply answering a paused agent question resumes that task instead of starting a
 		// new delegation (#116); an ordinary message falls through to the mention path below.
 		if b.handleThreadContinuation(ctx, evt, msg) {

@@ -97,6 +97,10 @@ type Config struct {
 	// without limit.
 	RoomQueueCapacity   int `env:"ROOM_QUEUE_CAPACITY" envDefault:"32"`
 	GlobalQueueCapacity int `env:"GLOBAL_QUEUE_CAPACITY" envDefault:"256"`
+	// ControlCapacityPerJob bounds all durable inbound intents and Matrix/A2A outbox controls tied
+	// to one delegation. Terminal controls remain inside the bound until their job tombstone expires
+	// so high-cardinality reactions cannot replace replay evidence with fresh capacity.
+	ControlCapacityPerJob int `env:"CONTROL_CAPACITY_PER_JOB" envDefault:"16"`
 	// Durable worker timing. One coordinator polls while idle, so ClaimInterval bounds recovery
 	// latency without multiplying idle database traffic by Concurrency. Active jobs heartbeat their
 	// fenced leases; failed preflight/Matrix operations retry with capped exponential backoff.
@@ -243,6 +247,9 @@ func (c Config) validate() error {
 	if c.GlobalQueueCapacity < c.Concurrency {
 		return fmt.Errorf("GLOBAL_QUEUE_CAPACITY must be >= CONCURRENCY")
 	}
+	if c.ControlCapacityPerJob < 5 {
+		return fmt.Errorf("CONTROL_CAPACITY_PER_JOB must be >= 5")
+	}
 	if c.DelegationClaimInterval <= 0 {
 		return fmt.Errorf("DELEGATION_CLAIM_INTERVAL must be positive")
 	}
@@ -269,6 +276,9 @@ func (c Config) validate() error {
 	}
 	if c.MaxTaskProgressPosts < 0 {
 		return fmt.Errorf("MAX_TASK_PROGRESS_POSTS must be >= 0")
+	}
+	if c.MaxTaskProgressPosts > c.ControlCapacityPerJob-5 {
+		return fmt.Errorf("MAX_TASK_PROGRESS_POSTS must leave at least five durable control slots")
 	}
 	for _, room := range c.StagingRooms {
 		if !strings.HasPrefix(room, "!") || !strings.Contains(room, ":") {

@@ -10,7 +10,7 @@ data:
   agentCardRefreshInterval: 30s
   concurrency: "2"
   databaseURL: postgres://postgres@fault-proxy:5432/bridge?sslmode=disable
-  # Keep lease expiry short enough for six real process replacements on a constrained laptop.
+  # Keep lease expiry short enough for twelve real process replacements on a constrained laptop.
   delegationClaimInterval: 100ms
   delegationLeaseDuration: 3s
   deadManSwitchDelay: 0s
@@ -19,6 +19,10 @@ data:
   senderRateBurst: "20"
   roomRatePerMinute: "6000"
   roomRateBurst: "20"
+  maxTaskProgressPosts: "2"
+  pinInFlightTasks: "true"
+  controlCapacityPerJob: "16"
+  taskTimeout: 5m
 ---
 apiVersion: v1
 kind: ConfigMap
