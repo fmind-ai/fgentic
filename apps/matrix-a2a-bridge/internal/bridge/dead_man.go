@@ -52,8 +52,9 @@ func (c *matrixDeadManClient) Schedule(
 ) (id.DelayID, error) {
 	content := &event.MessageEventContent{MsgType: event.MsgNotice, Body: deadManNoticeText}
 	content.GetRelatesTo().SetReplyTo(placeholder)
-	resp, err := intent.SendMessageEvent(
+	resp, err := sendMessageEvent(
 		ctx,
+		intent,
 		roomID,
 		event.EventMessage,
 		automatedContent(content),

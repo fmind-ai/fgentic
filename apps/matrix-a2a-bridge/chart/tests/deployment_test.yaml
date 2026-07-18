@@ -85,6 +85,13 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].env[?(@.name == "DELEGATION_MAX_ATTEMPTS")].value
           value: "5"
+  - it: renders the exact managed-room access manager identity
+    set:
+      config.accessManagerMXID: "@room-manager:fgentic.fmind.ai"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "ACCESS_MANAGER_MXID")].value
+          value: "@room-manager:fgentic.fmind.ai"
   - it: keeps the delayed-event dead-man switch opt-in
     asserts:
       - equal:

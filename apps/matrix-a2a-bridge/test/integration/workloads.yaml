@@ -170,6 +170,8 @@ spec:
                   key: homeserverURL
             - name: SERVER_NAME
               value: integration.test
+            - name: ACCESS_MANAGER_MXID
+              value: "@integration-user:integration.test"
             - name: REGISTRATION_PATH
               value: /config/registration.yaml
             - name: AGENTS_PATH

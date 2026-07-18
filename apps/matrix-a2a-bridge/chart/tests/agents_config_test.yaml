@@ -21,7 +21,7 @@ tests:
       - matchRegex:
           path: data["agents.yaml"]
           pattern: "telegram:\\n\\s+- '@telegram_\\*:fgentic\\.fmind\\.ai'"
-  - it: preserves per-agent sender policy fields
+  - it: preserves exact room binding and defense-in-depth sender policy fields
     set:
       agents:
         agent-locked:
@@ -32,12 +32,17 @@ tests:
           avatarURL: mxc://fgentic.fmind.ai/locked-avatar
           allowedServers:
             - partner.example
+          allowedRooms:
+            - "!managed:fgentic.fmind.ai"
           allowedSenders:
             - "@ops-*:partner.example"
     asserts:
       - matchRegex:
           path: data["agents.yaml"]
           pattern: "allowedServers:\\n\\s+- partner.example"
+      - matchRegex:
+          path: data["agents.yaml"]
+          pattern: "allowedRooms:\\n\\s+- '!managed:fgentic.fmind.ai'"
       - matchRegex:
           path: data["agents.yaml"]
           pattern: "allowedSenders:\\n\\s+- '@ops-\\*:partner.example'"
@@ -86,13 +91,13 @@ tests:
     asserts:
       - matchRegex:
           path: data["agents.yaml"]
-          pattern: "agent-platform-helper:\\n\\s+agentContractSHA256: 239cd0991f26cda8bb80bb40d1d29de5ffa64f868fb780af49d356a936cb4359\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+dataClassification: public\\n\\s+description: .*\\n\\s+name: platform-helper"
+          pattern: "agent-platform-helper:\\n\\s+agentContractSHA256: 239cd0991f26cda8bb80bb40d1d29de5ffa64f868fb780af49d356a936cb4359\\n\\s+allowedRooms:\\n\\s+- '#lobby:fgentic\\.fmind\\.ai'\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+dataClassification: public\\n\\s+description: .*\\n\\s+name: platform-helper"
       - matchRegex:
           path: data["agents.yaml"]
-          pattern: "agent-docs-qa:\\n\\s+agentContractSHA256: 81fe04d0099b150e2ec15d431940228ab63daf1076715d9cc119ad91fff4fa87\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+dataClassification: public\\n\\s+description: .*\\n\\s+name: docs-qa"
+          pattern: "agent-docs-qa:\\n\\s+agentContractSHA256: 81fe04d0099b150e2ec15d431940228ab63daf1076715d9cc119ad91fff4fa87\\n\\s+allowedRooms:\\n\\s+- '#lobby:fgentic\\.fmind\\.ai'\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+dataClassification: public\\n\\s+description: .*\\n\\s+name: docs-qa"
       - matchRegex:
           path: data["agents.yaml"]
-          pattern: "agent-scribe:\\n\\s+agentContractSHA256: d6a4e2405cb96d9735cb3b03199ef3f89e662ad052281968bae248a69520f924\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+dataClassification: public\\n\\s+description: .*\\n\\s+name: scribe"
+          pattern: "agent-scribe:\\n\\s+agentContractSHA256: d6a4e2405cb96d9735cb3b03199ef3f89e662ad052281968bae248a69520f924\\n\\s+allowedRooms:\\n\\s+- '#lobby:fgentic\\.fmind\\.ai'\\n\\s+allowedSenders:\\n\\s+- '@alice:fgentic\\.fmind\\.ai'\\n\\s+dataClassification: public\\n\\s+description: .*\\n\\s+name: scribe"
   - it: keeps onboarding sender-filtered at runtime instead of rendering a static agent list
     asserts:
       - notExists:

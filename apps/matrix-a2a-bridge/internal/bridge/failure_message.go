@@ -82,7 +82,7 @@ func (b *Bridge) postFailureReply(
 }
 
 // postFailureForTarget is the pre-dispatch variant used before a ghost intent has been prepared.
-// It spends notice capacity before any registration/join request and never exposes those failures.
+// It spends notice capacity before registration and never joins a ghost as a side effect.
 func (b *Bridge) postFailureForTarget(
 	ctx context.Context,
 	evt *event.Event,
@@ -101,10 +101,6 @@ func (b *Bridge) postFailureForTarget(
 	}
 	if err := intent.EnsureRegistered(ctx); err != nil {
 		b.log.Error("ensure failure-notice ghost registered", "ghost", agent, "err", err)
-		return
-	}
-	if err := intent.EnsureJoined(ctx, evt.RoomID); err != nil {
-		b.log.Error("ensure failure-notice ghost joined", "ghost", agent, "room", evt.RoomID, "err", err)
 		return
 	}
 	b.postReply(ctx, intent, evt, failureMessage(reason, agent, 0))

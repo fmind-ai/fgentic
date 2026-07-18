@@ -33,15 +33,15 @@ func agentDirectoryQuery(body string) string {
 func (b *Bridge) handleAgentDirectory(ctx context.Context, evt *event.Event, query string) {
 	if b.handleCommandNotice(ctx, evt, agentDirectoryCommand, func() string {
 		if query != "" {
-			return b.agentDirectoryDetailText(evt.Sender, query)
+			return b.agentDirectoryDetailText(ctx, evt.Sender, evt.RoomID, query)
 		}
-		return b.agentDirectoryText(evt.Sender)
+		return b.agentDirectoryText(ctx, evt.Sender, evt.RoomID)
 	}) {
 		b.log.Info("served local agent directory", "sender", evt.Sender, "room", evt.RoomID)
 	}
 }
 
-func (b *Bridge) agentDirectoryText(sender id.UserID) string {
+func (b *Bridge) agentDirectoryText(ctx context.Context, sender id.UserID, roomID id.RoomID) string {
 	// Keep the routing and profile snapshots coherent across a remap. Card refreshes may still
 	// move a profile from fallback to live while this renders, which is safe and intentional.
 	b.agentConfigMu.RLock()
@@ -51,6 +51,9 @@ func (b *Bridge) agentDirectoryText(sender id.UserID) string {
 	hiddenByLimit := 0
 	for _, entry := range b.agents.Entries() {
 		if !entry.Ref.AllowsSender(identity, b.cfg.ServerName) {
+			continue
+		}
+		if b.roomAdmission(ctx, entry.Ref, entry.Ghost, roomID) != "" {
 			continue
 		}
 		if len(lines) == maxDirectoryAgents {
@@ -103,12 +106,13 @@ func (b *Bridge) agentDirectoryText(sender id.UserID) string {
 	)
 }
 
-func (b *Bridge) agentDirectoryDetailText(sender id.UserID, query string) string {
+func (b *Bridge) agentDirectoryDetailText(ctx context.Context, sender id.UserID, roomID id.RoomID, query string) string {
 	b.agentConfigMu.RLock()
 	defer b.agentConfigMu.RUnlock()
 	localpart, ref, ok := b.directoryTarget(query)
 	identity := b.agents.IdentifySender(sender)
-	if !ok || !ref.AllowsSender(identity, b.cfg.ServerName) {
+	if !ok || !ref.AllowsSender(identity, b.cfg.ServerName) ||
+		b.roomAdmission(ctx, ref, localpart, roomID) != "" {
 		return fmt.Sprintf(
 			"No invocable agent named %q is available to %s. Run %s or %s to list available agents.",
 			normalizeProfileText(query, maxProfileNameRunes), sender, agentDirectoryCommand, agentsCommand,

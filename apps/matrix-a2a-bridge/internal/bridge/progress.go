@@ -33,7 +33,7 @@ func (b *Bridge) surface(ctx context.Context, intent *appservice.IntentAPI, room
 	// Thread the update under the placeholder (stable Matrix v1.4). Keeping progress in a thread
 	// keeps the main timeline to placeholder -> final answer, while the sub-timeline shows detail.
 	content.RelatesTo = &event.RelatesTo{Type: event.RelThread, EventID: p.root}
-	if _, err := intent.SendMessageEvent(ctx, roomID, event.EventMessage, automatedContent(content)); err != nil {
+	if _, err := sendMessageEvent(ctx, intent, roomID, event.EventMessage, automatedContent(content)); err != nil {
 		b.log.Warn("post threaded task progress", "room", roomID, "err", err)
 		return
 	}
@@ -75,7 +75,7 @@ func (b *Bridge) updatePinned(
 	mutate func([]id.EventID) ([]id.EventID, bool),
 ) {
 	var current event.PinnedEventsEventContent
-	if err := intent.StateEvent(ctx, roomID, event.StatePinnedEvents, "", &current); err != nil {
+	if err := intent.Client.StateEvent(ctx, roomID, event.StatePinnedEvents, "", &current); err != nil {
 		if !errors.Is(err, mautrix.MNotFound) {
 			b.log.Info("task placeholder "+op+" skipped: cannot read pinned events", "room", roomID, "err", err)
 			return
@@ -86,7 +86,7 @@ func (b *Bridge) updatePinned(
 	if !changed {
 		return
 	}
-	if _, err := intent.SendStateEvent(ctx, roomID, event.StatePinnedEvents, "", &event.PinnedEventsEventContent{Pinned: next}); err != nil {
+	if _, err := sendStateEvent(ctx, intent, roomID, event.StatePinnedEvents, "", &event.PinnedEventsEventContent{Pinned: next}); err != nil {
 		b.log.Info("task placeholder "+op+" skipped (likely missing state-event power level)", "room", roomID, "err", err)
 	}
 }

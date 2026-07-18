@@ -18,6 +18,7 @@ import (
 const validRemoteAgentsYAML = `agents:
   agent-remote:
     url: https://partner.example/a2a
+    allowedRooms: ["!room:fgentic.fmind.ai"]
     timeout: 12s
     tokenBudget: 8192
     cardIdentity:
@@ -86,6 +87,47 @@ func TestLoadAgents(t *testing.T) {
 	}
 	if len(am.Names()) != 2 {
 		t.Errorf("Names() = %v", am.Names())
+	}
+}
+
+func TestAllowedRoomsCompileExactPolicy(t *testing.T) {
+	agents, err := LoadAgents(writeTemp(t, `schemaVersion: 1
+agents:
+  agent-k8s:
+    namespace: kagent
+    name: k8s-agent
+    allowedRooms:
+      - "!managed:fgentic.fmind.ai"
+      - "#bootstrap:fgentic.fmind.ai"
+`))
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	ref, ok := agents.Lookup("agent-k8s")
+	if !ok {
+		t.Fatal("agent-k8s missing")
+	}
+	if _, ok := ref.allowedRoomIDs["!managed:fgentic.fmind.ai"]; !ok {
+		t.Fatalf("compiled room IDs = %v", ref.allowedRoomIDs)
+	}
+	if len(ref.allowedAliases) != 1 || ref.allowedAliases[0] != "#bootstrap:fgentic.fmind.ai" {
+		t.Fatalf("compiled aliases = %v", ref.allowedAliases)
+	}
+}
+
+func TestAllowedRoomsRejectMalformedOrDuplicateEntries(t *testing.T) {
+	for name, rooms := range map[string]string{
+		"not matrix":             "[not-a-room]",
+		"bad server":             "['!room:bad server']",
+		"surrounding whitespace": "[' !room:fgentic.fmind.ai']",
+		"duplicate":              "['!room:fgentic.fmind.ai', '!room:fgentic.fmind.ai']",
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := LoadAgents(writeTemp(t, "agents:\n  agent-k8s:\n    namespace: kagent\n    name: k8s-agent\n    allowedRooms: "+rooms+"\n"))
+			if err == nil || !strings.Contains(err.Error(), "allowedRooms") {
+				t.Fatalf("LoadAgents error = %v", err)
+			}
+		})
 	}
 }
 

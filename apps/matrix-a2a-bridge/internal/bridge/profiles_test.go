@@ -16,7 +16,9 @@ import (
 	"time"
 
 	"github.com/a2aproject/a2a-go/v2/a2a"
+	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/appservice"
+	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/a2aclient"
@@ -347,7 +349,16 @@ func TestRemoteCardTrustFailureQuarantinesAndRemovesDirectoryEntry(t *testing.T)
 		SenderRatePerMinute:      60, SenderRateBurst: 10, RoomRatePerMinute: 60, RoomRateBurst: 10,
 		RateLimitBucketCapacity: testRateLimitBucketCapacity,
 	}
-	as := &appservice.AppService{Registration: &appservice.Registration{SenderLocalpart: "a2a-bridge"}}
+	stateStore := mautrix.NewMemoryStateStore().(appservice.StateStore)
+	if err := stateStore.SetMembership(
+		t.Context(), "!room:"+ownServer, id.NewUserID("agent-remote", ownServer), event.MembershipJoin,
+	); err != nil {
+		t.Fatalf("seed remote membership: %v", err)
+	}
+	as := &appservice.AppService{
+		Registration: &appservice.Registration{SenderLocalpart: "a2a-bridge"},
+		StateStore:   stateStore,
+	}
 	b := New(cfg, as, agents, client, state.NewMemory(), slog.Default())
 	b.profileWriter = nil
 
@@ -365,7 +376,7 @@ func TestRemoteCardTrustFailureQuarantinesAndRemovesDirectoryEntry(t *testing.T)
 	if profile.Status != profileStatusRejected || profile.Description == "Signed purpose" || client.IsReady(profileTarget(t, agents, "agent-remote")) {
 		t.Fatalf("quarantined profile = %+v, ready=%v", profile, client.ready)
 	}
-	if directory := b.agentDirectoryText(id.NewUserID("alice", ownServer)); !containsAll(directory, "@agent-remote:"+ownServer, "unavailable", "capabilities hidden") ||
+	if directory := b.agentDirectoryText(t.Context(), id.NewUserID("alice", ownServer), "!room:"+ownServer); !containsAll(directory, "@agent-remote:"+ownServer, "unavailable", "capabilities hidden") ||
 		strings.Contains(directory, "Signed purpose") {
 		t.Fatalf("directory rejected target entry: %s", directory)
 	}
@@ -376,7 +387,7 @@ func TestRemoteCardTrustFailureQuarantinesAndRemovesDirectoryEntry(t *testing.T)
 	if profile.Status != profileStatusUnavailable {
 		t.Fatalf("post-quarantine profile status = %q, want unavailable", profile.Status)
 	}
-	if directory := b.agentDirectoryText(id.NewUserID("alice", ownServer)); !containsAll(directory, "@agent-remote:"+ownServer, "unavailable", "capabilities hidden") ||
+	if directory := b.agentDirectoryText(t.Context(), id.NewUserID("alice", ownServer), "!room:"+ownServer); !containsAll(directory, "@agent-remote:"+ownServer, "unavailable", "capabilities hidden") ||
 		strings.Contains(directory, "Signed purpose") {
 		t.Fatalf("directory unavailable target entry: %s", directory)
 	}

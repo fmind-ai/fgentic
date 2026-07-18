@@ -62,6 +62,8 @@ spec:
             {{- end }}
             - name: GHOST_PREFIX
               value: {{ .Values.config.ghostPrefix | quote }}
+            - name: ACCESS_MANAGER_MXID
+              value: {{ .Values.config.accessManagerMXID | quote }}
             - name: REQUEST_TIMEOUT
               value: {{ .Values.config.requestTimeout | quote }}
             - name: TASK_TIMEOUT

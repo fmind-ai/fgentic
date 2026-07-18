@@ -721,6 +721,57 @@ if [[ "${SCENARIO}" == "crash-recovery" ]]; then
 fi
 
 if [[ "${SCENARIO}" == "integration" ]]; then
+  echo "==> Verifying managed-room fail-closed audit"
+  managed_room_audits="$(
+    jq -Rsc '
+    [
+      split("\n")[]
+      | fromjson?
+      | select(
+          .log_stream == "audit"
+          and .msg == "delegation audit"
+          and .ghost == "agent-integration"
+          and .terminal_stage == "room_authorization"
+          and (.terminal_reason == "room_binding_rejected" or .terminal_reason == "ghost_membership_required")
+          and .rate_limit_verdict == "not_checked"
+          and .a2a_attempted == false
+          and (has("content") | not)
+          and (has("body") | not)
+          and (has("prompt") | not)
+        )
+      | .terminal_reason
+    ]
+    | unique
+    | sort
+    ' <"${dead_man_log_file}"
+  )"
+  readonly managed_room_audits
+  if [[ "${managed_room_audits}" != '["ghost_membership_required","room_binding_rejected"]' ]]; then
+    echo "Error: missing content-free managed-room denial evidence: ${managed_room_audits}" >&2
+    exit 1
+  fi
+  unauthorized_invites="$(
+    jq -Rsc '
+    [
+      split("\n")[]
+      | fromjson?
+      | select(
+          .log_stream == "audit"
+          and .audit_schema == "fgentic.managed_room_invite.v1"
+          and .outcome == "denied"
+          and .reason == "invite_sender_rejected"
+          and (has("content") | not)
+          and (has("body") | not)
+        )
+    ]
+    | length
+    ' <"${dead_man_log_file}"
+  )"
+  readonly unauthorized_invites
+  if [[ "${unauthorized_invites}" != "1" ]]; then
+    echo "Error: expected one content-free unauthorized invite audit, got ${unauthorized_invites}" >&2
+    exit 1
+  fi
   echo "==> Verifying fail-closed remote AgentCard audit"
   untrusted_audits="$(
     jq -Rsc '
