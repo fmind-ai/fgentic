@@ -118,7 +118,9 @@ func run() error {
 		store := policy.NewStore(cfg.PolicyPath, log)
 		go store.Watch(ctx, cfg.PolicyReloadInterval)
 		keyClient := &http.Client{Timeout: cfg.RequestTimeout}
-		verifier := httpsig.NewVerifier(httpsig.NewHTTPKeyResolver(keyClient), cfg.SignatureMaxSkew)
+		verifier := httpsig.NewVerifierWithFutureSkew(
+			httpsig.NewHTTPKeyResolver(keyClient), cfg.SignatureMaxSkew, cfg.SignatureFutureSkew,
+		)
 		border := apgateway.NewBorder(verifier, store, log)
 		if cfg.IntegrityRequireInbound {
 			resolver := integrity.NewHTTPKeyResolver(&http.Client{Timeout: cfg.RequestTimeout})

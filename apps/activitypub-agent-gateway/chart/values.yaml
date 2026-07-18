@@ -86,7 +86,8 @@ policy:
   enabled: false
   configMapName: fgentic-activitypub-policy
   reloadInterval: 5s # poll the projected policy.json for a hot-swap
-  signatureMaxSkew: 12h # reject inbound signatures whose timestamp drifts further than this
+  signatureMaxSkew: 12h # reject inbound signatures older than this replay window
+  signatureFutureSkew: 5m # max ahead-of-gateway signer clock; app rejects values above 5m
 
 # FEP-8b32 object integrity proofs (eddsa-jcs-2022, issue #212). When enabled, outbound replies carry
 # an Ed25519 DataIntegrityProof and each actor publishes its assertionMethod Multikey, so a remote

@@ -33,8 +33,13 @@ var (
 	ErrSignatureInvalid     = errors.New("http signature verification failed")
 	ErrDigestMismatch       = errors.New("body digest does not match signed digest")
 	ErrStale                = errors.New("http signature timestamp outside the accepted window")
+	ErrTimestampRequired    = errors.New("http signature must cover a timestamp")
+	ErrMissingCoverage      = errors.New("http signature does not cover the request target")
 	ErrKeyResolution        = errors.New("could not resolve the signing key")
 )
+
+// MaximumFutureSkew is the production ceiling for tolerating a signer clock ahead of the gateway.
+const MaximumFutureSkew = 5 * time.Minute
 
 // PublicKey is a resolved signing key and the actor URI that controls it.
 type PublicKey struct {
@@ -54,20 +59,30 @@ type Result struct {
 	Scheme string // "cavage" or "rfc9421"
 }
 
-// Verifier checks inbound signatures. maxSkew bounds how far a signature timestamp may drift from
-// now (replay protection); now is injectable for deterministic tests.
+// Verifier checks inbound signatures. maxAge bounds replay of old requests while futureSkew is a
+// deliberately smaller allowance for an ahead-of-gateway signer clock; now is test-injectable.
 type Verifier struct {
-	resolver KeyResolver
-	maxSkew  time.Duration
-	now      func() time.Time
+	resolver   KeyResolver
+	maxAge     time.Duration
+	futureSkew time.Duration
+	now        func() time.Time
 }
 
-// NewVerifier builds a Verifier. maxSkew defaults to 12h when non-positive.
-func NewVerifier(resolver KeyResolver, maxSkew time.Duration) *Verifier {
-	if maxSkew <= 0 {
-		maxSkew = 12 * time.Hour
+// NewVerifier builds a Verifier with at most five minutes of future clock tolerance. maxAge
+// defaults to 12h when non-positive.
+func NewVerifier(resolver KeyResolver, maxAge time.Duration) *Verifier {
+	return NewVerifierWithFutureSkew(resolver, maxAge, MaximumFutureSkew)
+}
+
+// NewVerifierWithFutureSkew builds a Verifier with an explicit future-clock allowance.
+func NewVerifierWithFutureSkew(resolver KeyResolver, maxAge, futureSkew time.Duration) *Verifier {
+	if maxAge <= 0 {
+		maxAge = 12 * time.Hour
 	}
-	return &Verifier{resolver: resolver, maxSkew: maxSkew, now: time.Now}
+	if futureSkew <= 0 || futureSkew > MaximumFutureSkew {
+		futureSkew = MaximumFutureSkew
+	}
+	return &Verifier{resolver: resolver, maxAge: maxAge, futureSkew: futureSkew, now: time.Now}
 }
 
 // Verify authenticates req (whose body was already read into body) and returns the signing key's
@@ -86,6 +101,9 @@ func (v *Verifier) Verify(ctx context.Context, req *http.Request, body []byte) (
 		return Result{}, ErrNoSignature
 	}
 	if err != nil {
+		return Result{}, err
+	}
+	if err := checkCoveredComponents(sig); err != nil {
 		return Result{}, err
 	}
 	if err := v.checkFreshness(req, sig); err != nil {
@@ -110,27 +128,45 @@ func (v *Verifier) Verify(ctx context.Context, req *http.Request, body []byte) (
 	return Result{KeyID: sig.keyID, Owner: pub.Owner, Scheme: scheme}, nil
 }
 
+// checkCoveredComponents requires the signature to bind the method, path, and authority before
+// any key fetch. RFC 9421's @target-uri is accepted as the stronger combined path+authority form.
+func checkCoveredComponents(sig *parsedSignature) error {
+	switch sig.scheme {
+	case "rfc9421":
+		targetBound := sig.covers("@target-uri") || (sig.covers("@path") && sig.covers("@authority"))
+		if !sig.covers("@method") || !targetBound {
+			return ErrMissingCoverage
+		}
+	case "cavage":
+		if !sig.covers("(request-target)") || !sig.covers("host") {
+			return ErrMissingCoverage
+		}
+	default:
+		return fmt.Errorf("%w: unknown signature scheme", ErrMalformedSignature)
+	}
+	return nil
+}
+
 // checkFreshness enforces the replay window using the signature's created param (RFC 9421) or the
 // Date header (Cavage), whichever the signature covers.
 func (v *Verifier) checkFreshness(req *http.Request, sig *parsedSignature) error {
 	var ts time.Time
 	switch {
-	case !sig.created.IsZero():
+	case sig.scheme == "rfc9421" && sig.createdSet:
 		ts = sig.created
-	case sig.covers("date") || sig.covers("(created)"):
+	case sig.scheme == "cavage" && sig.covers("(created)") && sig.createdSet:
+		ts = sig.created
+	case sig.covers("date"):
 		parsed, err := http.ParseTime(req.Header.Get("Date"))
 		if err != nil {
 			return fmt.Errorf("%w: unparseable Date header", ErrMalformedSignature)
 		}
 		ts = parsed
 	default:
-		return nil // no timestamp covered; nothing to check
+		return ErrTimestampRequired
 	}
-	delta := v.now().Sub(ts)
-	if delta < 0 {
-		delta = -delta
-	}
-	if delta > v.maxSkew {
+	age := v.now().Sub(ts)
+	if age > v.maxAge || age < -v.futureSkew {
 		return ErrStale
 	}
 	return nil

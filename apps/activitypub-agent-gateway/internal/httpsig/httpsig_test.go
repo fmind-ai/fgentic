@@ -114,6 +114,27 @@ func signCavageEd25519(req *http.Request, priv ed25519.PrivateKey, headers []str
 	setCavageHeader(req, testKeyID, "ed25519", headers, sig)
 }
 
+func signRFC9421Ed25519(t *testing.T, req *http.Request, priv ed25519.PrivateKey, components []string, created *int64) {
+	t.Helper()
+	quoted := make([]string, len(components))
+	for i, component := range components {
+		quoted[i] = `"` + component + `"`
+	}
+	params := "(" + strings.Join(quoted, " ") + ")"
+	if created != nil {
+		params += ";created=" + strconv.FormatInt(*created, 10)
+	}
+	params += `;keyid="` + testKeyID + `";alg="ed25519"`
+	parsed := &parsedSignature{scheme: "rfc9421", components: components, signatureParams: params}
+	signingString, err := parsed.signingStringRFC9421(req)
+	if err != nil {
+		t.Fatalf("signingStringRFC9421: %v", err)
+	}
+	sig := ed25519.Sign(priv, []byte(signingString))
+	req.Header.Set("Signature-Input", "sig1="+params)
+	req.Header.Set("Signature", "sig1=:"+base64.StdEncoding.EncodeToString(sig)+":")
+}
+
 func TestVerifyCavageEd25519(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -165,11 +186,54 @@ func TestVerifyRejects(t *testing.T) {
 	})
 
 	t.Run("stale", func(t *testing.T) {
-		req := newSignedRequest(t, body, time.Now().Add(-48*time.Hour))
+		now := time.Unix(1_700_000_000, 0).UTC()
+		req := newSignedRequest(t, body, now.Add(-2*time.Hour))
 		signCavageEd25519(req, priv, headers)
 		v := NewVerifier(fakeResolver{key: pub, owner: testOwner}, time.Hour)
+		v.now = func() time.Time { return now }
 		if _, err := v.Verify(context.Background(), req, body); !errors.Is(err, ErrStale) {
 			t.Errorf("err = %v, want ErrStale", err)
+		}
+	})
+
+	t.Run("future beyond clock tolerance", func(t *testing.T) {
+		now := time.Unix(1_700_000_000, 0).UTC()
+		req := newSignedRequest(t, body, now.Add(MaximumFutureSkew+time.Second))
+		signCavageEd25519(req, priv, headers)
+		v := NewVerifier(fakeResolver{key: pub, owner: testOwner}, time.Hour)
+		v.now = func() time.Time { return now }
+		if _, err := v.Verify(context.Background(), req, body); !errors.Is(err, ErrStale) {
+			t.Errorf("err = %v, want ErrStale", err)
+		}
+	})
+
+	t.Run("no covered timestamp", func(t *testing.T) {
+		req := newSignedRequest(t, body, time.Now())
+		withoutDate := []string{"(request-target)", "host", "digest"}
+		signCavageEd25519(req, priv, withoutDate)
+		v := NewVerifier(fakeResolver{key: pub, owner: testOwner}, time.Hour)
+		if _, err := v.Verify(context.Background(), req, body); !errors.Is(err, ErrTimestampRequired) {
+			t.Errorf("err = %v, want ErrTimestampRequired", err)
+		}
+	})
+
+	t.Run("missing request target", func(t *testing.T) {
+		req := newSignedRequest(t, body, time.Now())
+		withoutTarget := []string{"host", "date", "digest"}
+		signCavageEd25519(req, priv, withoutTarget)
+		v := NewVerifier(fakeResolver{key: pub, owner: testOwner}, time.Hour)
+		if _, err := v.Verify(context.Background(), req, body); !errors.Is(err, ErrMissingCoverage) {
+			t.Errorf("err = %v, want ErrMissingCoverage", err)
+		}
+	})
+
+	t.Run("missing authority", func(t *testing.T) {
+		req := newSignedRequest(t, body, time.Now())
+		withoutHost := []string{"(request-target)", "date", "digest"}
+		signCavageEd25519(req, priv, withoutHost)
+		v := NewVerifier(fakeResolver{key: pub, owner: testOwner}, time.Hour)
+		if _, err := v.Verify(context.Background(), req, body); !errors.Is(err, ErrMissingCoverage) {
+			t.Errorf("err = %v, want ErrMissingCoverage", err)
 		}
 	})
 
@@ -181,6 +245,64 @@ func TestVerifyRejects(t *testing.T) {
 			t.Errorf("err = %v, want ErrKeyResolution", err)
 		}
 	})
+}
+
+func TestVerifyRFC9421RejectsMissingFreshnessAndTargetCoverage(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	body := []byte(`{"type":"Create"}`)
+	newRequest := func() *http.Request {
+		req := httptest.NewRequest(http.MethodPost, testURL, strings.NewReader(string(body)))
+		req.Host = "fgentic.localhost"
+		req.Header.Set("Content-Digest", "sha-256=:"+b64sha256(body)+":")
+		return req
+	}
+
+	t.Run("no created or covered date", func(t *testing.T) {
+		req := newRequest()
+		signRFC9421Ed25519(t, req, priv, []string{"@method", "@target-uri", "content-digest"}, nil)
+		v := NewVerifier(fakeResolver{key: pub, owner: testOwner}, time.Hour)
+		if _, err := v.Verify(context.Background(), req, body); !errors.Is(err, ErrTimestampRequired) {
+			t.Fatalf("error = %v, want ErrTimestampRequired", err)
+		}
+	})
+
+	t.Run("future created", func(t *testing.T) {
+		now := time.Unix(1_700_000_000, 0).UTC()
+		created := now.Add(MaximumFutureSkew + time.Second).Unix()
+		req := newRequest()
+		signRFC9421Ed25519(t, req, priv, []string{"@method", "@target-uri", "content-digest"}, &created)
+		v := NewVerifier(fakeResolver{key: pub, owner: testOwner}, time.Hour)
+		v.now = func() time.Time { return now }
+		if _, err := v.Verify(context.Background(), req, body); !errors.Is(err, ErrStale) {
+			t.Fatalf("error = %v, want ErrStale", err)
+		}
+	})
+
+	for name, components := range map[string][]string{
+		"missing method":    {"@path", "@authority", "content-digest"},
+		"missing path":      {"@method", "@authority", "content-digest"},
+		"missing authority": {"@method", "@path", "content-digest"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			created := time.Now().Unix()
+			req := newRequest()
+			signRFC9421Ed25519(t, req, priv, components, &created)
+			v := NewVerifier(fakeResolver{key: pub, owner: testOwner}, time.Hour)
+			if _, err := v.Verify(context.Background(), req, body); !errors.Is(err, ErrMissingCoverage) {
+				t.Fatalf("error = %v, want ErrMissingCoverage", err)
+			}
+		})
+	}
+}
+
+func TestNewVerifierCapsFutureClockSkew(t *testing.T) {
+	v := NewVerifierWithFutureSkew(fakeResolver{}, time.Hour, time.Hour)
+	if v.futureSkew != MaximumFutureSkew {
+		t.Fatalf("future skew = %s, want hard maximum %s", v.futureSkew, MaximumFutureSkew)
+	}
 }
 
 func TestVerifyRFC9421Ed25519(t *testing.T) {

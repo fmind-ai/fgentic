@@ -19,6 +19,7 @@ type parsedSignature struct {
 	components      []string
 	signature       []byte
 	created         time.Time
+	createdSet      bool
 	signatureParams string
 }
 
@@ -58,9 +59,12 @@ func parseCavage(header string) (*parsedSignature, error) {
 		sig.components = []string{"date"} // draft default
 	}
 	if created, ok := params["created"]; ok {
-		if unix, convErr := strconv.ParseInt(created, 10, 64); convErr == nil {
-			sig.created = time.Unix(unix, 0)
+		unix, convErr := strconv.ParseInt(created, 10, 64)
+		if convErr != nil {
+			return nil, fmt.Errorf("%w: created is not an integer", ErrMalformedSignature)
 		}
+		sig.created = time.Unix(unix, 0)
+		sig.createdSet = true
 	}
 	raw, ok := params["signature"]
 	if !ok || raw == "" {
@@ -84,7 +88,7 @@ func (s *parsedSignature) signingStringCavage(req *http.Request) (string, error)
 		case "(request-target)":
 			lines = append(lines, "(request-target): "+strings.ToLower(req.Method)+" "+req.URL.RequestURI())
 		case "(created)":
-			if s.created.IsZero() {
+			if !s.createdSet {
 				return "", fmt.Errorf("%w: (created) covered but absent", ErrMalformedSignature)
 			}
 			lines = append(lines, "(created): "+strconv.FormatInt(s.created.Unix(), 10))
@@ -177,9 +181,12 @@ func parseRFC9421(header http.Header) (*parsedSignature, error) {
 		case "alg":
 			sig.algorithm = value
 		case "created":
-			if unix, convErr := strconv.ParseInt(value, 10, 64); convErr == nil {
-				sig.created = time.Unix(unix, 0)
+			unix, convErr := strconv.ParseInt(value, 10, 64)
+			if convErr != nil {
+				return nil, fmt.Errorf("%w: created is not an integer", ErrMalformedSignature)
 			}
+			sig.created = time.Unix(unix, 0)
+			sig.createdSet = true
 		}
 	}
 	if sig.keyID == "" {

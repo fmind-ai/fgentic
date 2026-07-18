@@ -4,6 +4,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"log/slog"
+	"net/http"
 	"net/http/httptest"
 	"testing"
 	"time"
@@ -20,6 +21,47 @@ func gatewayWithBorder(t *testing.T, del Delegator, pub ed25519.PublicKey, polic
 	verifier := httpsig.NewVerifier(staticResolver{key: pub, owner: borderTestActor}, time.Hour)
 	g.UseBorder(NewBorder(verifier, store, slog.Default()))
 	return g
+}
+
+func TestInboxRejectsReplayableSignaturesBeforeA2A(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	body := []byte(createNote)
+	now := time.Now()
+	tests := map[string]struct {
+		date    time.Time
+		headers []string
+	}{
+		"no covered timestamp": {
+			date: now, headers: []string{"(request-target)", "host", "digest"},
+		},
+		"stale timestamp": {
+			date: now.Add(-2 * time.Hour), headers: []string{"(request-target)", "host", "date", "digest"},
+		},
+		"future timestamp": {
+			date: now.Add(httpsig.MaximumFutureSkew + time.Minute), headers: []string{"(request-target)", "host", "date", "digest"},
+		},
+		"missing request target": {
+			date: now, headers: []string{"host", "date", "digest"},
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			del := &fakeDelegator{reply: "must not run"}
+			g := gatewayWithBorder(t, del, pub, `{"version":1,"allowed_domains":["mastodon.example"]}`)
+			req := signedInboxWith(t, priv, body, test.date, test.headers)
+			rec := httptest.NewRecorder()
+			g.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusForbidden || rec.Body.String() != "forbidden\n" {
+				t.Fatalf("response = %d %q, want content-free 403", rec.Code, rec.Body.String())
+			}
+			if got := del.callCount(); got != 0 {
+				t.Fatalf("A2A calls = %d, want 0", got)
+			}
+		})
+	}
 }
 
 func TestInboxBorderEnforcement(t *testing.T) {
