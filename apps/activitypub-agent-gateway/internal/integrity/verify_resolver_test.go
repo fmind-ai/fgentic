@@ -5,10 +5,14 @@ import (
 	"crypto/ed25519"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/testhttp"
 )
 
 // staticResolver returns a fixed key regardless of the verificationMethod.
@@ -82,7 +86,9 @@ func TestHTTPKeyResolverExtractsMultikey(t *testing.T) {
 	actorID := "https://fgentic.localhost/ap/agents/agent-docs-qa"
 	vm := actorID + "#ed25519-key"
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	const host = "integrity.example.com"
+	baseURL := testhttp.URL(host)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/ap/agents/agent-docs-qa" {
 			http.NotFound(w, r)
 			return
@@ -97,8 +103,8 @@ func TestHTTPKeyResolverExtractsMultikey(t *testing.T) {
 	defer srv.Close()
 
 	// Rewrite the fetch host to the test server while keeping the fragment logic intact.
-	resolver := NewHTTPKeyResolver(srv.Client())
-	got, err := resolver.Resolve(context.Background(), srv.URL+"/ap/agents/agent-docs-qa#ed25519-key")
+	resolver := NewHTTPKeyResolver(testhttp.Client(t, map[string]*httptest.Server{host: srv}))
+	got, err := resolver.Resolve(context.Background(), baseURL+"/ap/agents/agent-docs-qa#ed25519-key")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
@@ -110,8 +116,37 @@ func TestHTTPKeyResolverExtractsMultikey(t *testing.T) {
 	}
 }
 
+func TestHTTPKeyResolverRejectsPrivateURLsWithoutDial(t *testing.T) {
+	t.Parallel()
+	var dials atomic.Int64
+	client := &http.Client{Transport: &http.Transport{DialContext: func(
+		context.Context,
+		string,
+		string,
+	) (net.Conn, error) {
+		dials.Add(1)
+		return nil, errors.New("unexpected dial")
+	}}}
+	resolver := NewHTTPKeyResolver(client)
+	for _, verificationMethod := range []string{
+		"http://keys.example.com/actor#ed25519-key",
+		"https://127.0.0.1/actor#ed25519-key",
+		"https://169.254.169.254/latest/meta-data#ed25519-key",
+		"https://[fd00::1]/actor#ed25519-key",
+	} {
+		if _, err := resolver.Resolve(context.Background(), verificationMethod); err == nil {
+			t.Errorf("Resolve(%q) must fail closed", verificationMethod)
+		}
+	}
+	if got := dials.Load(); got != 0 {
+		t.Fatalf("outbound dials = %d, want 0", got)
+	}
+}
+
 func TestHTTPKeyResolverErrors(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	const host = "integrity-errors.example.com"
+	baseURL := testhttp.URL(host)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/no-keys":
 			_, _ = fmt.Fprint(w, `{"id":"https://x/a"}`)
@@ -122,16 +157,16 @@ func TestHTTPKeyResolverErrors(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	resolver := NewHTTPKeyResolver(srv.Client())
+	resolver := NewHTTPKeyResolver(testhttp.Client(t, map[string]*httptest.Server{host: srv}))
 
-	if _, err := resolver.Resolve(context.Background(), srv.URL+"/no-keys#k"); err == nil {
+	if _, err := resolver.Resolve(context.Background(), baseURL+"/no-keys#k"); err == nil {
 		t.Errorf("expected error for doc with no assertionMethod")
 	}
-	if _, err := resolver.Resolve(context.Background(), srv.URL+"/missing#k"); err == nil {
+	if _, err := resolver.Resolve(context.Background(), baseURL+"/missing#k"); err == nil {
 		t.Errorf("expected error for 404")
 	}
 	// A sole inline key with no id is accepted (some servers omit key ids).
-	if got, err := resolver.Resolve(context.Background(), srv.URL+"/single#k"); err != nil {
+	if got, err := resolver.Resolve(context.Background(), baseURL+"/single#k"); err != nil {
 		t.Errorf("single-key resolve: %v", err)
 	} else if got.Controller != "https://x/a" {
 		t.Errorf("controller = %q", got.Controller)
@@ -142,7 +177,9 @@ func TestHTTPKeyResolverRejectsBadKeyMaterial(t *testing.T) {
 	if NewHTTPKeyResolver(nil) == nil {
 		t.Fatalf("nil client must fall back to a default resolver")
 	}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	const host = "integrity-bad.example.com"
+	baseURL := testhttp.URL(host)
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/bad-mb":
 			_, _ = fmt.Fprint(w, `{"id":"https://x/a","assertionMethod":[{"id":"https://x/a#k","type":"Multikey","controller":"https://x/a","publicKeyMultibase":"Xnotmultibase"}]}`)
@@ -155,10 +192,10 @@ func TestHTTPKeyResolverRejectsBadKeyMaterial(t *testing.T) {
 		}
 	}))
 	defer srv.Close()
-	resolver := NewHTTPKeyResolver(srv.Client())
+	resolver := NewHTTPKeyResolver(testhttp.Client(t, map[string]*httptest.Server{host: srv}))
 
 	for _, path := range []string{"/bad-mb", "/no-controller", "/not-json"} {
-		if _, err := resolver.Resolve(context.Background(), srv.URL+path+"#k"); err == nil {
+		if _, err := resolver.Resolve(context.Background(), baseURL+path+"#k"); err == nil {
 			t.Errorf("%s: expected error", path)
 		}
 	}

@@ -9,6 +9,8 @@ import (
 	"io"
 	"net/http"
 	"strings"
+
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/safehttp"
 )
 
 // maxKeyDocBytes bounds an untrusted actor/key document fetch.
@@ -68,16 +70,16 @@ func (v *Verifier) VerifyDocument(ctx context.Context, doc map[string]any) (cont
 // HTTPKeyResolver dereferences a verificationMethod to its controller's actor document and extracts
 // the matching Multikey (FEP-8b32 assertionMethod / publicKeyMultibase shape).
 type HTTPKeyResolver struct {
-	client *http.Client
+	client    *http.Client
+	clientErr error
 }
 
-// NewHTTPKeyResolver returns a resolver using client (which should carry sane timeouts and, in
-// cluster, an egress NetworkPolicy).
+// NewHTTPKeyResolver returns a resolver using a guarded clone of client. The clone permits only
+// public HTTPS destinations and revalidates DNS at dial time; the in-cluster egress NetworkPolicy
+// remains a second, independent control.
 func NewHTTPKeyResolver(client *http.Client) *HTTPKeyResolver {
-	if client == nil {
-		client = http.DefaultClient
-	}
-	return &HTTPKeyResolver{client: client}
+	guarded, err := safehttp.NewClient(client, nil)
+	return &HTTPKeyResolver{client: guarded, clientErr: err}
 }
 
 // multikey is one FEP-8b32 verification method (Multikey type, publicKeyMultibase encoding).
@@ -97,6 +99,9 @@ type keyDoc struct {
 // Resolve fetches the actor document addressed by verificationMethod (its fragment stripped) and
 // returns the Ed25519 key whose id matches, plus its controller.
 func (r *HTTPKeyResolver) Resolve(ctx context.Context, verificationMethod string) (ResolvedKey, error) {
+	if r.clientErr != nil {
+		return ResolvedKey{}, fmt.Errorf("configure key resolver: %w", r.clientErr)
+	}
 	docURL, _, _ := strings.Cut(verificationMethod, "#")
 	if docURL == "" {
 		return ResolvedKey{}, fmt.Errorf("empty verificationMethod")
@@ -104,6 +109,9 @@ func (r *HTTPKeyResolver) Resolve(ctx context.Context, verificationMethod string
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, docURL, nil)
 	if err != nil {
 		return ResolvedKey{}, fmt.Errorf("build key request: %w", err)
+	}
+	if err := safehttp.ValidateURL(req.URL); err != nil {
+		return ResolvedKey{}, fmt.Errorf("validate key URL: %w", err)
 	}
 	req.Header.Set("Accept", "application/activity+json")
 	resp, err := r.client.Do(req)

@@ -19,6 +19,7 @@ import (
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/integrity"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/policy"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/testhttp"
 )
 
 // newStatusGateway builds a gateway with the follow-to-subscribe status feed enabled, returning the
@@ -69,15 +70,15 @@ func followAgent(t *testing.T, g *Gateway, peer *remotePeer) {
 	t.Helper()
 	const ghost = "agent-docs-qa"
 	follow := fmt.Sprintf(`{"@context":"https://www.w3.org/ns/activitystreams","id":%q,"type":"Follow","actor":%q,"object":"https://fgentic.localhost/ap/agents/%s"}`,
-		peer.server.URL+"/activities/1", peer.actor(), ghost)
+		testhttp.URL(peer.host)+"/activities/1", peer.actor(), ghost)
 	if rec := do(t, g, http.MethodPost, "/ap/agents/"+ghost+"/inbox", follow); rec.Code != http.StatusAccepted {
 		t.Fatalf("follow code = %d", rec.Code)
 	}
 }
 
 func TestStatusFeedSubscribeAndReceiveSignedNote(t *testing.T) {
-	peer := newRemotePeer(t)
-	g, pub := newStatusGateway(t, peer.server.Client(), 6, nil)
+	peer := newRemotePeer(t, "status.example.com")
+	g, pub := newStatusGateway(t, peer.client(t), 6, nil)
 
 	followAgent(t, g, peer)
 	if g.followers.count(agentFollowerKey("agent-docs-qa")) != 1 {
@@ -113,8 +114,8 @@ func TestStatusFeedSubscribeAndReceiveSignedNote(t *testing.T) {
 }
 
 func TestStatusFeedUndoStopsDelivery(t *testing.T) {
-	peer := newRemotePeer(t)
-	g, _ := newStatusGateway(t, peer.server.Client(), 6, nil)
+	peer := newRemotePeer(t, "undo.example.com")
+	g, _ := newStatusGateway(t, peer.client(t), 6, nil)
 	followAgent(t, g, peer)
 
 	fireAlert(t, g, "agent-docs-qa", "A1", "first")
@@ -141,8 +142,8 @@ func TestStatusFeedUndoStopsDelivery(t *testing.T) {
 }
 
 func TestStatusFeedRateLimits(t *testing.T) {
-	peer := newRemotePeer(t)
-	g, _ := newStatusGateway(t, peer.server.Client(), 2, nil) // cap 2 per window
+	peer := newRemotePeer(t, "rate.example.com")
+	g, _ := newStatusGateway(t, peer.client(t), 2, nil) // cap 2 per window
 	followAgent(t, g, peer)
 
 	for i := 0; i < 5; i++ {
@@ -154,8 +155,8 @@ func TestStatusFeedRateLimits(t *testing.T) {
 }
 
 func TestStatusFeedIgnoresUnknownAgentAndResolved(t *testing.T) {
-	peer := newRemotePeer(t)
-	g, _ := newStatusGateway(t, peer.server.Client(), 6, nil)
+	peer := newRemotePeer(t, "ignored.example.com")
+	g, _ := newStatusGateway(t, peer.client(t), 6, nil)
 	followAgent(t, g, peer)
 
 	// An alert for an unlisted agent is ignored.

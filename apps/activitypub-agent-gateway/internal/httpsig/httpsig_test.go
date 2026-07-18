@@ -11,14 +11,18 @@ import (
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/testhttp"
 )
 
 const (
@@ -246,20 +250,23 @@ func TestHTTPKeyResolver(t *testing.T) {
 	}
 	pemText := string(pem.EncodeToMemory(&pem.Block{Type: "PUBLIC KEY", Bytes: der}))
 
+	const host = "keys.example.com"
+	baseURL := testhttp.URL(host)
 	mux := http.NewServeMux()
-	server := httptest.NewServer(mux)
+	server := httptest.NewTLSServer(mux)
 	defer server.Close()
 	mux.HandleFunc("/users/bob", func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = w.Write([]byte(`{"id":"` + server.URL + `/users/bob","publicKey":{"id":"` + server.URL +
-			`/users/bob#main-key","owner":"` + server.URL + `/users/bob","publicKeyPem":` + strconv.Quote(pemText) + `}}`))
+		_, _ = w.Write([]byte(`{"id":"` + baseURL + `/users/bob","publicKey":{"id":"` + baseURL +
+			`/users/bob#main-key","owner":"` + baseURL + `/users/bob","publicKeyPem":` + strconv.Quote(pemText) + `}}`))
 	})
 
-	resolver := NewHTTPKeyResolver(server.Client())
-	pub, err := resolver.Resolve(context.Background(), server.URL+"/users/bob#main-key")
+	client := testhttp.Client(t, map[string]*httptest.Server{host: server})
+	resolver := NewHTTPKeyResolver(client)
+	pub, err := resolver.Resolve(context.Background(), baseURL+"/users/bob#main-key")
 	if err != nil {
 		t.Fatalf("Resolve: %v", err)
 	}
-	if pub.Owner != server.URL+"/users/bob" {
+	if pub.Owner != baseURL+"/users/bob" {
 		t.Errorf("owner = %q", pub.Owner)
 	}
 	if _, ok := pub.Key.(*rsa.PublicKey); !ok {
@@ -268,6 +275,33 @@ func TestHTTPKeyResolver(t *testing.T) {
 
 	if _, err := resolver.Resolve(context.Background(), "#frag-only"); err == nil {
 		t.Errorf("expected error for empty document URL")
+	}
+}
+
+func TestHTTPKeyResolverRejectsPrivateURLsWithoutDial(t *testing.T) {
+	t.Parallel()
+	var dials atomic.Int64
+	client := &http.Client{Transport: &http.Transport{DialContext: func(
+		context.Context,
+		string,
+		string,
+	) (net.Conn, error) {
+		dials.Add(1)
+		return nil, errors.New("unexpected dial")
+	}}}
+	resolver := NewHTTPKeyResolver(client)
+	for _, keyID := range []string{
+		"http://keys.example.com/actor#main-key",
+		"https://127.0.0.1/actor#main-key",
+		"https://169.254.169.254/latest/meta-data#main-key",
+		"https://[fd00::1]/actor#main-key",
+	} {
+		if _, err := resolver.Resolve(context.Background(), keyID); err == nil {
+			t.Errorf("Resolve(%q) must fail closed", keyID)
+		}
+	}
+	if got := dials.Load(); got != 0 {
+		t.Fatalf("outbound dials = %d, want 0", got)
 	}
 }
 
