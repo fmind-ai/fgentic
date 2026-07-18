@@ -55,6 +55,32 @@ for workflow in "${workflows[@]}"; do
 			failed=true
 		fi
 	done <<<"${uses_lines}"
+
+	# GitHub otherwise lets a job occupy a runner for up to six hours. Keep every job's
+	# ceiling explicit, finite, and reviewable without hard-coding the current inventory.
+	timeout_rows="$(
+		yq -o=json '.jobs' "${workflow}" | jq -r '
+		  to_entries[] |
+		  . as $job |
+		  ($job.value["timeout-minutes"]) as $timeout |
+		  [
+		    $job.key,
+		    (if $job.value | has("timeout-minutes") then ($timeout | tojson) else "<missing>" end),
+		    (if ($timeout | type) == "number"
+		      then (($timeout | floor) == $timeout and $timeout > 0 and $timeout < 360)
+		      else false
+		    end)
+		  ] |
+		  @tsv
+		'
+	)"
+	while IFS=$'\t' read -r job timeout valid; do
+		[[ -n "${job}" ]] || continue
+		if [[ "${valid}" != true ]]; then
+			echo "error: ${workflow#"${root_dir}/"}: job ${job} needs an integer timeout-minutes between 1 and 359; got ${timeout}" >&2
+			failed=true
+		fi
+	done <<<"${timeout_rows}"
 done
 
 # Runners must be pinned to an explicit Ubuntu image. `ubuntu-latest` silently re-points over a
@@ -87,4 +113,4 @@ if ! yq --exit-status \
 fi
 
 [[ "${failed}" == false ]] || exit 1
-echo "GitHub Actions pinning and serialized-install contracts passed (${#workflows[@]} workflows)"
+echo "GitHub Actions pinning, bounded-runtime, and serialized-install contracts passed (${#workflows[@]} workflows)"
