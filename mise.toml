@@ -32,6 +32,7 @@ ripgrep = "latest"
 shellcheck = "0.11.0"
 shfmt = "3.13.1"
 sops = "latest"
+uv = "0.11.29"
 watchexec = "2.5.1"
 yq = "latest"
 
@@ -88,6 +89,7 @@ alias = "f"
 description = "Format everything (config/markup, shell, Terraform, and applications)"
 depends = [
   "format:dprint",
+  "format:docs",
   "format:shell",
   "format:terraform",
   "format:a2a-tck",
@@ -100,6 +102,13 @@ depends = [
 [tasks."format:dprint"]
 description = "Format JSON, Markdown, TOML, YAML at the repo root + infra/docs (dprint)"
 run = "dprint fmt"
+
+[tasks."format:docs"]
+description = "Format and auto-fix the documentation render hook"
+run = [
+  "uv run --project docs --frozen ruff check --fix docs/hooks.py",
+  "uv run --project docs --frozen ruff format docs/hooks.py",
+]
 
 # Preserve the established tab-indented Bash style: -i 0 keeps tabs, while -bn and -ci
 # normalize split binary operators and case bodies without changing the indentation model.
@@ -147,6 +156,7 @@ alias = "c"
 description = "Run every static check (config, Terraform, manifests, scans, workflows, and apps)"
 depends = [
   "check:format",
+  "check:docs",
   "check:shell",
   "check:terraform",
   "check:terraform-hermetic",
@@ -195,6 +205,26 @@ depends = [
 alias = "cf"
 description = "Verify config/markup formatting (dprint)"
 run = "dprint check"
+
+[tasks."docs:build"]
+description = "Build the version-locked documentation site"
+# The acknowledged Material maintenance notice is recorded in docs/site.md. Use its supported
+# opt-out so warning-free hooks preserve signal for actual MkDocs build diagnostics.
+run = "env NO_MKDOCS_2_WARNING=1 uv run --project docs --frozen mkdocs build --strict --config-file docs/mkdocs.yml"
+
+[tasks."docs:serve"]
+description = "Serve the version-locked documentation site locally"
+run = "uv run --project docs --frozen mkdocs serve --config-file docs/mkdocs.yml"
+
+[tasks."check:docs"]
+description = "Lint, type-check, and build every documentation page without warnings"
+run = [
+  "uv run --project docs --frozen ruff check docs/hooks.py",
+  "uv run --project docs --frozen ruff format --check docs/hooks.py",
+  "uv run --project docs --frozen ty check docs/hooks.py",
+  "uv run --project docs --frozen pip-audit --cache-dir .agents/tmp/pip-audit-cache/docs --progress-spinner off",
+  "mise run docs:build",
+]
 
 [tasks."check:shell"]
 description = "Verify every owned shell script is formatted and lint-clean"

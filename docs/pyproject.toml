@@ -1,0 +1,47 @@
+[project]
+name = "fgentic-docs"
+version = "0.0.0"
+requires-python = "==3.14.*"
+dependencies = ["mkdocs-material==9.7.6"]
+
+[dependency-groups]
+dev = ["pip-audit==2.10.1", "ruff==0.15.22", "ty==0.0.60"]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 120
+target-version = "py314"
+
+[tool.ruff.format]
+docstring-code-format = true
+line-ending = "lf"
+quote-style = "double"
+
+[tool.ruff.lint]
+select = [
+  "A",
+  "ARG",
+  "B",
+  "C4",
+  "E",
+  "F",
+  "I",
+  "N",
+  "PERF",
+  "PTH",
+  "RET",
+  "RUF",
+  "S",
+  "SIM",
+  "T20",
+  "UP",
+  "W",
+]
+
+[tool.ty.environment]
+python-version = "3.14"
+
+[tool.ty.rules]
+all = "error"
