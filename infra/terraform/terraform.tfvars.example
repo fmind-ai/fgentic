@@ -13,3 +13,4 @@ master_authorized_networks = [
 # delegate it at the parent DNS with `terraform output dns_name_servers`.
 # domain     = "fgentic.fmind.ai"
 # manage_dns = false # when DNS lives elsewhere (registrar, Cloudflare, ...)
+# admin_console_dns_enabled = true # only when the matching GitOps admin_console profile is enabled

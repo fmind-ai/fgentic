@@ -67,6 +67,17 @@ variable "manage_dns" {
   description = "Create the Cloud DNS zone + platform A records (apex, chat., matrix., auth., id., grafana.) for var.domain"
 }
 
+variable "admin_console_dns_enabled" {
+  type        = bool
+  default     = false
+  description = "Create the opt-in admin.<domain> A record; set this only when the GitOps admin_console profile is enabled"
+
+  validation {
+    condition     = !var.admin_console_dns_enabled || var.manage_dns
+    error_message = "admin_console_dns_enabled requires manage_dns=true; otherwise manage the admin host in the external DNS provider."
+  }
+}
+
 variable "domain" {
   type        = string
   default     = "fgentic.fmind.ai"
