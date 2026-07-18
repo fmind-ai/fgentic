@@ -14,11 +14,17 @@ It is the first surface of **ActivityPub as a second, additive federation transp
 
 Inbound AP content is **untrusted** (prompt injection is threat #1). The border enforces, before any A2A call:
 
-- **HTTP Message Signature** verification (Cavage draft that Mastodon emits + RFC 9421), stdlib crypto only, with body-digest binding and a replay window.
+- **HTTP Message Signature** verification (RFC 9421 + Cavage fallback), stdlib crypto only, with body-digest binding and a replay window.
 - **Actor-key binding**: a valid signature from key K only authorizes activities whose actor is K's owner.
 - A strict, **fail-closed allowlist** (`policy.json`: signing domains + exact actor URIs) that **hot-reloads from git** without a pod restart — a parse error, unreadable file, or empty allowlist denies everything.
 
 An unsigned, off-allowlist, or mis-bound inbound is dropped with content-free evidence and **zero** A2A calls. Object integrity, per-actor budget admission, and bot/attribution audit ([fediverse spec §3](../../docs/fediverse.md)) land in later M18 issues; the public HTTPRoute stays **disabled by default** until the border is proven in force.
+
+## Outbound signature negotiation
+
+Outbound inbox delivery prefers **RFC 9421**, signing `@method`, `@target-uri`, and the RFC 9530 `Content-Digest` with a `created` timestamp. A synchronous `401` triggers one Cavage retry; the successful profile is remembered per remote authority in a bounded, process-local cache. Network errors and 5xx responses are never retried with the other profile because the remote may already have processed the activity.
+
+Both profiles support RSA PKCS#1 v1.5 with SHA-256, the Mastodon interoperability baseline, while retaining Ed25519 for the gateway's existing sovereign actor key. FEP-8b32/844e/c390 object-layer proofs are independent of this hop-by-hop transport negotiation.
 
 ## Layout
 
