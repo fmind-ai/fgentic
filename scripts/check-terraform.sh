@@ -19,7 +19,11 @@ terraform fmt -check -recursive "${root}/infra"
 
 # One absolute data dir per target directory. Absolute so `-chdir` cannot reinterpret it, and under
 # ${data_root} so the trap reclaims it.
-data_dir_for() { printf '%s/%s' "${data_root}" "$(printf '%s' "$1" | tr '/' '_')"; }
+data_dir_for() {
+	local directory_name
+	directory_name="$(printf '%s' "$1" | tr '/' '_')"
+	printf '%s/%s' "${data_root}" "${directory_name}"
+}
 
 for dir in "${root}/infra/terraform" "${root}/infra/terraform/bootstrap"; do
 	[ -d "${dir}" ] || continue
@@ -30,4 +34,5 @@ done
 
 # The mocked contract tests reuse infra/terraform's already-initialized data dir.
 tf_dir="${root}/infra/terraform"
-TF_DATA_DIR="$(data_dir_for "${tf_dir}")" terraform -chdir="${tf_dir}" test
+tf_data_dir="$(data_dir_for "${tf_dir}")"
+TF_DATA_DIR="${tf_data_dir}" terraform -chdir="${tf_dir}" test

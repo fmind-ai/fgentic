@@ -13,19 +13,25 @@ for command in jq mise rg yq; do
 	}
 done
 
-mapfile -t workflows < <(
-	rg --files "${root_dir}/.github/workflows" -g '*.yml' -g '*.yaml' | sort
-)
-((${#workflows[@]} > 0)) || {
+workflow_status=0
+workflow_list="$(rg --files "${root_dir}/.github/workflows" -g '*.yml' -g '*.yaml' | sort)" \
+	|| workflow_status=$?
+((workflow_status <= 1)) || {
+	echo "error: could not enumerate GitHub Actions workflows" >&2
+	exit "${workflow_status}"
+}
+[[ -n "${workflow_list}" ]] || {
 	echo "error: no GitHub Actions workflows found" >&2
 	exit 1
 }
+mapfile -t workflows <<<"${workflow_list}"
 
 failed=false
 remote_pattern='^[[:alnum:]_.-]+/[[:alnum:]_.-]+(/[[:alnum:]_.-]+)*@[0-9a-f]{40}$'
 versioned_line_pattern='^[[:space:]]*uses:[[:space:]]+[[:alnum:]_.-]+/[[:alnum:]_.-]+(/[[:alnum:]_.-]+)*@[0-9a-f]{40}[[:space:]]+#[[:space:]]+v[0-9]+([.][0-9]+){0,2}[[:space:]]*$'
 
 for workflow in "${workflows[@]}"; do
+	uses_list="$(yq -r '.. | select(tag == "!!map" and has("uses")) | .uses' "${workflow}")"
 	while IFS= read -r uses; do
 		[[ -n "${uses}" ]] || continue
 		[[ "${uses}" == ./* ]] && continue
@@ -33,15 +39,22 @@ for workflow in "${workflows[@]}"; do
 			echo "error: ${workflow#"${root_dir}/"}: remote action is not pinned to 40 hex: ${uses}" >&2
 			failed=true
 		fi
-	done < <(yq -r '.. | select(tag == "!!map" and has("uses")) | .uses' "${workflow}")
+	done <<<"${uses_list}"
 
+	uses_status=0
+	uses_lines="$(rg '^[[:space:]]*uses:' "${workflow}")" || uses_status=$?
+	((uses_status <= 1)) || {
+		echo "error: could not inspect action references in ${workflow}" >&2
+		exit "${uses_status}"
+	}
 	while IFS= read -r line; do
+		[[ -n "${line}" ]] || continue
 		[[ "${line}" =~ ^[[:space:]]*uses:[[:space:]]+\./ ]] && continue
 		if [[ ! "${line}" =~ ${versioned_line_pattern} ]]; then
 			echo "error: ${workflow#"${root_dir}/"}: pinned action needs a '# vN' version hint: ${line}" >&2
 			failed=true
 		fi
-	done < <(rg '^[[:space:]]*uses:' "${workflow}")
+	done <<<"${uses_lines}"
 done
 
 # Runners must be pinned to an explicit Ubuntu image. `ubuntu-latest` silently re-points over a

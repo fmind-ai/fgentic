@@ -79,7 +79,8 @@ trap cleanup EXIT
 trap 'exit 129' HUP
 trap 'exit 130' INT
 trap 'exit 143' TERM
-printf '%s\t%s\t%s\t%s\n' "${host}" "$$" "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "${root_dir}" >"${owner_file}"
+owner_started="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
+printf '%s\t%s\t%s\t%s\n' "${host}" "$$" "${owner_started}" "${root_dir}" >"${owner_file}"
 
 echo "Acquired the Fgentic agent gate; running ${tasks[*]}." >&2
 for task in "${tasks[@]}"; do
