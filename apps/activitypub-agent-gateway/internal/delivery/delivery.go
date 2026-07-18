@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/safehttp"
 )
 
 const (
@@ -33,24 +34,24 @@ const (
 // Deliverer signs and posts activities to remote inboxes with one shared signing key. keyID is
 // derived per sender actor (<actorID>#main-key), matching the `publicKey` each actor publishes.
 type Deliverer struct {
-	client   *http.Client
-	priv     crypto.Signer
-	now      func() time.Time
-	log      *slog.Logger
-	profiles profileMemory
+	client    *http.Client
+	clientErr error
+	priv      crypto.Signer
+	now       func() time.Time
+	log       *slog.Logger
+	profiles  profileMemory
 }
 
-// New builds a Deliverer. client should carry a sane timeout and, in cluster, an egress
-// NetworkPolicy — outbound delivery is a distinct trust boundary.
+// New builds a Deliverer. It guards a clone of client against non-public destinations and DNS
+// rebinding; the in-cluster egress NetworkPolicy remains a second, independent control.
 func New(client *http.Client, priv crypto.Signer, log *slog.Logger) *Deliverer {
-	if client == nil {
-		client = http.DefaultClient
-	}
+	guarded, err := safehttp.NewClient(client)
 	return &Deliverer{
-		client: client,
-		priv:   priv,
-		now:    func() time.Time { return time.Now().UTC() },
-		log:    log,
+		client:    guarded,
+		clientErr: err,
+		priv:      priv,
+		now:       func() time.Time { return time.Now().UTC() },
+		log:       log,
 		profiles: profileMemory{
 			byServer: make(map[string]httpsig.Profile),
 		},
@@ -60,15 +61,15 @@ func New(client *http.Client, priv crypto.Signer, log *slog.Logger) *Deliverer {
 // Deliver signs activity as senderActorID and POSTs it to inboxURL, returning an error on a non-2xx
 // response. The body is the exact bytes signed (both the HTTP digest and any embedded object proof).
 func (d *Deliverer) Deliver(ctx context.Context, inboxURL, senderActorID string, activity []byte) error {
+	if d.clientErr != nil {
+		return fmt.Errorf("configure delivery client: %w", d.clientErr)
+	}
 	parsedURL, err := url.Parse(inboxURL)
 	if err != nil {
 		return fmt.Errorf("parse delivery inbox %q: %w", inboxURL, err)
 	}
-	if parsedURL.Host == "" {
-		return fmt.Errorf("parse delivery inbox %q: missing authority", inboxURL)
-	}
-	if !strings.EqualFold(parsedURL.Scheme, "https") {
-		return fmt.Errorf("parse delivery inbox %q: public federation requires https", inboxURL)
+	if err := safehttp.ValidateURL(parsedURL); err != nil {
+		return fmt.Errorf("validate delivery inbox: %w", err)
 	}
 	server := strings.ToLower(parsedURL.Host)
 	first := d.profiles.get(server)

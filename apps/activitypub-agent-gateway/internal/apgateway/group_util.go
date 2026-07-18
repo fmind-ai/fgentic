@@ -6,9 +6,12 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"strings"
 
 	vocab "github.com/go-ap/activitypub"
+
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/safehttp"
 )
 
 // maxActorDocBytes bounds an untrusted follower actor-document fetch.
@@ -20,6 +23,9 @@ func (g *Gateway) fetchInbox(ctx context.Context, actorURI string) (string, erro
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, actorURI, nil)
 	if err != nil {
 		return "", fmt.Errorf("build actor request: %w", err)
+	}
+	if err := safehttp.ValidateURL(req.URL); err != nil {
+		return "", fmt.Errorf("validate actor URL: %w", err)
 	}
 	req.Header.Set("Accept", "application/activity+json")
 	resp, err := g.groupClient.Do(req)
@@ -42,6 +48,13 @@ func (g *Gateway) fetchInbox(ctx context.Context, actorURI string) (string, erro
 	}
 	if doc.Inbox == "" {
 		return "", fmt.Errorf("actor %s declares no inbox", actorURI)
+	}
+	inboxURL, err := url.Parse(doc.Inbox)
+	if err != nil {
+		return "", fmt.Errorf("parse actor %s inbox: %w", actorURI, err)
+	}
+	if err := safehttp.ValidateURL(inboxURL); err != nil {
+		return "", fmt.Errorf("validate actor %s inbox: %w", actorURI, err)
 	}
 	return doc.Inbox, nil
 }

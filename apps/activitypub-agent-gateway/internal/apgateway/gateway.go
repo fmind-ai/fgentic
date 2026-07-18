@@ -32,6 +32,7 @@ import (
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/identity"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/integrity"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/safehttp"
 )
 
 // maxInboxBytes bounds an untrusted inbound activity body.
@@ -83,8 +84,12 @@ func (g *Gateway) UseDelivery(deliverer *delivery.Deliverer, client *http.Client
 	if err != nil {
 		return fmt.Errorf("gateway: encode outbound HTTP-signature public key: %w", err)
 	}
+	guardedClient, err := safehttp.NewClient(client)
+	if err != nil {
+		return fmt.Errorf("gateway: configure actor resolver: %w", err)
+	}
 	g.deliverer = deliverer
-	g.groupClient = client
+	g.groupClient = guardedClient
 	g.httpPublicKeyPEM = pemText
 	if g.followers == nil {
 		g.followers = newFollowerStore()

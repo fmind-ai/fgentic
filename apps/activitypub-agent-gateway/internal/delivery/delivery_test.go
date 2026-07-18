@@ -6,8 +6,10 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
+	"errors"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -17,6 +19,7 @@ import (
 	"time"
 
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/testhttp"
 )
 
 // captureInbox records delivered bodies and verifies each signature against pub.
@@ -63,10 +66,12 @@ func TestDeliverSignsAndPosts(t *testing.T) {
 	inbox := &captureInbox{verifier: httpsig.NewVerifier(fixedResolver{key: &priv.PublicKey, owner: sender}, time.Hour), status: http.StatusAccepted}
 	srv := httptest.NewTLSServer(inbox.handler(t))
 	defer srv.Close()
+	const host = "inbox.example.com"
+	baseURL := testhttp.URL(host)
 
-	d := New(srv.Client(), priv, slog.Default())
+	d := New(testhttp.Client(t, map[string]*httptest.Server{host: srv}), priv, slog.Default())
 	body := []byte(`{"type":"Announce","actor":"` + sender + `"}`)
-	if err := d.Deliver(context.Background(), srv.URL+"/inbox", sender, body); err != nil {
+	if err := d.Deliver(context.Background(), baseURL+"/inbox", sender, body); err != nil {
 		t.Fatalf("Deliver: %v", err)
 	}
 	if len(inbox.bodies) != 1 || string(inbox.bodies[0]) != string(body) {
@@ -110,11 +115,13 @@ func TestDeliverFallsBackAndRemembersProfilePerServer(t *testing.T) {
 		w.WriteHeader(http.StatusAccepted)
 	}))
 	defer srv.Close()
+	const host = "fallback.example.com"
+	baseURL := testhttp.URL(host)
 
-	d := New(srv.Client(), priv, slog.Default())
+	d := New(testhttp.Client(t, map[string]*httptest.Server{host: srv}), priv, slog.Default())
 	body := []byte(`{"type":"Announce"}`)
 	for range 2 {
-		if deliverErr := d.Deliver(context.Background(), srv.URL+"/inbox", sender, body); deliverErr != nil {
+		if deliverErr := d.Deliver(context.Background(), baseURL+"/inbox", sender, body); deliverErr != nil {
 			t.Fatalf("Deliver: %v", deliverErr)
 		}
 	}
@@ -139,8 +146,10 @@ func TestDeliverErrorsOnNon2xx(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
-	d := New(srv.Client(), priv, slog.Default())
-	if err := d.Deliver(context.Background(), srv.URL, "https://x/actor", []byte("{}")); err == nil {
+	const host = "failure.example.com"
+	baseURL := testhttp.URL(host)
+	d := New(testhttp.Client(t, map[string]*httptest.Server{host: srv}), priv, slog.Default())
+	if err := d.Deliver(context.Background(), baseURL, "https://x/actor", []byte("{}")); err == nil {
 		t.Errorf("expected error on 500 response")
 	}
 	if requests.Load() != 1 {
@@ -156,9 +165,11 @@ func TestDeliverReturnsBothProfileFailures(t *testing.T) {
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
 	defer srv.Close()
+	const host = "unauthorized.example.com"
+	baseURL := testhttp.URL(host)
 
-	d := New(srv.Client(), priv, slog.Default())
-	if err := d.Deliver(context.Background(), srv.URL, "https://x/actor", []byte("{}")); err == nil {
+	d := New(testhttp.Client(t, map[string]*httptest.Server{host: srv}), priv, slog.Default())
+	if err := d.Deliver(context.Background(), baseURL, "https://x/actor", []byte("{}")); err == nil {
 		t.Fatal("expected both signature profiles to fail")
 	}
 	if requests.Load() != 2 {
@@ -190,6 +201,32 @@ func TestDeliverRejectsPlainHTTP(t *testing.T) {
 	}
 }
 
+func TestDeliverRejectsPrivateInboxWithoutDial(t *testing.T) {
+	t.Parallel()
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	var dials atomic.Int64
+	client := &http.Client{Transport: &http.Transport{DialContext: func(
+		context.Context,
+		string,
+		string,
+	) (net.Conn, error) {
+		dials.Add(1)
+		return nil, errors.New("unexpected dial")
+	}}}
+	d := New(client, priv, slog.Default())
+	if err := d.Deliver(
+		context.Background(),
+		"https://169.254.169.254/latest/meta-data",
+		"https://sender.example/actor",
+		nil,
+	); err == nil {
+		t.Fatal("metadata inbox must be rejected")
+	}
+	if got := dials.Load(); got != 0 {
+		t.Fatalf("outbound dials = %d, want 0", got)
+	}
+}
+
 func TestFanoutIsBestEffort(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	const sender = "https://fgentic.localhost/ap/groups/collab"
@@ -198,11 +235,17 @@ func TestFanoutIsBestEffort(t *testing.T) {
 	defer good.Close()
 	bad := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) }))
 	defer bad.Close()
+	const goodHost = "good.example.com"
+	const badHost = "bad.example.com"
 
-	d := New(good.Client(), priv, slog.Default())
+	client := testhttp.Client(t, map[string]*httptest.Server{goodHost: good, badHost: bad})
+	d := New(client, priv, slog.Default())
 	body := []byte(`{"type":"Announce"}`)
 	// One good inbox, one failing: fanout delivers to the good one and reports 1.
-	delivered := d.Fanout(context.Background(), []string{good.URL + "/inbox", bad.URL + "/inbox"}, sender, body)
+	delivered := d.Fanout(context.Background(), []string{
+		testhttp.URL(goodHost) + "/inbox",
+		testhttp.URL(badHost) + "/inbox",
+	}, sender, body)
 	if delivered != 1 {
 		t.Errorf("delivered = %d, want 1 (best-effort)", delivered)
 	}

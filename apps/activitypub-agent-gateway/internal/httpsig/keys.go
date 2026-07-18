@@ -12,6 +12,8 @@ import (
 	"net/http"
 	"os"
 	"strings"
+
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/safehttp"
 )
 
 // maxKeyDocBytes bounds an untrusted actor/key document fetch.
@@ -57,16 +59,16 @@ func LoadRSAPrivateKeyFromFile(path string) (*rsa.PrivateKey, error) {
 // untrusted trust material: the caller still binds the returned owner to the activity actor and
 // checks the allowlist before admitting anything.
 type HTTPKeyResolver struct {
-	client *http.Client
+	client    *http.Client
+	clientErr error
 }
 
-// NewHTTPKeyResolver returns a resolver using client (which should carry sane timeouts and,
-// in-cluster, an egress NetworkPolicy).
+// NewHTTPKeyResolver returns a resolver using a guarded clone of client. The clone permits only
+// public HTTPS destinations and revalidates DNS at dial time; the in-cluster egress NetworkPolicy
+// remains a second, independent control.
 func NewHTTPKeyResolver(client *http.Client) *HTTPKeyResolver {
-	if client == nil {
-		client = http.DefaultClient
-	}
-	return &HTTPKeyResolver{client: client}
+	guarded, err := safehttp.NewClient(client)
+	return &HTTPKeyResolver{client: guarded, clientErr: err}
 }
 
 // actorKeyDoc is the subset of an actor document carrying its public key (Mastodon/GTS shape).
@@ -82,6 +84,9 @@ type actorKeyDoc struct {
 // Resolve fetches keyID (its fragment stripped to address the actor document) and returns the
 // parsed public key and the actor that owns it.
 func (r *HTTPKeyResolver) Resolve(ctx context.Context, keyID string) (PublicKey, error) {
+	if r.clientErr != nil {
+		return PublicKey{}, fmt.Errorf("configure key resolver: %w", r.clientErr)
+	}
 	docURL, _, _ := strings.Cut(keyID, "#")
 	if docURL == "" {
 		return PublicKey{}, fmt.Errorf("empty keyId")
@@ -89,6 +94,9 @@ func (r *HTTPKeyResolver) Resolve(ctx context.Context, keyID string) (PublicKey,
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, docURL, nil)
 	if err != nil {
 		return PublicKey{}, fmt.Errorf("build key request: %w", err)
+	}
+	if err := safehttp.ValidateURL(req.URL); err != nil {
+		return PublicKey{}, fmt.Errorf("validate key URL: %w", err)
 	}
 	req.Header.Set("Accept", "application/activity+json")
 	resp, err := r.client.Do(req)

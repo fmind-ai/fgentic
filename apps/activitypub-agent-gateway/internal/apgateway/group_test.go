@@ -2,6 +2,7 @@ package apgateway
 
 import (
 	"bytes"
+	"context"
 	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
@@ -24,6 +25,7 @@ import (
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/integrity"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/policy"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/testhttp"
 )
 
 const validGroups = `schemaVersion: 1
@@ -46,13 +48,14 @@ func writeGroups(t *testing.T, body string) string {
 // captures the signed activities the group delivers to that inbox.
 type remotePeer struct {
 	server    *httptest.Server
+	host      string
 	mu        sync.Mutex
 	delivered []map[string]any
 }
 
-func newRemotePeer(t *testing.T) *remotePeer {
+func newRemotePeer(t *testing.T, host string) *remotePeer {
 	t.Helper()
-	p := &remotePeer{}
+	p := &remotePeer{host: host}
 	mux := http.NewServeMux()
 	p.server = httptest.NewTLSServer(mux)
 	t.Cleanup(p.server.Close)
@@ -72,8 +75,13 @@ func newRemotePeer(t *testing.T) *remotePeer {
 	return p
 }
 
-func (p *remotePeer) actor() string { return p.server.URL + "/users/bob" }
-func (p *remotePeer) inbox() string { return p.server.URL + "/users/bob/inbox" }
+func (p *remotePeer) actor() string { return testhttp.URL(p.host) + "/users/bob" }
+func (p *remotePeer) inbox() string { return testhttp.URL(p.host) + "/users/bob/inbox" }
+
+func (p *remotePeer) client(t *testing.T) *http.Client {
+	t.Helper()
+	return testhttp.Client(t, map[string]*httptest.Server{p.host: p.server})
+}
 
 func (p *remotePeer) deliveries() []map[string]any {
 	p.mu.Lock()
@@ -129,16 +137,20 @@ func newGroupGateway(t *testing.T, del Delegator, client *http.Client, border *B
 }
 
 func TestGroupCollaborationHappyPath(t *testing.T) {
-	author := newRemotePeer(t)   // posts the message
-	observer := newRemotePeer(t) // a second follower who should see the fan-out
+	author := newRemotePeer(t, "author.example.com")     // posts the message
+	observer := newRemotePeer(t, "observer.example.com") // a second follower who should see the fan-out
 	del := &fakeDelegator{reply: "Fgentic is a sovereignty-first agent platform."}
-	g := newGroupGateway(t, del, author.server.Client(), nil) // border nil: focus on the AP-native flow
+	client := testhttp.Client(t, map[string]*httptest.Server{
+		author.host:   author.server,
+		observer.host: observer.server,
+	})
+	g := newGroupGateway(t, del, client, nil) // border nil: focus on the AP-native flow
 	groupActor := "https://fgentic.localhost/ap/groups/collab"
 
 	// 1. Both remotes follow the group; each gets a signed Accept and is recorded.
 	for i, peer := range []*remotePeer{author, observer} {
 		follow := fmt.Sprintf(`{"@context":"https://www.w3.org/ns/activitystreams","id":%q,"type":"Follow","actor":%q,"object":%q}`,
-			fmt.Sprintf("%s/activities/%d", peer.server.URL, i), peer.actor(), groupActor)
+			fmt.Sprintf("%s/activities/%d", testhttp.URL(peer.host), i), peer.actor(), groupActor)
 		if rec := do(t, g, http.MethodPost, "/ap/groups/collab/inbox", follow); rec.Code != http.StatusAccepted {
 			t.Fatalf("follow code = %d", rec.Code)
 		}
@@ -149,7 +161,7 @@ func TestGroupCollaborationHappyPath(t *testing.T) {
 
 	// 2. The author posts a message mentioning an agent.
 	create := fmt.Sprintf(`{"@context":"https://www.w3.org/ns/activitystreams","id":%q,"type":"Create","actor":%q,"object":{"id":%q,"type":"Note","attributedTo":%q,"content":"@agent-docs-qa what is fgentic?"}}`,
-		author.server.URL+"/activities/9", author.actor(), author.server.URL+"/notes/1", author.actor())
+		testhttp.URL(author.host)+"/activities/9", author.actor(), testhttp.URL(author.host)+"/notes/1", author.actor())
 	if rec := do(t, g, http.MethodPost, "/ap/groups/collab/inbox", create); rec.Code != http.StatusAccepted {
 		t.Fatalf("create code = %d", rec.Code)
 	}
@@ -172,6 +184,21 @@ func TestGroupCollaborationHappyPath(t *testing.T) {
 	// The agent reply carries the reply content to followers.
 	if body := mustJSON(t, observer.deliveries()); !bytes.Contains(body, []byte("sovereignty-first")) {
 		t.Errorf("agent reply not fanned out to the group")
+	}
+}
+
+func TestFetchInboxRejectsPrivateDestination(t *testing.T) {
+	t.Parallel()
+	const host = "private-inbox.example.com"
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = fmt.Fprint(w, `{"id":"https://private-inbox.example.com/users/bob","inbox":"https://169.254.169.254/latest/meta-data"}`)
+	}))
+	defer srv.Close()
+	client := testhttp.Client(t, map[string]*httptest.Server{host: srv})
+	g := newGroupGateway(t, &fakeDelegator{}, client, nil)
+
+	if _, err := g.fetchInbox(context.Background(), testhttp.URL(host)+"/users/bob"); err == nil {
+		t.Fatal("private follower inbox must be rejected")
 	}
 }
 
