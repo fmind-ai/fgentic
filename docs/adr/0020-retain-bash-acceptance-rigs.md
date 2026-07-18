@@ -20,7 +20,7 @@ This ADR therefore measures the current repository before deciding. The evidence
 
 ## Evidence
 
-The repository now has 81 shell files and 27,383 lines. The six investigated files contain 10,361 lines (37.8%):
+The root `scripts/` tree now has 81 shell files and 27,383 lines. The six investigated files contain 10,361 lines (37.8%):
 
 | File                                             |      Lines | Commits touching | Added + deleted | `kubectl` / `jq` / `yq` sites | Owning hosted check task (one observed run) |
 | ------------------------------------------------ | ---------: | ---------------: | --------------: | ----------------------------: | ------------------------------------------- |
@@ -36,7 +36,7 @@ The command-site count is real complexity—473 static subprocess call sites—b
 
 The runner premise is also different from a serial Bash index. Root `check` has 44 direct dependencies, 32 backed by repository shell scripts. mise resolves those as a DAG and runs independent dependencies in parallel, up to its job limit; this is the documented behavior of [`depends`](https://mise.jdx.dev/tasks/task-configuration.html#depends). CI deliberately serializes the outer `format` → `check` → `test` phases, but the 44 checks fan out internally.
 
-Three clean hosted PR runs on 2026-07-18 measured root `mise run check` at 168.11s, 171.29s, and 176.24s (median 171.29s): [run 29639676013](https://github.com/fmind-ai/fgentic/actions/runs/29639676013), [run 29639384944](https://github.com/fmind-ai/fgentic/actions/runs/29639384944), and [run 29639017331](https://github.com/fmind-ai/fgentic/actions/runs/29639017331). Their complete CI jobs, including install, format, check, and test, took 311–338 seconds. In the latest sample `check:shell` was the 150.69s critical-path task; moving one 1,100-line rig would remove about 4% of the lint input, while the Trivy and knowledge contract tasks themselves completed in under nine seconds. A Go port has no demonstrated wall-clock return yet.
+Three clean hosted PR runs on 2026-07-18 measured root `mise run check` at 168.11s, 171.29s, and 176.24s (median 171.29s): [run 29639676013](https://github.com/fmind-ai/fgentic/actions/runs/29639676013), [run 29639384944](https://github.com/fmind-ai/fgentic/actions/runs/29639384944), and [run 29639017331](https://github.com/fmind-ai/fgentic/actions/runs/29639017331). Their complete CI jobs, including install, format, check, and test, took 311–338 seconds. In the latest sample `check:shell` was the longest observed task at 150.69s; moving one 1,100-line rig would remove about 4% of the lint input, while the Trivy and knowledge contract tasks themselves completed in under nine seconds. A Go port has no demonstrated wall-clock return yet.
 
 Failure granularity remains a valid weakness. A shell task reports its mise name plus the script's message, not a `go test` subtest and coverage location. The six files nevertheless contain 352 explicit `fail` call sites plus contextual `echo`/`printf` diagnostics, and no issue identifies an escaped defect caused by an ambiguous message. Better structure is a benefit to prove in a pilot, not evidence for a broad rewrite.
 
@@ -92,7 +92,7 @@ Stop and revert the pilot if one quarter of the source is translated without a c
 
 Do not create a general Go acceptance-helper package for the first pilot. If two accepted ports reveal the same typed fixture or Kubernetes operation, extract the common package in the second PR with both consumers present. This prices the half-migrated world explicitly and avoids speculative dual helpers.
 
-## Cost and consequences
+## Consequences
 
 These are planning ranges, not delivery estimates: a Bats granularity pilot is 16–32 agent-hours; the MCP Go pilot is 40–80 agent-hours including Docker parity and review; all six rigs are at least 240–480 agent-hours before runtime-owner scheduling. `demo-cluster.sh` alone plausibly consumes 80–160 hours because interruption and destructive cleanup states must be exercised. Every port temporarily doubles a gate that runs on all PRs and creates regression risk at exactly the boundary used to detect regressions.
 
