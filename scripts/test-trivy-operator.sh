@@ -126,7 +126,7 @@ static_contract() {
     .spec.upgrade.crds == "CreateReplace"
   ' "${HELM_RELEASE}" "Trivy Helm source or CRD lifecycle drifted"
 
-	local target_namespaces
+	local configured_namespace_set expected_namespace_set target_namespaces
 	target_namespaces="$(yq -r '.spec.values.targetNamespaces' "${HELM_RELEASE}")"
 	local -a configured_namespaces
 	IFS=, read -r -a configured_namespaces <<<"${target_namespaces}"
@@ -137,9 +137,9 @@ static_contract() {
 		[[ "${namespace}" =~ ^[a-z0-9-]+$ ]] \
 			|| fail "invalid or whitespace-padded Trivy target namespace: ${namespace}"
 	done
-	diff -u \
-		<(printf '%s\n' "${TARGET_NAMESPACES[@]}" | sort) \
-		<(printf '%s\n' "${configured_namespaces[@]}" | sort) >/dev/null \
+	expected_namespace_set="$(printf '%s\n' "${TARGET_NAMESPACES[@]}" | sort)"
+	configured_namespace_set="$(printf '%s\n' "${configured_namespaces[@]}" | sort)"
+	[[ "${configured_namespace_set}" == "${expected_namespace_set}" ]] \
 		|| fail "Trivy target namespace set drifted"
 
 	assert_yq '
@@ -204,27 +204,27 @@ static_contract() {
     .spec.values.trivyOperator.scanJobPodTemplateContainerSecurityContext.readOnlyRootFilesystem == true
   ' "${HELM_RELEASE}" "Trivy image, resource, or Pod security pins drifted"
 
-	local deleted_roles
+	local deleted_roles expected_deleted_roles
 	deleted_roles="$(
 		yq -r '.spec.postRenderers[].kustomize.patches[].target |
       select(.kind == "ClusterRole") | .name' "${HELM_RELEASE}" | sort
 	)"
-	diff -u <(printf '%s\n' \
+	expected_deleted_roles="$(printf '%s\n' \
 		aggregate-config-audit-reports-view \
 		aggregate-exposed-secret-reports-view \
-		aggregate-vulnerability-reports-view | sort) \
-		<(printf '%s\n' "${deleted_roles}") >/dev/null \
+		aggregate-vulnerability-reports-view | sort)"
+	[[ "${deleted_roles}" == "${expected_deleted_roles}" ]] \
 		|| fail "unconditional chart aggregate roles are not all post-render deleted"
 
-	local bound_namespaces
+	local bound_namespaces expected_bound_namespaces
 	bound_namespaces="$(
 		yq eval-all -r '
       select(.kind == "RoleBinding" and .metadata.name == "trivy-operator-target") |
       .metadata.namespace
     ' "${RBAC}" | rg -v '^---$' | sort
 	)"
-	diff -u <(printf '%s\n' "${TARGET_NAMESPACES[@]}" | sort) \
-		<(printf '%s\n' "${bound_namespaces}") >/dev/null \
+	expected_bound_namespaces="$(printf '%s\n' "${TARGET_NAMESPACES[@]}" | sort)"
+	[[ "${bound_namespaces}" == "${expected_bound_namespaces}" ]] \
 		|| fail "Trivy target RoleBindings drifted"
 	assert_jq_yaml '
     [.[] | select(.kind == "ClusterRole" and .metadata.name == "trivy-operator-target")]
@@ -479,6 +479,45 @@ static_contract() {
   ' "${ROOT_DIR}/clusters/base/infrastructure.yaml" \
 		"observability monitors must not be availability-coupled to Trivy"
 
+	# Docker inspection failure is unknown state, never evidence that cleanup completed.
+	local cleanup_status cleanup_workdir discovery_status handler_status
+	if (
+		runtime_container_ids() { return 42; }
+		runtime_artifacts_exist
+	) >/dev/null 2>&1; then
+		fail "runtime artifact discovery accepted a failed container inventory"
+	else
+		discovery_status=$?
+	fi
+	[[ "${discovery_status}" -eq 2 ]] \
+		|| fail "runtime artifact discovery did not preserve unknown state"
+	if (
+		runtime_container_ids() { return 42; }
+		cleanup_runtime_cluster_artifacts
+	) >/dev/null 2>&1; then
+		fail "runtime cleanup accepted a failed container inventory"
+	else
+		cleanup_status=$?
+	fi
+	[[ "${cleanup_status}" -eq 2 ]] \
+		|| fail "runtime cleanup did not preserve unknown state"
+
+	cleanup_workdir="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-trivy-cleanup-test.XXXXXX")"
+	if (
+		runtime_owned_by_test() { return 1; }
+		runtime_cluster_exists() { return 1; }
+		runtime_container_ids() { return 42; }
+		cleanup_runtime_contract 0 "${cleanup_workdir}" false
+	) >/dev/null 2>&1; then
+		fail "runtime contract cleanup accepted unknown artifact state"
+	else
+		handler_status=$?
+	fi
+	[[ "${handler_status}" -eq 1 ]] \
+		|| fail "runtime contract cleanup did not report unknown artifact state"
+	[[ ! -e "${cleanup_workdir}" ]] \
+		|| fail "runtime contract cleanup leaked its work directory after inspection failure"
+
 	echo "Trivy Operator static contract passed"
 }
 
@@ -499,7 +538,12 @@ runtime_volume_exists() {
 }
 
 runtime_artifacts_exist() {
-	[[ -n "$(runtime_container_ids)" ]] || runtime_network_exists || runtime_volume_exists \
+	local container_ids
+	if ! container_ids="$(runtime_container_ids)"; then
+		echo "error: could not inspect disposable Trivy containers" >&2
+		return 2
+	fi
+	[[ -n "${container_ids}" ]] || runtime_network_exists || runtime_volume_exists \
 		|| runtime_recorded_volumes_exist
 }
 
@@ -519,7 +563,17 @@ runtime_owned_by_test() {
 }
 
 runtime_cleanup_complete() {
-	! runtime_cluster_exists && ! runtime_artifacts_exist
+	local artifact_status
+	if runtime_cluster_exists; then
+		return 1
+	fi
+	if runtime_artifacts_exist; then
+		return 1
+	else
+		artifact_status=$?
+	fi
+	[[ "${artifact_status}" -eq 1 ]] && return 0
+	return "${artifact_status}"
 }
 
 stop_runtime_processes() {
@@ -608,10 +662,17 @@ collect_runtime_diagnostics() {
 }
 
 cleanup_runtime_cluster_artifacts() {
-	local attempt network_owner volume volume_owner
+	local attempt cleanup_status container_id_output network_owner volume volume_owner
 	local -a container_ids=()
 	for attempt in {1..30}; do
-		mapfile -t container_ids < <(runtime_container_ids)
+		container_ids=()
+		if ! container_id_output="$(runtime_container_ids)"; then
+			echo "error: could not inspect disposable Trivy containers during cleanup" >&2
+			return 2
+		fi
+		if [[ -n "${container_id_output}" ]]; then
+			mapfile -t container_ids <<<"${container_id_output}"
+		fi
 		if ((${#container_ids[@]} > 0)); then
 			docker rm --force "${container_ids[@]}" >/dev/null 2>&1 || true
 		fi
@@ -633,7 +694,10 @@ cleanup_runtime_cluster_artifacts() {
 		done
 		if runtime_cleanup_complete; then
 			return 0
+		else
+			cleanup_status=$?
 		fi
+		((cleanup_status == 1)) || return "${cleanup_status}"
 		[[ "${attempt}" -eq 30 ]] || sleep 2
 	done
 	# Docker can finish removing a large anonymous containerd volume just after `volume rm`
@@ -641,8 +705,10 @@ cleanup_runtime_cluster_artifacts() {
 	sleep 5
 	if runtime_cleanup_complete; then
 		return 0
+	else
+		cleanup_status=$?
 	fi
-	return 1
+	return "${cleanup_status}"
 }
 
 assert_service_account_access() {
@@ -739,14 +805,15 @@ release_scan_quota_hold() {
 }
 
 monitor_scan_job_concurrency() {
-	local active="" jobs="" node_name="" operator_pod="" operator_pod_name=""
+	local active="" job_count="" jobs="" node_name="" operator_pod="" operator_pod_name=""
 	local operator_pods="" pods="" snapshot="" working_set=""
 	while [[ ! -e "${RUNTIME_WORKDIR}/stop-scan-monitor" ]]; do
 		if jobs="$(kubectl --namespace "${OPERATOR_NAMESPACE}" get jobs \
 			--selector app.kubernetes.io/managed-by=trivy-operator --output json 2>/dev/null)"; then
 			active="$(jq '[.items[].status.active // 0] | add // 0' <<<"${jobs}")"
+			job_count="$(jq '.items | length' <<<"${jobs}")"
 			printf '%(%Y-%m-%dT%H:%M:%SZ)T active=%s jobs=%s\n' -1 "${active}" \
-				"$(jq '.items | length' <<<"${jobs}")" >>"${RUNTIME_WORKDIR}/scan-concurrency.log"
+				"${job_count}" >>"${RUNTIME_WORKDIR}/scan-concurrency.log"
 			if ((active > 0)); then
 				touch "${RUNTIME_WORKDIR}/scan-job-observed"
 				if [[ -z "${operator_pod_name}" || -z "${node_name}" ]] \
@@ -841,9 +908,11 @@ write_synthetic_report() {
 	local name="$1"
 	local high_count="$2"
 	local output="$3"
+	local updated_at
+	updated_at="$(date --utc +%Y-%m-%dT%H:%M:%SZ)"
 	jq --null-input \
 		--arg name "${name}" \
-		--arg updated_at "$(date --utc +%Y-%m-%dT%H:%M:%SZ)" \
+		--arg updated_at "${updated_at}" \
 		--argjson high_count "${high_count}" '
       {
         apiVersion: "aquasecurity.github.io/v1alpha1",
@@ -917,14 +986,67 @@ synthetic_high_metric() {
       /image_repository="fgentic\/runtime-synthetic"/ &&
       /namespace="models"/ &&
       /severity="High"/ {print $NF}
-    '
+	    '
+}
+
+cleanup_runtime_contract() {
+	local result="$1"
+	local workdir="$2"
+	local cluster_owned="$3"
+	local artifact_status=1
+	local cleanup_failed=false
+	trap - EXIT INT TERM
+	stop_runtime_processes
+	if ((result != 0)); then
+		collect_runtime_diagnostics
+	fi
+
+	if [[ "${cluster_owned}" == false ]] && runtime_owned_by_test; then
+		# A failed k3d create can still leave its labeled server behind. The private token proves
+		# that a partial cluster belongs to this invocation before cleanup is claimed.
+		cluster_owned=true
+	fi
+	if [[ "${cluster_owned}" == true ]]; then
+		if ! runtime_owned_by_test; then
+			echo "error: refusing cleanup because the server ownership label no longer matches" >&2
+			cleanup_failed=true
+		else
+			k3d cluster delete "${RUNTIME_CLUSTER_NAME}" >/dev/null 2>&1 || true
+			if ! cleanup_runtime_cluster_artifacts; then
+				echo "error: disposable Trivy cluster cleanup did not complete" >&2
+				cleanup_failed=true
+			fi
+		fi
+	elif runtime_cluster_exists; then
+		echo "error: unowned same-name k3d artifacts remain; refusing destructive cleanup" >&2
+		cleanup_failed=true
+	elif runtime_artifacts_exist; then
+		echo "error: unowned same-name k3d artifacts remain; refusing destructive cleanup" >&2
+		cleanup_failed=true
+	else
+		artifact_status=$?
+		if ((artifact_status != 1)); then
+			echo "error: could not determine whether unowned Trivy artifacts remain" >&2
+			cleanup_failed=true
+		fi
+	fi
+
+	rm -rf "${workdir}"
+	if [[ "${cleanup_failed}" == true ]]; then
+		result=1
+	elif [[ "${cluster_owned}" == true ]]; then
+		echo "==> Deleted isolated Trivy cluster ${RUNTIME_CLUSTER_NAME} and exact runtime artifacts"
+	fi
+	exit "${result}"
 }
 
 runtime_contract() {
 	require_commands awk curl date diff docker helm jq k3d kubectl sed sha256sum sort yq
 	docker info >/dev/null 2>&1 || fail "Docker daemon is not available"
 
-	local k3s_image kubeconfig actual_owner chart_path actual_digest node_command
+	local actual_digest actual_owner artifact_status chart_path container_count container_name
+	local expected_deployment_image image_volume_owner k3s_image kubeconfig node_command
+	local operator_image_tag runtime_volume_output
 	local k3s_arg
 	local -a k3s_args=()
 	local namespace expected_namespaces actual_namespaces
@@ -941,50 +1063,20 @@ runtime_contract() {
 	RUNTIME_WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-trivy.XXXXXX")"
 	kubeconfig="${RUNTIME_WORKDIR}/kubeconfig"
 
-	cleanup() {
-		local result=$?
-		local cleanup_failed=false
-		trap - EXIT INT TERM
-		stop_runtime_processes
-		if ((result != 0)); then
-			collect_runtime_diagnostics
-		fi
-
-		if [[ "${RUNTIME_CLUSTER_OWNED}" == false ]] && runtime_owned_by_test; then
-			# A failed k3d create can still leave its labeled server behind. The private token proves
-			# that a partial cluster belongs to this invocation before cleanup is claimed.
-			RUNTIME_CLUSTER_OWNED=true
-		fi
-		if [[ "${RUNTIME_CLUSTER_OWNED}" == true ]]; then
-			if ! runtime_owned_by_test; then
-				echo "error: refusing cleanup because the server ownership label no longer matches" >&2
-				cleanup_failed=true
-			else
-				k3d cluster delete "${RUNTIME_CLUSTER_NAME}" >/dev/null 2>&1 || true
-				if ! cleanup_runtime_cluster_artifacts; then
-					echo "error: disposable Trivy cluster cleanup did not complete" >&2
-					cleanup_failed=true
-				fi
-			fi
-		elif runtime_cluster_exists || runtime_artifacts_exist; then
-			echo "error: unowned same-name k3d artifacts remain; refusing destructive cleanup" >&2
-			cleanup_failed=true
-		fi
-
-		rm -rf "${RUNTIME_WORKDIR}"
-		if [[ "${cleanup_failed}" == true ]]; then
-			result=1
-		elif [[ "${RUNTIME_CLUSTER_OWNED}" == true ]]; then
-			echo "==> Deleted isolated Trivy cluster ${RUNTIME_CLUSTER_NAME} and exact runtime artifacts"
-		fi
-		exit "${result}"
-	}
+	cleanup() { cleanup_runtime_contract "$?" "${RUNTIME_WORKDIR}" "${RUNTIME_CLUSTER_OWNED}"; }
 	trap cleanup EXIT
 	trap 'exit 130' INT TERM
 
-	if runtime_cluster_exists || runtime_artifacts_exist; then
+	if runtime_cluster_exists; then
 		fail "same-name k3d resources already exist; refusing to mutate them: ${RUNTIME_CLUSTER_NAME}"
 	fi
+	if runtime_artifacts_exist; then
+		fail "same-name k3d resources already exist; refusing to mutate them: ${RUNTIME_CLUSTER_NAME}"
+	else
+		artifact_status=$?
+	fi
+	((artifact_status == 1)) \
+		|| fail "could not determine whether same-name k3d artifacts already exist"
 
 	chart_path="${RUNTIME_WORKDIR}/trivy-operator-${CHART_VERSION}.tgz"
 	echo "==> Downloading and verifying Trivy Operator chart ${CHART_VERSION}"
@@ -1014,17 +1106,22 @@ runtime_contract() {
 	node_command="$(docker inspect --format '{{json .Config.Cmd}}' "${RUNTIME_NODE_NAME}")"
 	rg --fixed-strings '"--disable-network-policy"' <<<"${node_command}" >/dev/null \
 		|| fail "running Trivy k3s node did not disable the local NetworkPolicy controller"
-	[[ "$(runtime_container_ids | wc -l | tr -d ' ')" == "1" ]] \
+	container_count="$(runtime_container_ids | wc -l | tr -d ' ')"
+	[[ "${container_count}" == "1" ]] \
 		|| fail "disposable cluster created unexpected node or load-balancer containers"
-	[[ "$(docker inspect --format '{{.Name}}' "${RUNTIME_NODE_NAME}")" == "/${RUNTIME_NODE_NAME}" ]] \
+	container_name="$(docker inspect --format '{{.Name}}' "${RUNTIME_NODE_NAME}")"
+	[[ "${container_name}" == "/${RUNTIME_NODE_NAME}" ]] \
 		|| fail "disposable cluster server identity drifted"
 	runtime_volume_exists || fail "disposable cluster did not create its expected owned image volume"
-	[[ "$(docker volume inspect --format '{{ index .Labels "app" }}/{{ index .Labels "k3d.cluster" }}' \
-		"k3d-${RUNTIME_CLUSTER_NAME}-images")" == "k3d/${RUNTIME_CLUSTER_NAME}" ]] \
+	image_volume_owner="$(docker volume inspect \
+		--format '{{ index .Labels "app" }}/{{ index .Labels "k3d.cluster" }}' \
+		"k3d-${RUNTIME_CLUSTER_NAME}-images")"
+	[[ "${image_volume_owner}" == "k3d/${RUNTIME_CLUSTER_NAME}" ]] \
 		|| fail "disposable cluster image volume ownership labels drifted"
-	mapfile -t RUNTIME_VOLUME_NAMES < <(docker inspect "${RUNTIME_NODE_NAME}" \
-		| jq -r '.[0].Mounts[] | select(.Type == "volume") | .Name')
-	((${#RUNTIME_VOLUME_NAMES[@]} > 0)) || fail "disposable server volume inventory is empty"
+	runtime_volume_output="$(docker inspect "${RUNTIME_NODE_NAME}" \
+		| jq -r '.[0].Mounts[] | select(.Type == "volume") | .Name')"
+	[[ -n "${runtime_volume_output}" ]] || fail "disposable server volume inventory is empty"
+	mapfile -t RUNTIME_VOLUME_NAMES <<<"${runtime_volume_output}"
 
 	k3d kubeconfig get "${RUNTIME_CLUSTER_NAME}" >"${kubeconfig}"
 	export KUBECONFIG="${kubeconfig}"
@@ -1091,9 +1188,10 @@ runtime_contract() {
 	kubectl --namespace "${OPERATOR_NAMESPACE}" rollout status deployment/trivy-operator --timeout=5m
 	deployment_image="$(kubectl --namespace "${OPERATOR_NAMESPACE}" get deployment trivy-operator \
 		--output jsonpath='{.spec.template.spec.containers[0].image}')"
-	[[ "${deployment_image}" == "mirror.gcr.io/aquasec/trivy-operator:$(
-		yq -r '.spec.values.image.tag' "${HELM_RELEASE}"
-	)" ]] || fail "running operator image drifted from the HelmRelease value"
+	operator_image_tag="$(yq -r '.spec.values.image.tag' "${HELM_RELEASE}")"
+	expected_deployment_image="mirror.gcr.io/aquasec/trivy-operator:${operator_image_tag}"
+	[[ "${deployment_image}" == "${expected_deployment_image}" ]] \
+		|| fail "running operator image drifted from the HelmRelease value"
 	startup_logs="$(kubectl --namespace "${OPERATOR_NAMESPACE}" logs \
 		deployment/trivy-operator --all-containers)"
 	if rg --ignore-case \
