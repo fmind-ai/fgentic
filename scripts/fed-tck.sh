@@ -67,23 +67,23 @@ for command in curl docker jq k3d kubectl mise rg sha256sum tar yq; do
 	command -v "${command}" >/dev/null 2>&1 || die "required command not found: ${command}"
 done
 [[ "${PORT}" =~ ^[0-9]+$ ]] || die "FGENTIC_FED_TCK_PORT must be an integer"
-((10#${PORT} >= 1024 && 10#${PORT} <= 65535)) ||
-	die "FGENTIC_FED_TCK_PORT must be between 1024 and 65535"
+((10#${PORT} >= 1024 && 10#${PORT} <= 65535)) \
+	|| die "FGENTIC_FED_TCK_PORT must be between 1024 and 65535"
 [ -r "${CA_CERT}" ] || die "local CA certificate not found: ${CA_CERT}"
 [ -r "${TCK_SCOPE_FILE}" ] || die "TCK scope document not found: ${TCK_SCOPE_FILE}"
 
 actual_owner="$(docker inspect --format '{{index .Config.Labels "dev.fgentic.demo"}}' \
 	"k3d-${CLUSTER_NAME}-server-0" 2>/dev/null || true)"
-[ "${actual_owner}" = "${OWNER_LABEL}" ] ||
-	die "${CLUSTER_NAME} is absent or not the ownership-labelled federation lab; run 'mise run fed:up'"
+[ "${actual_owner}" = "${OWNER_LABEL}" ] \
+	|| die "${CLUSTER_NAME} is absent or not the ownership-labelled federation lab; run 'mise run fed:up'"
 if ! k3d kubeconfig get "${CLUSTER_NAME}" >"${KUBECONFIG_FILE}"; then
 	die "could not derive kubeconfig from the ownership-labelled federation lab"
 fi
 chmod 600 "${KUBECONFIG_FILE}"
-[ "$(kubectl --kubeconfig "${KUBECONFIG_FILE}" config current-context)" = "${KUBE_CONTEXT}" ] ||
-	die "derived federation kubeconfig has an unexpected current context"
-kubectl --kubeconfig "${KUBECONFIG_FILE}" --context "${KUBE_CONTEXT}" get --raw=/readyz >/dev/null ||
-	die "${CLUSTER_NAME} API is not ready; run 'mise run fed:up'"
+[ "$(kubectl --kubeconfig "${KUBECONFIG_FILE}" config current-context)" = "${KUBE_CONTEXT}" ] \
+	|| die "derived federation kubeconfig has an unexpected current context"
+kubectl --kubeconfig "${KUBECONFIG_FILE}" --context "${KUBE_CONTEXT}" get --raw=/readyz >/dev/null \
+	|| die "${CLUSTER_NAME} API is not ready; run 'mise run fed:up'"
 
 mkdir -p "${CACHE_DIR}" "${SOURCE_DIR}" "${REPORT_DIR}"
 if [ ! -f "${ARCHIVE_FILE}" ]; then
@@ -91,8 +91,8 @@ if [ ! -f "${ARCHIVE_FILE}" ]; then
 	curl --fail --location --silent --show-error --retry 3 --retry-all-errors \
 		--connect-timeout 10 --max-time 180 --output "${download}" "${TCK_ARCHIVE_URL}"
 	download_sha256="$(sha256sum "${download}" | awk '{print $1}')"
-	[ "${download_sha256}" = "${TCK_ARCHIVE_SHA256}" ] ||
-		die "downloaded A2A TCK archive checksum mismatch"
+	[ "${download_sha256}" = "${TCK_ARCHIVE_SHA256}" ] \
+		|| die "downloaded A2A TCK archive checksum mismatch"
 	mv "${download}" "${ARCHIVE_FILE}"
 	download=""
 fi
@@ -103,8 +103,8 @@ if [ "${actual_archive_sha256}" != "${TCK_ARCHIVE_SHA256}" ]; then
 fi
 tar --extract --gzip --file "${ARCHIVE_FILE}" --directory "${SOURCE_DIR}" --strip-components=1
 [ "$(yq --input-format toml --output-format yaml --unwrapScalar '.project.version' \
-	"${SOURCE_DIR}/pyproject.toml")" = "${TCK_VERSION}" ] ||
-	die "pinned A2A TCK source version mismatch"
+	"${SOURCE_DIR}/pyproject.toml")" = "${TCK_VERSION}" ] \
+	|| die "pinned A2A TCK source version mismatch"
 
 UV_BIN="$(mise --cd "${ROOT_DIR}/apps/synapse-federation-policy" which uv)"
 readonly UV_BIN
@@ -124,8 +124,8 @@ for ((_attempt = 1; _attempt <= 30; _attempt++)); do
 	}
 	sleep 1
 done
-rg --quiet --fixed-strings "Forwarding from 127.0.0.1:${PORT}" "${PORT_FORWARD_LOG}" ||
-	die "federation Gateway port-forward did not become ready"
+rg --quiet --fixed-strings "Forwarding from 127.0.0.1:${PORT}" "${PORT_FORWARD_LOG}" \
+	|| die "federation Gateway port-forward did not become ready"
 
 client_secret="$(kubectl --kubeconfig "${KUBECONFIG_FILE}" --context "${KUBE_CONTEXT}" \
 	--namespace flux-system \
@@ -163,11 +163,11 @@ set +e
 		UV_PROJECT_ENVIRONMENT="${VENV_DIR}" PYTHONDONTWRITEBYTECODE=1 \
 		PYTHONPATH="${ROOT_DIR}/scripts${PYTHONPATH:+:${PYTHONPATH}}" \
 		"${UV_BIN}" run --no-sync python -B -m pytest tests/compatibility \
-			--sut-host "${SUT_HOST}" --transport jsonrpc -m must -q \
-			-p a2a_tck_plugin \
-			--compatibility-report "${REPORT_DIR}/compatibility" \
-			--html "${REPORT_DIR}/tck_report.html" --self-contained-html \
-			--junitxml "${REPORT_DIR}/junitreport.xml"
+		--sut-host "${SUT_HOST}" --transport jsonrpc -m must -q \
+		-p a2a_tck_plugin \
+		--compatibility-report "${REPORT_DIR}/compatibility" \
+		--html "${REPORT_DIR}/tck_report.html" --self-contained-html \
+		--junitxml "${REPORT_DIR}/junitreport.xml"
 )
 tck_status="$?"
 set -e
@@ -181,12 +181,12 @@ set -e
 client_secret=""
 access_token=""
 case "${credential_scan_status}" in
-0)
-	rm -rf "${REPORT_DIR}"
-	die "A2A TCK report contained a runtime credential; discarded the staged reports"
-	;;
-1) ;;
-*) die "could not scan the staged A2A TCK reports for runtime credentials" ;;
+	0)
+		rm -rf "${REPORT_DIR}"
+		die "A2A TCK report contained a runtime credential; discarded the staged reports"
+		;;
+	1) ;;
+	*) die "could not scan the staged A2A TCK reports for runtime credentials" ;;
 esac
 
 mkdir -p "${ARTIFACT_DIR}"
@@ -209,8 +209,8 @@ jq -e '
   .transport == "JSONRPC" and
   .summary == {failed: 0, missing: 0, passed: 33, skipped: 202} and
   .mismatches == []
-' "${ARTIFACT_DIR}/fgentic-scope.json" >/dev/null ||
-	die "A2A TCK pass/skip set drifted from the reviewed exported-route scope"
+' "${ARTIFACT_DIR}/fgentic-scope.json" >/dev/null \
+	|| die "A2A TCK pass/skip set drifted from the reviewed exported-route scope"
 
 echo "A2A TCK ${TCK_VERSION} MUST/JSONRPC scope passed: 33 passed, 202 annotated skips."
 echo "Reports: ${ARTIFACT_DIR}"

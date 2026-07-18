@@ -54,29 +54,29 @@ jq -e --arg commit "${TCK_COMMIT}" --arg sha256 "${TCK_SHA256}" '
 for contract in \
 	"readonly TCK_COMMIT=\"${TCK_COMMIT}\"" \
 	"readonly TCK_ARCHIVE_SHA256=\"${TCK_SHA256}\"" \
-		'https://github.com/a2aproject/a2a-tck/archive/${TCK_COMMIT}.tar.gz' \
-		'yq --input-format toml --output-format yaml --unwrapScalar' \
-		'--namespace "${GATEWAY_NAMESPACE}" port-forward' \
+	'https://github.com/a2aproject/a2a-tck/archive/${TCK_COMMIT}.tar.gz' \
+	'yq --input-format toml --output-format yaml --unwrapScalar' \
+	'--namespace "${GATEWAY_NAMESPACE}" port-forward' \
 	'--data-binary @-' \
 	'FGENTIC_TCK_BEARER_TOKEN="${access_token}"' \
-		'FGENTIC_TCK_EXTENSION_URI="${TOKEN_BUDGET_EXTENSION}"' \
-		'FGENTIC_TCK_USAGE_RECEIPT_URI="${USAGE_RECEIPT_EXTENSION}"' \
-		'--transport jsonrpc -m must' \
-		'UV_BIN="$(mise --cd "${ROOT_DIR}/apps/synapse-federation-policy" which uv)"' \
-		'UV_PROJECT_ENVIRONMENT="${VENV_DIR}" "${UV_BIN}" sync --locked' \
-		'"${UV_BIN}" run --no-sync python -B -m pytest' \
-		'PYTHONDONTWRITEBYTECODE=1' \
-		'--junitxml "${REPORT_DIR}/junitreport.xml"' \
-		'--html "${REPORT_DIR}/tck_report.html"' \
-		'.summary == {failed: 0, missing: 0, passed: 33, skipped: 202}' \
-		'k3d kubeconfig get "${CLUSTER_NAME}" >"${KUBECONFIG_FILE}"' \
-		'unset KUBECONFIG' \
-		'rg --quiet --fixed-strings --no-ignore --hidden --file "${CREDENTIAL_PATTERNS}" "${REPORT_DIR}"' \
-		'discarded the staged reports' \
-		'"dev.fgentic.demo"' \
+	'FGENTIC_TCK_EXTENSION_URI="${TOKEN_BUDGET_EXTENSION}"' \
+	'FGENTIC_TCK_USAGE_RECEIPT_URI="${USAGE_RECEIPT_EXTENSION}"' \
+	'--transport jsonrpc -m must' \
+	'UV_BIN="$(mise --cd "${ROOT_DIR}/apps/synapse-federation-policy" which uv)"' \
+	'UV_PROJECT_ENVIRONMENT="${VENV_DIR}" "${UV_BIN}" sync --locked' \
+	'"${UV_BIN}" run --no-sync python -B -m pytest' \
+	'PYTHONDONTWRITEBYTECODE=1' \
+	'--junitxml "${REPORT_DIR}/junitreport.xml"' \
+	'--html "${REPORT_DIR}/tck_report.html"' \
+	'.summary == {failed: 0, missing: 0, passed: 33, skipped: 202}' \
+	'k3d kubeconfig get "${CLUSTER_NAME}" >"${KUBECONFIG_FILE}"' \
+	'unset KUBECONFIG' \
+	'rg --quiet --fixed-strings --no-ignore --hidden --file "${CREDENTIAL_PATTERNS}" "${REPORT_DIR}"' \
+	'discarded the staged reports' \
+	'"dev.fgentic.demo"' \
 	'kubectl --kubeconfig "${KUBECONFIG_FILE}" --context "${KUBE_CONTEXT}"'; do
-	rg --quiet --fixed-strings -- "${contract}" "${RUNNER}" ||
-		fail "A2A TCK runner omits contract: ${contract}"
+	rg --quiet --fixed-strings -- "${contract}" "${RUNNER}" \
+		|| fail "A2A TCK runner omits contract: ${contract}"
 done
 if rg --quiet --fixed-strings -- '--data-urlencode "client_secret=' "${RUNNER}"; then
 	fail "A2A TCK runner exposes the client secret in process arguments"
@@ -90,13 +90,13 @@ for contract in \
 	'for extension_uri in (token_budget_uri, usage_receipt_uri)' \
 	'http_client.post = adapted_post' \
 	'http_client.build_request = adapted_build_request'; do
-	rg --quiet --fixed-strings -- "${contract}" "${PLUGIN}" ||
-		fail "A2A TCK adapter omits exact-route contract: ${contract}"
+	rg --quiet --fixed-strings -- "${contract}" "${PLUGIN}" \
+		|| fail "A2A TCK adapter omits exact-route contract: ${contract}"
 done
 
 for task in 'check:a2a-tck' 'fed:tck'; do
-	rg --quiet --fixed-strings "[tasks.\"${task}\"]" "${MISE_CONFIG}" ||
-		fail "mise task is missing: ${task}"
+	rg --quiet --fixed-strings "[tasks.\"${task}\"]" "${MISE_CONFIG}" \
+		|| fail "mise task is missing: ${task}"
 done
 
 echo "A2A TCK pin, scope, authentication, report, and secret-handling contracts passed."

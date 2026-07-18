@@ -18,9 +18,9 @@ run_rule_test() {
 	local rules_file="${workdir}/${stem}.rules.yaml"
 	local test_file="${workdir}/${stem}.test.yaml"
 
-	flux envsubst --strict < "${manifest}" \
-		| yq 'select(.kind == "PrometheusRule") | .spec' > "${rules_file}"
-	RULES_FILE="${rules_file}" yq '.rule_files = [strenv(RULES_FILE)]' "${fixture}" > "${test_file}"
+	flux envsubst --strict <"${manifest}" \
+		| yq 'select(.kind == "PrometheusRule") | .spec' >"${rules_file}"
+	RULES_FILE="${rules_file}" yq '.rule_files = [strenv(RULES_FILE)]' "${fixture}" >"${test_file}"
 
 	promtool check rules "${rules_file}"
 	promtool test rules "${test_file}"

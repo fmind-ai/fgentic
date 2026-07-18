@@ -49,45 +49,45 @@ if (($# != 1)); then
 fi
 
 cluster_name="${FGENTIC_FED_CLUSTER:-${FEDERATION_CLUSTER}}"
-[ "${cluster_name}" = "${FEDERATION_CLUSTER}" ] ||
-	die "FGENTIC_FED_CLUSTER must be ${FEDERATION_CLUSTER}"
+[ "${cluster_name}" = "${FEDERATION_CLUSTER}" ] \
+	|| die "FGENTIC_FED_CLUSTER must be ${FEDERATION_CLUSTER}"
 case "${FGENTIC_FED_CONSTRAINED:-no}" in
-yes | no) ;;
-*) die "FGENTIC_FED_CONSTRAINED must be yes or no" ;;
+	yes | no) ;;
+	*) die "FGENTIC_FED_CONSTRAINED must be yes or no" ;;
 esac
 case "${FGENTIC_FED_TRACE:-no}" in
-yes | no) ;;
-*) die "FGENTIC_FED_TRACE must be yes or no" ;;
+	yes | no) ;;
+	*) die "FGENTIC_FED_TRACE must be yes or no" ;;
 esac
 
 case "$1" in
-up)
-	case "${FGENTIC_FED_POLICY_PROBE:-deny}" in
-	allow | deny) ;;
-	*) die "FGENTIC_FED_POLICY_PROBE must be allow or deny" ;;
-	esac
-	export FGENTIC_FED_POLICY_PROBE="${FGENTIC_FED_POLICY_PROBE:-deny}"
-	export FGENTIC_DEMO_PROFILE=federation
-	export FGENTIC_DEMO_CLUSTER="${cluster_name}"
-	export FGENTIC_DEMO_TIMEOUT="${FGENTIC_FED_TIMEOUT:-20m}"
-	exec "${ROOT_DIR}/scripts/demo.sh" up
-	;;
-status | stop)
-	export FGENTIC_DEMO_PROFILE=federation
-	export FGENTIC_DEMO_CLUSTER="${cluster_name}"
-	exec "${ROOT_DIR}/scripts/demo.sh" "$1"
-	;;
-down)
-	export FGENTIC_DEMO_PROFILE=federation
-	export FGENTIC_DEMO_CLUSTER="${cluster_name}"
-	export FGENTIC_DEMO_TIMEOUT="${FGENTIC_FED_TIMEOUT:-20m}"
-	exec "${ROOT_DIR}/scripts/demo.sh" down
-	;;
--h | --help)
-	usage
-	;;
-*)
-	usage >&2
-	exit 2
-	;;
+	up)
+		case "${FGENTIC_FED_POLICY_PROBE:-deny}" in
+			allow | deny) ;;
+			*) die "FGENTIC_FED_POLICY_PROBE must be allow or deny" ;;
+		esac
+		export FGENTIC_FED_POLICY_PROBE="${FGENTIC_FED_POLICY_PROBE:-deny}"
+		export FGENTIC_DEMO_PROFILE=federation
+		export FGENTIC_DEMO_CLUSTER="${cluster_name}"
+		export FGENTIC_DEMO_TIMEOUT="${FGENTIC_FED_TIMEOUT:-20m}"
+		exec "${ROOT_DIR}/scripts/demo.sh" up
+		;;
+	status | stop)
+		export FGENTIC_DEMO_PROFILE=federation
+		export FGENTIC_DEMO_CLUSTER="${cluster_name}"
+		exec "${ROOT_DIR}/scripts/demo.sh" "$1"
+		;;
+	down)
+		export FGENTIC_DEMO_PROFILE=federation
+		export FGENTIC_DEMO_CLUSTER="${cluster_name}"
+		export FGENTIC_DEMO_TIMEOUT="${FGENTIC_FED_TIMEOUT:-20m}"
+		exec "${ROOT_DIR}/scripts/demo.sh" down
+		;;
+	-h | --help)
+		usage
+		;;
+	*)
+		usage >&2
+		exit 2
+		;;
 esac

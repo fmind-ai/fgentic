@@ -19,10 +19,10 @@ mkdir -p "${tmp}/infra"
 cp -r infra/terraform "${tmp}/infra/terraform"
 
 poison_backend() {
-  # A backend cache pointing at the private GCS state bucket with no credentials configured.
-  rm -rf "$1/.terraform"
-  mkdir -p "$1/.terraform"
-  cat > "$1/.terraform/terraform.tfstate" <<'JSON'
+	# A backend cache pointing at the private GCS state bucket with no credentials configured.
+	rm -rf "$1/.terraform"
+	mkdir -p "$1/.terraform"
+	cat >"$1/.terraform/terraform.tfstate" <<'JSON'
 {"version":3,"serial":1,"lineage":"poison-regression","backend":{"type":"gcs","hash":1,"config":{"bucket":"fgentic-ai-tfstate","prefix":"fgentic"}}}
 JSON
 }
@@ -31,29 +31,29 @@ poison_backend "${tmp}/infra/terraform"
 [ -d "${tmp}/infra/terraform/bootstrap" ] && poison_backend "${tmp}/infra/terraform/bootstrap"
 
 if ! TF_CHECK_ROOT="${tmp}" bash scripts/check-terraform.sh >/dev/null 2>&1; then
-  echo "FAIL: check-terraform.sh read the poisoned GCS backend cache (not hermetic)" >&2
-  exit 1
+	echo "FAIL: check-terraform.sh read the poisoned GCS backend cache (not hermetic)" >&2
+	exit 1
 fi
 
 # The poison must be ignored (redirection), not migrated or overwritten...
 for cache in \
-  "${tmp}/infra/terraform/.terraform/terraform.tfstate" \
-  "${tmp}/infra/terraform/bootstrap/.terraform/terraform.tfstate"; do
-  [ -f "${cache}" ] || continue
-  grep -q '"type":"gcs"' "${cache}" || {
-    echo "FAIL: the gate mutated the poisoned backend cache at ${cache}" >&2
-    exit 1
-  }
+	"${tmp}/infra/terraform/.terraform/terraform.tfstate" \
+	"${tmp}/infra/terraform/bootstrap/.terraform/terraform.tfstate"; do
+	[ -f "${cache}" ] || continue
+	grep -q '"type":"gcs"' "${cache}" || {
+		echo "FAIL: the gate mutated the poisoned backend cache at ${cache}" >&2
+		exit 1
+	}
 done
 
 # ...and providers must land in the task-owned TF_DATA_DIR, never in the working .terraform.
 for provider_dir in \
-  "${tmp}/infra/terraform/.terraform/providers" \
-  "${tmp}/infra/terraform/bootstrap/.terraform/providers"; do
-  [ ! -e "${provider_dir}" ] || {
-    echo "FAIL: providers written to the working .terraform (${provider_dir}) instead of TF_DATA_DIR" >&2
-    exit 1
-  }
+	"${tmp}/infra/terraform/.terraform/providers" \
+	"${tmp}/infra/terraform/bootstrap/.terraform/providers"; do
+	[ ! -e "${provider_dir}" ] || {
+		echo "FAIL: providers written to the working .terraform (${provider_dir}) instead of TF_DATA_DIR" >&2
+		exit 1
+	}
 done
 
 echo "terraform hermetic gate: poisoned GCS backend ignored; working .terraform left untouched"

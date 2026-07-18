@@ -20,12 +20,12 @@ if (($# > 1)); then
 	exit 2
 fi
 case "${mode}" in
-all) tasks=(check test) ;;
-check | test) tasks=("${mode}") ;;
-*)
-	echo "error: usage: scripts/agent-gate.sh [check|test]" >&2
-	exit 2
-	;;
+	all) tasks=(check test) ;;
+	check | test) tasks=("${mode}") ;;
+	*)
+		echo "error: usage: scripts/agent-gate.sh [check|test]" >&2
+		exit 2
+		;;
 esac
 readonly mode
 
@@ -49,9 +49,9 @@ cleanup() {
 waiting_reported=false
 while ! mkdir "${lock_dir}" 2>/dev/null; do
 	if [[ -r "${owner_file}" ]]; then
-		IFS=$'\t' read -r owner_host owner_pid owner_started owner_worktree <"${owner_file}" || true
-		if [[ "${owner_host:-}" == "${host}" && "${owner_pid:-}" =~ ^[1-9][0-9]*$ ]] &&
-			! kill -0 "${owner_pid}" 2>/dev/null; then
+		IFS=$'\t' read -r owner_host owner_pid _owner_started _owner_worktree <"${owner_file}" || true
+		if [[ "${owner_host:-}" == "${host}" && "${owner_pid:-}" =~ ^[1-9][0-9]*$ ]] \
+			&& ! kill -0 "${owner_pid}" 2>/dev/null; then
 			stale_dir="${lock_dir}.stale.$$"
 			if mv "${lock_dir}" "${stale_dir}" 2>/dev/null; then
 				rm -rf -- "${stale_dir}"

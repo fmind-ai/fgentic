@@ -5,16 +5,16 @@
 set -euo pipefail
 
 if [ "$#" -gt 0 ]; then
-  manifests=("$@")
+	manifests=("$@")
 else
-  # Rendered charts are validated separately; raw Go-template files are not YAML documents.
-  manifest_list="$(rg --files infra clusters -g '*.yaml' -g '*.yml' -g '!**/chart/templates/**' | sort)"
-  mapfile -t manifests <<<"${manifest_list}"
+	# Rendered charts are validated separately; raw Go-template files are not YAML documents.
+	manifest_list="$(rg --files infra clusters -g '*.yaml' -g '*.yml' -g '!**/chart/templates/**' | sort)"
+	mapfile -t manifests <<<"${manifest_list}"
 fi
 
 if [ "${#manifests[@]}" -eq 0 ]; then
-  echo "error: no manifests to audit" >&2
-  exit 2
+	echo "error: no manifests to audit" >&2
+	exit 2
 fi
 
 uncovered="$({ yq eval-all -o=json '.' "${manifests[@]}" || exit; } | jq -rs '
@@ -85,11 +85,11 @@ uncovered="$({ yq eval-all -o=json '.' "${manifests[@]}" || exit; } | jq -rs '
 ')"
 
 if [ -n "${uncovered}" ]; then
-  echo "cross-namespace backendRefs missing a matching ReferenceGrant:" >&2
-  while IFS=$'\t' read -r route backend; do
-    printf '  %s -> %s\n' "${route}" "${backend}" >&2
-  done <<< "${uncovered}"
-  exit 1
+	echo "cross-namespace backendRefs missing a matching ReferenceGrant:" >&2
+	while IFS=$'\t' read -r route backend; do
+		printf '  %s -> %s\n' "${route}" "${backend}" >&2
+	done <<<"${uncovered}"
+	exit 1
 fi
 
 echo "ReferenceGrant audit passed (${#manifests[@]} manifest files)"

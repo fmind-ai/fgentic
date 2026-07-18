@@ -84,8 +84,8 @@ assert_jq_yaml() {
 	local expression="$1"
 	local document="$2"
 	local message="$3"
-	yq -o=json '.' "${document}" | jq --slurp --exit-status "${expression}" >/dev/null ||
-		fail "${message}"
+	yq -o=json '.' "${document}" | jq --slurp --exit-status "${expression}" >/dev/null \
+		|| fail "${message}"
 }
 
 static_contract() {
@@ -97,8 +97,8 @@ static_contract() {
 			network_policy_arg_count=$((network_policy_arg_count + 1))
 		fi
 	done
-	((network_policy_arg_count == 1)) ||
-		fail "Trivy runtime must disable the failed NetworkPolicy controller on every server"
+	((network_policy_arg_count == 1)) \
+		|| fail "Trivy runtime must disable the failed NetworkPolicy controller on every server"
 
 	assert_yq '
     .kind == "GitRepository" and
@@ -109,8 +109,8 @@ static_contract() {
     (.spec.ref | has("tag") | not) and
     (.spec.ref | has("branch") | not)
   ' "${SOURCE}" "Trivy chart source is not pinned to the reviewed release commit"
-	rg --fixed-strings '# trivy-operator-version: v0.32.0' "${SOURCE}" >/dev/null ||
-		fail "Trivy release metadata for Renovate drifted"
+	rg --fixed-strings '# trivy-operator-version: v0.32.0' "${SOURCE}" >/dev/null \
+		|| fail "Trivy release metadata for Renovate drifted"
 
 	assert_yq '
     .kind == "HelmRelease" and
@@ -129,17 +129,17 @@ static_contract() {
 	target_namespaces="$(yq -r '.spec.values.targetNamespaces' "${HELM_RELEASE}")"
 	local -a configured_namespaces
 	IFS=, read -r -a configured_namespaces <<<"${target_namespaces}"
-	((${#configured_namespaces[@]} == ${#TARGET_NAMESPACES[@]})) ||
-		fail "Trivy target namespace count drifted"
+	((${#configured_namespaces[@]} == ${#TARGET_NAMESPACES[@]})) \
+		|| fail "Trivy target namespace count drifted"
 	local namespace
 	for namespace in "${configured_namespaces[@]}"; do
-		[[ "${namespace}" =~ ^[a-z0-9-]+$ ]] ||
-			fail "invalid or whitespace-padded Trivy target namespace: ${namespace}"
+		[[ "${namespace}" =~ ^[a-z0-9-]+$ ]] \
+			|| fail "invalid or whitespace-padded Trivy target namespace: ${namespace}"
 	done
 	diff -u \
 		<(printf '%s\n' "${TARGET_NAMESPACES[@]}" | sort) \
-		<(printf '%s\n' "${configured_namespaces[@]}" | sort) >/dev/null ||
-		fail "Trivy target namespace set drifted"
+		<(printf '%s\n' "${configured_namespaces[@]}" | sort) >/dev/null \
+		|| fail "Trivy target namespace set drifted"
 
 	assert_yq '
     .spec.values.targetWorkloads == "pod,replicaset,statefulset,daemonset,cronjob,job" and
@@ -212,8 +212,8 @@ static_contract() {
 		aggregate-config-audit-reports-view \
 		aggregate-exposed-secret-reports-view \
 		aggregate-vulnerability-reports-view | sort) \
-		<(printf '%s\n' "${deleted_roles}") >/dev/null ||
-		fail "unconditional chart aggregate roles are not all post-render deleted"
+		<(printf '%s\n' "${deleted_roles}") >/dev/null \
+		|| fail "unconditional chart aggregate roles are not all post-render deleted"
 
 	local bound_namespaces
 	bound_namespaces="$(
@@ -223,8 +223,8 @@ static_contract() {
     ' "${RBAC}" | rg -v '^---$' | sort
 	)"
 	diff -u <(printf '%s\n' "${TARGET_NAMESPACES[@]}" | sort) \
-		<(printf '%s\n' "${bound_namespaces}") >/dev/null ||
-		fail "Trivy target RoleBindings drifted"
+		<(printf '%s\n' "${bound_namespaces}") >/dev/null \
+		|| fail "Trivy target RoleBindings drifted"
 	assert_jq_yaml '
     [.[] | select(.kind == "ClusterRole" and .metadata.name == "trivy-operator-target")]
       as $roles |
@@ -334,9 +334,9 @@ static_contract() {
 			expected=0
 		fi
 		count="$(
-			kubectl kustomize "${ROOT_DIR}/clusters/${environment}" |
-				yq -o=json '.' |
-				jq --slurp '[.[] | select(
+			kubectl kustomize "${ROOT_DIR}/clusters/${environment}" \
+				| yq -o=json '.' \
+				| jq --slurp '[.[] | select(
               .kind == "Kustomization" and
               .metadata.namespace == "flux-system" and
               (
@@ -346,8 +346,8 @@ static_contract() {
               )
             )] | length'
 		)"
-		[[ "${count}" == "${expected}" ]] ||
-			fail "clusters/${environment} Trivy structural footprint is ${count}, expected ${expected}"
+		[[ "${count}" == "${expected}" ]] \
+			|| fail "clusters/${environment} Trivy structural footprint is ${count}, expected ${expected}"
 	done
 	assert_yq '
     [
@@ -404,9 +404,9 @@ static_contract() {
   ' "${ROOT_DIR}/clusters/demo/kustomization.yaml" \
 		"demo must delete the exact Trivy namespace admission bundle"
 
-	if ! kubectl kustomize "${ROOT_DIR}/clusters/federation" |
-		yq -o=json '.' |
-		jq --slurp --exit-status '
+	if ! kubectl kustomize "${ROOT_DIR}/clusters/federation" \
+		| yq -o=json '.' \
+		| jq --slurp --exit-status '
         [.[] | select(
           .kind == "Kustomization" and
           .metadata.name == "namespaces" and
@@ -498,8 +498,8 @@ runtime_volume_exists() {
 }
 
 runtime_artifacts_exist() {
-	[[ -n "$(runtime_container_ids)" ]] || runtime_network_exists || runtime_volume_exists ||
-		runtime_recorded_volumes_exist
+	[[ -n "$(runtime_container_ids)" ]] || runtime_network_exists || runtime_volume_exists \
+		|| runtime_recorded_volumes_exist
 }
 
 runtime_recorded_volumes_exist() {
@@ -564,8 +564,8 @@ collect_runtime_diagnostics() {
 		docker volume inspect "k3d-${RUNTIME_CLUSTER_NAME}-images"
 	} >"${destination}/docker-runtime.txt" 2>&1 || true
 
-	if [[ "${RUNTIME_CLUSTER_OWNED}" == true && -s "${RUNTIME_WORKDIR}/kubeconfig" ]] &&
-		kubectl version --request-timeout=5s >/dev/null 2>&1; then
+	if [[ "${RUNTIME_CLUSTER_OWNED}" == true && -s "${RUNTIME_WORKDIR}/kubeconfig" ]] \
+		&& kubectl version --request-timeout=5s >/dev/null 2>&1; then
 		kubectl get namespaces,pods,jobs,deployments,replicasets --all-namespaces \
 			--output wide >"${destination}/workloads.txt" 2>&1 || true
 		kubectl get events --all-namespaces --sort-by=.metadata.creationTimestamp \
@@ -652,8 +652,8 @@ assert_service_account_access() {
 	local actual
 	actual="$(kubectl auth can-i "${verb}" "${resource}" --namespace "${namespace}" \
 		--as="system:serviceaccount:${OPERATOR_NAMESPACE}:trivy-operator" || true)"
-	[[ "${actual}" == "${expected}" ]] ||
-		fail "Trivy Operator ${verb} ${resource} in ${namespace}: got ${actual}, expected ${expected}"
+	[[ "${actual}" == "${expected}" ]] \
+		|| fail "Trivy Operator ${verb} ${resource} in ${namespace}: got ${actual}, expected ${expected}"
 }
 
 wait_for_scan_quota_usage() {
@@ -661,8 +661,8 @@ wait_for_scan_quota_usage() {
 	local quota_ready=false
 	for _ in {1..30}; do
 		if kubectl --namespace "${OPERATOR_NAMESPACE}" get resourcequota \
-			trivy-scan-serialization --output json |
-			jq --arg expected "${expected}" --exit-status '
+			trivy-scan-serialization --output json \
+			| jq --arg expected "${expected}" --exit-status '
           .status.hard["count/jobs.batch"] == "1" and
           (.status.used["count/jobs.batch"] // "0") == $expected
         ' >/dev/null; then
@@ -671,8 +671,8 @@ wait_for_scan_quota_usage() {
 		fi
 		sleep 1
 	done
-	[[ "${quota_ready}" == true ]] ||
-		fail "scan serialization quota usage did not become ${expected}"
+	[[ "${quota_ready}" == true ]] \
+		|| fail "scan serialization quota usage did not become ${expected}"
 }
 
 create_scan_quota_hold() {
@@ -748,8 +748,8 @@ monitor_scan_job_concurrency() {
 				"$(jq '.items | length' <<<"${jobs}")" >>"${RUNTIME_WORKDIR}/scan-concurrency.log"
 			if ((active > 0)); then
 				touch "${RUNTIME_WORKDIR}/scan-job-observed"
-				if [[ -z "${operator_pod_name}" || -z "${node_name}" ]] &&
-					operator_pods="$(kubectl --namespace "${OPERATOR_NAMESPACE}" get pods \
+				if [[ -z "${operator_pod_name}" || -z "${node_name}" ]] \
+					&& operator_pods="$(kubectl --namespace "${OPERATOR_NAMESPACE}" get pods \
 						--selector app.kubernetes.io/name=trivy-operator,app.kubernetes.io/instance=trivy-operator \
 						--output json 2>/dev/null)"; then
 					operator_pod="$(jq --compact-output '
@@ -762,8 +762,8 @@ monitor_scan_job_concurrency() {
 				fi
 				if [[ -n "${operator_pod_name}" && -n "${node_name}" ]]; then
 					working_set="$(
-						kubectl get --raw "/api/v1/nodes/${node_name}/proxy/stats/summary" 2>/dev/null |
-							jq -r --arg pod "${operator_pod_name}" --arg namespace \
+						kubectl get --raw "/api/v1/nodes/${node_name}/proxy/stats/summary" 2>/dev/null \
+							| jq -r --arg pod "${operator_pod_name}" --arg namespace \
 								"${OPERATOR_NAMESPACE}" '
                     first(.pods[] | select(
                       .podRef.namespace == $namespace and .podRef.name == $pod
@@ -779,8 +779,8 @@ monitor_scan_job_concurrency() {
 						fi
 					fi
 				fi
-				if [[ ! -s "${RUNTIME_WORKDIR}/scan-pod.json" ]] &&
-					pods="$(kubectl --namespace "${OPERATOR_NAMESPACE}" get pods \
+				if [[ ! -s "${RUNTIME_WORKDIR}/scan-pod.json" ]] \
+					&& pods="$(kubectl --namespace "${OPERATOR_NAMESPACE}" get pods \
 						--selector app.kubernetes.io/managed-by=trivy-operator --output json \
 						2>/dev/null)"; then
 					snapshot="$(jq --compact-output '
@@ -806,8 +806,8 @@ assert_scan_pod_contract() {
 	scanner_image="mirror.gcr.io/aquasec/trivy:$(
 		yq -r '.spec.values.trivy.image.tag' "${HELM_RELEASE}"
 	)"
-	[[ -s "${RUNTIME_WORKDIR}/scan-pod.json" ]] ||
-		fail "the first active Trivy scan Pod was not captured"
+	[[ -s "${RUNTIME_WORKDIR}/scan-pod.json" ]] \
+		|| fail "the first active Trivy scan Pod was not captured"
 	jq --exit-status --arg image "${scanner_image}" '
       .metadata.labels["app.kubernetes.io/managed-by"] == "trivy-operator" and
       .metadata.labels["fgentic.dev/trivy-network"] == "true" and
@@ -832,8 +832,8 @@ assert_scan_pod_contract() {
         .securityContext.runAsNonRoot == true and
         .securityContext.runAsUser == 10000 and
         (.securityContext.capabilities.drop | sort) == ["ALL"])
-    ' "${RUNTIME_WORKDIR}/scan-pod.json" >/dev/null ||
-		fail "generated Trivy scan Pod security, image, or resource contract drifted"
+    ' "${RUNTIME_WORKDIR}/scan-pod.json" >/dev/null \
+		|| fail "generated Trivy scan Pod security, image, or resource contract drifted"
 }
 
 write_synthetic_report() {
@@ -909,8 +909,8 @@ start_metrics_port_forward() {
 
 synthetic_high_metric() {
 	local port="$1"
-	curl --fail --silent --show-error "http://127.0.0.1:${port}/metrics" |
-		awk '
+	curl --fail --silent --show-error "http://127.0.0.1:${port}/metrics" \
+		| awk '
       /^trivy_image_vulnerabilities\{/ &&
       /image_digest="sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"/ &&
       /image_repository="fgentic\/runtime-synthetic"/ &&
@@ -931,10 +931,10 @@ runtime_contract() {
 	local metrics_port metric_value report_names working_set startup_logs
 	local max_active
 	RUNTIME_CLUSTER_NAME="${TRIVY_OPERATOR_CLUSTER_NAME:-fgentic-trivy-${RANDOM}-$$}"
-	[[ "${RUNTIME_CLUSTER_NAME}" =~ ^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$ ]] ||
-		fail "invalid disposable cluster name: ${RUNTIME_CLUSTER_NAME}"
-	[[ "${RUNTIME_CLUSTER_NAME}" != "fgentic" && "${RUNTIME_CLUSTER_NAME}" != "local" ]] ||
-		fail "refusing to target shared cluster name: ${RUNTIME_CLUSTER_NAME}"
+	[[ "${RUNTIME_CLUSTER_NAME}" =~ ^[a-z0-9][a-z0-9-]{0,30}[a-z0-9]$ ]] \
+		|| fail "invalid disposable cluster name: ${RUNTIME_CLUSTER_NAME}"
+	[[ "${RUNTIME_CLUSTER_NAME}" != "fgentic" && "${RUNTIME_CLUSTER_NAME}" != "local" ]] \
+		|| fail "refusing to target shared cluster name: ${RUNTIME_CLUSTER_NAME}"
 	RUNTIME_NODE_NAME="k3d-${RUNTIME_CLUSTER_NAME}-server-0"
 	RUNTIME_OWNER_TOKEN="${RUNTIME_CLUSTER_NAME}-${RANDOM}-$$"
 	RUNTIME_WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-trivy.XXXXXX")"
@@ -991,8 +991,8 @@ runtime_contract() {
 		"${CHART_URL}" --output "${chart_path}"
 	actual_digest="$(sha256sum "${chart_path}" | awk '{print $1}')"
 	printf '%s  %s\n' "${actual_digest}" "${chart_path##*/}" >"${RUNTIME_WORKDIR}/chart.sha256"
-	[[ "${actual_digest}" == "${CHART_DIGEST}" ]] ||
-		fail "Trivy chart digest is ${actual_digest}, expected ${CHART_DIGEST}"
+	[[ "${actual_digest}" == "${CHART_DIGEST}" ]] \
+		|| fail "Trivy chart digest is ${actual_digest}, expected ${CHART_DIGEST}"
 
 	k3s_image="$(yq -r '.image' "${K3D_CONFIG}")"
 	[[ "${k3s_image}" == rancher/k3s:v*-k3s* ]] || fail "invalid pinned k3s image: ${k3s_image}"
@@ -1007,22 +1007,22 @@ runtime_contract() {
 		--kubeconfig-update-default=false --kubeconfig-switch-context=false --timeout 3m
 	actual_owner="$(docker inspect --format "{{ index .Config.Labels \"${OWNER_LABEL}\" }}" \
 		"${RUNTIME_NODE_NAME}")"
-	[[ "${actual_owner}" == "${RUNTIME_OWNER_TOKEN}" ]] ||
-		fail "created server lacks the private ownership token; refusing to claim cleanup ownership"
+	[[ "${actual_owner}" == "${RUNTIME_OWNER_TOKEN}" ]] \
+		|| fail "created server lacks the private ownership token; refusing to claim cleanup ownership"
 	RUNTIME_CLUSTER_OWNED=true
 	node_command="$(docker inspect --format '{{json .Config.Cmd}}' "${RUNTIME_NODE_NAME}")"
-	rg --fixed-strings '"--disable-network-policy"' <<<"${node_command}" >/dev/null ||
-		fail "running Trivy k3s node did not disable the local NetworkPolicy controller"
-	[[ "$(runtime_container_ids | wc -l | tr -d ' ')" == "1" ]] ||
-		fail "disposable cluster created unexpected node or load-balancer containers"
-	[[ "$(docker inspect --format '{{.Name}}' "${RUNTIME_NODE_NAME}")" == "/${RUNTIME_NODE_NAME}" ]] ||
-		fail "disposable cluster server identity drifted"
+	rg --fixed-strings '"--disable-network-policy"' <<<"${node_command}" >/dev/null \
+		|| fail "running Trivy k3s node did not disable the local NetworkPolicy controller"
+	[[ "$(runtime_container_ids | wc -l | tr -d ' ')" == "1" ]] \
+		|| fail "disposable cluster created unexpected node or load-balancer containers"
+	[[ "$(docker inspect --format '{{.Name}}' "${RUNTIME_NODE_NAME}")" == "/${RUNTIME_NODE_NAME}" ]] \
+		|| fail "disposable cluster server identity drifted"
 	runtime_volume_exists || fail "disposable cluster did not create its expected owned image volume"
 	[[ "$(docker volume inspect --format '{{ index .Labels "app" }}/{{ index .Labels "k3d.cluster" }}' \
-		"k3d-${RUNTIME_CLUSTER_NAME}-images")" == "k3d/${RUNTIME_CLUSTER_NAME}" ]] ||
-		fail "disposable cluster image volume ownership labels drifted"
-	mapfile -t RUNTIME_VOLUME_NAMES < <(docker inspect "${RUNTIME_NODE_NAME}" |
-		jq -r '.[0].Mounts[] | select(.Type == "volume") | .Name')
+		"k3d-${RUNTIME_CLUSTER_NAME}-images")" == "k3d/${RUNTIME_CLUSTER_NAME}" ]] \
+		|| fail "disposable cluster image volume ownership labels drifted"
+	mapfile -t RUNTIME_VOLUME_NAMES < <(docker inspect "${RUNTIME_NODE_NAME}" \
+		| jq -r '.[0].Mounts[] | select(.Type == "volume") | .Name')
 	((${#RUNTIME_VOLUME_NAMES[@]} > 0)) || fail "disposable server volume inventory is empty"
 
 	k3d kubeconfig get "${RUNTIME_CLUSTER_NAME}" >"${kubeconfig}"
@@ -1041,8 +1041,8 @@ runtime_contract() {
         . != "kube-public" and . != "kube-system")
     ' | sort)"
 	diff -u <(printf '%s\n' "${expected_namespaces}") \
-		<(printf '%s\n' "${actual_namespaces}") >/dev/null ||
-		fail "disposable cluster custom namespace set drifted"
+		<(printf '%s\n' "${actual_namespaces}") >/dev/null \
+		|| fail "disposable cluster custom namespace set drifted"
 
 	echo "==> Applying reviewed CRDs, repository RBAC, NetworkPolicy, and Helm values"
 	helm show crds "${chart_path}" >"${RUNTIME_WORKDIR}/crds.yaml"
@@ -1069,8 +1069,8 @@ runtime_contract() {
 	kubectl kustomize "${RUNTIME_WORKDIR}/postrender" \
 		>"${RUNTIME_WORKDIR}/rendered-filtered.yaml"
 	rendered_rbac_count="$(
-		yq -o=json '.' "${RUNTIME_WORKDIR}/rendered-filtered.yaml" |
-			jq --slurp '[.[] | select(
+		yq -o=json '.' "${RUNTIME_WORKDIR}/rendered-filtered.yaml" \
+			| jq --slurp '[.[] | select(
           .kind == "ServiceAccount" or
           .kind == "Role" or
           .kind == "RoleBinding" or
@@ -1078,8 +1078,8 @@ runtime_contract() {
           .kind == "ClusterRoleBinding"
         )] | length'
 	)"
-	[[ "${rendered_rbac_count}" == "0" ]] ||
-		fail "post-rendered chart contains ${rendered_rbac_count} chart-owned RBAC objects"
+	[[ "${rendered_rbac_count}" == "0" ]] \
+		|| fail "post-rendered chart contains ${rendered_rbac_count} chart-owned RBAC objects"
 	kubectl apply --filename "${RUNTIME_WORKDIR}/rendered-filtered.yaml" >/dev/null
 	for report_name in aggregate-config-audit-reports-view \
 		aggregate-exposed-secret-reports-view aggregate-vulnerability-reports-view; do
@@ -1175,8 +1175,8 @@ EOF
 	report_deadline=$((SECONDS + 600))
 	real_reports=""
 	while ((SECONDS < report_deadline)); do
-		[[ ! -e "${RUNTIME_WORKDIR}/scan-concurrency-violation" ]] ||
-			fail "more than one Trivy scan Job was active concurrently"
+		[[ ! -e "${RUNTIME_WORKDIR}/scan-concurrency-violation" ]] \
+			|| fail "more than one Trivy scan Job was active concurrently"
 		reports="$(kubectl --namespace models get vulnerabilityreports.aquasecurity.github.io \
 			--output json 2>/dev/null || printf '{"items":[]}')"
 		real_reports="$(jq --compact-output --arg digest "${fixture_digest}" '
@@ -1207,30 +1207,30 @@ EOF
 		[[ -z "${real_reports}" ]] || break
 		sleep 5
 	done
-	[[ -n "${real_reports}" ]] ||
-		fail "both digest-pinned fixtures did not produce schema-valid VulnerabilityReports within 10m"
+	[[ -n "${real_reports}" ]] \
+		|| fail "both digest-pinned fixtures did not produce schema-valid VulnerabilityReports within 10m"
 	report_names="$(jq -r 'map(.metadata.name) | sort | join(",")' <<<"${real_reports}")"
 	kubectl --namespace models wait --for=condition=Ready pod/trivy-fixture-a \
 		pod/trivy-fixture-b --timeout=3m >/dev/null
 	touch "${RUNTIME_WORKDIR}/stop-scan-monitor"
 	wait "${RUNTIME_SCAN_MONITOR_PID}"
 	RUNTIME_SCAN_MONITOR_PID=""
-	[[ -e "${RUNTIME_WORKDIR}/scan-job-observed" ]] ||
-		fail "no active Trivy scan Job was observed"
-	[[ ! -e "${RUNTIME_WORKDIR}/scan-concurrency-violation" ]] ||
-		fail "more than one Trivy scan Job was active concurrently"
-	[[ ! -e "${RUNTIME_WORKDIR}/scan-memory-violation" ]] ||
-		fail "operator working-set memory reached the 256Mi limit during scanning"
+	[[ -e "${RUNTIME_WORKDIR}/scan-job-observed" ]] \
+		|| fail "no active Trivy scan Job was observed"
+	[[ ! -e "${RUNTIME_WORKDIR}/scan-concurrency-violation" ]] \
+		|| fail "more than one Trivy scan Job was active concurrently"
+	[[ ! -e "${RUNTIME_WORKDIR}/scan-memory-violation" ]] \
+		|| fail "operator working-set memory reached the 256Mi limit during scanning"
 	assert_scan_pod_contract
 	max_active="$(awk -F'[ =]' '/ active=/ {if ($3 > max) max=$3} END {print max + 0}' \
 		"${RUNTIME_WORKDIR}/scan-concurrency.log")"
 	[[ "${max_active}" == "1" ]] || fail "maximum observed active Trivy Jobs was ${max_active}"
 	working_set="$(awk -F= '/ workingSetBytes=/ {if ($2 > max) max=$2} END {print max + 0}' \
 		"${RUNTIME_WORKDIR}/scan-working-set.log")"
-	[[ "${working_set}" =~ ^[1-9][0-9]*$ ]] ||
-		fail "kubelet summary did not expose operator workingSetBytes during an active scan"
-	((working_set < OPERATOR_MEMORY_LIMIT_BYTES)) ||
-		fail "operator workingSetBytes ${working_set} reached the 256Mi limit during scanning"
+	[[ "${working_set}" =~ ^[1-9][0-9]*$ ]] \
+		|| fail "kubelet summary did not expose operator workingSetBytes during an active scan"
+	((working_set < OPERATOR_MEMORY_LIMIT_BYTES)) \
+		|| fail "operator workingSetBytes ${working_set} reached the 256Mi limit during scanning"
 
 	echo "==> Proving live findings metrics change from one to two HIGH findings"
 	start_metrics_port_forward
@@ -1243,8 +1243,8 @@ EOF
 		[[ "${metric_value}" == "1" ]] && break
 		sleep 1
 	done
-	[[ "${metric_value}" == "1" ]] ||
-		fail "live Trivy metrics did not expose the synthetic HIGH count of one"
+	[[ "${metric_value}" == "1" ]] \
+		|| fail "live Trivy metrics did not expose the synthetic HIGH count of one"
 	kubectl --namespace models delete vulnerabilityreport synthetic-high-1 --wait=true >/dev/null
 	write_synthetic_report synthetic-high-2 2 "${RUNTIME_WORKDIR}/synthetic-high-2.json"
 	kubectl apply --filename "${RUNTIME_WORKDIR}/synthetic-high-2.json" >/dev/null
@@ -1254,8 +1254,8 @@ EOF
 		[[ "${metric_value}" == "2" ]] && break
 		sleep 1
 	done
-	[[ "${metric_value}" == "2" ]] ||
-		fail "live Trivy metrics did not change to the synthetic HIGH count of two"
+	[[ "${metric_value}" == "2" ]] \
+		|| fail "live Trivy metrics did not change to the synthetic HIGH count of two"
 
 	startup_logs="$(kubectl --namespace "${OPERATOR_NAMESPACE}" logs \
 		deployment/trivy-operator --all-containers)"
@@ -1264,8 +1264,8 @@ EOF
 		fail "the controlled quota hold did not reject an operator scan Job"
 	fi
 	if rg --invert-match --ignore-case 'exceeded quota: trivy-scan-serialization' \
-		<<<"${startup_logs}" |
-		rg --ignore-case \
+		<<<"${startup_logs}" \
+		| rg --ignore-case \
 			'forbidden|permission denied|unauthorized|cannot (get|list|watch|create|update|patch|delete)'; then
 		fail "Trivy Operator logs contain an authorization failure unrelated to scan serialization"
 	fi

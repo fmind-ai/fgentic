@@ -194,13 +194,13 @@ bash -n "${DEMO_SOURCES[@]}" "${DEV}" "${ROOT_DIR}/scripts/seed-demo.sh"
 			return
 		fi
 		case "$(wc -l <"${bridge_image_calls}")" in
-		1)
-			printf '%s\n' '{"spec":{"values":{"image":{"repository":"matrix-a2a-bridge","tag":"stale"}}}}'
-			;;
-		2) return 1 ;;
-		*)
-			printf '%s\n' '{"spec":{"values":{"image":{"repository":"matrix-a2a-bridge","tag":"fixture"}}}}'
-			;;
+			1)
+				printf '%s\n' '{"spec":{"values":{"image":{"repository":"matrix-a2a-bridge","tag":"stale"}}}}'
+				;;
+			2) return 1 ;;
+			*)
+				printf '%s\n' '{"spec":{"values":{"image":{"repository":"matrix-a2a-bridge","tag":"fixture"}}}}'
+				;;
 		esac
 	}
 	k3d() {
@@ -218,15 +218,15 @@ bash -n "${DEMO_SOURCES[@]}" "${DEV}" "${ROOT_DIR}/scripts/seed-demo.sh"
 	[ "$(rg --count --fixed-strings \
 		'kubectl --namespace bridge get helmrelease matrix-a2a-bridge --output json' \
 		"${bridge_image_calls}")" -eq 3 ]
-	tail -n 1 "${bridge_image_calls}" |
-		rg --fixed-strings --line-regexp \
+	tail -n 1 "${bridge_image_calls}" \
+		| rg --fixed-strings --line-regexp \
 			'k3d image import --mode auto --cluster fgentic-demo-fixture matrix-a2a-bridge:fixture' >/dev/null
 	PROFILE=federation
 	load_bridge_image_if_requested
 	[ "$(rg --count '^kubectl ' "${bridge_image_calls}")" -eq 4 ]
 	[ "$(rg --count '^k3d ' "${bridge_image_calls}")" -eq 2 ]
-	tail -n 1 "${bridge_image_calls}" |
-		rg --fixed-strings --line-regexp \
+	tail -n 1 "${bridge_image_calls}" \
+		| rg --fixed-strings --line-regexp \
 			'k3d image import --mode auto --cluster fgentic-demo-fixture matrix-a2a-bridge:fixture' >/dev/null
 
 	# The real helper must distinguish a requested image whose containerd import fails.
@@ -525,8 +525,8 @@ PATH="${dev_fake_bin}:${PATH}" \
 	FAKE_DEV_COMMANDS="${dev_fake_state}/commands" \
 	FGENTIC_CA_DIR="${WORK_DIR}/portable-ca" \
 	"${ROOT_DIR}/scripts/local-ca.sh" >"${dev_fake_state}/local-ca.txt" 2>&1
-openssl x509 --in "${WORK_DIR}/portable-ca/ca.crt" --noout --text |
-	rg --fixed-strings 'CA:TRUE' >/dev/null || {
+openssl x509 --in "${WORK_DIR}/portable-ca/ca.crt" --noout --text \
+	| rg --fixed-strings 'CA:TRUE' >/dev/null || {
 	echo 'error: portable local CA generation omitted the CA constraint' >&2
 	exit 1
 }
@@ -747,8 +747,8 @@ assert_yq \
 yq eval-all -o=yaml \
 	'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") |
     .spec.values' \
-	"${WORK_DIR}/demo-bridge.yaml" |
-	helm template matrix-a2a-bridge "${ROOT_DIR}/apps/matrix-a2a-bridge/chart" \
+	"${WORK_DIR}/demo-bridge.yaml" \
+	| helm template matrix-a2a-bridge "${ROOT_DIR}/apps/matrix-a2a-bridge/chart" \
 		--namespace bridge \
 		--values - >"${WORK_DIR}/demo-bridge-chart.yaml"
 assert_yq \
@@ -850,7 +850,8 @@ rg --fixed-strings 'git-http-backend' "${DEMO_SOURCES[@]}" >/dev/null
 rg --fixed-strings 'http://fgentic-demo-source.flux-system.svc.cluster.local:8080/cgi-bin/git/repo.git' \
 	"${DEMO_SOURCES[@]}" >/dev/null
 for retry_contract in \
-	'if flux reconcile source git flux-system --timeout=2m >/dev/null &&' \
+	'if flux reconcile source git flux-system --timeout=2m >/dev/null \' \
+	'&& actual_revision="$(kubectl --namespace flux-system get gitrepository flux-system \' \
 	"expected_revision=\"main@sha1:\${SOURCE_REVISION}\"" \
 	"! kustomizations=\"\$(kubectl --request-timeout=10s --namespace flux-system \\" \
 	"! helmreleases=\"\$(kubectl --request-timeout=10s get helmreleases \\"; do
@@ -919,38 +920,38 @@ replacement_fixture "${EXPECTED_DEMO_REPLY}" | reply_fixture_matches || {
 	echo 'error: demo reply predicate rejected the streamed Matrix replacement response' >&2
 	exit 1
 }
-replacement_fixture 'A useful model response.' |
-	reply_fixture_matches vertex google/gemini-2.5-flash || {
+replacement_fixture 'A useful model response.' \
+	| reply_fixture_matches vertex google/gemini-2.5-flash || {
 	echo 'error: demo reply predicate rejected a successful configured-model replacement' >&2
 	exit 1
 }
 if replacement_fixture "${EXPECTED_DEMO_REPLY}" \
-	'@agent-docs-qa:fgentic.localhost' '@agent-scribe:fgentic.localhost' |
-	reply_fixture_matches; then
+	'@agent-docs-qa:fgentic.localhost' '@agent-scribe:fgentic.localhost' \
+	| reply_fixture_matches; then
 	echo 'error: demo reply predicate accepted a replacement from the wrong ghost' >&2
 	exit 1
 fi
 if replacement_fixture "${EXPECTED_DEMO_REPLY}" \
-	'@agent-docs-qa:fgentic.localhost' '@agent-docs-qa:fgentic.localhost' '$other' |
-	reply_fixture_matches; then
+	'@agent-docs-qa:fgentic.localhost' '@agent-docs-qa:fgentic.localhost' '$other' \
+	| reply_fixture_matches; then
 	echo 'error: demo reply predicate accepted a replacement for another event' >&2
 	exit 1
 fi
 if replacement_fixture "${EXPECTED_DEMO_REPLY}" \
-	'@agent-docs-qa:fgentic.localhost' '@agent-docs-qa:fgentic.localhost' '$reply' 'm.text' |
-	reply_fixture_matches; then
+	'@agent-docs-qa:fgentic.localhost' '@agent-docs-qa:fgentic.localhost' '$reply' 'm.text' \
+	| reply_fixture_matches; then
 	echo 'error: demo reply predicate accepted a replacement with the wrong message type' >&2
 	exit 1
 fi
-if reply_fixture '--- BEGIN FGENTIC BRIDGE PROVENANCE ---' |
-	reply_fixture_matches vertex google/gemini-2.5-flash; then
+if reply_fixture '--- BEGIN FGENTIC BRIDGE PROVENANCE ---' \
+	| reply_fixture_matches vertex google/gemini-2.5-flash; then
 	echo 'error: demo reply predicate accepted the streaming provenance envelope' >&2
 	exit 1
 fi
 if replacement_fixture '⚠️ agent failed after starting.' \
 	'@agent-docs-qa:fgentic.localhost' '@agent-docs-qa:fgentic.localhost' \
-	'$reply' 'm.notice' 'Processing request' |
-	reply_fixture_matches vertex google/gemini-2.5-flash; then
+	'$reply' 'm.notice' 'Processing request' \
+	| reply_fixture_matches vertex google/gemini-2.5-flash; then
 	echo 'error: demo reply predicate accepted a placeholder before a terminal failure' >&2
 	exit 1
 fi
@@ -960,14 +961,14 @@ for rejected_reply in \
 	'⏳ working on it…' \
 	'(the agent returned no content)' \
 	'   '; do
-	if reply_fixture "${rejected_reply}" |
-		reply_fixture_matches vertex google/gemini-2.5-flash; then
+	if reply_fixture "${rejected_reply}" \
+		| reply_fixture_matches vertex google/gemini-2.5-flash; then
 		echo "error: demo reply predicate accepted a non-success notice: ${rejected_reply}" >&2
 		exit 1
 	fi
 done
-if jq --null-input --compact-output '{events_before: [], events_after: []}' |
-	reply_fixture_matches; then
+if jq --null-input --compact-output '{events_before: [], events_after: []}' \
+	| reply_fixture_matches; then
 	echo 'error: demo reply predicate accepted a missing reply' >&2
 	exit 1
 fi

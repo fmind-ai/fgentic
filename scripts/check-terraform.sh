@@ -22,10 +22,10 @@ terraform fmt -check -recursive "${root}/infra"
 data_dir_for() { printf '%s/%s' "${data_root}" "$(printf '%s' "$1" | tr '/' '_')"; }
 
 for dir in "${root}/infra/terraform" "${root}/infra/terraform/bootstrap"; do
-  [ -d "${dir}" ] || continue
-  data_dir="$(data_dir_for "${dir}")"
-  TF_DATA_DIR="${data_dir}" terraform -chdir="${dir}" init -backend=false -input=false >/dev/null
-  TF_DATA_DIR="${data_dir}" terraform -chdir="${dir}" validate
+	[ -d "${dir}" ] || continue
+	data_dir="$(data_dir_for "${dir}")"
+	TF_DATA_DIR="${data_dir}" terraform -chdir="${dir}" init -backend=false -input=false >/dev/null
+	TF_DATA_DIR="${data_dir}" terraform -chdir="${dir}" validate
 done
 
 # The mocked contract tests reuse infra/terraform's already-initialized data dir.

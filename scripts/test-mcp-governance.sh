@@ -14,16 +14,16 @@ catalog_entry_path="${REPO_ROOT}/infra/mcp-catalog/kagent-tools/server.json"
 runtime=false
 
 case "${1:-}" in
-"") ;;
---runtime) runtime=true ;;
--h | --help)
-	echo "usage: scripts/test-mcp-governance.sh [--runtime]" >&2
-	exit 0
-	;;
-*)
-	echo "usage: scripts/test-mcp-governance.sh [--runtime]" >&2
-	exit 2
-	;;
+	"") ;;
+	--runtime) runtime=true ;;
+	-h | --help)
+		echo "usage: scripts/test-mcp-governance.sh [--runtime]" >&2
+		exit 0
+		;;
+	*)
+		echo "usage: scripts/test-mcp-governance.sh [--runtime]" >&2
+		exit 2
+		;;
 esac
 if [ "$#" -gt 1 ]; then
 	echo "usage: scripts/test-mcp-governance.sh [--runtime]" >&2
@@ -49,11 +49,11 @@ decode_initialize_response() {
 	local response_json
 	media_type="${media_type,,}"
 	case "${media_type}" in
-	application/json)
-		response_json="$(<"${body_path}")"
-		;;
-	text/event-stream)
-		if ! response_json="$(awk '
+		application/json)
+			response_json="$(<"${body_path}")"
+			;;
+		text/event-stream)
+			if ! response_json="$(awk '
           function dispatch() {
             if (!has_data) {
               return
@@ -80,10 +80,10 @@ decode_initialize_response() {
             if (invalid || events != 1) exit 1
           }
         ' "${body_path}")"; then
-			return 1
-		fi
-		;;
-	*) return 1 ;;
+				return 1
+			fi
+			;;
+		*) return 1 ;;
 	esac
 
 	jq -ers '
@@ -321,8 +321,8 @@ assert_equal "$(
 		' "${tmp_dir}/agentgateway.yaml" \
 		| tr '\n' ' ' | sed -E 's/[[:space:]]+/ /g; s/^ //; s/ $//'
 )" \
-		'request.method == "POST" && request.path == "/mcp" && ( string(request.body).trim().startsWith("[") || json(request.body).method == "tools/call" )|audit.kind,fgentic.agent,mcp.method,mcp.tool.name,mcp.tool.target,mcp.quota.policy' \
-		"content-free MCP audit contract"
+	'request.method == "POST" && request.path == "/mcp" && ( string(request.body).trim().startsWith("[") || json(request.body).method == "tools/call" )|audit.kind,fgentic.agent,mcp.method,mcp.tool.name,mcp.tool.target,mcp.quota.policy' \
+	"content-free MCP audit contract"
 assert_equal "$(
 	yq eval-all -N -r '
       select(.kind == "AgentgatewayPolicy" and .metadata.name == "mcp-tool-audit")
@@ -415,8 +415,8 @@ for profile in demo vllm; do
 	})" "1" "${profile} effective egress-policy handoff guard"
 done
 for profile in vertex openai anthropic mistral azure-openai; do
-	[[ ! -e "${REPO_ROOT}/infra/agentgateway/providers/profiles/${profile}/networkpolicy.yaml" ]] ||
-		fail "${profile} unexpectedly gained a proxy-isolating NetworkPolicy"
+	[[ ! -e "${REPO_ROOT}/infra/agentgateway/providers/profiles/${profile}/networkpolicy.yaml" ]] \
+		|| fail "${profile} unexpectedly gained a proxy-isolating NetworkPolicy"
 done
 
 gateway_version="$({
@@ -428,8 +428,8 @@ helm template agentgateway-crds oci://cr.agentgateway.dev/charts/agentgateway-cr
 	--version "${gateway_version}" >"${tmp_dir}/agentgateway-crds.yaml"
 for kind in AgentgatewayBackend AgentgatewayPolicy; do
 	case "${kind}" in
-	AgentgatewayBackend) crd_name=agentgatewaybackends.agentgateway.dev ;;
-	AgentgatewayPolicy) crd_name=agentgatewaypolicies.agentgateway.dev ;;
+		AgentgatewayBackend) crd_name=agentgatewaybackends.agentgateway.dev ;;
+		AgentgatewayPolicy) crd_name=agentgatewaypolicies.agentgateway.dev ;;
 	esac
 	yq -o=json \
 		"select(.kind == \"CustomResourceDefinition\" and .metadata.name == \"${crd_name}\") | .spec.versions[] | select(.name == \"v1alpha1\") | .schema.openAPIV3Schema" \
@@ -971,8 +971,8 @@ mcp_request() {
 initialized_status="$(mcp_request '{"jsonrpc":"2.0","method":"notifications/initialized"}' \
 	--output /dev/null --write-out '%{http_code}')"
 case "${initialized_status}" in
-200 | 202 | 204) ;;
-*) fail "MCP initialized notification returned ${initialized_status}" ;;
+	200 | 202 | 204) ;;
+	*) fail "MCP initialized notification returned ${initialized_status}" ;;
 esac
 unsupported_protocol_version="1900-01-01"
 unsupported_protocol_status="$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' \
@@ -1092,8 +1092,8 @@ terminate_status="$(curl --silent --show-error --output /dev/null --write-out '%
 	--header "MCP-Protocol-Version: ${negotiated_protocol_version}" \
 	"http://127.0.0.1:${host_port}/mcp")"
 case "${terminate_status}" in
-200 | 202 | 204 | 405) ;;
-*) fail "authenticated MCP session termination returned ${terminate_status}" ;;
+	200 | 202 | 204 | 405) ;;
+	*) fail "authenticated MCP session termination returned ${terminate_status}" ;;
 esac
 
 echo "MCP session protocol: subsequent requests used ${negotiated_protocol_version}; ${unsupported_protocol_version} was rejected with 400"

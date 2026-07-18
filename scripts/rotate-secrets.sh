@@ -107,123 +107,123 @@ resolve_provider_target() {
 }
 
 case "${SECRET_SET}" in
-appservice)
-	GEN_SET="appservice"
-	TARGET_FILES=(matrix-a2a-bridge-registration.sops.yaml)
-	;;
-a2a)
-	GEN_SET="a2a"
-	TARGET_FILES=(a2a-authorization.sops.yaml)
-	;;
-mcp)
-	GEN_SET="mcp"
-	TARGET_FILES=(mcp-authorization.sops.yaml)
-	;;
-db-synapse)
-	GEN_SET="db-core"
-	DB_MODE="synapse"
-	TARGET_FILES=(postgres-roles.sops.yaml)
-	;;
-db-mas)
-	GEN_SET="db-core"
-	DB_MODE="mas"
-	TARGET_FILES=(postgres-roles.sops.yaml)
-	;;
-db-bridge)
-	GEN_SET="db-core"
-	DB_MODE="bridge"
-	TARGET_FILES=(postgres-roles.sops.yaml matrix-a2a-bridge-db.sops.yaml)
-	;;
-db-kagent)
-	GEN_SET="db-core"
-	DB_MODE="kagent"
-	TARGET_FILES=(postgres-roles.sops.yaml kagent.sops.yaml)
-	;;
-db-core)
-	GEN_SET="db-core"
-	DB_MODE="all"
-	TARGET_FILES=(postgres-roles.sops.yaml matrix-a2a-bridge-db.sops.yaml kagent.sops.yaml)
-	;;
-db-knowledge-owner)
-	GEN_SET="knowledge-db"
-	KNOWLEDGE_DB_MODE="owner"
-	TARGET_FILES=(knowledge-db.sops.yaml)
-	;;
-db-knowledge-retrieval)
-	GEN_SET="knowledge-db"
-	KNOWLEDGE_DB_MODE="retrieval"
-	TARGET_FILES=(knowledge-db.sops.yaml)
-	;;
-knowledge-db)
-	GEN_SET="knowledge-db"
-	KNOWLEDGE_DB_MODE="all"
-	TARGET_FILES=(knowledge-db.sops.yaml)
-	;;
-knowledge-ingestion)
-	GEN_SET="knowledge-ingestion"
-	TARGET_FILES=(knowledge-ingestion.sops.yaml)
-	;;
-provider)
-	resolve_provider_target
-	GEN_SET="provider"
-	TARGET_FILES=("${MODEL_SECRET_FILE}")
-	;;
-keycloak-db)
-	GEN_SET="keycloak-db"
-	TARGET_FILES=(keycloak-db.sops.yaml)
-	;;
-slack)
-	GEN_SET="slack"
-	TARGET_FILES=(mautrix-slack.sops.yaml)
-	;;
-telegram)
-	GEN_SET="telegram"
-	TARGET_FILES=(mautrix-telegram.sops.yaml)
-	;;
-keycloak-client)
-	if [ "${KEYCLOAK_CLIENT_UPDATED:-}" != "yes" ]; then
-		echo "error: rotate the live Keycloak fgentic client first, then set KEYCLOAK_CLIENT_UPDATED=yes" >&2
-		exit 1
-	fi
-	FGENTIC_CLIENT_SECRET="${FGENTIC_CLIENT_SECRET:-}"
-	if [ "${#FGENTIC_CLIENT_SECRET}" -lt 32 ] || [[ "${FGENTIC_CLIENT_SECRET}" == *$'\n'* ]]; then
-		echo "error: FGENTIC_CLIENT_SECRET must be a single-line secret of at least 32 characters" >&2
-		exit 1
-	fi
-	TARGET_FILES=(keycloak-bootstrap.sops.yaml)
-	;;
-all)
-	GEN_SET="rotatable"
-	DB_MODE="all"
-	KNOWLEDGE_DB_MODE="all"
-	TARGET_FILES=(
-		postgres-roles.sops.yaml
-		matrix-a2a-bridge-db.sops.yaml
-		kagent.sops.yaml
-		knowledge-db.sops.yaml
-		matrix-a2a-bridge-registration.sops.yaml
-		a2a-authorization.sops.yaml
-		mcp-authorization.sops.yaml
-		keycloak-db.sops.yaml
-	)
-	LLM_PROVIDER="$(yq -er '.data.llm_provider' "${PLATFORM_SETTINGS}")"
-	resolve_model_secret "${LLM_PROVIDER}" || {
-		echo "error: invalid provider in ${PLATFORM_SETTINGS}" >&2
-		exit 1
-	}
-	if [ -n "${MODEL_SECRET_FILE}" ]; then
-		if [ -z "${!MODEL_SECRET_ENV:-}" ]; then
-			echo "error: ${MODEL_SECRET_ENV} is required for llm_provider=${LLM_PROVIDER}" >&2
+	appservice)
+		GEN_SET="appservice"
+		TARGET_FILES=(matrix-a2a-bridge-registration.sops.yaml)
+		;;
+	a2a)
+		GEN_SET="a2a"
+		TARGET_FILES=(a2a-authorization.sops.yaml)
+		;;
+	mcp)
+		GEN_SET="mcp"
+		TARGET_FILES=(mcp-authorization.sops.yaml)
+		;;
+	db-synapse)
+		GEN_SET="db-core"
+		DB_MODE="synapse"
+		TARGET_FILES=(postgres-roles.sops.yaml)
+		;;
+	db-mas)
+		GEN_SET="db-core"
+		DB_MODE="mas"
+		TARGET_FILES=(postgres-roles.sops.yaml)
+		;;
+	db-bridge)
+		GEN_SET="db-core"
+		DB_MODE="bridge"
+		TARGET_FILES=(postgres-roles.sops.yaml matrix-a2a-bridge-db.sops.yaml)
+		;;
+	db-kagent)
+		GEN_SET="db-core"
+		DB_MODE="kagent"
+		TARGET_FILES=(postgres-roles.sops.yaml kagent.sops.yaml)
+		;;
+	db-core)
+		GEN_SET="db-core"
+		DB_MODE="all"
+		TARGET_FILES=(postgres-roles.sops.yaml matrix-a2a-bridge-db.sops.yaml kagent.sops.yaml)
+		;;
+	db-knowledge-owner)
+		GEN_SET="knowledge-db"
+		KNOWLEDGE_DB_MODE="owner"
+		TARGET_FILES=(knowledge-db.sops.yaml)
+		;;
+	db-knowledge-retrieval)
+		GEN_SET="knowledge-db"
+		KNOWLEDGE_DB_MODE="retrieval"
+		TARGET_FILES=(knowledge-db.sops.yaml)
+		;;
+	knowledge-db)
+		GEN_SET="knowledge-db"
+		KNOWLEDGE_DB_MODE="all"
+		TARGET_FILES=(knowledge-db.sops.yaml)
+		;;
+	knowledge-ingestion)
+		GEN_SET="knowledge-ingestion"
+		TARGET_FILES=(knowledge-ingestion.sops.yaml)
+		;;
+	provider)
+		resolve_provider_target
+		GEN_SET="provider"
+		TARGET_FILES=("${MODEL_SECRET_FILE}")
+		;;
+	keycloak-db)
+		GEN_SET="keycloak-db"
+		TARGET_FILES=(keycloak-db.sops.yaml)
+		;;
+	slack)
+		GEN_SET="slack"
+		TARGET_FILES=(mautrix-slack.sops.yaml)
+		;;
+	telegram)
+		GEN_SET="telegram"
+		TARGET_FILES=(mautrix-telegram.sops.yaml)
+		;;
+	keycloak-client)
+		if [ "${KEYCLOAK_CLIENT_UPDATED:-}" != "yes" ]; then
+			echo "error: rotate the live Keycloak fgentic client first, then set KEYCLOAK_CLIENT_UPDATED=yes" >&2
 			exit 1
 		fi
-		TARGET_FILES+=("${MODEL_SECRET_FILE}")
-	fi
-	;;
-*)
-	echo "error: unsupported secret-set: ${SECRET_SET}" >&2
-	usage
-	exit 2
-	;;
+		FGENTIC_CLIENT_SECRET="${FGENTIC_CLIENT_SECRET:-}"
+		if [ "${#FGENTIC_CLIENT_SECRET}" -lt 32 ] || [[ "${FGENTIC_CLIENT_SECRET}" == *$'\n'* ]]; then
+			echo "error: FGENTIC_CLIENT_SECRET must be a single-line secret of at least 32 characters" >&2
+			exit 1
+		fi
+		TARGET_FILES=(keycloak-bootstrap.sops.yaml)
+		;;
+	all)
+		GEN_SET="rotatable"
+		DB_MODE="all"
+		KNOWLEDGE_DB_MODE="all"
+		TARGET_FILES=(
+			postgres-roles.sops.yaml
+			matrix-a2a-bridge-db.sops.yaml
+			kagent.sops.yaml
+			knowledge-db.sops.yaml
+			matrix-a2a-bridge-registration.sops.yaml
+			a2a-authorization.sops.yaml
+			mcp-authorization.sops.yaml
+			keycloak-db.sops.yaml
+		)
+		LLM_PROVIDER="$(yq -er '.data.llm_provider' "${PLATFORM_SETTINGS}")"
+		resolve_model_secret "${LLM_PROVIDER}" || {
+			echo "error: invalid provider in ${PLATFORM_SETTINGS}" >&2
+			exit 1
+		}
+		if [ -n "${MODEL_SECRET_FILE}" ]; then
+			if [ -z "${!MODEL_SECRET_ENV:-}" ]; then
+				echo "error: ${MODEL_SECRET_ENV} is required for llm_provider=${LLM_PROVIDER}" >&2
+				exit 1
+			fi
+			TARGET_FILES+=("${MODEL_SECRET_FILE}")
+		fi
+		;;
+	*)
+		echo "error: unsupported secret-set: ${SECRET_SET}" >&2
+		usage
+		exit 2
+		;;
 esac
 
 decrypt() {
@@ -235,8 +235,8 @@ secret_value() { # secret_value <file> <namespace> <name> <yq suffix>
 	local namespace="$2"
 	local name="$3"
 	local suffix="$4"
-	decrypt "${file}" |
-		yq eval-all -er "select(.metadata.namespace == \"${namespace}\" and .metadata.name == \"${name}\") | ${suffix}" -
+	decrypt "${file}" \
+		| yq eval-all -er "select(.metadata.namespace == \"${namespace}\" and .metadata.name == \"${name}\") | ${suffix}" -
 }
 
 assert_equal() {
@@ -297,20 +297,20 @@ if [ -n "${DB_MODE}" ]; then
 	OLD_PG_BRIDGE="${PG_BRIDGE}"
 	OLD_PG_KAGENT="${PG_KAGENT}"
 	case "${DB_MODE}" in
-	synapse) PG_SYNAPSE="$(openssl rand -hex 24)" ;;
-	mas) PG_MAS="$(openssl rand -hex 24)" ;;
-	bridge) PG_BRIDGE="$(openssl rand -hex 24)" ;;
-	kagent) PG_KAGENT="$(openssl rand -hex 24)" ;;
-	all)
-		PG_SYNAPSE="$(openssl rand -hex 24)"
-		PG_MAS="$(openssl rand -hex 24)"
-		PG_BRIDGE="$(openssl rand -hex 24)"
-		PG_KAGENT="$(openssl rand -hex 24)"
-		;;
-	*)
-		echo "error: invalid database rotation mode: ${DB_MODE}" >&2
-		exit 1
-		;;
+		synapse) PG_SYNAPSE="$(openssl rand -hex 24)" ;;
+		mas) PG_MAS="$(openssl rand -hex 24)" ;;
+		bridge) PG_BRIDGE="$(openssl rand -hex 24)" ;;
+		kagent) PG_KAGENT="$(openssl rand -hex 24)" ;;
+		all)
+			PG_SYNAPSE="$(openssl rand -hex 24)"
+			PG_MAS="$(openssl rand -hex 24)"
+			PG_BRIDGE="$(openssl rand -hex 24)"
+			PG_KAGENT="$(openssl rand -hex 24)"
+			;;
+		*)
+			echo "error: invalid database rotation mode: ${DB_MODE}" >&2
+			exit 1
+			;;
 	esac
 	export PG_SYNAPSE PG_MAS PG_BRIDGE PG_KAGENT
 fi
@@ -325,16 +325,16 @@ if [ -n "${KNOWLEDGE_DB_MODE}" ]; then
 	OLD_PG_KNOWLEDGE_OWNER="${PG_KNOWLEDGE_OWNER}"
 	OLD_PG_KNOWLEDGE_RETRIEVAL="${PG_KNOWLEDGE_RETRIEVAL}"
 	case "${KNOWLEDGE_DB_MODE}" in
-	owner) PG_KNOWLEDGE_OWNER="$(openssl rand -hex 24)" ;;
-	retrieval) PG_KNOWLEDGE_RETRIEVAL="$(openssl rand -hex 24)" ;;
-	all)
-		PG_KNOWLEDGE_OWNER="$(openssl rand -hex 24)"
-		PG_KNOWLEDGE_RETRIEVAL="$(openssl rand -hex 24)"
-		;;
-	*)
-		echo "error: invalid knowledge database rotation mode: ${KNOWLEDGE_DB_MODE}" >&2
-		exit 1
-		;;
+		owner) PG_KNOWLEDGE_OWNER="$(openssl rand -hex 24)" ;;
+		retrieval) PG_KNOWLEDGE_RETRIEVAL="$(openssl rand -hex 24)" ;;
+		all)
+			PG_KNOWLEDGE_OWNER="$(openssl rand -hex 24)"
+			PG_KNOWLEDGE_RETRIEVAL="$(openssl rand -hex 24)"
+			;;
+		*)
+			echo "error: invalid knowledge database rotation mode: ${KNOWLEDGE_DB_MODE}" >&2
+			exit 1
+			;;
 	esac
 	export PG_KNOWLEDGE_OWNER PG_KNOWLEDGE_RETRIEVAL
 fi
@@ -380,16 +380,16 @@ if [ "${SECRET_SET}" = "keycloak-client" ]; then
 	target="${SECRETS_DIR}/keycloak-bootstrap.sops.yaml"
 	stage="${STAGE_DIR}/keycloak-bootstrap.sops.yaml"
 	export FGENTIC_CLIENT_SECRET
-	decrypt "${target}" |
-		yq eval-all '
+	decrypt "${target}" \
+		| yq eval-all '
       (. | select(.metadata.name == "keycloak-credentials" and .metadata.namespace == "keycloak") | .stringData.FGENTIC_CLIENT_SECRET) = strenv(FGENTIC_CLIENT_SECRET)
       | (. | select(.metadata.name == "mas-upstream-oidc" and .metadata.namespace == "matrix") | .stringData."provider.yaml") |= (
           from_yaml
           | (.upstream_oauth2.providers[] | select(.client_id == "fgentic").client_secret) = strenv(FGENTIC_CLIENT_SECRET)
           | to_yaml
         )
-    ' - |
-		sops --config "${SOPS_CONFIG}" --filename-override "${target}" --encrypt /dev/stdin \
+    ' - \
+		| sops --config "${SOPS_CONFIG}" --filename-override "${target}" --encrypt /dev/stdin \
 			>"${stage}"
 	chmod 0644 "${stage}"
 else
@@ -466,20 +466,20 @@ validate_databases() {
 	assert_equal "${new_bridge}" "${PG_BRIDGE}" "unexpected bridge database value"
 	assert_equal "${new_kagent}" "${PG_KAGENT}" "unexpected kagent database value"
 	case "${DB_MODE}" in
-	synapse) assert_changed "${OLD_PG_SYNAPSE}" "${new_synapse}" "Synapse database password" ;;
-	mas) assert_changed "${OLD_PG_MAS}" "${new_mas}" "MAS database password" ;;
-	bridge) assert_changed "${OLD_PG_BRIDGE}" "${new_bridge}" "bridge database password" ;;
-	kagent) assert_changed "${OLD_PG_KAGENT}" "${new_kagent}" "kagent database password" ;;
-	all)
-		assert_changed "${OLD_PG_SYNAPSE}" "${new_synapse}" "Synapse database password"
-		assert_changed "${OLD_PG_MAS}" "${new_mas}" "MAS database password"
-		assert_changed "${OLD_PG_BRIDGE}" "${new_bridge}" "bridge database password"
-		assert_changed "${OLD_PG_KAGENT}" "${new_kagent}" "kagent database password"
-		;;
-	*)
-		echo "error: invalid database validation mode: ${DB_MODE}" >&2
-		exit 1
-		;;
+		synapse) assert_changed "${OLD_PG_SYNAPSE}" "${new_synapse}" "Synapse database password" ;;
+		mas) assert_changed "${OLD_PG_MAS}" "${new_mas}" "MAS database password" ;;
+		bridge) assert_changed "${OLD_PG_BRIDGE}" "${new_bridge}" "bridge database password" ;;
+		kagent) assert_changed "${OLD_PG_KAGENT}" "${new_kagent}" "kagent database password" ;;
+		all)
+			assert_changed "${OLD_PG_SYNAPSE}" "${new_synapse}" "Synapse database password"
+			assert_changed "${OLD_PG_MAS}" "${new_mas}" "MAS database password"
+			assert_changed "${OLD_PG_BRIDGE}" "${new_bridge}" "bridge database password"
+			assert_changed "${OLD_PG_KAGENT}" "${new_kagent}" "kagent database password"
+			;;
+		*)
+			echo "error: invalid database validation mode: ${DB_MODE}" >&2
+			exit 1
+			;;
 	esac
 	if [ -f "${STAGE_DIR}/matrix-a2a-bridge-db.sops.yaml" ]; then
 		bridge_url="$(secret_value "${STAGE_DIR}/matrix-a2a-bridge-db.sops.yaml" bridge matrix-a2a-bridge-db '.stringData.url')"
@@ -526,26 +526,26 @@ validate_knowledge_db() {
 	assert_equal "${owner_password}" "${PG_KNOWLEDGE_OWNER}" "unexpected knowledge owner database value"
 	assert_equal "${retrieval_password}" "${PG_KNOWLEDGE_RETRIEVAL}" "unexpected knowledge retrieval database value"
 	case "${KNOWLEDGE_DB_MODE}" in
-	owner)
-		assert_changed "${OLD_PG_KNOWLEDGE_OWNER}" "${owner_password}" "knowledge owner database password"
-		assert_equal "${OLD_PG_KNOWLEDGE_RETRIEVAL}" "${retrieval_password}" \
-			"knowledge retrieval password changed during owner-only rotation"
-		;;
-	retrieval)
-		assert_equal "${OLD_PG_KNOWLEDGE_OWNER}" "${owner_password}" \
-			"knowledge owner password changed during retrieval-only rotation"
-		assert_changed "${OLD_PG_KNOWLEDGE_RETRIEVAL}" "${retrieval_password}" \
-			"knowledge retrieval database password"
-		;;
-	all)
-		assert_changed "${OLD_PG_KNOWLEDGE_OWNER}" "${owner_password}" "knowledge owner database password"
-		assert_changed "${OLD_PG_KNOWLEDGE_RETRIEVAL}" "${retrieval_password}" \
-			"knowledge retrieval database password"
-		;;
-	*)
-		echo "error: invalid knowledge database validation mode: ${KNOWLEDGE_DB_MODE}" >&2
-		exit 1
-		;;
+		owner)
+			assert_changed "${OLD_PG_KNOWLEDGE_OWNER}" "${owner_password}" "knowledge owner database password"
+			assert_equal "${OLD_PG_KNOWLEDGE_RETRIEVAL}" "${retrieval_password}" \
+				"knowledge retrieval password changed during owner-only rotation"
+			;;
+		retrieval)
+			assert_equal "${OLD_PG_KNOWLEDGE_OWNER}" "${owner_password}" \
+				"knowledge owner password changed during retrieval-only rotation"
+			assert_changed "${OLD_PG_KNOWLEDGE_RETRIEVAL}" "${retrieval_password}" \
+				"knowledge retrieval database password"
+			;;
+		all)
+			assert_changed "${OLD_PG_KNOWLEDGE_OWNER}" "${owner_password}" "knowledge owner database password"
+			assert_changed "${OLD_PG_KNOWLEDGE_RETRIEVAL}" "${retrieval_password}" \
+				"knowledge retrieval database password"
+			;;
+		*)
+			echo "error: invalid knowledge database validation mode: ${KNOWLEDGE_DB_MODE}" >&2
+			exit 1
+			;;
 	esac
 }
 
@@ -559,8 +559,8 @@ validate_knowledge_ingestion() {
 	old_db="$(secret_value "${old_file}" postgres pg-knowledge-ingestion '.stringData.password')"
 	old_connector_db="$(
 		# A pre-#335 optional set has no connector pair; the first post-upgrade rotation adds it.
-		secret_value "${old_file}" postgres pg-knowledge-connector '.stringData.password' 2>/dev/null ||
-			true
+		secret_value "${old_file}" postgres pg-knowledge-connector '.stringData.password' 2>/dev/null \
+			|| true
 	)"
 	old_authorization="$(
 		secret_value "${old_file}" knowledge knowledge-ingestion-credential '.stringData.authorization'
@@ -724,32 +724,32 @@ validate_keycloak_client() {
 }
 
 case "${SECRET_SET}" in
-appservice) validate_appservice ;;
-a2a) validate_a2a ;;
-mcp) validate_mcp ;;
-db-knowledge-* | knowledge-db) validate_knowledge_db ;;
-knowledge-ingestion) validate_knowledge_ingestion ;;
-db-synapse | db-mas | db-bridge | db-kagent | db-core) validate_databases ;;
-provider) validate_provider ;;
-keycloak-db) validate_keycloak_db ;;
-slack) validate_slack ;;
-telegram) validate_telegram ;;
-keycloak-client) validate_keycloak_client ;;
-all)
-	validate_databases
-	validate_appservice
-	validate_a2a
-	validate_mcp
-	validate_keycloak_db
-	validate_knowledge_db
-	if [ -n "${MODEL_SECRET_FILE}" ]; then
-		validate_provider
-	fi
-	;;
-*)
-	echo "error: no validation rule for ${SECRET_SET}" >&2
-	exit 1
-	;;
+	appservice) validate_appservice ;;
+	a2a) validate_a2a ;;
+	mcp) validate_mcp ;;
+	db-knowledge-* | knowledge-db) validate_knowledge_db ;;
+	knowledge-ingestion) validate_knowledge_ingestion ;;
+	db-synapse | db-mas | db-bridge | db-kagent | db-core) validate_databases ;;
+	provider) validate_provider ;;
+	keycloak-db) validate_keycloak_db ;;
+	slack) validate_slack ;;
+	telegram) validate_telegram ;;
+	keycloak-client) validate_keycloak_client ;;
+	all)
+		validate_databases
+		validate_appservice
+		validate_a2a
+		validate_mcp
+		validate_keycloak_db
+		validate_knowledge_db
+		if [ -n "${MODEL_SECRET_FILE}" ]; then
+			validate_provider
+		fi
+		;;
+	*)
+		echo "error: no validation rule for ${SECRET_SET}" >&2
+		exit 1
+		;;
 esac
 
 # Every output is valid before the first tracked file changes. Ciphertext backups make the small
@@ -772,43 +772,43 @@ platform-secrets, then follow the ordered restart plan in:
 EOF
 
 case "${SECRET_SET}" in
-appservice)
-	echo "Restart order: Synapse (reload registration), then bridge (load matching tokens)."
-	;;
-a2a)
-	echo "Restart order: wait for agentgateway policy acceptance, then restart the bridge."
-	;;
-mcp)
-	echo "Restart order: wait for agentgateway policy acceptance, then restart the kagent controller so it regenerates and rolls platform-helper."
-	;;
-db-synapse | db-mas | db-bridge | db-kagent | db-core | keycloak-db)
-	echo "Restart order: wait for CNPG managedRolesStatus to match the Secret resourceVersion, then restart the named consumer(s)."
-	;;
-db-knowledge-owner | db-knowledge-retrieval | knowledge-db)
-	echo "Restart order: wait for the affected CNPG DatabaseRole resource(s) to reconcile," \
-		"then restart the retrieval consumer when its credential changed."
-	;;
-knowledge-ingestion)
-	echo "Restart order: wait for the CNPG connector/ingestion roles and gateway policy to accept" \
-		"the new copies before starting another ingestion Job; acquisition holds none of them."
-	;;
-slack)
-	echo "Restart order: wait for the slackbridge CNPG role, restart Synapse, then restart mautrix-slack."
-	;;
-telegram)
-	echo "Restart order: wait for the telegrambridge CNPG role, restart Synapse, then restart mautrix-telegram."
-	;;
-provider)
-	echo "Restart order: wait for the provider backend to report Accepted; no workload restart is normally required."
-	;;
-keycloak-client)
-	echo "Restart order: live Keycloak was changed first; reconcile the matching ciphertext, then restart MAS."
-	;;
-all)
-	echo "Restart order: CNPG roles, Keycloak/Synapse/MAS/kagent, then bridge last; the runbook has exact commands."
-	;;
-*)
-	echo "error: no restart plan for ${SECRET_SET}" >&2
-	exit 1
-	;;
+	appservice)
+		echo "Restart order: Synapse (reload registration), then bridge (load matching tokens)."
+		;;
+	a2a)
+		echo "Restart order: wait for agentgateway policy acceptance, then restart the bridge."
+		;;
+	mcp)
+		echo "Restart order: wait for agentgateway policy acceptance, then restart the kagent controller so it regenerates and rolls platform-helper."
+		;;
+	db-synapse | db-mas | db-bridge | db-kagent | db-core | keycloak-db)
+		echo "Restart order: wait for CNPG managedRolesStatus to match the Secret resourceVersion, then restart the named consumer(s)."
+		;;
+	db-knowledge-owner | db-knowledge-retrieval | knowledge-db)
+		echo "Restart order: wait for the affected CNPG DatabaseRole resource(s) to reconcile," \
+			"then restart the retrieval consumer when its credential changed."
+		;;
+	knowledge-ingestion)
+		echo "Restart order: wait for the CNPG connector/ingestion roles and gateway policy to accept" \
+			"the new copies before starting another ingestion Job; acquisition holds none of them."
+		;;
+	slack)
+		echo "Restart order: wait for the slackbridge CNPG role, restart Synapse, then restart mautrix-slack."
+		;;
+	telegram)
+		echo "Restart order: wait for the telegrambridge CNPG role, restart Synapse, then restart mautrix-telegram."
+		;;
+	provider)
+		echo "Restart order: wait for the provider backend to report Accepted; no workload restart is normally required."
+		;;
+	keycloak-client)
+		echo "Restart order: live Keycloak was changed first; reconcile the matching ciphertext, then restart MAS."
+		;;
+	all)
+		echo "Restart order: CNPG roles, Keycloak/Synapse/MAS/kagent, then bridge last; the runbook has exact commands."
+		;;
+	*)
+		echo "error: no restart plan for ${SECRET_SET}" >&2
+		exit 1
+		;;
 esac

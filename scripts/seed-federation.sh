@@ -81,7 +81,6 @@ curl() {
 		"$@"
 }
 
-
 # shellcheck source=scripts/lib/federation-a2a.sh
 source "${ROOT_DIR}/scripts/lib/federation-a2a.sh"
 # shellcheck source=scripts/lib/federation-matrix.sh
@@ -94,8 +93,8 @@ for command in awk cmp curl date jq kubectl mise openssl; do
 done
 [ -r "${CA_CERT}" ] || die "local CA certificate not found: ${CA_CERT}"
 case "${POLICY_PROBE_MODE}" in
-allow | deny) ;;
-*) die "FGENTIC_FED_POLICY_PROBE must be allow or deny" ;;
+	allow | deny) ;;
+	*) die "FGENTIC_FED_POLICY_PROBE must be allow or deny" ;;
 esac
 
 verify_cross_org_delegation
@@ -141,10 +140,10 @@ signed_control_response="${WORK_DIR}/signed-control.json"
 signed_control_status=""
 send_signed_federation_probe "${SERVER_C}" "${MATRIX_C_URL}" "${room_id}" \
 	"${signed_control_response}" signed_control_status
-[ "${signed_control_status}" = "200" ] ||
-	die "signed federation positive control failed (HTTP ${signed_control_status})"
-jq -e '.pdus == {}' "${signed_control_response}" >/dev/null ||
-	die "signed federation positive control returned an invalid transaction response"
+[ "${signed_control_status}" = "200" ] \
+	|| die "signed federation positive control failed (HTTP ${signed_control_status})"
+jq -e '.pdus == {}' "${signed_control_response}" >/dev/null \
+	|| die "signed federation positive control returned an invalid transaction response"
 
 for target in "${SERVER_A}|${MATRIX_A_URL}|A" "${SERVER_B}|${MATRIX_B_URL}|B"; do
 	target_server="${target%%|*}"
@@ -202,18 +201,18 @@ encoded_policy_event="$(jq --null-input --raw-output --arg value "${policy_event
 verify_local_policy_event "${encoded_policy_room}" "${encoded_policy_event}" \
 	"${policy_event_id}" "${policy_marker}"
 case "${POLICY_PROBE_MODE}" in
-allow)
-	wait_for_remote_policy_event "${encoded_policy_room}" "${encoded_policy_event}" \
-		"${policy_event_id}" "${policy_marker}"
-	policy_outcome="allowed on A after Flux policy reconcile"
-	;;
-deny)
-	wait_for_policy_violation "${policy_room_id}" "${policy_event_id}" "${policy_marker}"
-	verify_remote_policy_event_absent "${encoded_policy_room}" "${encoded_policy_event}" \
-		"${policy_event_id}"
-	policy_outcome="retained on B, absent on A"
-	;;
-*) die "unsupported federation policy probe mode: ${POLICY_PROBE_MODE}" ;;
+	allow)
+		wait_for_remote_policy_event "${encoded_policy_room}" "${encoded_policy_event}" \
+			"${policy_event_id}" "${policy_marker}"
+		policy_outcome="allowed on A after Flux policy reconcile"
+		;;
+	deny)
+		wait_for_policy_violation "${policy_room_id}" "${policy_event_id}" "${policy_marker}"
+		verify_remote_policy_event_absent "${encoded_policy_room}" "${encoded_policy_event}" \
+			"${policy_event_id}"
+		policy_outcome="retained on B, absent on A"
+		;;
+	*) die "unsupported federation policy probe mode: ${POLICY_PROBE_MODE}" ;;
 esac
 
 local_room_document="$(jq --null-input --compact-output '{
@@ -231,8 +230,8 @@ encoded_local_room="$(jq --null-input --raw-output --arg value "${local_room_id}
 local_creation="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 	--header "Authorization: Bearer ${ALICE_TOKEN}" \
 	"${MATRIX_A_URL}/_matrix/client/v3/rooms/${encoded_local_room}/state/m.room.create")"
-jq -e '.room_version == "12" and ."m.federate" == false' <<<"${local_creation}" >/dev/null ||
-	die "default room version or explicit local-only federation policy was not enforced"
+jq -e '.room_version == "12" and ."m.federate" == false' <<<"${local_creation}" >/dev/null \
+	|| die "default room version or explicit local-only federation policy was not enforced"
 
 for session in "${MATRIX_A_URL}|${ALICE_TOKEN}" "${MATRIX_B_URL}|${BOB_TOKEN}" \
 	"${MATRIX_C_URL}|${CHARLIE_TOKEN}"; do

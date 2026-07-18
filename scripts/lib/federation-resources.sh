@@ -13,14 +13,14 @@ memory_quantity_bytes() {
 	number="${quantity%%[[:alpha:]]*}"
 	unit="${quantity#"${number}"}"
 	case "${unit}" in
-	B | "") multiplier=1 ;;
-	KB) multiplier=1000 ;;
-	MB) multiplier=1000000 ;;
-	GB) multiplier=1000000000 ;;
-	KiB) multiplier=1024 ;;
-	MiB) multiplier=1048576 ;;
-	GiB) multiplier=1073741824 ;;
-	*) return 1 ;;
+		B | "") multiplier=1 ;;
+		KB) multiplier=1000 ;;
+		MB) multiplier=1000000 ;;
+		GB) multiplier=1000000000 ;;
+		KiB) multiplier=1024 ;;
+		MiB) multiplier=1048576 ;;
+		GiB) multiplier=1073741824 ;;
+		*) return 1 ;;
 	esac
 	awk -v number="${number}" -v multiplier="${multiplier}" \
 		'BEGIN { printf "%.0f", number * multiplier }'
@@ -37,8 +37,8 @@ resource_trace_phase() {
 resource_trace_set_phase() {
 	resource_trace_enabled || return 0
 	case "$1" in
-	bootstrap | reconcile | proof | idle | stopped) ;;
-	*) die "invalid federation resource-trace phase: $1" ;;
+		bootstrap | reconcile | proof | idle | stopped) ;;
+		*) die "invalid federation resource-trace phase: $1" ;;
 	esac
 	printf '%s\n' "$1" >"${RESOURCE_TRACE_DIR}/phase"
 	if ! resource_trace_sample_volume; then
@@ -51,8 +51,8 @@ resource_trace_record_sampling_failure() {
 	resource_trace_enabled || return 0
 	local kind="$1" phase timestamp
 	case "${kind}" in
-	server | volume | sampler) ;;
-	*) return 1 ;;
+		server | volume | sampler) ;;
+		*) return 1 ;;
 	esac
 	timestamp="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 	phase="$(resource_trace_phase)"
@@ -101,8 +101,8 @@ resource_trace_sample_workloads() {
 	docker ps --format '{{.Names}}' | rg --fixed-strings --line-regexp "${server}" >/dev/null || return 0
 	timestamp="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 	phase="$(resource_trace_phase)"
-	docker exec "${server}" crictl stats --output json 2>/dev/null |
-		jq --compact-output --arg timestamp "${timestamp}" --arg phase "${phase}" '
+	docker exec "${server}" crictl stats --output json 2>/dev/null \
+		| jq --compact-output --arg timestamp "${timestamp}" --arg phase "${phase}" '
       .stats[]? |
       select(.attributes.labels."io.kubernetes.pod.namespace" != null) |
       {

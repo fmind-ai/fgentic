@@ -11,6 +11,11 @@ pre-commit:
       glob: "*.{json,md,toml,yaml,yml}"
       run: mise run format:dprint # whole-tree; dprint.json excludes apps/ + *.sops.yaml
       stage_fixed: true
+    format:shell:
+      priority: 1
+      glob: "scripts/**/*.sh"
+      run: mise run format:shell
+      stage_fixed: true
     format:terraform:
       priority: 1
       glob: "infra/**/*.tf"

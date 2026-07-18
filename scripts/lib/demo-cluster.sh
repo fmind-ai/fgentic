@@ -10,8 +10,8 @@ configure_ephemeral_flux_controllers() {
 	# single-replica controllers alive through API-server I/O stalls instead of flapping every
 	# dependent Kustomization after the default 15-second leader-election lease expires.
 	deployment_output="$(kubectl --namespace flux-system get deployments \
-		--selector app.kubernetes.io/part-of=flux --output json | \
-		jq --raw-output --arg lease \
+		--selector app.kubernetes.io/part-of=flux --output json \
+		| jq --raw-output --arg lease \
 			"--leader-election-lease-duration=${FLUX_LEADER_ELECTION_LEASE_DURATION}" '
         .items[] |
         select((((.spec.template.spec.containers[0].args // []) | index($lease)) == null)) |
@@ -53,9 +53,9 @@ configure_federation_flux_controllers() {
 	# constrained lab uses one scheduler thread and a request-sized soft heap, while the default
 	# profile explicitly restores the upstream runtime and resource values after constrained reuse.
 	deployment_output="$(kubectl --namespace flux-system get deployments \
-		--selector app.kubernetes.io/part-of=flux --output json | \
-		jq --raw-output '.items[].metadata.name')" ||
-		die 'could not inspect Flux controllers for federation runtime tuning'
+		--selector app.kubernetes.io/part-of=flux --output json \
+		| jq --raw-output '.items[].metadata.name')" \
+		|| die 'could not inspect Flux controllers for federation runtime tuning'
 	while IFS= read -r deployment; do
 		[ -z "${deployment}" ] || deployments[${#deployments[@]}]="${deployment}"
 	done <<<"${deployment_output}"
@@ -110,8 +110,8 @@ configure_federation_metrics_server() {
 		fi
 		return
 	fi
-	[ "${changed}" = no ] ||
-		kubectl --namespace kube-system rollout status deployment/metrics-server --timeout=2m
+	[ "${changed}" = no ] \
+		|| kubectl --namespace kube-system rollout status deployment/metrics-server --timeout=2m
 }
 random_hex() {
 	openssl rand -hex "$1"
@@ -119,8 +119,8 @@ random_hex() {
 
 cluster_exists() {
 	local cluster_output query_status
-	cluster_output="$(k3d cluster list --output json)" ||
-		die 'could not inspect the k3d cluster inventory'
+	cluster_output="$(k3d cluster list --output json)" \
+		|| die 'could not inspect the k3d cluster inventory'
 	if jq -e --arg name "${CLUSTER_NAME}" \
 		'any(.[]; .name == $name)' <<<"${cluster_output}" >/dev/null; then
 		return 0
@@ -177,8 +177,8 @@ cluster_volume_exists() {
 }
 
 cluster_volume_identity() {
-	docker volume inspect "k3d-${CLUSTER_NAME}-images" 2>/dev/null |
-		jq --exit-status --raw-output --arg cluster "${CLUSTER_NAME}" '
+	docker volume inspect "k3d-${CLUSTER_NAME}-images" 2>/dev/null \
+		| jq --exit-status --raw-output --arg cluster "${CLUSTER_NAME}" '
       .[0] |
       select(.Labels.app == "k3d" and .Labels."k3d.cluster" == $cluster) |
       (.Name + "@" + .CreatedAt)
@@ -241,8 +241,8 @@ cluster_retained_storage_bytes() {
 	container_output="$(cluster_container_ids)" || return 1
 	while IFS= read -r container_id; do
 		[ -n "${container_id}" ] || continue
-		bytes="$(docker container inspect --size --format '{{.SizeRw}}' "${container_id}")" ||
-			return 1
+		bytes="$(docker container inspect --size --format '{{.SizeRw}}' "${container_id}")" \
+			|| return 1
 		[[ "${bytes}" =~ ^[0-9]+$ ]] || return 1
 		total=$((total + bytes))
 	done <<<"${container_output}"
@@ -334,8 +334,8 @@ teardown_receipt_fail() {
 require_valid_teardown_receipt() {
 	local receipt
 	receipt="$(teardown_receipt_path)"
-	validate_teardown_receipt_file "${receipt}" ||
-		teardown_receipt_fail "malformed or stale teardown receipt for ${CLUSTER_NAME}"
+	validate_teardown_receipt_file "${receipt}" \
+		|| teardown_receipt_fail "malformed or stale teardown receipt for ${CLUSTER_NAME}"
 }
 
 require_no_pending_teardown() {
@@ -355,14 +355,14 @@ write_teardown_receipt() {
 	state_dir="${receipt%/*}"
 	[ ! -e "${receipt}" ] || teardown_receipt_fail "teardown receipt already exists for ${CLUSTER_NAME}"
 
-	container_output="$(cluster_container_ids)" ||
-		die "could not inspect ${CLUSTER_NAME} containers before receipt creation"
+	container_output="$(cluster_container_ids)" \
+		|| die "could not inspect ${CLUSTER_NAME} containers before receipt creation"
 	while IFS= read -r container_id; do
 		[ -z "${container_id}" ] || container_ids[${#container_ids[@]}]="${container_id}"
 	done <<<"${container_output}"
 	((${#container_ids[@]} > 0)) || die "${CLUSTER_NAME} has no containers to record"
-	container_output="$(docker container inspect "${container_ids[@]}")" ||
-		die "could not capture ${CLUSTER_NAME} container identities"
+	container_output="$(docker container inspect "${container_ids[@]}")" \
+		|| die "could not capture ${CLUSTER_NAME} container identities"
 	server_id="$(jq --exit-status --raw-output --arg cluster "${CLUSTER_NAME}" \
 		--arg owner "${OWNER_LABEL}" '
       [.[] | select(
@@ -373,28 +373,28 @@ write_teardown_receipt() {
     ' <<<"${container_output}")" || die "could not prove ${CLUSTER_NAME} receipt generation"
 	jq --exit-status --arg cluster "${CLUSTER_NAME}" '
       all(.[]; .Config.Labels."k3d.cluster" == $cluster)
-    ' <<<"${container_output}" >/dev/null ||
-		die "refusing to record containers outside ${CLUSTER_NAME}"
+    ' <<<"${container_output}" >/dev/null \
+		|| die "refusing to record containers outside ${CLUSTER_NAME}"
 
-	network_output="$(docker network inspect "k3d-${CLUSTER_NAME}")" ||
-		die "could not capture ${CLUSTER_NAME} network identity"
+	network_output="$(docker network inspect "k3d-${CLUSTER_NAME}")" \
+		|| die "could not capture ${CLUSTER_NAME} network identity"
 	jq --exit-status --arg cluster "${CLUSTER_NAME}" '
       length == 1 and
       .[0].Name == ("k3d-" + $cluster) and
       .[0].Labels.app == "k3d" and
       ((.[0].Labels."k3d.cluster" // "") == "" or
        .[0].Labels."k3d.cluster" == $cluster)
-    ' <<<"${network_output}" >/dev/null ||
-		die "refusing to record foreign network k3d-${CLUSTER_NAME}"
+    ' <<<"${network_output}" >/dev/null \
+		|| die "refusing to record foreign network k3d-${CLUSTER_NAME}"
 
-	volume_output="$(cluster_attached_volume_names)" ||
-		die "could not inspect ${CLUSTER_NAME} attached volumes before receipt creation"
+	volume_output="$(cluster_attached_volume_names)" \
+		|| die "could not inspect ${CLUSTER_NAME} attached volumes before receipt creation"
 	while IFS= read -r name; do
 		[ -z "${name}" ] || volume_names[${#volume_names[@]}]="${name}"
 	done <<<"${volume_output}"
 	((${#volume_names[@]} > 0)) || die "${CLUSTER_NAME} has no attached volumes to record"
-	volume_output="$(docker volume inspect "${volume_names[@]}")" ||
-		die "could not capture ${CLUSTER_NAME} volume identities"
+	volume_output="$(docker volume inspect "${volume_names[@]}")" \
+		|| die "could not capture ${CLUSTER_NAME} volume identities"
 	jq --exit-status --arg cluster "${CLUSTER_NAME}" '
       all(.[];
         if .Name == ("k3d-" + $cluster + "-images") then
@@ -402,31 +402,31 @@ write_teardown_receipt() {
         else
           ((.Labels // {}) | has("com.docker.volume.anonymous"))
         end)
-    ' <<<"${volume_output}" >/dev/null ||
-		die "refusing to record foreign volume attached to ${CLUSTER_NAME}"
+    ' <<<"${volume_output}" >/dev/null \
+		|| die "refusing to record foreign volume attached to ${CLUSTER_NAME}"
 
-	image_output="$(cluster_owned_image_ids)" ||
-		die "could not inspect ${CLUSTER_NAME} local images before receipt creation"
+	image_output="$(cluster_owned_image_ids)" \
+		|| die "could not inspect ${CLUSTER_NAME} local images before receipt creation"
 	while IFS= read -r image_id; do
 		[ -z "${image_id}" ] || image_ids[${#image_ids[@]}]="${image_id}"
 	done <<<"${image_output}"
 	if ((${#image_ids[@]} > 0)); then
-		image_output="$(docker image inspect "${image_ids[@]}")" ||
-			die "could not capture ${CLUSTER_NAME} local-image identities"
+		image_output="$(docker image inspect "${image_ids[@]}")" \
+			|| die "could not capture ${CLUSTER_NAME} local-image identities"
 		jq --exit-status --arg cluster "${CLUSTER_NAME}" '
         all(.[]; .Config.Labels."dev.fgentic.demo.cluster" == $cluster)
-      ' <<<"${image_output}" >/dev/null ||
-			die "refusing to record a foreign local image for ${CLUSTER_NAME}"
+      ' <<<"${image_output}" >/dev/null \
+			|| die "refusing to record a foreign local image for ${CLUSTER_NAME}"
 	else
 		image_output='[]'
 	fi
 
-	mkdir -p "${state_dir}" ||
-		die "could not create ${CLUSTER_NAME} teardown state directory"
-	chmod 700 "${state_dir}" ||
-		die "could not protect ${CLUSTER_NAME} teardown state directory"
-	temporary="$(mktemp "${state_dir}/.${CLUSTER_NAME}.XXXXXX")" ||
-		die "could not create temporary ${CLUSTER_NAME} teardown receipt"
+	mkdir -p "${state_dir}" \
+		|| die "could not create ${CLUSTER_NAME} teardown state directory"
+	chmod 700 "${state_dir}" \
+		|| die "could not protect ${CLUSTER_NAME} teardown state directory"
+	temporary="$(mktemp "${state_dir}/.${CLUSTER_NAME}.XXXXXX")" \
+		|| die "could not create temporary ${CLUSTER_NAME} teardown receipt"
 	chmod 600 "${temporary}" || {
 		rm -f "${temporary}"
 		die "could not protect temporary ${CLUSTER_NAME} teardown receipt"
@@ -487,15 +487,15 @@ validate_receipt_container() {
           length == 1 and .[0].Id == $id and
           (.[0].Name | ltrimstr("/")) == $name and
           .[0].Config.Labels."k3d.cluster" == $cluster
-        ' <<<"${actual}" >/dev/null ||
-			teardown_receipt_fail "container identity or ownership changed for ${name}"
+        ' <<<"${actual}" >/dev/null \
+			|| teardown_receipt_fail "container identity or ownership changed for ${name}"
 		receipt="$(teardown_receipt_path)"
 		generation="$(jq --raw-output '.generation' "${receipt}")"
 		if [ "${id}" = "${generation}" ]; then
 			jq --exit-status --arg owner "${OWNER_LABEL}" \
 				'.[0].Config.Labels."dev.fgentic.demo" == $owner' \
-				<<<"${actual}" >/dev/null ||
-				teardown_receipt_fail "server ownership changed for ${name}"
+				<<<"${actual}" >/dev/null \
+				|| teardown_receipt_fail "server ownership changed for ${name}"
 		fi
 		return 0
 	fi
@@ -517,8 +517,8 @@ validate_receipt_network() {
           length == 1 and .[0].Id == $id and .[0].Name == $name and
           (.[0].Labels."k3d.cluster" // "") == $cluster_label and
           .[0].Labels.app == "k3d"
-        ' <<<"${actual}" >/dev/null ||
-			teardown_receipt_fail "network identity or ownership changed for ${name}"
+        ' <<<"${actual}" >/dev/null \
+			|| teardown_receipt_fail "network identity or ownership changed for ${name}"
 		return 0
 	fi
 	if actual="$(docker network inspect "${name}" 2>/dev/null)"; then
@@ -537,8 +537,8 @@ validate_receipt_volume() {
 		return 1
 	fi
 	actual_created="$(jq --raw-output '.[0].CreatedAt' <<<"${actual}")"
-	[ "${actual_created}" = "${created}" ] ||
-		teardown_receipt_fail "volume name ${name} was reused with a different creation identity"
+	[ "${actual_created}" = "${created}" ] \
+		|| teardown_receipt_fail "volume name ${name} was reused with a different creation identity"
 	if jq --exit-status '.[0].Labels.app == "k3d"' <<<"${actual}" >/dev/null; then
 		actual_kind=images
 	elif jq --exit-status '((.[0].Labels // {}) | has("com.docker.volume.anonymous"))' \
@@ -547,20 +547,20 @@ validate_receipt_volume() {
 	else
 		teardown_receipt_fail "volume ownership changed for ${name}"
 	fi
-	[ "${actual_kind}" = "${kind}" ] ||
-		teardown_receipt_fail "volume kind changed for ${name}"
+	[ "${actual_kind}" = "${kind}" ] \
+		|| teardown_receipt_fail "volume kind changed for ${name}"
 	if [ "${kind}" = images ]; then
 		jq --exit-status --arg cluster "${CLUSTER_NAME}" \
-			'.[0].Labels."k3d.cluster" == $cluster' <<<"${actual}" >/dev/null ||
-			teardown_receipt_fail "image-volume ownership changed for ${name}"
+			'.[0].Labels."k3d.cluster" == $cluster' <<<"${actual}" >/dev/null \
+			|| teardown_receipt_fail "image-volume ownership changed for ${name}"
 	fi
 	while IFS= read -r attachment_id; do
 		[ -n "${attachment_id}" ] || continue
 		if actual="$(docker container inspect "${attachment_id}" 2>/dev/null)"; then
 			jq --exit-status --arg volume "${name}" \
 				'any(.[0].Mounts[]?; .Type == "volume" and .Name == $volume)' \
-				<<<"${actual}" >/dev/null ||
-				teardown_receipt_fail "recorded attachment from ${attachment_id} to ${name} changed"
+				<<<"${actual}" >/dev/null \
+				|| teardown_receipt_fail "recorded attachment from ${attachment_id} to ${name} changed"
 		fi
 	done < <(jq --raw-output '.attachments[]' <<<"${object}")
 	return 0
@@ -571,8 +571,8 @@ validate_receipt_image() {
 	id="$(jq --raw-output '.id' <<<"${object}")"
 	if actual="$(docker image inspect "${id}" 2>/dev/null)"; then
 		actual_id="$(jq --raw-output '.[0].Id' <<<"${actual}")"
-		if [ "${actual_id}" != "${id}" ] ||
-			! jq --exit-status --arg cluster "${CLUSTER_NAME}" \
+		if [ "${actual_id}" != "${id}" ] \
+			|| ! jq --exit-status --arg cluster "${CLUSTER_NAME}" \
 				'.[0].Config.Labels."dev.fgentic.demo.cluster" == $cluster' \
 				<<<"${actual}" >/dev/null; then
 			teardown_receipt_fail "local-image identity or ownership changed for ${id}"
@@ -582,8 +582,8 @@ validate_receipt_image() {
 		[ -n "${ref}" ] || continue
 		if actual="$(docker image inspect "${ref}" 2>/dev/null)"; then
 			actual_id="$(jq --raw-output '.[0].Id' <<<"${actual}")"
-			[ "${actual_id}" = "${id}" ] ||
-				teardown_receipt_fail "local-image reference ${ref} was reused by ${actual_id}"
+			[ "${actual_id}" = "${id}" ] \
+				|| teardown_receipt_fail "local-image reference ${ref} was reused by ${actual_id}"
 		fi
 	done < <(jq --raw-output '.repo_tags[]' <<<"${object}")
 	docker image inspect "${id}" >/dev/null 2>&1
@@ -595,8 +595,8 @@ validate_teardown_receipt_resources() {
 	generation="$(jq --raw-output '.generation' "${receipt}")"
 	while IFS= read -r object; do
 		if validate_receipt_container "${object}"; then
-			[ "$(jq --raw-output '.id' <<<"${object}")" != "${generation}" ] ||
-				generation_present=yes
+			[ "$(jq --raw-output '.id' <<<"${object}")" != "${generation}" ] \
+				|| generation_present=yes
 		fi
 	done < <(jq --compact-output '.containers[]' "${receipt}")
 	validate_receipt_network "$(jq --compact-output '.network' "${receipt}")" || true
@@ -607,12 +607,12 @@ validate_teardown_receipt_resources() {
 		validate_receipt_image "${object}" || true
 	done < <(jq --compact-output '.images[]' "${receipt}")
 	if cluster_exists; then
-		[ "${generation_present}" = yes ] ||
-			teardown_receipt_fail "live k3d metadata no longer matches receipt generation ${generation}"
+		[ "${generation_present}" = yes ] \
+			|| teardown_receipt_fail "live k3d metadata no longer matches receipt generation ${generation}"
 	else
 		cluster_status=$?
-		[ "${cluster_status}" -eq 1 ] ||
-			teardown_receipt_fail "could not inspect k3d metadata during recovery"
+		[ "${cluster_status}" -eq 1 ] \
+			|| teardown_receipt_fail "could not inspect k3d metadata during recovery"
 	fi
 }
 
@@ -664,8 +664,8 @@ recover_teardown_receipt() {
 		k3d cluster delete "${CLUSTER_NAME}" || true
 	else
 		cluster_status=$?
-		[ "${cluster_status}" -eq 1 ] ||
-			teardown_receipt_fail "could not inspect k3d metadata before recovery"
+		[ "${cluster_status}" -eq 1 ] \
+			|| teardown_receipt_fail "could not inspect k3d metadata before recovery"
 	fi
 
 	for attempt in 1 2 3; do
@@ -706,10 +706,10 @@ recover_teardown_receipt() {
 
 require_owned_evaluation_cluster() {
 	cluster_exists || die "${CLUSTER_NAME} does not exist"
-	cluster_owned_by_demo ||
-		die "refusing to manage ${CLUSTER_NAME}: it was not created by scripts/demo.sh"
-	cluster_volume_identity >/dev/null ||
-		die "refusing to manage ${CLUSTER_NAME}: its image volume is missing or foreign"
+	cluster_owned_by_demo \
+		|| die "refusing to manage ${CLUSTER_NAME}: it was not created by scripts/demo.sh"
+	cluster_volume_identity >/dev/null \
+		|| die "refusing to manage ${CLUSTER_NAME}: its image volume is missing or foreign"
 }
 
 cluster_runtime_artifacts_exist() {
@@ -735,20 +735,20 @@ prune_owned_host_images() {
 	local image_refs=()
 	image_output="$(docker images \
 		--filter "label=dev.fgentic.demo.cluster=${CLUSTER_NAME}" \
-		--filter "reference=${repository}:*" --format '{{.Repository}}:{{.Tag}}')" ||
-		die "could not inspect ${CLUSTER_NAME} host images for ${repository}"
+		--filter "reference=${repository}:*" --format '{{.Repository}}:{{.Tag}}')" \
+		|| die "could not inspect ${CLUSTER_NAME} host images for ${repository}"
 	while IFS= read -r image_ref; do
 		[ -z "${image_ref}" ] || image_refs[${#image_refs[@]}]="${image_ref}"
 	done <<<"${image_output}"
 	((${#image_refs[@]} > 0)) || return 0
-	docker image rm "${image_refs[@]}" >/dev/null ||
-		die "could not remove imported ${CLUSTER_NAME} host images for ${repository}"
+	docker image rm "${image_refs[@]}" >/dev/null \
+		|| die "could not remove imported ${CLUSTER_NAME} host images for ${repository}"
 	remaining_output="$(docker images \
 		--filter "label=dev.fgentic.demo.cluster=${CLUSTER_NAME}" \
-		--filter "reference=${repository}:*" --quiet)" ||
-		die "could not verify ${CLUSTER_NAME} host-image pruning for ${repository}"
-	[ -z "${remaining_output}" ] ||
-		die "stale ${CLUSTER_NAME} host images remain for ${repository}"
+		--filter "reference=${repository}:*" --quiet)" \
+		|| die "could not verify ${CLUSTER_NAME} host-image pruning for ${repository}"
+	[ -z "${remaining_output}" ] \
+		|| die "stale ${CLUSTER_NAME} host images remain for ${repository}"
 }
 
 prune_stale_node_images() {
@@ -761,34 +761,34 @@ prune_stale_node_images() {
 		--format '{{.Names}}')" || die "could not inspect ${CLUSTER_NAME} runtime nodes"
 	while IFS= read -r node; do
 		case "${node}" in
-		*-server-[0-9]* | *-agent-[0-9]*) nodes[${#nodes[@]}]="${node}" ;;
+			*-server-[0-9]* | *-agent-[0-9]*) nodes[${#nodes[@]}]="${node}" ;;
 		esac
 	done <<<"${node_output}"
 	((${#nodes[@]} > 0)) || die "${CLUSTER_NAME} has no running runtime node"
 	for node in "${nodes[@]}"; do
-		image_output="$(docker exec "${node}" crictl images --output json)" ||
-			die "could not inspect imported images on ${node}"
+		image_output="$(docker exec "${node}" crictl images --output json)" \
+			|| die "could not inspect imported images on ${node}"
 		jq --exit-status --arg active "${active_ref}" \
-			'any(.images[].repoTags[]?; . == $active)' <<<"${image_output}" >/dev/null ||
-			die "active imported image ${active_image} is missing from ${node}"
+			'any(.images[].repoTags[]?; . == $active)' <<<"${image_output}" >/dev/null \
+			|| die "active imported image ${active_image} is missing from ${node}"
 		stale_output="$(jq --raw-output --arg active "${active_ref}" \
 			--arg prefix "docker.io/library/${repository}:" '
           .images[].repoTags[]? |
           select(startswith($prefix) and . != $active)
         ' <<<"${image_output}")" || die "could not parse imported images on ${node}"
 		while IFS= read -r stale_ref; do
-			[ -z "${stale_ref}" ] ||
-				docker exec "${node}" crictl rmi "${stale_ref}" >/dev/null ||
-				die "could not prune stale image ${stale_ref} from ${node}"
+			[ -z "${stale_ref}" ] \
+				|| docker exec "${node}" crictl rmi "${stale_ref}" >/dev/null \
+				|| die "could not prune stale image ${stale_ref} from ${node}"
 		done <<<"${stale_output}"
-		image_output="$(docker exec "${node}" crictl images --output json)" ||
-			die "could not verify imported images on ${node}"
+		image_output="$(docker exec "${node}" crictl images --output json)" \
+			|| die "could not verify imported images on ${node}"
 		jq --exit-status --arg active "${active_ref}" \
 			--arg prefix "docker.io/library/${repository}:" '
           all(.images[].repoTags[]?; . as $ref |
             (($ref | startswith($prefix) | not) or $ref == $active))
-        ' <<<"${image_output}" >/dev/null ||
-			die "stale ${repository} images remain on ${node}"
+        ' <<<"${image_output}" >/dev/null \
+			|| die "stale ${repository} images remain on ${node}"
 	done
 }
 
@@ -821,23 +821,23 @@ EOF
 load_bridge_image_if_requested() {
 	local requested_image
 	case "${PROFILE}" in
-	demo)
-		requested_image="$(
-			kubectl --namespace bridge get helmrelease matrix-a2a-bridge --output json 2>/dev/null |
-				jq --exit-status --raw-output \
-					'.spec.values.image | "\(.repository):\(.tag)"' 2>/dev/null
-		)" || return 1
-		;;
-	federation)
-		requested_image="$(
-			kubectl --namespace agentgateway-system get deployment \
-				federation-usage-receipt --output json 2>/dev/null |
-				jq --exit-status --raw-output \
-					'.spec.template.spec.containers[] | select(.name == "usage-receipt") | .image' \
-					2>/dev/null
-		)" || return 1
-		;;
-	*) return 0 ;;
+		demo)
+			requested_image="$(
+				kubectl --namespace bridge get helmrelease matrix-a2a-bridge --output json 2>/dev/null \
+					| jq --exit-status --raw-output \
+						'.spec.values.image | "\(.repository):\(.tag)"' 2>/dev/null
+			)" || return 1
+			;;
+		federation)
+			requested_image="$(
+				kubectl --namespace agentgateway-system get deployment \
+					federation-usage-receipt --output json 2>/dev/null \
+					| jq --exit-status --raw-output \
+						'.spec.template.spec.containers[] | select(.name == "usage-receipt") | .image' \
+						2>/dev/null
+			)" || return 1
+			;;
+		*) return 0 ;;
 	esac
 	[ "${requested_image}" = "${BRIDGE_IMAGE}" ] || return 1
 
@@ -968,26 +968,26 @@ EOF
 	actual_revision=""
 	source_deadline=$((SECONDS + 120))
 	while ((SECONDS < source_deadline)); do
-		if flux reconcile source git flux-system --timeout=2m >/dev/null &&
-			actual_revision="$(kubectl --namespace flux-system get gitrepository flux-system \
-				--output jsonpath='{.status.artifact.revision}')" &&
-			[ "${actual_revision}" = "${expected_revision}" ]; then
+		if flux reconcile source git flux-system --timeout=2m >/dev/null \
+			&& actual_revision="$(kubectl --namespace flux-system get gitrepository flux-system \
+				--output jsonpath='{.status.artifact.revision}')" \
+			&& [ "${actual_revision}" = "${expected_revision}" ]; then
 			break
 		fi
 		sleep 2
 	done
-	[ "${actual_revision}" = "${expected_revision}" ] ||
-		die "Flux fetched ${actual_revision:-no revision}, expected ${expected_revision}"
+	[ "${actual_revision}" = "${expected_revision}" ] \
+		|| die "Flux fetched ${actual_revision:-no revision}, expected ${expected_revision}"
 	echo "Flux fetched exact ephemeral revision ${expected_revision}."
 }
 
 timeout_seconds() {
 	local value="${1%[smh]}"
 	case "$1" in
-	*s) printf '%s' "${value}" ;;
-	*m) printf '%s' "$((value * 60))" ;;
-	*h) printf '%s' "$((value * 3600))" ;;
-	*) return 1 ;;
+		*s) printf '%s' "${value}" ;;
+		*m) printf '%s' "$((value * 60))" ;;
+		*h) printf '%s' "$((value * 3600))" ;;
+		*) return 1 ;;
 	esac
 }
 
@@ -1000,8 +1000,8 @@ platform_is_ready() {
       .status.observedGeneration == .metadata.generation and
       .status.lastAppliedRevision == $revision and
       any(.status.conditions[]?; .type == "Ready" and .status == "True"))
-  ' <<<"${kustomizations}" >/dev/null &&
-		jq -e '
+  ' <<<"${kustomizations}" >/dev/null \
+		&& jq -e '
       (.items | length > 0) and all(.items[];
         .status.observedGeneration == .metadata.generation and
         any(.status.conditions[]?; .type == "Ready" and .status == "True"))
@@ -1048,8 +1048,8 @@ deadline_diagnostic_timeout() {
 
 bridge_image_wait_required() {
 	case "${PROFILE}" in
-	demo | federation) return 0 ;;
-	*) return 1 ;;
+		demo | federation) return 0 ;;
+		*) return 1 ;;
 	esac
 }
 
@@ -1088,15 +1088,15 @@ wait_for_platform_fixed() {
 			fi
 		fi
 		if ! kustomizations="$(kubectl --request-timeout=10s --namespace flux-system \
-			get kustomizations --output json)" ||
-			! helmreleases="$(kubectl --request-timeout=10s get helmreleases \
+			get kustomizations --output json)" \
+			|| ! helmreleases="$(kubectl --request-timeout=10s get helmreleases \
 				--all-namespaces --output json)"; then
 			sleep 5
 			continue
 		fi
 		resource_trace_record_ready_layers "${expected_revision}" "${kustomizations}"
-		if [ "${bridge_image_loaded}" = true ] &&
-			platform_is_ready "${expected_revision}" "${kustomizations}" "${helmreleases}"; then
+		if [ "${bridge_image_loaded}" = true ] \
+			&& platform_is_ready "${expected_revision}" "${kustomizations}" "${helmreleases}"; then
 			return
 		fi
 		sleep 5
@@ -1175,11 +1175,11 @@ wait_for_platform_constrained() {
 				[ "${bridge_image_status}" -ne 2 ] || return 1
 			fi
 		fi
-		if ! request_timeout="$(deadline_timeout "${hard_deadline}" 10)" ||
-			! kustomizations="$(kubectl --request-timeout="${request_timeout}" \
-				--namespace flux-system get kustomizations --output json)" ||
-			! request_timeout="$(deadline_timeout "${hard_deadline}" 10)" ||
-			! helmreleases="$(kubectl --request-timeout="${request_timeout}" get \
+		if ! request_timeout="$(deadline_timeout "${hard_deadline}" 10)" \
+			|| ! kustomizations="$(kubectl --request-timeout="${request_timeout}" \
+				--namespace flux-system get kustomizations --output json)" \
+			|| ! request_timeout="$(deadline_timeout "${hard_deadline}" 10)" \
+			|| ! helmreleases="$(kubectl --request-timeout="${request_timeout}" get \
 				helmreleases --all-namespaces --output json)"; then
 			now="${SECONDS}"
 			if ((now - last_progress >= no_progress_seconds)); then
@@ -1203,8 +1203,8 @@ wait_for_platform_constrained() {
 			echo "Flux convergence progress: ${after} immutable milestones observed."
 			resource_trace_record_ready_layers "${expected_revision}" "${kustomizations}"
 		fi
-		if [ "${bridge_image_loaded}" = true ] &&
-			platform_is_ready "${expected_revision}" "${kustomizations}" "${helmreleases}"; then
+		if [ "${bridge_image_loaded}" = true ] \
+			&& platform_is_ready "${expected_revision}" "${kustomizations}" "${helmreleases}"; then
 			return
 		fi
 		if ((SECONDS - last_progress >= no_progress_seconds)); then
@@ -1238,8 +1238,8 @@ render_bootstrap_namespaces() {
 	# Secrets and the local CA need their target Namespaces before Flux starts. Apply only those
 	# cluster-scoped objects here: the early Flux namespace layer owns quotas and LimitRanges after
 	# platform-settings substitution, before any dependent workload can reconcile.
-	kubectl kustomize "${namespace_layer}" |
-		PROFILE="${PROFILE}" yq 'select(.kind == "Namespace" and
+	kubectl kustomize "${namespace_layer}" \
+		| PROFILE="${PROFILE}" yq 'select(.kind == "Namespace" and
       (strenv(PROFILE) != "demo" or .metadata.name != "trivy-system"))'
 }
 
@@ -1253,19 +1253,27 @@ demo_up() {
 	docker info >/dev/null 2>&1 || die "Docker daemon is not running"
 	require_no_pending_teardown up
 	if [ -n "${FGENTIC_DEMO_CACHE_DIR:-}" ]; then
-		docker buildx version >/dev/null 2>&1 ||
-			die "FGENTIC_DEMO_CACHE_DIR requires Docker buildx"
+		docker buildx version >/dev/null 2>&1 \
+			|| die "FGENTIC_DEMO_CACHE_DIR requires Docker buildx"
 	fi
 	if [ "${PROFILE}" = "demo" ]; then
 		configure_provider
 	else
+		# shellcheck disable=SC2034 # sourced render helpers consume this default provider global
 		LLM_PROVIDER="demo"
+		# shellcheck disable=SC2034 # sourced render helpers consume this default model global
 		LLM_MODEL="fgentic-demo"
+		# shellcheck disable=SC2034 # sourced render helpers consume this default project global
 		GCP_PROJECT="not-configured"
+		# shellcheck disable=SC2034 # sourced render helpers consume this default provider global
 		VERTEX_REGION="europe-west1"
+		# shellcheck disable=SC2034 # sourced render helpers consume this default provider global
 		OPENAI_HOST="api.openai.com"
+		# shellcheck disable=SC2034 # sourced render helpers consume this default provider global
 		AZURE_OPENAI_RESOURCE="not-configured"
+		# shellcheck disable=SC2034 # sourced secret helpers consume this optional Secret name
 		MODEL_SECRET_NAME=""
+		# shellcheck disable=SC2034 # sourced secret helpers consume this optional Secret value
 		MODEL_SECRET_VALUE=""
 	fi
 
@@ -1281,27 +1289,27 @@ demo_up() {
 	# not let k3d silently adopt a retained image volume from a previously interrupted deletion.
 	if cluster_exists; then
 		cluster_present=yes
-		cluster_owned_by_demo ||
-			die "refusing to reuse ${CLUSTER_NAME}: it was not created by scripts/demo.sh"
+		cluster_owned_by_demo \
+			|| die "refusing to reuse ${CLUSTER_NAME}: it was not created by scripts/demo.sh"
 		if [ "${PROFILE}" = federation ]; then
-			actual_capacity_mode="$(cluster_capacity_mode)" ||
-				die "could not inspect ${CLUSTER_NAME} capacity mode"
-			[ "${actual_capacity_mode}" = "${FEDERATION_CAPACITY_MODE}" ] ||
-				die "refusing to switch ${CLUSTER_NAME} from ${actual_capacity_mode:-unlabelled} to ${FEDERATION_CAPACITY_MODE} capacity in place; run fed:down first"
+			actual_capacity_mode="$(cluster_capacity_mode)" \
+				|| die "could not inspect ${CLUSTER_NAME} capacity mode"
+			[ "${actual_capacity_mode}" = "${FEDERATION_CAPACITY_MODE}" ] \
+				|| die "refusing to switch ${CLUSTER_NAME} from ${actual_capacity_mode:-unlabelled} to ${FEDERATION_CAPACITY_MODE} capacity in place; run fed:down first"
 		fi
-		container_output="$(cluster_container_ids)" ||
-			die "could not inspect ${CLUSTER_NAME} containers before reuse"
-		reused_container_ids="$(sort <<<"${container_output}")" ||
-			die "could not order ${CLUSTER_NAME} container identities"
-		reused_volume_identity="$(cluster_volume_identity)" ||
-			die "refusing to reuse ${CLUSTER_NAME}: its image volume is missing or foreign"
+		container_output="$(cluster_container_ids)" \
+			|| die "could not inspect ${CLUSTER_NAME} containers before reuse"
+		reused_container_ids="$(sort <<<"${container_output}")" \
+			|| die "could not order ${CLUSTER_NAME} container identities"
+		reused_volume_identity="$(cluster_volume_identity)" \
+			|| die "refusing to reuse ${CLUSTER_NAME}: its image volume is missing or foreign"
 	else
 		if cluster_artifacts_exist; then
 			die "refusing orphan reuse for ${CLUSTER_NAME}: owner-labelled server evidence is unavailable"
 		else
 			artifact_status=$?
-			[ "${artifact_status}" -eq 1 ] ||
-				die "could not inspect retained artifacts for ${CLUSTER_NAME}"
+			[ "${artifact_status}" -eq 1 ] \
+				|| die "could not inspect retained artifacts for ${CLUSTER_NAME}"
 		fi
 		render_k3d_config "${WORK_DIR}/k3d-config.yaml"
 	fi
@@ -1313,7 +1321,7 @@ demo_up() {
 	if [ "${cluster_present}" = no ]; then
 		runtime_labels=(--runtime-label "dev.fgentic.demo=${OWNER_LABEL}@server:*")
 		if [ "${PROFILE}" = federation ]; then
-			runtime_labels+=(--runtime-label \
+			runtime_labels+=(--runtime-label
 				"dev.fgentic.demo.capacity=${FEDERATION_CAPACITY_MODE}@server:*")
 		fi
 		k3d cluster create --config "${WORK_DIR}/k3d-config.yaml" \
@@ -1324,28 +1332,29 @@ demo_up() {
 			:
 		else
 			running_status=$?
-			[ "${running_status}" -eq 1 ] ||
-				die "could not inspect ${CLUSTER_NAME} runtime state before reuse"
+			[ "${running_status}" -eq 1 ] \
+				|| die "could not inspect ${CLUSTER_NAME} runtime state before reuse"
 			k3d cluster start "${CLUSTER_NAME}" >/dev/null
 		fi
 		cluster_running || die "${CLUSTER_NAME} did not become ready after k3d start"
-		container_output="$(cluster_container_ids)" ||
-			die "could not inspect ${CLUSTER_NAME} containers after start"
-		current_container_ids="$(sort <<<"${container_output}")" ||
-			die "could not order ${CLUSTER_NAME} container identities after start"
-		[ "${current_container_ids}" = "${reused_container_ids}" ] ||
-			die "refusing to continue: k3d replaced retained containers while starting ${CLUSTER_NAME}"
-		current_volume_identity="$(cluster_volume_identity)" ||
-			die "could not inspect ${CLUSTER_NAME} image volume after start"
-		[ "${current_volume_identity}" = "${reused_volume_identity}" ] ||
-			die "refusing to continue: k3d replaced the retained image volume while starting ${CLUSTER_NAME}"
+		container_output="$(cluster_container_ids)" \
+			|| die "could not inspect ${CLUSTER_NAME} containers after start"
+		current_container_ids="$(sort <<<"${container_output}")" \
+			|| die "could not order ${CLUSTER_NAME} container identities after start"
+		[ "${current_container_ids}" = "${reused_container_ids}" ] \
+			|| die "refusing to continue: k3d replaced retained containers while starting ${CLUSTER_NAME}"
+		current_volume_identity="$(cluster_volume_identity)" \
+			|| die "could not inspect ${CLUSTER_NAME} image volume after start"
+		[ "${current_volume_identity}" = "${reused_volume_identity}" ] \
+			|| die "refusing to continue: k3d replaced the retained image volume while starting ${CLUSTER_NAME}"
 	fi
 	k3d kubeconfig get "${CLUSTER_NAME}" >"${KUBECONFIG_FILE}"
 	export KUBECONFIG="${KUBECONFIG_FILE}"
 	configure_federation_metrics_server
 	if [ "${PROFILE}" = "federation" ]; then
-		FEDERATION_GATEWAY_IP="$(docker inspect "k3d-${CLUSTER_NAME}-serverlb" |
-			jq -er --arg network "k3d-${CLUSTER_NAME}" \
+		# shellcheck disable=SC2034 # sourced federation helpers consume the discovered gateway address
+		FEDERATION_GATEWAY_IP="$(docker inspect "k3d-${CLUSTER_NAME}-serverlb" \
+			| jq -er --arg network "k3d-${CLUSTER_NAME}" \
 				'.[0].NetworkSettings.Networks[$network].IPAddress')"
 		prepare_federation_agent_card_key
 	fi
@@ -1420,16 +1429,16 @@ demo_status() {
 			die "refusing orphan inspection for ${CLUSTER_NAME}: owner-labelled server evidence is unavailable"
 		else
 			artifact_status=$?
-			[ "${artifact_status}" -eq 1 ] ||
-				die "could not inspect retained artifacts for ${CLUSTER_NAME}"
+			[ "${artifact_status}" -eq 1 ] \
+				|| die "could not inspect retained artifacts for ${CLUSTER_NAME}"
 		fi
 		echo "Federation cluster ${CLUSTER_NAME}: state=absent retained_bytes=0"
 		return
 	fi
 	require_owned_evaluation_cluster
 	container_output="$(cluster_container_ids)" || die "could not inspect ${CLUSTER_NAME} containers"
-	running_output="$(cluster_running_container_ids)" ||
-		die "could not inspect running ${CLUSTER_NAME} containers"
+	running_output="$(cluster_running_container_ids)" \
+		|| die "could not inspect running ${CLUSTER_NAME} containers"
 	total_containers="$(awk 'NF { count++ } END { print count + 0 }' <<<"${container_output}")"
 	running_containers="$(awk 'NF { count++ } END { print count + 0 }' <<<"${running_output}")"
 	state=partial
@@ -1437,12 +1446,12 @@ demo_status() {
 	[ "${running_containers}" -ne "${total_containers}" ] || state=running
 	volume_bytes="$(cluster_volume_bytes || printf 'unknown')"
 	retained_bytes="$(cluster_retained_storage_bytes || printf 'unknown')"
-	image_bytes="$(cluster_owned_image_bytes)" ||
-		die "could not inspect ${CLUSTER_NAME} local images"
+	image_bytes="$(cluster_owned_image_bytes)" \
+		|| die "could not inspect ${CLUSTER_NAME} local images"
 	capacity_mode=standard
 	if [ "${PROFILE}" = federation ]; then
-		capacity_mode="$(cluster_capacity_mode)" ||
-			die "could not inspect ${CLUSTER_NAME} capacity mode"
+		capacity_mode="$(cluster_capacity_mode)" \
+			|| die "could not inspect ${CLUSTER_NAME} capacity mode"
 	fi
 	echo "Federation cluster ${CLUSTER_NAME}: state=${state} capacity_mode=${capacity_mode} running_containers=${running_containers}/${total_containers} image_volume_bytes=${volume_bytes} retained_cluster_bytes=${retained_bytes} local_image_virtual_bytes=${image_bytes}"
 }
@@ -1454,27 +1463,27 @@ demo_stop() {
 	require_cluster_runtime
 	require_no_pending_teardown stop
 	require_owned_evaluation_cluster
-	before_output="$(cluster_container_ids)" ||
-		die "could not inspect ${CLUSTER_NAME} containers before stopping"
-	before_container_ids="$(sort <<<"${before_output}")" ||
-		die "could not order ${CLUSTER_NAME} container identities before stopping"
-	before_identity="$(cluster_volume_identity)" ||
-		die "could not inspect ${CLUSTER_NAME} image volume before stopping"
+	before_output="$(cluster_container_ids)" \
+		|| die "could not inspect ${CLUSTER_NAME} containers before stopping"
+	before_container_ids="$(sort <<<"${before_output}")" \
+		|| die "could not order ${CLUSTER_NAME} container identities before stopping"
+	before_identity="$(cluster_volume_identity)" \
+		|| die "could not inspect ${CLUSTER_NAME} image volume before stopping"
 	k3d cluster stop "${CLUSTER_NAME}" >/dev/null
-	running_output="$(cluster_running_container_ids)" ||
-		die "could not verify ${CLUSTER_NAME} stopped containers"
-	[ -z "${running_output}" ] ||
-		die "${CLUSTER_NAME} still has running containers after k3d stop"
-	after_output="$(cluster_container_ids)" ||
-		die "could not inspect ${CLUSTER_NAME} retained containers after stopping"
-	after_container_ids="$(sort <<<"${after_output}")" ||
-		die "could not order ${CLUSTER_NAME} retained container identities"
-	[ "${after_container_ids}" = "${before_container_ids}" ] ||
-		die "${CLUSTER_NAME} container identity changed while stopping"
-	after_identity="$(cluster_volume_identity)" ||
-		die "${CLUSTER_NAME} lost its owned image volume while stopping"
-	[ "${after_identity}" = "${before_identity}" ] ||
-		die "${CLUSTER_NAME} image volume identity changed while stopping"
+	running_output="$(cluster_running_container_ids)" \
+		|| die "could not verify ${CLUSTER_NAME} stopped containers"
+	[ -z "${running_output}" ] \
+		|| die "${CLUSTER_NAME} still has running containers after k3d stop"
+	after_output="$(cluster_container_ids)" \
+		|| die "could not inspect ${CLUSTER_NAME} retained containers after stopping"
+	after_container_ids="$(sort <<<"${after_output}")" \
+		|| die "could not order ${CLUSTER_NAME} retained container identities"
+	[ "${after_container_ids}" = "${before_container_ids}" ] \
+		|| die "${CLUSTER_NAME} container identity changed while stopping"
+	after_identity="$(cluster_volume_identity)" \
+		|| die "${CLUSTER_NAME} lost its owned image volume while stopping"
+	[ "${after_identity}" = "${before_identity}" ] \
+		|| die "${CLUSTER_NAME} image volume identity changed while stopping"
 	image_volume_bytes="$(cluster_volume_bytes || printf 'unknown')"
 	retained_bytes="$(cluster_retained_storage_bytes || printf 'unknown')"
 	echo "Federation cluster ${CLUSTER_NAME}: state=stopped running_containers=0 image_volume_bytes=${image_volume_bytes} retained_cluster_bytes=${retained_bytes}; the exact image volume is preserved."
@@ -1489,8 +1498,8 @@ demo_down() {
 		return
 	fi
 	if cluster_exists; then
-		cluster_owned_by_demo ||
-			die "refusing to delete ${CLUSTER_NAME}: it was not created by scripts/demo.sh"
+		cluster_owned_by_demo \
+			|| die "refusing to delete ${CLUSTER_NAME}: it was not created by scripts/demo.sh"
 		write_teardown_receipt
 		recover_teardown_receipt || die "could not finish ${CLUSTER_NAME} teardown"
 		echo "The reusable local CA and FGENTIC_DEMO_CACHE_DIR, when set, were preserved."
@@ -1499,8 +1508,8 @@ demo_down() {
 			teardown_receipt_fail "refusing orphan cleanup for ${CLUSTER_NAME}: teardown receipt and owner-labelled server evidence are unavailable"
 		else
 			artifact_status=$?
-			[ "${artifact_status}" -eq 1 ] ||
-				die "could not inspect retained artifacts for ${CLUSTER_NAME}"
+			[ "${artifact_status}" -eq 1 ] \
+				|| die "could not inspect retained artifacts for ${CLUSTER_NAME}"
 		fi
 		echo "Demo cluster ${CLUSTER_NAME} does not exist."
 	fi

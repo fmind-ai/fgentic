@@ -11,8 +11,8 @@ source "${ROOT_DIR}/scripts/lib.sh"
 
 synapse_pod_uid() {
 	local namespace="$1"
-	kubectl --namespace "${namespace}" get pods --output json |
-		jq -er '
+	kubectl --namespace "${namespace}" get pods --output json \
+		| jq -er '
       [
         .items[] |
         select(any(.metadata.ownerReferences[]?;
@@ -31,10 +31,10 @@ assert_synapse_uids() {
 	local actual_a actual_b
 	actual_a="$(synapse_pod_uid matrix)"
 	actual_b="$(synapse_pod_uid matrix-b)"
-	[ "${actual_a}" = "${SYNAPSE_A_UID}" ] ||
-		die "homeserver A restarted during the ${phase} policy reconcile"
-	[ "${actual_b}" = "${SYNAPSE_B_UID}" ] ||
-		die "homeserver B restarted during the ${phase} policy reconcile"
+	[ "${actual_a}" = "${SYNAPSE_A_UID}" ] \
+		|| die "homeserver A restarted during the ${phase} policy reconcile"
+	[ "${actual_b}" = "${SYNAPSE_B_UID}" ] \
+		|| die "homeserver B restarted during the ${phase} policy reconcile"
 }
 
 for command in jq k3d kubectl; do
@@ -49,8 +49,8 @@ cleanup() {
 	if [ "${completed}" != true ]; then
 		echo "Policy reload drill failed; deleting the disposable federation lab." >&2
 		FGENTIC_FED_CLUSTER="${FEDERATION_CLUSTER}" \
-			"${ROOT_DIR}/scripts/federation.sh" down >&2 ||
-			echo "warning: federation lab cleanup did not complete" >&2
+			"${ROOT_DIR}/scripts/federation.sh" down >&2 \
+			|| echo "warning: federation lab cleanup did not complete" >&2
 	fi
 	rm -f "${KUBECONFIG_FILE}"
 	exit "${status}"

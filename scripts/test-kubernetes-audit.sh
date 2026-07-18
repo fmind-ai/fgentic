@@ -58,34 +58,35 @@ static_contract() {
     .rules[0].level == "Metadata" and
     .rules[1].level == "Metadata" and
     .rules[2].level == "None"
-  ' "${POLICY}" >/dev/null ||
-		fail "audit policy must be Metadata-only, omit duplicate receive events, and drop unmatched traffic"
+  ' "${POLICY}" >/dev/null \
+		|| fail "audit policy must be Metadata-only, omit duplicate receive events, and drop unmatched traffic"
 	yq -e '([.rules[].level | select(. != "Metadata" and . != "None")] | length) == 0' \
 		"${POLICY}" >/dev/null || fail "audit policy contains a body-capturing level"
 	local write_verbs
 	write_verbs="$(yq -r '.rules[0].verbs | sort | join(",")' "${POLICY}")"
-	[[ "${write_verbs}" == "create,delete,deletecollection,patch,update" ]] ||
-		fail "audit write verbs drifted"
+	[[ "${write_verbs}" == "create,delete,deletecollection,patch,update" ]] \
+		|| fail "audit write verbs drifted"
 	local read_verbs catchall_keys
 	read_verbs="$(yq -r '.rules[1].verbs | join(",")' "${POLICY}")"
-	[[ "${read_verbs}" == "get" ]] ||
-		fail "audit read rule must select only one-object gets"
+	[[ "${read_verbs}" == "get" ]] \
+		|| fail "audit read rule must select only one-object gets"
 	catchall_keys="$(yq -r '.rules[2] | keys | join(",")' "${POLICY}")"
-	[[ "${catchall_keys}" == "level" ]] ||
-		fail "the final None rule must remain an unfiltered catch-all"
+	[[ "${catchall_keys}" == "level" ]] \
+		|| fail "the final None rule must remain an unfiltered catch-all"
 	local rule_index rule_keys resource_keys
 	for rule_index in 0 1; do
 		rule_keys="$(yq -r ".rules[${rule_index}] | keys | sort | join(\",\")" "${POLICY}")"
-		[[ "${rule_keys}" == "level,resources,verbs" ]] ||
-			fail "audit rule ${rule_index} contains an unexpected selector"
+		[[ "${rule_keys}" == "level,resources,verbs" ]] \
+			|| fail "audit rule ${rule_index} contains an unexpected selector"
 		resource_keys="$(yq -r ".rules[${rule_index}].resources[] | keys | sort | join(\",\")" \
 			"${POLICY}" | sort -u)"
-		[[ "${resource_keys}" == "group,resources" ]] ||
-			fail "audit rule ${rule_index} contains an unexpected resource selector"
+		[[ "${resource_keys}" == "group,resources" ]] \
+			|| fail "audit rule ${rule_index} contains an unexpected resource selector"
 	done
 
 	local expected_write_resources expected_read_resources
-	expected_write_resources="$(sort <<'RESOURCES'
+	expected_write_resources="$(
+		sort <<'RESOURCES'
 |configmaps
 |pods/exec
 |secrets
@@ -96,17 +97,17 @@ kagent.dev|agents
 kustomize.toolkit.fluxcd.io|kustomizations
 networking.k8s.io|networkpolicies
 RESOURCES
-)"
+	)"
 	expected_read_resources="$(grep -Fv '|pods/exec' <<<"${expected_write_resources}")"
 	local actual_write_resources actual_read_resources
 	actual_write_resources="$(normalized_resources 0)"
 	actual_read_resources="$(normalized_resources 1)"
 	diff -u <(printf '%s\n' "${expected_write_resources}") \
-		<(printf '%s\n' "${actual_write_resources}") >/dev/null ||
-		fail "audit write-resource allowlist drifted"
+		<(printf '%s\n' "${actual_write_resources}") >/dev/null \
+		|| fail "audit write-resource allowlist drifted"
 	diff -u <(printf '%s\n' "${expected_read_resources}") \
-		<(printf '%s\n' "${actual_read_resources}") >/dev/null ||
-		fail "audit read-resource allowlist drifted"
+		<(printf '%s\n' "${actual_read_resources}") >/dev/null \
+		|| fail "audit read-resource allowlist drifted"
 
 	yq -e '[.files[] | select(
     .source == "k3d-audit-policy.yaml" and
@@ -118,19 +119,20 @@ RESOURCES
     (.nodeFilters | join(",")) == "server:*")] | length == 1' \
 		"${K3D_CONFIG}" >/dev/null || fail "k3d does not create the API audit log directory"
 	local expected_args actual_args
-	expected_args="$(cat <<'ARGS'
+	expected_args="$(
+		cat <<'ARGS'
 --kube-apiserver-arg=audit-log-maxage=7
 --kube-apiserver-arg=audit-log-maxbackup=3
 --kube-apiserver-arg=audit-log-maxsize=10
 --kube-apiserver-arg=audit-log-path=/var/log/kubernetes/audit/audit.log
 --kube-apiserver-arg=audit-policy-file=/etc/fgentic/audit-policy.yaml
 ARGS
-)"
+	)"
 	actual_args="$(yq -r '.options.k3s.extraArgs[] |
     select(.arg | test("^--kube-apiserver-arg=audit-")) |
     select((.nodeFilters | join(",")) == "server:*") | .arg' "${K3D_CONFIG}" | sort)"
-	diff -u <(printf '%s\n' "${expected_args}") <(printf '%s\n' "${actual_args}") >/dev/null ||
-		fail "k3d must activate the exact bounded API audit flags on every server"
+	diff -u <(printf '%s\n' "${expected_args}") <(printf '%s\n' "${actual_args}") >/dev/null \
+		|| fail "k3d must activate the exact bounded API audit flags on every server"
 	yq -e '
     [.options.k3s.extraArgs[] | select(.arg == "--disable-network-policy")] as $args |
     (
@@ -141,8 +143,8 @@ ARGS
       ($args | .[0] | has("arg")) and
       ($args | .[0] | has("nodeFilters"))
     )
-  ' "${K3D_CONFIG}" >/dev/null ||
-		fail "k3d must disable the failed local NetworkPolicy controller on every server"
+  ' "${K3D_CONFIG}" >/dev/null \
+		|| fail "k3d must disable the failed local NetworkPolicy controller on every server"
 
 	echo "Kubernetes API audit static contract passed"
 }
@@ -234,8 +236,8 @@ runtime_contract() {
 	k3d cluster create --config "${RUNTIME_WORKDIR}/k3d-config.yaml"
 	local actual_owner
 	actual_owner="$(docker inspect --format "{{ index .Config.Labels \"${OWNER_LABEL}\" }}" "${RUNTIME_NODE_NAME}")"
-	[[ "${actual_owner}" == "${owner_token}" ]] ||
-		fail "created node does not carry the expected ownership label; leaving it untouched"
+	[[ "${actual_owner}" == "${owner_token}" ]] \
+		|| fail "created node does not carry the expected ownership label; leaving it untouched"
 	RUNTIME_CLUSTER_OWNED=true
 
 	k3d kubeconfig get "${RUNTIME_CLUSTER_NAME}" >"${kubeconfig}"
@@ -251,11 +253,11 @@ runtime_contract() {
 		"audit-log-maxsize=1" \
 		"audit-log-path=${AUDIT_LOG_PATH}" \
 		"audit-policy-file=/etc/fgentic/audit-policy.yaml"; do
-		grep -Fq "\"--kube-apiserver-arg=${expected_arg}\"" <<<"${node_command}" ||
-			fail "running k3s node is missing --kube-apiserver-arg=${expected_arg}"
+		grep -Fq "\"--kube-apiserver-arg=${expected_arg}\"" <<<"${node_command}" \
+			|| fail "running k3s node is missing --kube-apiserver-arg=${expected_arg}"
 	done
-	rg --fixed-strings '"--disable-network-policy"' <<<"${node_command}" >/dev/null ||
-		fail "running k3s node did not disable the local NetworkPolicy controller"
+	rg --fixed-strings '"--disable-network-policy"' <<<"${node_command}" >/dev/null \
+		|| fail "running k3s node did not disable the local NetworkPolicy controller"
 
 	local namespace rotation_name
 	namespace="fgentic-api-audit-probe"
@@ -290,7 +292,7 @@ EOF
 	export K3D_AUDIT_ROTATION_NAMESPACE="${namespace}"
 	export K3D_AUDIT_ROTATION_CONFIGMAP="${rotation_name}"
 	# The child bash, not this parent, expands its positional argument and exported kubectl target.
-	# shellcheck disable=SC2016
+	# shellcheck disable=SC2016 # child bash expands these intentionally literal variables
 	patch_command='
         value="$1"
         kubectl --namespace "${K3D_AUDIT_ROTATION_NAMESPACE}" patch configmap \
@@ -312,8 +314,8 @@ EOF
 			break
 		fi
 	done
-	((backup_count >= 1 && backup_count <= 3)) ||
-		fail "audit log did not rotate within the bounded patch budget or exceeded three backups"
+	((backup_count >= 1 && backup_count <= 3)) \
+		|| fail "audit log did not rotate within the bounded patch budget or exceeded three backups"
 
 	local rotation_audit_file="${RUNTIME_WORKDIR}/rotation-audit.jsonl"
 	docker exec "${RUNTIME_NODE_NAME}" sh -c \
@@ -333,8 +335,8 @@ EOF
       .level == "Metadata" and
       (has("requestObject") | not) and
       (has("responseObject") | not))
-  ' --slurp "${rotation_audit_file}" >/dev/null ||
-		fail "rotated ConfigMap events did not retain the body-suppressed Metadata contract"
+  ' --slurp "${rotation_audit_file}" >/dev/null \
+		|| fail "rotated ConfigMap events did not retain the body-suppressed Metadata contract"
 
 	local secret_name secret_sentinel
 	secret_name="audit-probe"
@@ -393,12 +395,12 @@ EOF
       .level == "Metadata" and
       (has("requestObject") | not) and
       (has("responseObject") | not))
-	' --slurp "${audit_file}" >/dev/null ||
-		fail "Secret events must remain body-suppressed Metadata records"
+	' --slurp "${audit_file}" >/dev/null \
+		|| fail "Secret events must remain body-suppressed Metadata records"
 
 	local node_log="${RUNTIME_WORKDIR}/k3s-node.log"
-	docker logs "${RUNTIME_NODE_NAME}" >"${node_log}" 2>&1 ||
-		fail "could not inspect the disposable k3s node log"
+	docker logs "${RUNTIME_NODE_NAME}" >"${node_log}" 2>&1 \
+		|| fail "could not inspect the disposable k3s node log"
 	if rg --quiet \
 		'network_policy_controller\.go|sendmsg\(\) failed|Message too large|iptables-restore' \
 		"${node_log}"; then
