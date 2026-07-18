@@ -63,6 +63,7 @@ nav:
   - Home: index.md
   - Adoption:
       - Adopter decision brief: adopter-decision-brief.md
+      - EU compliance annex: compliance.md
       - Adopter case studies:
           - Overview: adopters/index.md
           - One-page template: adopters/template.md

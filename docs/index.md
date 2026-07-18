@@ -8,6 +8,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 
 - [Architecture & Vision](architecture.md) - what Fgentic is, why it matters, and the end-to-end architecture (§1–§3, §11)
 - [Adopter Decision Brief](adopter-decision-brief.md) - vendor-neutral procurement decision and parameterized TCO worksheet
+- [EU Compliance Engineering Annex](compliance.md) - evidence-bound GDPR data flows and EU AI Act positioning
 - [Inbound Migration Guide](migration-guide.md) - staged authorization, data, cutover, rollback, and decommission path from a tenant-anchored agent platform
 - [Open Agentic Stack](open-stack.md) - governance, protocol boundaries, and current reuse across the independently stewarded layers
 - [Design Decisions D1–D20](design-decisions.md) - the durable register of settled decisions with evidence (§4)
