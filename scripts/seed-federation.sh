@@ -22,6 +22,7 @@ readonly FEDERATION_LOOPBACK="127.0.0.2"
 readonly POLICY_EVENT_TYPE="com.fgentic.blocked"
 readonly POLICY_LOG_PREFIX="fgentic_federation_policy_violation "
 readonly POLICY_PROBE_MODE="${FGENTIC_FED_POLICY_PROBE:-deny}"
+readonly REPLY_FILTER="${ROOT_DIR}/scripts/lib/demo-reply.jq"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-federation-seed.XXXXXX")"
 readonly WORK_DIR
 
@@ -327,25 +328,21 @@ send_agent_mention() {
 
 wait_for_bridge_reply() {
 	local room_id="$1"
-	local since="$2"
-	local input_event_id="$3"
+	local input_event_id="$2"
 	local deadline=$((SECONDS + 180))
-	local encoded_since sync
+	local encoded_room encoded_event context
+	encoded_room="$(jq --null-input --raw-output --arg value "${room_id}" '$value | @uri')"
+	encoded_event="$(jq --null-input --raw-output --arg value "${input_event_id}" '$value | @uri')"
 	while ((SECONDS < deadline)); do
-		encoded_since="$(jq --null-input --raw-output --arg value "${since}" '$value | @uri')"
-		sync="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
+		context="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 			--header "Authorization: Bearer ${BOB_TOKEN}" \
-			"${MATRIX_B_URL}/_matrix/client/v3/sync?timeout=1000&since=${encoded_since}")"
-		if jq -e --arg room "${room_id}" --arg sender "@agent-docs-qa:${SERVER_A}" \
-			--arg body "${EXPECTED_DEMO_REPLY}" --arg event "${input_event_id}" '
-        .rooms.join[$room].timeline.events[]? | select(
-          .sender == $sender and .type == "m.room.message" and
-          .content.msgtype == "m.notice" and .content.body == $body and
-          .content["m.relates_to"]["m.in_reply_to"].event_id == $event)
-      ' <<<"${sync}" >/dev/null; then
+			"${MATRIX_B_URL}/_matrix/client/v3/rooms/${encoded_room}/context/${encoded_event}?limit=50")"
+		if jq -e --arg sender "@agent-docs-qa:${SERVER_A}" \
+			--arg event_id "${input_event_id}" --arg provider demo --arg model fgentic-demo \
+			--arg expected_demo_reply "${EXPECTED_DEMO_REPLY}" \
+			--from-file "${REPLY_FILTER}" <<<"${context}" >/dev/null; then
 			return
 		fi
-		since="$(jq -er '.next_batch | select(type == "string" and length > 0)' <<<"${sync}")"
 		sleep 2
 	done
 	die "managed-room bridge reply did not federate to org B within 3 minutes"
@@ -656,10 +653,9 @@ invite_matrix_user "${MATRIX_A_URL}" "${ALICE_TOKEN}" "${encoded_room}" "${bridg
 wait_for_matrix_membership "${MATRIX_A_URL}" "${ALICE_TOKEN}" \
 	"${encoded_room}" "${bridge_ghost}" join
 wait_for_managed_invite_audit accepted
-bridge_reply_since="$(initial_sync_token "${MATRIX_B_URL}" "${BOB_TOKEN}")"
 bridge_input_event="$(send_agent_mention "${MATRIX_B_URL}" "${BOB_TOKEN}" \
 	"${encoded_room}" "managed-positive-${RANDOM}-$$")"
-wait_for_bridge_reply "${room_id}" "${bridge_reply_since}" "${bridge_input_event}"
+wait_for_bridge_reply "${room_id}" "${bridge_input_event}"
 
 # The signed org-C transaction remains blocked at Synapse, and therefore cannot create another
 # bridge audit or A2A attempt even while the managed ghost is active in the room.
@@ -687,9 +683,9 @@ jq -e '
     .reason == "invite_sender_rejected")] | length) == 1 and
   ([.[] | select(.audit_schema == "fgentic.managed_room_invite.v1" and
     .reason == "accepted")] | length) == 1 and
-  all(.[] | has("body") | not) and
-  all(.[] | has("content") | not) and
-  all(.[] | has("prompt") | not)
+  all(.[]; has("body") | not) and
+  all(.[]; has("content") | not) and
+  all(.[]; has("prompt") | not)
 ' <<<"${bridge_records}" >/dev/null \
 	|| die "managed-room bridge audit contract was incomplete or content-bearing"
 teardown_federation_bridge
