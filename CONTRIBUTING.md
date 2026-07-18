@@ -6,8 +6,22 @@ Thanks for considering a contribution — human or AI agent, the rules are the s
 
 1. The backlog is the current set of [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones) (the milestones page is the source of truth), each with a `kind/epic` tracker issue listing its issues in sweep order. **Pickup is scoped by the `track/*` labels, not raw milestone order:** work `track/v1` (the Definitive v1 scope — see the [focus board #316](https://github.com/fmind-ai/fgentic/issues/316)) first, ordered by `priority/p0 → p1 → p2`; leave `track/vision` until v1 ships.
 1. Issues labeled **`agent-ready`** are groomed with tasks and acceptance criteria — pick one up as-is. Issues labeled **`needs-human`** wait on a maintainer decision, account, approval, or spend — you can prepare the work, but flag the blocking part.
-1. Issues labeled **`good first issue`** are the friendliest entry points.
+1. Issues labeled **[`good first issue`](https://github.com/fmind-ai/fgentic/issues?q=state%3Aopen%20label%3A%22good%20first%20issue%22)** are small, self-contained entry points reserved for human newcomers. Autonomous agents must skip them, even when another label says `agent-ready`. An agent may help only when the human who already claimed the issue explicitly asks for assistance.
 1. For anything not covered by an issue, open one first — especially before changing a settled design (the `D<n>` register in [docs/design-decisions.md](docs/design-decisions.md) and the ADRs in [docs/adr/](docs/adr/) are revisited by proposing a new ADR, not by a drive-by PR).
+
+## Your first contribution
+
+1. Fork the repository, clone your fork, and create a short `<type>/<slug>` branch from current `main`.
+1. Choose an open [`good first issue`](https://github.com/fmind-ai/fgentic/issues?q=state%3Aopen%20label%3A%22good%20first%20issue%22). Read its full Tasks and Acceptance criteria; check its assignees, `status/in-progress` label, claim comments, related branches, and open PRs; then comment with your intent and branch only when no active claim exists. A maintainer will confirm there is no competing worktree, assign the issue, and mark the lease before you start.
+1. Run `mise run install`, make only the issue-sized change, and use the smallest focused checks while iterating. The installed hooks run the canonical repository gates before your commit and push complete.
+1. Certify the Developer Certificate of Origin with `git commit -s` on every commit. This adds your own `Signed-off-by` trailer; it is not a CLA or an attribution trailer.
+1. Push your branch and open a pull request using the repository template. Explain What / Why / How / Test plan, use `Fixes #N`, keep the PR focused, and respond to CI and review findings. Maintainers squash-merge accepted PRs.
+
+If the pool is empty, do not relabel an arbitrary issue yourself. Comment on [#191](https://github.com/fmind-ai/fgentic/issues/191) so a maintainer can select work whose context, risk, and acceptance boundary are genuinely suitable for a newcomer.
+
+## Maintaining the newcomer pool
+
+Maintainers review the pool once per calendar quarter and record the audit on [#191](https://github.com/fmind-ai/fgentic/issues/191) or its successor. Keep at least ten open, unclaimed issues: add only human-selected, low-context work with complete acceptance criteria; remove `agent-ready` while an issue is reserved; remove `good first issue` when scope or prerequisites grow; and replace claimed or closed items without displacing the contributor already working them. If the pool falls below ten, record the deficit and select replacements before the quarterly review closes.
 
 ## Development workflow
 
