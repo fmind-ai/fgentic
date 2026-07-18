@@ -21,8 +21,14 @@ metadata:
   namespace: models
 spec:
   selector:
+    matchExpressions:
+      - key: app.kubernetes.io/instance
+        operator: In
+        values:
+          - vllm
+          - knowledge-embeddings
+          - knowledge-reranker
     matchLabels:
-      app.kubernetes.io/instance: vllm
       app.kubernetes.io/component: serving-engine
       app.kubernetes.io/part-of: vllm-stack
   podMetricsEndpoints:
