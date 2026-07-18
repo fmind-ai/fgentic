@@ -10,6 +10,10 @@ resource "google_dns_managed_zone" "platform" {
   description = "Fgentic platform hosts (managed by Terraform)"
   # The data-flow edge makes API activation complete before a fresh project creates the zone.
   project = google_project_service.enabled_services["dns.googleapis.com"].project
+
+  dnssec_config {
+    state = "on"
+  }
 }
 
 locals {
