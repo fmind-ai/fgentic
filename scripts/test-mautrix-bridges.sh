@@ -168,6 +168,7 @@ render_and_validate_bridge() {
 			 .network.takeout.backward_backfill == false' \
 				"${CONFIG}" "Telegram login/history sync widened beyond explicit portal selection"
 			;;
+		*) fail "unsupported mautrix bridge network: ${NETWORK}" ;;
 	esac
 	if yq -e '.. | select(tag == "!!str" and . == "generate")' "${CONFIG}" >/dev/null 2>&1; then
 		fail "read-only ${DISPLAY_NAME} config contains a generated-at-startup value"

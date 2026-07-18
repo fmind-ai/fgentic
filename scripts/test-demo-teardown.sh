@@ -341,6 +341,7 @@ for boundary in receipt metadata server partial; do
 			rm -f "${state}/cluster" "${state}/server" "${state}/loadbalancer" \
 				"${state}/network" "${state}/volume-images" "${state}/image"
 			;;
+		*) fail "unsupported teardown interruption boundary: ${boundary}" ;;
 	esac
 
 	if [ "${boundary}" = receipt ]; then
@@ -373,6 +374,7 @@ for conflict in server network volume image; do
 			printf '%s\n' sha256:replacement-image-id >"${state}/image"
 			printf '%s\n' foreign >"${state}/image-owner"
 			;;
+		*) fail "unsupported teardown conflict: ${conflict}" ;;
 	esac
 	if run_demo down "${state}" transient >"${state}/conflict" 2>&1; then
 		fail "${conflict} name reuse was accepted"
