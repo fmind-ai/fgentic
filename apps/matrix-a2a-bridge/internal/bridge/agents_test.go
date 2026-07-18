@@ -66,6 +66,9 @@ func TestLoadAgents(t *testing.T) {
 	if ref.Timeout() != 0 {
 		t.Errorf("local Timeout() = %s, want zero", ref.Timeout())
 	}
+	if ref.MaxSessionAge() != 0 {
+		t.Errorf("local MaxSessionAge() = %s, want zero", ref.MaxSessionAge())
+	}
 	if ref.MappingID() == "" {
 		t.Error("MappingID() is empty")
 	}
@@ -161,6 +164,26 @@ func TestLoadAgentsRejectsInvalidConfig(t *testing.T) {
     timeout: 2s
 `,
 			want: "only valid for a url target",
+		},
+		{
+			name: "local target with non-positive max session age",
+			content: `agents:
+  agent-x:
+    namespace: kagent
+    name: x
+    maxSessionAge: 0s
+`,
+			want: "maxSessionAge must be positive",
+		},
+		{
+			name: "remote target with local retention policy",
+			content: strings.Replace(
+				validRemoteAgentsYAML,
+				"    timeout: 12s\n",
+				"    timeout: 12s\n    maxSessionAge: 24h\n",
+				1,
+			),
+			want: "maxSessionAge is only valid for a local target",
 		},
 		{
 			name: "invalid agent contract digest",

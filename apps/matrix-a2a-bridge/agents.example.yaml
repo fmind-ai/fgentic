@@ -33,6 +33,8 @@ bridgedOrigins:
 #   agentContractSHA256: SHA-256 of the effective local Agent CRD plus imported prompt fragments.
 #          The authoring gate pins it; the bridge combines it with this live mapping to derive the
 #          content-free `agent_version` audit identifier. Remote targets omit it.
+#   maxSessionAge: optional positive duration for verified local room/agent session expiry.
+#          Omit to retain until !forget; remote targets cannot set it.
 agents:
   agent-platform-helper:
     namespace: kagent
@@ -50,6 +52,7 @@ agents:
     dataClassification: public
     agentContractSHA256: 81fe04d0099b150e2ec15d431940228ab63daf1076715d9cc119ad91fff4fa87
     description: Answers architecture and operations questions from local Fgentic documentation.
+    # maxSessionAge: 168h
     allowedSenders: ["@alice:fgentic.fmind.ai"]
   agent-scribe:
     namespace: kagent

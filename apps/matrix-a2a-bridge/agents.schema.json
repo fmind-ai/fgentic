@@ -42,6 +42,11 @@
       "properties": {
         "namespace": { "$ref": "#/$defs/nonEmptyString" },
         "name": { "$ref": "#/$defs/nonEmptyString" },
+        "maxSessionAge": {
+          "description": "Optional positive duration after which each local room/agent conversation is deleted from kagent and reset. Local targets only.",
+          "type": "string",
+          "pattern": "^(?:[0-9]+(?:\\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))+$"
+        },
         "url": { "type": "string", "format": "uri", "pattern": "^https?://" },
         "description": { "type": "string" },
         "avatarURL": { "type": "string", "pattern": "^mxc://[^/]+/.+$" },
@@ -127,6 +132,7 @@
             "anyOf": [
               { "required": ["namespace"] },
               { "required": ["name"] },
+              { "required": ["maxSessionAge"] },
               { "required": ["dataClassification"] },
               { "required": ["agentContractSHA256"] }
             ]

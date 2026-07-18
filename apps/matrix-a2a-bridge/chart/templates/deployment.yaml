@@ -53,6 +53,10 @@ spec:
               value: {{ .Values.config.homeserverURL | quote }}
             - name: A2A_BASE_URL
               value: {{ .Values.config.a2aBaseURL | quote }}
+            - name: KAGENT_API_URL
+              value: {{ .Values.config.kagentAPIURL | quote }}
+            - name: CONVERSATION_SWEEP_INTERVAL
+              value: {{ .Values.config.conversationSweepInterval | quote }}
             {{- if .Values.a2aAuthentication.enabled }}
             - name: A2A_API_KEY
               valueFrom:

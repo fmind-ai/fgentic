@@ -72,6 +72,18 @@ func TestAgentsSchemaStage(t *testing.T) {
 	}
 }
 
+func TestAgentsSchemaConversationRetentionIsLocalOnly(t *testing.T) {
+	schema := compileAgentsSchema(t)
+	local := []byte("schemaVersion: 1\nagents:\n  agent-local: {namespace: kagent, name: k8s, maxSessionAge: 168h}\n")
+	if err := schema.Validate(yamlInstance(t, local)); err != nil {
+		t.Fatalf("valid local maxSessionAge rejected: %v", err)
+	}
+	remote := []byte("schemaVersion: 1\nagents:\n  agent-remote: {url: https://partner.example/a2a, maxSessionAge: 168h}\n")
+	if err := schema.Validate(yamlInstance(t, remote)); err == nil {
+		t.Fatal("schema accepted maxSessionAge on a remote target")
+	}
+}
+
 func TestAgentsSchemaExtensions(t *testing.T) {
 	schema := compileAgentsSchema(t)
 	key := "publicKey: {kty: EC, crv: P-256, " +

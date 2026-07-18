@@ -15,6 +15,9 @@ config:
   # agent's own egress). Point directly at kagent to skip the gateway hop:
   #   http://kagent-controller.kagent.svc.cluster.local:8083
   a2aBaseURL: http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080
+  # Internal controller origin used only by verified conversation deletion.
+  kagentAPIURL: http://kagent-controller.kagent.svc.cluster.local:8083
+  conversationSweepInterval: 1h
   ghostPrefix: agent-
   requestTimeout: 60s # transport deadline for one A2A SendMessage
   taskTimeout: 10m # overall deadline when polling a long-running task (GetTask)
@@ -108,6 +111,7 @@ bridgedOrigins: {}
 # and partner-enforced `tokenBudget` extension value, plus a pinned ES256 `cardIdentity` (`name`,
 # `organization`, `keyID`, and public P-256 JWK). The bridge does not observe model token usage.
 # Signed-card trust is checked before any remote A2A invocation; no remote target is enabled by default.
+# A local mapping may set maxSessionAge (for example 168h) to expire each room/agent conversation.
 agents:
   agent-platform-helper:
     namespace: kagent

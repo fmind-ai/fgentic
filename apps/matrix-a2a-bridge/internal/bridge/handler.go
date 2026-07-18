@@ -166,6 +166,8 @@ type Bridge struct {
 	durableIntake       bool // immutable after startup; pre-ACK jobs replace legacy message dispatch
 	durableQueue        *durableQueue
 	durableIntakeGate   durableIntakeGate
+	sessionPurger       sessionPurger
+	conversationLocks   [conversationLockStripes]sync.Mutex
 
 	runCtx context.Context // process lifetime; delegations run under it, not the handler ctx
 }
@@ -289,6 +291,10 @@ func (b *Bridge) Start(ctx context.Context) error {
 		b.watchWG.Add(1)
 		go b.cleanupDurableState(watchCtx)
 	}
+	// Keep one cheap sweep loop resident even when the initial map has no retention policy: agents
+	// are reloadable, and enabling maxSessionAge must take effect without a bridge restart.
+	b.watchWG.Add(1)
+	go b.runConversationRetention(watchCtx)
 	return nil
 }
 
@@ -392,6 +398,11 @@ func (b *Bridge) HandleMessage(ctx context.Context, evt *event.Event) {
 				b.handleCommandNotice(ctx, evt, budgetCommand, func() string {
 					return b.budgetText(evt.Sender, evt.RoomID)
 				})
+			}
+			return
+		case plaintextCommandForget:
+			if b.markEventProcessed(ctx, evt) != dedupVerdictDuplicate {
+				b.handleForgetCommand(ctx, evt, command.agent)
 			}
 			return
 		case plaintextCommandInvalid:
@@ -700,6 +711,9 @@ func (b *Bridge) abandonContinuation(evt *event.Event, open *openTask, reason, o
 // then calls SendMessage with the answer and same taskID+contextID, following the reused placeholder
 // to a terminal state (or another pause). A rate-limited answer re-registers the task so it can retry.
 func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open *openTask, answer string) {
+	conversationLock := b.conversationLock(reply.RoomID.String(), open.localpart)
+	conversationLock.Lock()
+	defer conversationLock.Unlock()
 	inflightDelegations.Inc()
 	defer inflightDelegations.Dec()
 	started := time.Now()
@@ -750,6 +764,18 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 		a2aAttempted: true, a2aUserID: reply.Sender.String(), contextID: open.contextID, taskID: open.taskID,
 		replyEventID: open.placeholder, dedupVerdict: dedupVerdictAccepted, rateLimitVerdict: rateLimitVerdictAllowed,
 	}
+	if open.contextID != "" {
+		if err := b.store.AddContextOwner(ctx, reply.RoomID.String(), open.localpart, open.contextID, reply.Sender.String()); err != nil {
+			audit.a2aAttempted = false
+			audit.terminalStage = "conversation_state"
+			audit.terminalReason = "conversation_owner_record_failed"
+			b.editFailureReply(
+				ctx, intent, reply.RoomID, open.placeholder, currentSender,
+				open.localpart, audit.terminalReason, 0,
+			)
+			return
+		}
+	}
 	defer func() {
 		audit.duration = time.Since(started)
 		b.logDelegationAudit(reply, ref, open.localpart, currentSender, audit)
@@ -796,7 +822,7 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 	audit.contextID = orDefault(res.ContextID, open.contextID)
 	audit.taskID = orDefault(res.TaskID, open.taskID)
 	if res.ContextID != "" {
-		if err := b.store.SetContext(ctx, reply.RoomID.String(), open.localpart, res.ContextID); err != nil {
+		if err := b.store.SetContext(ctx, reply.RoomID.String(), open.localpart, res.ContextID, reply.Sender.String()); err != nil {
 			b.log.Error("store context", "room", reply.RoomID, "ghost", open.localpart, "err", err)
 		}
 	}
@@ -995,6 +1021,9 @@ func (b *Bridge) dispatchWithDedupVerdict(
 ) {
 	inflightDelegations.Inc()
 	defer inflightDelegations.Dec()
+	conversationLock := b.conversationLock(evt.RoomID.String(), localpart)
+	conversationLock.Lock()
+	defer conversationLock.Unlock()
 	auditStarted := time.Now()
 	ctx, span := b.tracer.Start(
 		ctx,
@@ -1080,6 +1109,19 @@ func (b *Bridge) dispatchWithDedupVerdict(
 	if err != nil {
 		b.log.Error("load context, starting fresh thread", "room", evt.RoomID, "ghost", localpart, "err", err)
 	}
+	if contextID != "" {
+		if err := b.store.AddContextOwner(ctx, evt.RoomID.String(), localpart, contextID, evt.Sender.String()); err != nil {
+			b.log.Warn(
+				"record conversation owner failed",
+				"room", evt.RoomID, "ghost", localpart, "reason", "conversation_owner_record_failed",
+			)
+			audit.outcome = outcomeDenied
+			audit.terminalStage = "conversation_state"
+			audit.terminalReason = "conversation_owner_record_failed"
+			audit.replyEventID = b.postFailureReply(ctx, intent, evt, sender, localpart, audit.terminalReason, 0)
+			return
+		}
+	}
 
 	// Resolve any file the mention carries into A2A parts (#115). A referenced file that fails policy
 	// fails the whole delegation closed: post a bounded notice and never spend the A2A call.
@@ -1152,7 +1194,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 	audit.taskID = res.TaskID
 	audit.activated = res.ActivatedExtensions // extension set the remote echoed on SendMessage (#114)
 	if res.ContextID != "" {
-		if err := b.store.SetContext(ctx, evt.RoomID.String(), localpart, res.ContextID); err != nil {
+		if err := b.store.SetContext(ctx, evt.RoomID.String(), localpart, res.ContextID, evt.Sender.String()); err != nil {
 			b.log.Error("store context", "room", evt.RoomID, "ghost", localpart, "err", err)
 		}
 	}

@@ -58,6 +58,10 @@ type Config struct {
 	// A2AAPIKey authenticates this bridge workload at agentgateway. It is deliberately separate
 	// from X-User-Id, which carries Matrix attribution but is not a caller credential.
 	A2AAPIKey string `env:"A2A_API_KEY"`
+	// KagentAPIURL is the internal controller origin used only for verified local-session deletion.
+	KagentAPIURL string `env:"KAGENT_API_URL" envDefault:"http://kagent-controller.kagent.svc.cluster.local:8083"`
+	// ConversationSweepInterval bounds how quickly configured maxSessionAge policies take effect.
+	ConversationSweepInterval time.Duration `env:"CONVERSATION_SWEEP_INTERVAL" envDefault:"1h"`
 
 	// GhostPrefix is the local-part prefix for agent ghost users (@agent-k8s -> prefix "agent-").
 	GhostPrefix string `env:"GHOST_PREFIX" envDefault:"agent-"`
@@ -261,6 +265,9 @@ func (c Config) validate() error {
 	}
 	if c.DelegationMaxAttempts < 1 {
 		return fmt.Errorf("DELEGATION_MAX_ATTEMPTS must be >= 1")
+	}
+	if c.ConversationSweepInterval <= 0 {
+		return fmt.Errorf("CONVERSATION_SWEEP_INTERVAL must be positive")
 	}
 	if c.SenderRatePerMinute <= 0 || c.RoomRatePerMinute <= 0 {
 		return fmt.Errorf("rate limits must be positive")
