@@ -1,5 +1,19 @@
+# Fail closed for every Pod in the opt-in admin namespace. This guard is composed only when the
+# profile is enabled, so the disabled profile retains zero footprint while an unlabelled Pod gains
+# no ambient access.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: admin-default-deny
+  namespace: admin
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
 # The server only returns static files. Matrix and MAS API calls originate in the administrator's
-# browser, so the Pod needs no egress and accepts ingress only from the shared Gateway namespace.
+# browser, so the Ketesa Pod needs no egress and accepts ingress only from the shared Gateway.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
