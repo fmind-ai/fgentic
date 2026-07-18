@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline contract checks for the credential-free evaluation lifecycle and its embedded model.
+# shellcheck disable=SC2030,SC2031 # fixture cases intentionally isolate injected globals in subshells
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
