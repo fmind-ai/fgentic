@@ -28,6 +28,8 @@ Both profiles use a dedicated RSA PKCS#1 v1.5/SHA-256 transport key, the Mastodo
 
 When Group or status-feed delivery is enabled, set `HTTP_SIGNATURE_KEY_PATH` to a PKCS#8 or PKCS#1 RSA private key of at least 2048 bits. The Helm chart mounts `httpSignature.secretKey` (`rsa.pem`) from the SOPS-backed signing Secret alongside—but never in place of—the Ed25519 integrity key.
 
+The gateway remains opt-in until issue #489 composes it into the demo profile, so operators provision this key manually with the other ActivityPub keys. Copy `infra/secrets/activitypub-agent-gateway-signing-key.sops.yaml.example` to the target cluster's secret set, generate a distinct transport key with `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out rsa.pem`, add its PEM as `stringData.rsa.pem`, then encrypt the manifest in place with SOPS before committing it. Never replace `stringData.ed25519.pem`: the two keys have separate identities and rotation lifecycles. The opt-in HelmRelease deliberately fails fast if `rsa.pem` is absent rather than silently sending an Ed25519 transport signature that Mastodon cannot discover.
+
 ## Layout
 
 - `cmd/gateway` — entrypoint (two HTTP servers: public AP + private metrics).
