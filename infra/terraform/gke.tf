@@ -61,6 +61,12 @@ resource "google_container_cluster" "cluster" {
 
   datapath_provider = "ADVANCED_DATAPATH" # Dataplane V2 (Cilium) => NetworkPolicy enforcement
 
+  # Reject Service.spec.externalIPs cluster-wide. Public ingress uses the reviewed Traefik
+  # LoadBalancer/Gateway API path; arbitrary external IP routing must not bypass that boundary.
+  service_external_ips_config {
+    enabled = false
+  }
+
   release_channel {
     channel = "REGULAR"
   }
