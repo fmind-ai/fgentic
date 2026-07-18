@@ -1,20 +1,27 @@
 #!/usr/bin/env bash
 # Definition-only federation snapshot, signing, and secret helpers sourced by scripts/demo.sh.
 snapshot_source() {
+	local archive candidate_paths git_status included_paths path
 	SNAPSHOT_DIR="${WORK_DIR}/snapshot"
 	mkdir -p "${SNAPSHOT_DIR}"
-	if [ -n "$(git -C "${ROOT_DIR}" status --porcelain)" ]; then
+	git_status="$(git -C "${ROOT_DIR}" status --porcelain)"
+	if [ -n "${git_status}" ]; then
 		echo "Note: the ephemeral demo snapshot includes the current uncommitted working tree."
 	fi
+	archive="${WORK_DIR}/snapshot.tar"
+	candidate_paths="${WORK_DIR}/snapshot-candidates"
+	included_paths="${WORK_DIR}/snapshot-included"
 	(
 		cd "${ROOT_DIR}" || exit
-		git ls-files --cached --others --exclude-standard -z \
-			| while IFS= read -r -d '' path; do
-				[ -e "${path}" ] || [ -L "${path}" ] || continue
-				printf '%s\0' "${path}"
-			done \
-			| tar --null --files-from=- --create --file=-
-	) | tar --directory "${SNAPSHOT_DIR}" --extract --file=-
+		git ls-files --cached --others --exclude-standard -z >"${candidate_paths}"
+		while IFS= read -r -d '' path; do
+			[ -e "${path}" ] || [ -L "${path}" ] || continue
+			printf '%s\0' "${path}"
+		done <"${candidate_paths}" >"${included_paths}"
+		tar --null --files-from="${included_paths}" --create --file="${archive}"
+	)
+	tar --directory "${SNAPSHOT_DIR}" --extract --file="${archive}"
+	rm -f "${archive}" "${candidate_paths}" "${included_paths}"
 
 	LLM_PROVIDER="${LLM_PROVIDER}" LLM_MODEL="${LLM_MODEL}" GCP_PROJECT="${GCP_PROJECT}" \
 		VERTEX_REGION="${VERTEX_REGION}" OPENAI_HOST="${OPENAI_HOST}" \
@@ -52,7 +59,7 @@ snapshot_source() {
 }
 prepare_federation_agent_card_key() {
 	local bootstrap_json configmap_json encoded_private_key encoded_receipt_key
-	local existing_receipt_jwk public_artifacts_exist
+	local existing_receipt_jwk namespace_manifest patch_data patch_document public_artifacts_exist
 	AGENT_CARD_PRIVATE_KEY="${WORK_DIR}/agent-card-private-key.pem"
 	AGENT_CARD_KEY_ID=""
 	EXISTING_AGENT_CARD_JWK_FILE=""
@@ -64,8 +71,8 @@ prepare_federation_agent_card_key() {
 	# The signing key is needed before the ephemeral Git snapshot exists. Keep it only in the
 	# lifecycle-owned bootstrap Secret; neither the signed source nor a workload namespace ever
 	# receives private material. Reusing the key keeps the public trust anchor stable across up.
-	kubectl create namespace flux-system --dry-run=client --output=yaml \
-		| kubectl apply --filename - >/dev/null
+	namespace_manifest="$(kubectl create namespace flux-system --dry-run=client --output=yaml)"
+	printf '%s\n' "${namespace_manifest}" | kubectl apply --filename - >/dev/null
 	bootstrap_json="$(kubectl --namespace flux-system get secret fgentic-demo-bootstrap \
 		--output json 2>/dev/null || printf '{}')"
 	public_artifacts_exist=false
@@ -134,16 +141,17 @@ prepare_federation_agent_card_key() {
 	chmod 600 "${USAGE_RECEIPT_PRIVATE_KEY}"
 
 	if kubectl --namespace flux-system get secret fgentic-demo-bootstrap >/dev/null 2>&1; then
-		kubectl --namespace flux-system create secret generic fgentic-demo-bootstrap \
+		patch_document="$(kubectl --namespace flux-system create secret generic \
+			fgentic-demo-bootstrap \
 			--from-file="agent-card-private-key=${AGENT_CARD_PRIVATE_KEY}" \
 			--from-literal="agent-card-key-id=${AGENT_CARD_KEY_ID}" \
 			--from-file="usage-receipt-private-key=${USAGE_RECEIPT_PRIVATE_KEY}" \
 			--from-literal="usage-receipt-key-id=${USAGE_RECEIPT_KEY_ID}" \
-			--dry-run=client --output=json \
-			| jq --compact-output '{data: .data}' \
+			--dry-run=client --output=json)"
+		patch_data="$(jq --compact-output '{data: .data}' <<<"${patch_document}")"
+		printf '%s\n' "${patch_data}" \
 			| kubectl --namespace flux-system patch secret fgentic-demo-bootstrap \
-				--type=merge --patch-file /dev/stdin \
-				>/dev/null
+				--type=merge --patch-file /dev/stdin >/dev/null
 	else
 		apply_secret flux-system fgentic-demo-bootstrap \
 			--from-file="agent-card-private-key=${AGENT_CARD_PRIVATE_KEY}" \
@@ -168,8 +176,10 @@ sign_federation_agent_card_snapshot() {
 	USAGE_RECEIPT_JWK_FILE="${WORK_DIR}/usage-receipt-public-jwk.json"
 	[ -f "${template}" ] || die "federation AgentCard template not found"
 	[ -f "${policy}" ] || die "federation AgentCard policy not found"
-	marker_count="$(rg --only-matching --fixed-strings "${FEDERATION_AGENT_CARD_MARKER}" \
-		"${policy}" | wc -l | tr -d ' ')"
+	if ! marker_count="$(rg --count-matches --fixed-strings \
+		"${FEDERATION_AGENT_CARD_MARKER}" "${policy}")"; then
+		marker_count=0
+	fi
 	[ "${marker_count}" = "1" ] \
 		|| die "federation AgentCard policy must contain exactly one signed-card marker"
 	card_server="$(yq --unwrapScalar '.data.server_name' "${settings}")"
@@ -241,13 +251,14 @@ sign_federation_agent_card_snapshot() {
 publish_federation_agent_card_artifacts() {
 	# These are the exact public bytes served by the snapshot policy. The ConfigMap is evidence
 	# for the acceptance test and a convenient public-key distribution point, never key storage.
-	kubectl --namespace agentgateway-system create configmap \
+	local configmap_manifest
+	configmap_manifest="$(kubectl --namespace agentgateway-system create configmap \
 		"${FEDERATION_AGENT_CARD_CONFIGMAP}" \
 		--from-file="agent-card.json=${AGENT_CARD_PUBLIC_FILE}" \
 		--from-file="public-jwk.json=${AGENT_CARD_JWK_FILE}" \
 		--from-file="usage-receipt-public-jwk.json=${USAGE_RECEIPT_JWK_FILE}" \
-		--dry-run=client --output=yaml \
-		| kubectl apply --filename - >/dev/null
+		--dry-run=client --output=yaml)"
+	printf '%s\n' "${configmap_manifest}" | kubectl apply --filename - >/dev/null
 }
 
 configure_federation_policy_snapshot() {
@@ -308,7 +319,10 @@ create_federation_secrets() {
 	value=""
 
 	local pg_synapse pg_synapse_b pg_synapse_c pg_keycloak pg_kagent
-	local pg_knowledge_owner pg_knowledge_retrieval namespace
+	local pg_knowledge_owner pg_knowledge_retrieval namespace ca_configmap
+	local keycloak_admin_password fgentic_client_secret fgentic_alice_password
+	local fgentic_bob_password org_b_a2a_client_secret untrusted_a2a_client_secret
+	local wrong_audience_a2a_client_secret
 	pg_synapse="$(bootstrap_secret_value pg-synapse)"
 	pg_synapse_b="$(bootstrap_secret_value pg-synapse-b)"
 	pg_synapse_c="$(bootstrap_secret_value pg-synapse-c)"
@@ -344,22 +358,30 @@ create_federation_secrets() {
 		--from-literal=url="postgresql://kagent:${pg_kagent}@platform-pg-rw.postgres.svc.cluster.local:5432/kagent?sslmode=require"
 	apply_secret kagent kagent-model-auth \
 		--from-literal=OPENAI_API_KEY=sk-not-used-agentgateway-holds-the-real-key
+	keycloak_admin_password="$(bootstrap_secret_value keycloak-admin-password)"
+	fgentic_client_secret="$(bootstrap_secret_value fgentic-client-secret)"
+	fgentic_alice_password="$(bootstrap_secret_value fgentic-alice-password)"
+	fgentic_bob_password="$(bootstrap_secret_value fgentic-bob-password)"
+	org_b_a2a_client_secret="$(bootstrap_secret_value org-b-a2a-client-secret)"
+	untrusted_a2a_client_secret="$(bootstrap_secret_value untrusted-a2a-client-secret)"
+	wrong_audience_a2a_client_secret="$(bootstrap_secret_value wrong-audience-a2a-client-secret)"
 	apply_secret keycloak keycloak-credentials \
 		--from-literal=KC_BOOTSTRAP_ADMIN_USERNAME=admin \
-		--from-literal=KC_BOOTSTRAP_ADMIN_PASSWORD="$(bootstrap_secret_value keycloak-admin-password)" \
-		--from-literal=FGENTIC_CLIENT_SECRET="$(bootstrap_secret_value fgentic-client-secret)" \
-		--from-literal=FGENTIC_ALICE_PASSWORD="$(bootstrap_secret_value fgentic-alice-password)" \
-		--from-literal=FGENTIC_BOB_PASSWORD="$(bootstrap_secret_value fgentic-bob-password)" \
-		--from-literal=ORG_B_A2A_CLIENT_SECRET="$(bootstrap_secret_value org-b-a2a-client-secret)" \
-		--from-literal=UNTRUSTED_A2A_CLIENT_SECRET="$(bootstrap_secret_value untrusted-a2a-client-secret)" \
-		--from-literal=WRONG_AUDIENCE_A2A_CLIENT_SECRET="$(bootstrap_secret_value wrong-audience-a2a-client-secret)"
+		--from-literal=KC_BOOTSTRAP_ADMIN_PASSWORD="${keycloak_admin_password}" \
+		--from-literal=FGENTIC_CLIENT_SECRET="${fgentic_client_secret}" \
+		--from-literal=FGENTIC_ALICE_PASSWORD="${fgentic_alice_password}" \
+		--from-literal=FGENTIC_BOB_PASSWORD="${fgentic_bob_password}" \
+		--from-literal=ORG_B_A2A_CLIENT_SECRET="${org_b_a2a_client_secret}" \
+		--from-literal=UNTRUSTED_A2A_CLIENT_SECRET="${untrusted_a2a_client_secret}" \
+		--from-literal=WRONG_AUDIENCE_A2A_CLIENT_SECRET="${wrong_audience_a2a_client_secret}"
 
 	# Only the public root is mirrored into the homeserver namespaces. The CA key remains in
 	# cert-manager, and both runtime and config-check pods mount this ConfigMap read-only.
 	for namespace in matrix matrix-b matrix-c; do
-		kubectl --namespace "${namespace}" create configmap fgentic-local-ca \
-			--from-file="ca.crt=${ca_cert}" --dry-run=client --output=yaml \
-			| kubectl apply --filename - >/dev/null
+		ca_configmap="$(kubectl --namespace "${namespace}" create configmap fgentic-local-ca \
+			--from-file="ca.crt=${ca_cert}" \
+			--dry-run=client --output=yaml)"
+		printf '%s\n' "${ca_configmap}" | kubectl apply --filename - >/dev/null
 	done
 	publish_federation_agent_card_artifacts
 }
