@@ -12,6 +12,7 @@ package apgateway
 
 import (
 	"context"
+	"crypto/rsa"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -28,6 +29,7 @@ import (
 
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/budget"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/delivery"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/identity"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/integrity"
 )
@@ -63,25 +65,42 @@ type Gateway struct {
 	groupClient        *http.Client
 	statusLimiter      *budget.Reserver // per-agent status-feed rate limiter; nil disables the feed
 	statusMaxPerWindow uint64           // max status Notes per agent per limiter window
+	httpPublicKeyPEM   string           // RSA #main-key published by every actor that signs delivery
 }
 
 // UseDelivery installs the outbound delivery infrastructure shared by group fan-out (#217) and the
 // agent status feed (#219): a signed-activity deliverer, an inbox-resolving client, and the follower
 // store. Requires a signer (for the actor publicKey) and a border (F3/F4 on inbound subscription).
-func (g *Gateway) UseDelivery(deliverer *delivery.Deliverer, client *http.Client) {
+func (g *Gateway) UseDelivery(deliverer *delivery.Deliverer, client *http.Client) error {
+	if deliverer == nil {
+		return fmt.Errorf("gateway: outbound deliverer is required")
+	}
+	publicKey := deliverer.PublicKey()
+	if _, ok := publicKey.(*rsa.PublicKey); !ok {
+		return fmt.Errorf("gateway: outbound HTTP-signature key is %T, want RSA", publicKey)
+	}
+	pemText, err := httpsig.EncodePublicKeyPEM(publicKey)
+	if err != nil {
+		return fmt.Errorf("gateway: encode outbound HTTP-signature public key: %w", err)
+	}
 	g.deliverer = deliverer
 	g.groupClient = client
+	g.httpPublicKeyPEM = pemText
 	if g.followers == nil {
 		g.followers = newFollowerStore()
 	}
+	return nil
 }
 
 // UseGroups enables the ActivityPub Group collaboration surface (issue #217): designated rooms are
 // exposed as Group actors that remote actors can follow and post to, with Announce fan-out and
 // governed @agent routing.
-func (g *Gateway) UseGroups(registry *GroupRegistry, deliverer *delivery.Deliverer, client *http.Client) {
-	g.UseDelivery(deliverer, client)
+func (g *Gateway) UseGroups(registry *GroupRegistry, deliverer *delivery.Deliverer, client *http.Client) error {
+	if err := g.UseDelivery(deliverer, client); err != nil {
+		return err
+	}
 	g.groups = registry
+	return nil
 }
 
 // UseStatusFeed enables the follow-to-subscribe agent status feed (issue #219): agents accept
@@ -484,6 +503,15 @@ func (g *Gateway) marshalActor(ghost string, ref AgentRef) ([]byte, error) {
 				"controller":         actorID,
 				"publicKeyMultibase": g.signer.PublicKeyMultibase(),
 			},
+		}
+	}
+	if g.httpPublicKeyPEM != "" {
+		actorID := string(g.actorID(ghost))
+		contexts = append(contexts, "https://w3id.org/security/v1")
+		doc["publicKey"] = map[string]any{
+			"id":           actorID + "#main-key",
+			"owner":        actorID,
+			"publicKeyPem": g.httpPublicKeyPEM,
 		}
 	}
 	// FEP-c390 identity (issue #218): bind this actor to the platform's sovereign did:key so a

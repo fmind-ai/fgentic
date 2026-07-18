@@ -34,14 +34,19 @@ spec:
     # FEP-8b32 object integrity (issue #212) is ON: outbound replies are signed with the SOPS-backed
     # Ed25519 key and each actor publishes its assertionMethod Multikey, and inbound activities must
     # ALSO carry a valid object proof (requireInbound) — belt-and-suspenders over the transport
-    # signature so a relayed or tampered object cannot ride a trusted actor. Requires the
-    # activitypub-agent-gateway-signing-key Secret (scripts/gen-secrets.sh).
+    # signature so a relayed or tampered object cannot ride a trusted actor. Requires the manually
+    # provisioned activitypub-agent-gateway-signing-key Secret documented in the app README.
     integrity:
       enabled: true
       requireInbound: true
+    # Outbound HTTP signatures use rsa.pem from the same SOPS-backed signing Secret. Keeping this
+    # RSA transport key separate from ed25519.pem preserves the object-proof verification method.
+    httpSignature:
+      secretName: activitypub-agent-gateway-signing-key
+      secretKey: rsa.pem
     # FEP-c390 cross-transport identity (issue #218) is ON: each actor binds to a P-256 did:key and
-    # its AgentCard publishes the matching JWK. Requires the activitypub-agent-gateway-identity-key
-    # Secret (scripts/gen-secrets.sh).
+    # its AgentCard publishes the matching JWK. Requires the manually provisioned
+    # activitypub-agent-gateway-identity-key Secret documented in the app README.
     identity:
       enabled: true
     # Per-actor/per-domain token-budget admission (issue #213) is ON: every inbound delegation
@@ -51,7 +56,7 @@ spec:
       enabled: true
     # Group collaboration (issue #217) is ON: designated rooms are exposed as AP Group actors that
     # remote actors follow and post to, with Announce fan-out and governed @agent routing. Inbound
-    # group traffic passes the F3/F4/F5 border; outbound delivery is signed with the integrity key.
+    # group traffic passes the F3/F4/F5 border; outbound delivery uses the dedicated RSA key.
     groups:
       enabled: true
     # Follow-to-subscribe agent status feed (issue #219) is ON: agents accept Follows and Prometheus

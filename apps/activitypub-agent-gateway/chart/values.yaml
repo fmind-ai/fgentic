@@ -46,8 +46,9 @@ agents:
 
 # Collaboration Groups (issue #217): expose designated rooms as ActivityPub Group actors that remote
 # Fediverse actors can follow and post to, with Announce fan-out and governed @agent routing. Needs
-# integrity.enabled (signing key for the actor publicKey + signed delivery) and policy.enabled (the
-# F3/F4/F5 border on inbound group traffic). DISABLED here so the chart installs standalone.
+# integrity.enabled (object proofs), the RSA httpSignature key (transport authentication), and
+# policy.enabled (the F3/F4/F5 border on inbound group traffic). DISABLED here so the chart installs
+# standalone.
 groups:
   enabled: false
   rooms:
@@ -58,7 +59,8 @@ groups:
 # Follow-to-subscribe agent status feed (issue #219): agents accept Follows, and Prometheus alerts
 # POSTed to the INTERNAL /alerts endpoint (metrics port) are published as signed status Notes fanned
 # out to followers, capped per agent per window. Sovereign, pull-based notifications — no outbound
-# webhook lock-in. Needs integrity.enabled (signing) and policy.enabled (border). DISABLED here.
+# webhook lock-in. Needs integrity.enabled (object proofs), the RSA httpSignature key (delivery),
+# and policy.enabled (border). DISABLED here.
 statusFeed:
   enabled: false
   window: 1m # rate-limit window
@@ -89,6 +91,14 @@ integrity:
   secretKey: ed25519.pem # PKCS#8 PEM key inside the Secret
   keyFragment: ed25519-key # verificationMethod = <actorID>#<keyFragment>
   requireInbound: false # require a valid inbound object proof (needs policy.enabled)
+
+# Hop-by-hop ActivityPub HTTP signatures use a distinct RSA key so Mastodon can verify RFC 9421 and
+# Cavage deliveries without changing the Ed25519 FEP-8b32 object-proof identity. This key is mounted
+# only when groups or the status feed enables outbound delivery. PKCS#8 and PKCS#1 PEM are accepted;
+# RSA must be at least 2048 bits.
+httpSignature:
+  secretName: activitypub-agent-gateway-signing-key
+  secretKey: rsa.pem
 
 # FEP-c390 cross-transport identity (issue #218). When enabled, each actor attaches a
 # VerifiableIdentityStatement bound to a P-256 did:key and its AgentCard publishes the matching JWK,

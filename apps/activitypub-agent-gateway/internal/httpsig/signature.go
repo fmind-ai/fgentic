@@ -225,7 +225,13 @@ func (s *parsedSignature) signingStringRFC9421(req *http.Request) (string, error
 		case "@method":
 			value = strings.ToUpper(req.Method)
 		case "@target-uri":
-			value = "https://" + req.Host + req.URL.RequestURI()
+			scheme := req.URL.Scheme
+			if scheme == "" {
+				// Public federation is HTTPS-only. Inbound requests arrive behind TLS termination with
+				// no URL scheme, so reconstruct the externally authenticated target consistently.
+				scheme = "https"
+			}
+			value = scheme + "://" + req.Host + req.URL.RequestURI()
 		case "@authority":
 			value = strings.ToLower(req.Host)
 		case "@path":

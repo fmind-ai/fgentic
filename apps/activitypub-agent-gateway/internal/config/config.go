@@ -72,6 +72,9 @@ type Config struct {
 	IntegrityKeyPath        string `env:"INTEGRITY_KEY_PATH"`
 	IntegrityKeyFragment    string `env:"INTEGRITY_KEY_FRAGMENT" envDefault:"ed25519-key"`
 	IntegrityRequireInbound bool   `env:"INTEGRITY_REQUIRE_INBOUND" envDefault:"false"`
+	// HTTPSignatureKeyPath is the mounted RSA private key used only for hop-by-hop ActivityPub HTTP
+	// signatures. Keeping it separate preserves the Ed25519 FEP-8b32 object-proof contract.
+	HTTPSignatureKeyPath string `env:"HTTP_SIGNATURE_KEY_PATH"`
 
 	// IdentityKeyPath is the mounted, SOPS-backed PKCS#8 PEM P-256 key that anchors the FEP-c390
 	// cross-transport identity (issue #218): each actor attaches a VerifiableIdentityStatement bound
@@ -88,14 +91,14 @@ type Config struct {
 	BudgetCapacity int           `env:"BUDGET_CAPACITY" envDefault:"4096"`
 
 	// GroupsPath is the projected groups.yaml mapping each exposed collaboration room to an AP Group
-	// actor (issue #217). Empty disables the Group surface. Groups need the signing key (for the
-	// actor publicKey and signed outbound delivery) and the border (F3/F4/F5 on inbound group traffic).
+	// actor (issue #217). Empty disables the Group surface. Groups need the Ed25519 object-proof key,
+	// the RSA HTTP-signature key published as actor publicKey, and the inbound F3/F4/F5 border.
 	GroupsPath string `env:"GROUPS_PATH"`
 
 	// StatusFeedEnabled turns on the follow-to-subscribe agent status feed (issue #219): agents accept
 	// Follows and operational events (Prometheus alerts POSTed to the internal /alerts endpoint) are
 	// published as signed status Notes fanned out to followers, capped at StatusMaxPerWindow per agent
-	// per StatusWindow. Like groups, it needs the signing key and the border.
+	// per StatusWindow. Like groups, it needs both signing keys and the border.
 	StatusFeedEnabled  bool          `env:"STATUS_FEED_ENABLED" envDefault:"false"`
 	StatusWindow       time.Duration `env:"STATUS_WINDOW" envDefault:"1m"`
 	StatusMaxPerWindow int           `env:"STATUS_MAX_PER_WINDOW" envDefault:"6"`
@@ -189,7 +192,10 @@ func (c Config) validate() error {
 	}
 	if c.GroupsPath != "" {
 		if c.IntegrityKeyPath == "" {
-			return fmt.Errorf("GROUPS_PATH needs INTEGRITY_KEY_PATH (the signing key authenticates group delivery)")
+			return fmt.Errorf("GROUPS_PATH needs INTEGRITY_KEY_PATH (group activities carry object proofs)")
+		}
+		if c.HTTPSignatureKeyPath == "" {
+			return fmt.Errorf("GROUPS_PATH needs HTTP_SIGNATURE_KEY_PATH (the RSA key authenticates delivery)")
 		}
 		if c.PolicyPath == "" {
 			return fmt.Errorf("GROUPS_PATH needs POLICY_PATH (the border gates inbound group traffic)")
@@ -197,7 +203,10 @@ func (c Config) validate() error {
 	}
 	if c.StatusFeedEnabled {
 		if c.IntegrityKeyPath == "" {
-			return fmt.Errorf("STATUS_FEED_ENABLED needs INTEGRITY_KEY_PATH (status Notes are signed and delivery is signed)")
+			return fmt.Errorf("STATUS_FEED_ENABLED needs INTEGRITY_KEY_PATH (status Notes carry object proofs)")
+		}
+		if c.HTTPSignatureKeyPath == "" {
+			return fmt.Errorf("STATUS_FEED_ENABLED needs HTTP_SIGNATURE_KEY_PATH (the RSA key authenticates delivery)")
 		}
 		if c.PolicyPath == "" {
 			return fmt.Errorf("STATUS_FEED_ENABLED needs POLICY_PATH (the border gates who may subscribe)")

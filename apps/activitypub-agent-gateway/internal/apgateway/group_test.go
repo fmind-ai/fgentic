@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -53,7 +54,7 @@ func newRemotePeer(t *testing.T) *remotePeer {
 	t.Helper()
 	p := &remotePeer{}
 	mux := http.NewServeMux()
-	p.server = httptest.NewServer(mux)
+	p.server = httptest.NewTLSServer(mux)
 	t.Cleanup(p.server.Close)
 	mux.HandleFunc("GET /users/bob", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = fmt.Fprintf(w, `{"id":%q,"type":"Person","inbox":%q}`, p.actor(), p.inbox())
@@ -104,8 +105,8 @@ func newGroupGateway(t *testing.T, del Delegator, client *http.Client, border *B
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	_, priv, _ := ed25519.GenerateKey(rand.Reader)
-	signer, err := integrity.NewSigner(priv, "ed25519-key")
+	_, objectPriv, _ := ed25519.GenerateKey(rand.Reader)
+	signer, err := integrity.NewSigner(objectPriv, "ed25519-key")
 	if err != nil {
 		t.Fatalf("NewSigner: %v", err)
 	}
@@ -114,7 +115,13 @@ func newGroupGateway(t *testing.T, del Delegator, client *http.Client, border *B
 	if err != nil {
 		t.Fatalf("LoadGroupRegistry: %v", err)
 	}
-	g.UseGroups(groups, delivery.New(client, priv, slog.Default()), client)
+	httpPriv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Generate HTTP-signature key: %v", err)
+	}
+	if err := g.UseGroups(groups, delivery.New(client, httpPriv, slog.Default()), client); err != nil {
+		t.Fatalf("UseGroups: %v", err)
+	}
 	if border != nil {
 		g.UseBorder(border)
 	}

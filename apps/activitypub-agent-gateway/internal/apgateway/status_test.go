@@ -3,6 +3,7 @@ package apgateway
 import (
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -38,7 +39,13 @@ func newStatusGateway(t *testing.T, client *http.Client, maxPerWindow int, borde
 		t.Fatalf("NewSigner: %v", err)
 	}
 	g.UseSigner(signer)
-	g.UseDelivery(delivery.New(client, priv, slog.Default()), client)
+	httpPriv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("Generate HTTP-signature key: %v", err)
+	}
+	if err := g.UseDelivery(delivery.New(client, httpPriv, slog.Default()), client); err != nil {
+		t.Fatalf("UseDelivery: %v", err)
+	}
 	fixed := time.Unix(1_700_000_000, 0)
 	g.UseStatusFeed(budget.NewWithClock(time.Minute, 64, func() time.Time { return fixed }), uint64(maxPerWindow))
 	if border != nil {

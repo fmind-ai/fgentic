@@ -14,11 +14,21 @@ It is the first surface of **ActivityPub as a second, additive federation transp
 
 Inbound AP content is **untrusted** (prompt injection is threat #1). The border enforces, before any A2A call:
 
-- **HTTP Message Signature** verification (Cavage draft that Mastodon emits + RFC 9421), stdlib crypto only, with body-digest binding and a replay window.
+- **HTTP Message Signature** verification (RFC 9421 + Cavage fallback), stdlib crypto only, with body-digest binding and a replay window.
 - **Actor-key binding**: a valid signature from key K only authorizes activities whose actor is K's owner.
 - A strict, **fail-closed allowlist** (`policy.json`: signing domains + exact actor URIs) that **hot-reloads from git** without a pod restart — a parse error, unreadable file, or empty allowlist denies everything.
 
 An unsigned, off-allowlist, or mis-bound inbound is dropped with content-free evidence and **zero** A2A calls. Object integrity, per-actor budget admission, and bot/attribution audit ([fediverse spec §3](../../docs/fediverse.md)) land in later M18 issues; the public HTTPRoute stays **disabled by default** until the border is proven in force.
+
+## Outbound signature negotiation
+
+Outbound inbox delivery prefers **RFC 9421**, signing `@method`, `@target-uri`, and the RFC 9530 `Content-Digest` with a `created` timestamp. A synchronous `401` triggers one Cavage retry; the successful profile is remembered per remote authority in a bounded, process-local cache. Network errors and 5xx responses are never retried with the other profile because the remote may already have processed the activity.
+
+Both profiles use a dedicated RSA PKCS#1 v1.5/SHA-256 transport key, the Mastodon interoperability baseline, published as each delivering actor's `#main-key`. The separate Ed25519 key continues to sign FEP-8b32 object proofs, so FEP-8b32/844e/c390 object-layer identities remain independent of this hop-by-hop negotiation.
+
+When Group or status-feed delivery is enabled, set `HTTP_SIGNATURE_KEY_PATH` to a PKCS#8 or PKCS#1 RSA private key of at least 2048 bits. The Helm chart mounts `httpSignature.secretKey` (`rsa.pem`) from the SOPS-backed signing Secret alongside—but never in place of—the Ed25519 integrity key.
+
+The gateway remains opt-in until issue #489 composes it into the demo profile, so operators provision this key manually with the other ActivityPub keys. Copy `infra/secrets/activitypub-agent-gateway-signing-key.sops.yaml.example` to the target cluster's secret set, generate a distinct transport key with `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out rsa.pem`, add its PEM as `stringData.rsa.pem`, then encrypt the manifest in place with SOPS before committing it. Never replace `stringData.ed25519.pem`: the two keys have separate identities and rotation lifecycles. The opt-in HelmRelease deliberately fails fast if `rsa.pem` is absent rather than silently sending an Ed25519 transport signature that Mastodon cannot discover.
 
 ## Layout
 

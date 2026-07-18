@@ -2,13 +2,17 @@ package delivery
 
 import (
 	"context"
+	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -19,12 +23,13 @@ import (
 type captureInbox struct {
 	mu       sync.Mutex
 	bodies   [][]byte
+	profiles []string
 	verifier *httpsig.Verifier
 	status   int
 }
 
 type fixedResolver struct {
-	key   ed25519.PublicKey
+	key   crypto.PublicKey
 	owner string
 }
 
@@ -35,26 +40,28 @@ func (r fixedResolver) Resolve(context.Context, string) (httpsig.PublicKey, erro
 func (c *captureInbox) handler(t *testing.T) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		body, _ := io.ReadAll(r.Body)
-		if _, err := c.verifier.Verify(r.Context(), r, body); err != nil {
+		result, err := c.verifier.Verify(r.Context(), r, body)
+		if err != nil {
 			t.Errorf("delivered request failed signature verification: %v", err)
 			w.WriteHeader(http.StatusUnauthorized)
 			return
 		}
 		c.mu.Lock()
 		c.bodies = append(c.bodies, body)
+		c.profiles = append(c.profiles, result.Scheme)
 		c.mu.Unlock()
 		w.WriteHeader(c.status)
 	}
 }
 
 func TestDeliverSignsAndPosts(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	const sender = "https://fgentic.localhost/ap/groups/collab"
-	inbox := &captureInbox{verifier: httpsig.NewVerifier(fixedResolver{key: pub, owner: sender}, time.Hour), status: http.StatusAccepted}
-	srv := httptest.NewServer(inbox.handler(t))
+	inbox := &captureInbox{verifier: httpsig.NewVerifier(fixedResolver{key: &priv.PublicKey, owner: sender}, time.Hour), status: http.StatusAccepted}
+	srv := httptest.NewTLSServer(inbox.handler(t))
 	defer srv.Close()
 
 	d := New(srv.Client(), priv, slog.Default())
@@ -65,11 +72,70 @@ func TestDeliverSignsAndPosts(t *testing.T) {
 	if len(inbox.bodies) != 1 || string(inbox.bodies[0]) != string(body) {
 		t.Errorf("inbox received %v", inbox.bodies)
 	}
+	if len(inbox.profiles) != 1 || inbox.profiles[0] != string(httpsig.ProfileRFC9421) {
+		t.Errorf("profiles = %v, want first delivery to prefer RFC 9421", inbox.profiles)
+	}
+}
+
+func TestDeliverFallsBackAndRemembersProfilePerServer(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	const sender = "https://fgentic.localhost/ap/groups/collab"
+	verifier := httpsig.NewVerifier(fixedResolver{key: &priv.PublicKey, owner: sender}, time.Hour)
+	var mu sync.Mutex
+	var profiles []string
+
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, readErr := io.ReadAll(r.Body)
+		if readErr != nil {
+			t.Errorf("read body: %v", readErr)
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
+		result, verifyErr := verifier.Verify(r.Context(), r, body)
+		if verifyErr != nil {
+			t.Errorf("verify %v: %v", r.Header, verifyErr)
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		mu.Lock()
+		profiles = append(profiles, result.Scheme)
+		mu.Unlock()
+		if result.Scheme == string(httpsig.ProfileRFC9421) {
+			w.WriteHeader(http.StatusUnauthorized)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}))
+	defer srv.Close()
+
+	d := New(srv.Client(), priv, slog.Default())
+	body := []byte(`{"type":"Announce"}`)
+	for range 2 {
+		if deliverErr := d.Deliver(context.Background(), srv.URL+"/inbox", sender, body); deliverErr != nil {
+			t.Fatalf("Deliver: %v", deliverErr)
+		}
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	want := []string{string(httpsig.ProfileRFC9421), string(httpsig.ProfileCavage), string(httpsig.ProfileCavage)}
+	if len(profiles) != len(want) {
+		t.Fatalf("profiles = %v, want %v", profiles, want)
+	}
+	for i := range want {
+		if profiles[i] != want[i] {
+			t.Errorf("profiles[%d] = %q, want %q", i, profiles[i], want[i])
+		}
+	}
 }
 
 func TestDeliverErrorsOnNon2xx(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	var requests atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
@@ -77,15 +143,60 @@ func TestDeliverErrorsOnNon2xx(t *testing.T) {
 	if err := d.Deliver(context.Background(), srv.URL, "https://x/actor", []byte("{}")); err == nil {
 		t.Errorf("expected error on 500 response")
 	}
+	if requests.Load() != 1 {
+		t.Errorf("requests = %d, want no fallback retry after a 500", requests.Load())
+	}
+}
+
+func TestDeliverReturnsBothProfileFailures(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	var requests atomic.Int32
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		requests.Add(1)
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	defer srv.Close()
+
+	d := New(srv.Client(), priv, slog.Default())
+	if err := d.Deliver(context.Background(), srv.URL, "https://x/actor", []byte("{}")); err == nil {
+		t.Fatal("expected both signature profiles to fail")
+	}
+	if requests.Load() != 2 {
+		t.Errorf("requests = %d, want one RFC 9421 attempt and one Cavage fallback", requests.Load())
+	}
+}
+
+func TestProfileMemoryIsBounded(t *testing.T) {
+	memory := profileMemory{byServer: make(map[string]httpsig.Profile)}
+	for i := range maxRememberedServers + 1 {
+		memory.set("server-"+strconv.Itoa(i), httpsig.ProfileCavage)
+	}
+	if len(memory.byServer) != maxRememberedServers {
+		t.Fatalf("remembered servers = %d, want %d", len(memory.byServer), maxRememberedServers)
+	}
+	if got := memory.get("server-0"); got != httpsig.ProfileRFC9421 {
+		t.Errorf("evicted server profile = %q, want RFC 9421 default", got)
+	}
+	if got := alternate(httpsig.ProfileCavage); got != httpsig.ProfileRFC9421 {
+		t.Errorf("alternate(Cavage) = %q", got)
+	}
+}
+
+func TestDeliverRejectsPlainHTTP(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	d := New(http.DefaultClient, priv, slog.Default())
+	if err := d.Deliver(context.Background(), "http://remote.example/inbox", "https://sender.example/actor", nil); err == nil {
+		t.Fatal("plain HTTP delivery must be rejected before any request")
+	}
 }
 
 func TestFanoutIsBestEffort(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	const sender = "https://fgentic.localhost/ap/groups/collab"
 	inbox := &captureInbox{verifier: httpsig.NewVerifier(fixedResolver{key: pub, owner: sender}, time.Hour), status: http.StatusOK}
-	good := httptest.NewServer(inbox.handler(t))
+	good := httptest.NewTLSServer(inbox.handler(t))
 	defer good.Close()
-	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) }))
+	bad := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) }))
 	defer bad.Close()
 
 	d := New(good.Client(), priv, slog.Default())

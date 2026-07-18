@@ -9,7 +9,6 @@ import (
 
 	vocab "github.com/go-ap/activitypub"
 
-	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/integrity"
 )
 
@@ -22,7 +21,7 @@ func (g *Gateway) groupActorID(id string) vocab.IRI {
 }
 
 // buildGroupActor renders a collaboration room as an ActivityPub Group actor, publishing the
-// Ed25519 HTTP-Signature key so followers can verify the group's Announce/Accept deliveries.
+// RSA HTTP-Signature key so followers can verify the group's Announce/Accept deliveries.
 func (g *Gateway) buildGroupActor(id string, ref GroupRef) map[string]any {
 	actorID := string(g.groupActorID(id))
 	doc := map[string]any{
@@ -37,13 +36,11 @@ func (g *Gateway) buildGroupActor(id string, ref GroupRef) map[string]any {
 		"followers":         actorID + "/followers",
 		"url":               actorID,
 	}
-	if g.signer != nil {
-		if pem, err := httpsig.EncodePublicKeyPEM(g.signer.PublicKey()); err == nil {
-			doc["publicKey"] = map[string]any{
-				"id":           actorID + "#main-key",
-				"owner":        actorID,
-				"publicKeyPem": pem,
-			}
+	if g.httpPublicKeyPEM != "" {
+		doc["publicKey"] = map[string]any{
+			"id":           actorID + "#main-key",
+			"owner":        actorID,
+			"publicKeyPem": g.httpPublicKeyPEM,
 		}
 	}
 	return doc
