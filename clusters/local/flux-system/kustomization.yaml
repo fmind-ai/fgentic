@@ -20,3 +20,21 @@ patches:
       - op: add
         path: /spec/template/spec/containers/0/args/-
         value: --leader-election-retry-period=30s
+  # Flux generates a cross-namespace wildcard for metrics. Keep the generated source immutable,
+  # but expose controller telemetry only to the exact platform Prometheus workload.
+  - target:
+      kind: NetworkPolicy
+      name: allow-scraping
+      namespace: flux-system
+    patch: |
+      - op: replace
+        path: /spec/ingress/0/from
+        value:
+          - namespaceSelector:
+              matchLabels:
+                kubernetes.io/metadata.name: monitoring
+            podSelector:
+              matchLabels:
+                app.kubernetes.io/name: prometheus
+                fgentic.dev/metrics-reader: prometheus
+                operator.prometheus.io/name: kube-prometheus-stack-prometheus
