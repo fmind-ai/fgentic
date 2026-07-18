@@ -25,7 +25,7 @@ run "defaults_to_six_public_hosts_without_admin" {
   command = plan
 
   assert {
-    condition     = length(google_project_service.enabled_services) == 7 && contains(keys(google_project_service.enabled_services), "dns.googleapis.com")
+    condition     = length(google_project_service.enabled_services) == 8 && contains(keys(google_project_service.enabled_services), "dns.googleapis.com")
     error_message = "Managed DNS must enable Cloud DNS in addition to every required platform API."
   }
 
@@ -105,6 +105,7 @@ run "unmanaged_dns_has_zero_records" {
       "container.googleapis.com",
       "iam.googleapis.com",
       "iamcredentials.googleapis.com",
+      "logging.googleapis.com",
       "storage.googleapis.com",
     ])
     error_message = "External DNS must retain every required platform API without enabling Cloud DNS."
