@@ -4,9 +4,16 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly ROOT_DIR
-INVENTORY_JSON="$(mktemp "${TMPDIR:-/tmp}/fgentic-shellcheck.XXXXXX.json")"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-shellcheck.XXXXXX")"
+readonly WORK_DIR
+cleanup() {
+	rm -rf -- "${WORK_DIR}"
+}
+trap cleanup EXIT
+
+INVENTORY_JSON="${WORK_DIR}/inventory.json"
 readonly INVENTORY_JSON
-SCRIPT_LIST="$(mktemp "${TMPDIR:-/tmp}/fgentic-shell-scripts.XXXXXX.list")"
+SCRIPT_LIST="${WORK_DIR}/scripts.list"
 readonly SCRIPT_LIST
 
 # Exact counts make both debt growth and burn-down explicit in review while #550 is active.
@@ -23,11 +30,6 @@ readonly EXPECTED_COUNTS_JSON='{
   "SC2329": 64
 }'
 
-cleanup() {
-	rm -f -- "${INVENTORY_JSON}" "${SCRIPT_LIST}"
-}
-trap cleanup EXIT
-
 cd "${ROOT_DIR}"
 rg --files scripts -g '*.sh' -0 | sort -z >"${SCRIPT_LIST}"
 mapfile -d '' -t shell_scripts <"${SCRIPT_LIST}"
@@ -37,7 +39,10 @@ mapfile -d '' -t shell_scripts <"${SCRIPT_LIST}"
 }
 
 shellcheck_status=0
-if shellcheck -x --format=json1 "${shell_scripts[@]}" >"${INVENTORY_JSON}"; then
+if shellcheck -x --rcfile=/dev/null --source-path=SCRIPTDIR \
+	--enable=add-default-case,check-extra-masked-returns,deprecate-which,quote-safe-variables,require-variable-braces \
+	--severity=style --format=json1 \
+	"${shell_scripts[@]}" >"${INVENTORY_JSON}"; then
 	:
 else
 	shellcheck_status=$?
