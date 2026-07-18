@@ -27,6 +27,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 - [Sovereign Grounding Store](grounding.md) - the composed CNPG + pgvector schema, ACL metadata, and exact-ranking contract (D18)
 - [External-Network Interop](interop.md) - opt-in Slack/Telegram bridges as governed identity boundaries
 - [Public Surface Stability Contract](stability.md) - stability tiers for surfaces partners pin
+- [CNCF Sandbox Application Dossier](cncf-sandbox-application.md) - copy-ready form answers, live-criteria self-assessment, and prerequisite gates for a future human submission
 - [Documentation Site](site.md) - generator decision, local authoring loop, and human-gated GitHub Pages publication
 
 # Runbooks & evidence

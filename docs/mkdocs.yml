@@ -68,6 +68,7 @@ nav:
           - One-page template: adopters/template.md
       - Inbound migration: migration-guide.md
       - Open agentic stack: open-stack.md
+      - CNCF Sandbox application dossier: cncf-sandbox-application.md
       - Incumbent chat coexistence: chat-coexistence.md
       - Forking and adapting: forking.md
       - Exit strategy: exit-strategy.md
