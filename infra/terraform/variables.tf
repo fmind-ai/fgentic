@@ -34,6 +34,11 @@ variable "cluster_name" {
   type        = string
   default     = "fgentic"
   description = "Name of the GKE Standard cluster"
+
+  validation {
+    condition     = length(var.cluster_name) <= 40 && can(regex("^[a-z]([a-z0-9-]*[a-z0-9])?$", var.cluster_name))
+    error_message = "cluster_name must be 1-40 characters, use only lowercase letters, numbers, and hyphens, start with a letter, and end with a letter or number."
+  }
 }
 
 variable "machine_type" {
