@@ -228,6 +228,9 @@ spec:
     - name: gateway
     - name: postgres
     - name: platform-secrets
+  # Production-shaped profiles append the ServiceMonitor opt-in through the same Component that
+  # adds the observability dependency. Keeping the list present makes that JSON patch fail fast.
+  patches: []
   sourceRef:
     kind: GitRepository
     name: flux-system

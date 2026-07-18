@@ -94,7 +94,9 @@ spec:
     metrics:
       enabled: true
     serviceMonitor:
-      enabled: true
+      # The profile-scoped observability dependency Component enables this only where the
+      # ServiceMonitor CRD exists; disposable profiles keep metrics available without the CR.
+      enabled: false
       interval: 30s
       scrapeTimeout: 10s
     health:
