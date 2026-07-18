@@ -27,6 +27,12 @@ pre-commit:
       glob: "*.go"
       run: mise run format
       stage_fixed: true
+    format:gateway:
+      priority: 1
+      root: "apps/activitypub-agent-gateway/"
+      glob: "*.go"
+      run: mise run format
+      stage_fixed: true
     format:policy:
       priority: 1
       root: "apps/synapse-federation-policy/"
