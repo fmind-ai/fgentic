@@ -21,8 +21,7 @@ readonly EXPECTED_COUNTS_JSON='{
   "SC2016": 126,
   "SC2030": 21,
   "SC2031": 81,
-  "SC2312": 345,
-  "SC2329": 64
+  "SC2312": 345
 }'
 
 cd "${ROOT_DIR}"

@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Definition-only constrained-host contracts sourced by scripts/test-federation.sh.
+# shellcheck disable=SC2329 # nested fixture functions are invoked indirectly by sourced helpers
 
 assert_yq_all() {
 	local expression="$1"
