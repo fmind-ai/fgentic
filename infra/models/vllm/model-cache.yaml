@@ -54,11 +54,12 @@ spec:
             - -c
           args:
             - |
+              import os
               from pathlib import Path
 
               from huggingface_hub import snapshot_download
 
-              revision = "7ae557604adf67be50417f59c2c2f167def9a775"
+              revision = os.environ["MODEL_REVISION"]
               target = Path("/models/qwen2.5-0.5b-instruct")
               marker = target / ".ready"
 
@@ -75,6 +76,10 @@ spec:
               value: /tmp
             - name: HF_HUB_DISABLE_TELEMETRY
               value: "1"
+            # This is the single source pin. Kustomize projects it into the serving Pod template,
+            # so changing the snapshot also forces a rollout whose init container waits for it.
+            - name: MODEL_REVISION
+              value: 7ae557604adf67be50417f59c2c2f167def9a775
           resources:
             requests:
               cpu: 50m

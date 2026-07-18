@@ -6,3 +6,22 @@ resources:
   - model-cache.yaml
   - helmrelease.yaml
   - networkpolicy.yaml
+replacements:
+  # Project the loader's single source pin into the HelmRelease Pod template. A pin-only change
+  # therefore rolls the Deployment, and its init container rejects any stale cache marker.
+  - source:
+      group: batch
+      version: v1
+      kind: Job
+      name: qwen2-5-0-5b-model-loader
+      namespace: models
+      fieldPath: spec.template.spec.containers.[name=model-loader].env.[name=MODEL_REVISION].value
+    targets:
+      - select:
+          group: helm.toolkit.fluxcd.io
+          version: v2
+          kind: HelmRelease
+          name: vllm
+          namespace: models
+        fieldPaths:
+          - spec.values.servingEngineSpec.modelSpec.[name=qwen2-5-0-5b].initContainer.env.[name=MODEL_REVISION].value

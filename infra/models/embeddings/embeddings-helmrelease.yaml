@@ -95,15 +95,20 @@ spec:
               - -c
             args:
               - |
+                import os
                 from pathlib import Path
                 from time import sleep
 
+                expected_revision = os.environ["MODEL_REVISION"]
                 marker = Path("/models/bge-m3/.ready")
                 for _ in range(900):
-                    if marker.is_file():
+                    if marker.is_file() and marker.read_text(encoding="utf-8").strip() == expected_revision:
                         raise SystemExit(0)
                     sleep(2)
                 raise SystemExit("model download did not complete")
+            env:
+              - name: MODEL_REVISION
+                value: replaced-by-kustomize
             resources:
               requests:
                 cpu: 10m

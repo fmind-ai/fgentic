@@ -67,11 +67,12 @@ spec:
             - -c
           args:
             - |
+              import os
               from pathlib import Path
 
               from huggingface_hub import snapshot_download
 
-              revision = "5617a9f61b028005a4858fdac845db406aefb181"
+              revision = os.environ["MODEL_REVISION"]
               target = Path("/models/bge-m3")
               marker = target / ".ready"
 
@@ -88,6 +89,8 @@ spec:
               value: /tmp
             - name: HF_HUB_DISABLE_TELEMETRY
               value: "1"
+            - name: MODEL_REVISION
+              value: 5617a9f61b028005a4858fdac845db406aefb181
           resources:
             requests:
               cpu: 50m
@@ -158,11 +161,12 @@ spec:
             - -c
           args:
             - |
+              import os
               from pathlib import Path
 
               from huggingface_hub import snapshot_download
 
-              revision = "953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e"
+              revision = os.environ["MODEL_REVISION"]
               target = Path("/models/bge-reranker-v2-m3")
               marker = target / ".ready"
 
@@ -179,6 +183,8 @@ spec:
               value: /tmp
             - name: HF_HUB_DISABLE_TELEMETRY
               value: "1"
+            - name: MODEL_REVISION
+              value: 953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e
           resources:
             requests:
               cpu: 50m
