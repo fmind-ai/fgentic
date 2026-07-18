@@ -14,6 +14,12 @@ resource "google_container_cluster" "cluster" {
   initial_node_count       = 1
   deletion_protection      = var.deletion_protection
 
+  resource_labels = {
+    application = "fgentic"
+    deployment  = "reference"
+    managed_by  = "terraform"
+  }
+
   network    = google_compute_network.vpc.self_link
   subnetwork = google_compute_subnetwork.subnet.self_link
 
