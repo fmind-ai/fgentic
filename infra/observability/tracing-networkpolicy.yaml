@@ -17,15 +17,33 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: agentgateway-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agentgateway-proxy
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kagent
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kagent
+              app.kubernetes.io/instance: kagent
+              app.kubernetes.io/component: controller
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kagent
+          podSelector:
+            matchLabels:
+              fgentic.dev/agent-zoo: "true"
       ports:
         - { protocol: TCP, port: 4317 }
     - from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: bridge
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: matrix-a2a-bridge
+              app.kubernetes.io/instance: matrix-a2a-bridge
       ports:
         - { protocol: TCP, port: 4318 }
     - from:
