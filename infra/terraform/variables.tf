@@ -84,11 +84,14 @@ variable "master_authorized_networks" {
     cidr_block   = string
     display_name = string
   }))
-  description = "CIDRs allowed to reach the public control-plane endpoint. REQUIRED — set your /32 in a gitignored terraform.tfvars. Never 0.0.0.0/0."
+  description = "IPv4 CIDRs allowed to reach the public control-plane endpoint. REQUIRED — set your /32 in a gitignored terraform.tfvars. Never an all-address /0."
 
   validation {
-    condition     = alltrue([for n in var.master_authorized_networks : n.cidr_block != "0.0.0.0/0"])
-    error_message = "master_authorized_networks must not contain 0.0.0.0/0; use a narrow CIDR (e.g. <your-ip>/32)."
+    condition = alltrue([
+      for network in var.master_authorized_networks :
+      try(cidrnetmask(network.cidr_block) != "0.0.0.0", false)
+    ])
+    error_message = "master_authorized_networks must contain valid IPv4 CIDRs and must not include any /0 representation; use a narrow CIDR (e.g. <your-ip>/32)."
   }
   validation {
     condition     = length(var.master_authorized_networks) > 0
