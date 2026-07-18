@@ -30,6 +30,7 @@ The detailed label taxonomy, milestone links, claim protocol, review gate, and `
 - `apps/` — independent applications. `matrix-a2a-bridge` is the Go Matrix Application Service; `synapse-federation-policy` is the Python callback module; `activitypub-agent-gateway` is the separate additive ActivityPub transport. Each app owns its module, packaging, tests, and any nested `AGENTS.md`.
 - `clusters/` — Flux entrypoints and environment overlays: `base`, `local`, `gcp`, `demo`, `federation`, and `federation-constrained`.
 - `infra/` — reusable GitOps layers for namespaces, Matrix, Postgres, gateway, agentgateway, kagent, models, federation, policy, observability, identity, knowledge, optional bridges/admin, and production HA.
+- `evals/` — per-Agent deterministic `golden.json` scenarios and rubrics. `scripts/new-agent.sh` scaffolds them; `mise run test:agents-golden` exercises every fixture against the zero-spend loopback model.
 - `scripts/` — guarded setup, development, federation, validation, and acceptance commands. Lifecycle scripts own their named resources and must not read or switch the default Kubernetes context.
 - `docs/` — OKF-frontmattered topic specs, runbooks, evidence, and ADRs. Preserve stable § numbering; revisit a settled decision with a new ADR.
 - `.github/` — issue/PR templates and CI/CD workflows. CI reuses mise gates; CD builds, scans, signs, and digest-pins the bridge image.
