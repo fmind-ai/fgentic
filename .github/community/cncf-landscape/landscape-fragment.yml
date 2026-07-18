@@ -1,0 +1,6 @@
+- item:
+  name: Fgentic
+  description: An open, sovereignty-first collaboration platform where humans delegate to A2A agents from federated Matrix rooms.
+  homepage_url: https://github.com/fmind-ai/fgentic
+  repo_url: https://github.com/fmind-ai/fgentic
+  logo: fgentic.svg
