@@ -31,6 +31,39 @@ remote_pattern='^[[:alnum:]_.-]+/[[:alnum:]_.-]+(/[[:alnum:]_.-]+)*@[0-9a-f]{40}
 versioned_line_pattern='^[[:space:]]*uses:[[:space:]]+[[:alnum:]_.-]+/[[:alnum:]_.-]+(/[[:alnum:]_.-]+)*@[0-9a-f]{40}[[:space:]]+#[[:space:]]+v[0-9]+([.][0-9]+){0,2}[[:space:]]*$'
 
 for workflow in "${workflows[@]}"; do
+	# Every workflow must make duplicate-run behavior explicit. This prevents unbounded
+	# parallel CI work and keeps stateful release/proof workflows serialized by design.
+	concurrency_rows="$(
+		yq -o=json '.concurrency' "${workflow}" | jq -r '
+		  def github_expression:
+		    if type == "string" then test("^\\$\\{\\{.+\\}\\}$") else false end;
+		  . as $concurrency |
+		  if ($concurrency | type) != "object" then
+		    ["concurrency", ($concurrency | tojson)]
+		  else
+		    (if ($concurrency | has("group") | not) then
+		      ["concurrency.group", "<missing>"]
+		    elif (($concurrency.group | type) != "string" or ($concurrency.group | length) == 0) then
+		      ["concurrency.group", ($concurrency.group | tojson)]
+		    else empty end),
+		    (if ($concurrency | has("cancel-in-progress") | not) then
+		      ["concurrency.cancel-in-progress", "<missing>"]
+		    elif (($concurrency["cancel-in-progress"] | type) == "boolean" or
+		      ($concurrency["cancel-in-progress"] | github_expression)) then
+		      empty
+		    else
+		      ["concurrency.cancel-in-progress", ($concurrency["cancel-in-progress"] | tojson)]
+		    end)
+		  end |
+		  @tsv
+		'
+	)"
+	while IFS=$'\t' read -r field value; do
+		[[ -n "${field}" ]] || continue
+		echo "error: ${workflow#"${root_dir}/"}: invalid ${field}; got ${value}" >&2
+		failed=true
+	done <<<"${concurrency_rows}"
+
 	uses_list="$(yq -r '.. | select(tag == "!!map" and has("uses")) | .uses' "${workflow}")"
 	while IFS= read -r uses; do
 		[[ -n "${uses}" ]] || continue
@@ -113,4 +146,4 @@ if ! yq --exit-status \
 fi
 
 [[ "${failed}" == false ]] || exit 1
-echo "GitHub Actions pinning, bounded-runtime, and serialized-install contracts passed (${#workflows[@]} workflows)"
+echo "GitHub Actions pinning, bounded-runtime, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
