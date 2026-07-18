@@ -79,6 +79,16 @@ resource "google_container_cluster" "cluster" {
     enable_components = ["SYSTEM_COMPONENTS"]
   }
 
+  # Retain non-billable GKE system diagnostics without deploying Google-managed workload
+  # collectors beside the platform's sovereign kube-prometheus-stack.
+  monitoring_service = "monitoring.googleapis.com/kubernetes"
+  monitoring_config {
+    enable_components = ["SYSTEM_COMPONENTS"]
+    managed_prometheus {
+      enabled = false
+    }
+  }
+
   master_authorized_networks_config {
     gcp_public_cidrs_access_enabled = false
     dynamic "cidr_blocks" {
