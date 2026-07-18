@@ -32,6 +32,10 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: gateway
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: traefik-gateway
+              app.kubernetes.io/name: traefik
       ports:
         - protocol: TCP
           port: 8080
