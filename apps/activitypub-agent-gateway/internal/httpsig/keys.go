@@ -67,7 +67,7 @@ type HTTPKeyResolver struct {
 // public HTTPS destinations and revalidates DNS at dial time; the in-cluster egress NetworkPolicy
 // remains a second, independent control.
 func NewHTTPKeyResolver(client *http.Client) *HTTPKeyResolver {
-	guarded, err := safehttp.NewClient(client, nil)
+	guarded, err := safehttp.NewClient(client)
 	return &HTTPKeyResolver{client: guarded, clientErr: err}
 }
 

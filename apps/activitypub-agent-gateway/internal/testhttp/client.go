@@ -66,11 +66,7 @@ func Client(t testing.TB, servers map[string]*httptest.Server) *http.Client {
 		}
 		return []netip.Addr{addr}, nil
 	})
-	client, err := safehttp.NewClient(base, resolver)
-	if err != nil {
-		t.Fatalf("testhttp: build guarded client: %v", err)
-	}
-	return client
+	return safehttp.NewTestClient(t, base, resolver)
 }
 
 // URL returns the public HTTPS origin for a test server host.

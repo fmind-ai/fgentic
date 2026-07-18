@@ -45,7 +45,7 @@ type Deliverer struct {
 // New builds a Deliverer. It guards a clone of client against non-public destinations and DNS
 // rebinding; the in-cluster egress NetworkPolicy remains a second, independent control.
 func New(client *http.Client, priv crypto.Signer, log *slog.Logger) *Deliverer {
-	guarded, err := safehttp.NewClient(client, nil)
+	guarded, err := safehttp.NewClient(client)
 	return &Deliverer{
 		client:    guarded,
 		clientErr: err,

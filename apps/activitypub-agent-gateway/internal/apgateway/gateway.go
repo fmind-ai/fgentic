@@ -84,7 +84,7 @@ func (g *Gateway) UseDelivery(deliverer *delivery.Deliverer, client *http.Client
 	if err != nil {
 		return fmt.Errorf("gateway: encode outbound HTTP-signature public key: %w", err)
 	}
-	guardedClient, err := safehttp.NewClient(client, nil)
+	guardedClient, err := safehttp.NewClient(client)
 	if err != nil {
 		return fmt.Errorf("gateway: configure actor resolver: %w", err)
 	}
