@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2312 # substitutions feed fail-closed assertions or mandatory fixture execution
 # Exercise real age/SOPS encryption in a disposable Git repository. No production recipient,
 # cluster, or provider credential is used; every secret value is synthetic and remains encrypted
 # on disk.

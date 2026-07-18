@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2312 # substitutions feed fail-closed assertions or mandatory fixture execution
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

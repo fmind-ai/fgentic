@@ -2,6 +2,7 @@
 # Offline contract checks for the credential-free evaluation lifecycle and its embedded model.
 # shellcheck disable=SC2016 # jq bindings and source-contract placeholders are intentionally literal
 # shellcheck disable=SC2030,SC2031 # fixture cases intentionally isolate injected globals in subshells
+# shellcheck disable=SC2312 # substitutions feed fail-closed assertions or mandatory fixture execution
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
