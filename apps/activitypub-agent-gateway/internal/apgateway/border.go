@@ -61,6 +61,17 @@ type BorderDecision struct {
 // Authorize runs the full border check for an inbound activity from actorURI. The request's raw
 // body must be passed so the signed digest can be verified against it.
 func (b *Border) Authorize(ctx context.Context, req *http.Request, body []byte, actorURI string) BorderDecision {
+	decision := b.VerifyDelegation(ctx, req, body, actorURI)
+	if !decision.Allowed {
+		return decision
+	}
+	return b.ReserveBudget(actorURI, decision.Digest)
+}
+
+// VerifyDelegation runs every identity and policy check for delegating content except the budget
+// reservation. Durable inbox intake calls this before inserting the activity ID, then the unique
+// background job reserves budget exactly once.
+func (b *Border) VerifyDelegation(ctx context.Context, req *http.Request, body []byte, actorURI string) BorderDecision {
 	result, err := b.verifier.Verify(ctx, req, body)
 	if err != nil {
 		return BorderDecision{Allowed: false, Reason: signatureReason(err), Digest: "none"}
@@ -78,7 +89,7 @@ func (b *Border) Authorize(ctx context.Context, req *http.Request, body []byte, 
 	if o := b.VerifyObject(ctx, body, actorURI, decision.Digest); !o.Allowed {
 		return o
 	}
-	return b.ReserveBudget(actorURI, decision.Digest)
+	return BorderDecision{Allowed: true, Reason: "allowlisted", Digest: decision.Digest}
 }
 
 // VerifyTransport runs ONLY the transport-hop checks — signature, actor-key binding, and the

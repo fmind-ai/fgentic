@@ -46,7 +46,9 @@ func TestValidateRejectsBadInput(t *testing.T) {
 			RequestTimeout: time.Minute, TaskTimeout: 10 * time.Minute,
 			ShutdownTimeout: time.Second, LogLevel: "info", LogFormat: "json",
 			PolicyReloadInterval: 5 * time.Second, SignatureMaxSkew: 12 * time.Hour,
-			IntegrityKeyFragment: "ed25519-key",
+			IntegrityKeyFragment:  "ed25519-key",
+			ActivityRetention:     7 * 24 * time.Hour,
+			ActivityQueueCapacity: 32,
 		}
 	}
 	if err := base().validate(); err != nil {
@@ -69,6 +71,9 @@ func TestValidateRejectsBadInput(t *testing.T) {
 		"bad shutdown":   func(c *Config) { c.ShutdownTimeout = 0 },
 		"bad reload":     func(c *Config) { c.PolicyReloadInterval = 0 },
 		"bad skew":       func(c *Config) { c.SignatureMaxSkew = 0 },
+		"bad retention":  func(c *Config) { c.ActivityRetention = 0 },
+		"bad queue cap":  func(c *Config) { c.ActivityQueueCapacity = 0 },
+		"policy no db":   func(c *Config) { c.PolicyPath = "/p" },
 		"empty fragment": func(c *Config) { c.IntegrityKeyFragment = "" },
 		"fragment hash":  func(c *Config) { c.IntegrityKeyFragment = "key#extra" },
 		"inbound no pol": func(c *Config) { c.IntegrityRequireInbound = true; c.PolicyPath = "" },
@@ -76,6 +81,7 @@ func TestValidateRejectsBadInput(t *testing.T) {
 		"budget window": func(c *Config) {
 			c.BudgetEnabled = true
 			c.PolicyPath = "/p"
+			c.DatabaseURL = "postgres://gateway"
 			c.BudgetWindow = time.Minute
 			c.BudgetCapacity = 8
 			c.BudgetWindow = 0
@@ -83,6 +89,7 @@ func TestValidateRejectsBadInput(t *testing.T) {
 		"budget cap": func(c *Config) {
 			c.BudgetEnabled = true
 			c.PolicyPath = "/p"
+			c.DatabaseURL = "postgres://gateway"
 			c.BudgetWindow = time.Minute
 			c.BudgetCapacity = 0
 		},
@@ -90,11 +97,13 @@ func TestValidateRejectsBadInput(t *testing.T) {
 			c.GroupsPath = "/g"
 			c.HTTPSignatureKeyPath = "/h"
 			c.PolicyPath = "/p"
+			c.DatabaseURL = "postgres://gateway"
 		},
 		"groups no http key": func(c *Config) {
 			c.GroupsPath = "/g"
 			c.IntegrityKeyPath = "/k"
 			c.PolicyPath = "/p"
+			c.DatabaseURL = "postgres://gateway"
 		},
 		"groups no pol": func(c *Config) {
 			c.GroupsPath = "/g"
@@ -105,11 +114,13 @@ func TestValidateRejectsBadInput(t *testing.T) {
 			c.StatusFeedEnabled = true
 			c.HTTPSignatureKeyPath = "/h"
 			c.PolicyPath = "/p"
+			c.DatabaseURL = "postgres://gateway"
 		},
 		"status no http key": func(c *Config) {
 			c.StatusFeedEnabled = true
 			c.IntegrityKeyPath = "/k"
 			c.PolicyPath = "/p"
+			c.DatabaseURL = "postgres://gateway"
 		},
 		"status no pol": func(c *Config) {
 			c.StatusFeedEnabled = true
@@ -121,6 +132,7 @@ func TestValidateRejectsBadInput(t *testing.T) {
 			c.IntegrityKeyPath = "/k"
 			c.HTTPSignatureKeyPath = "/h"
 			c.PolicyPath = "/p"
+			c.DatabaseURL = "postgres://gateway"
 			c.StatusWindow = 0
 		},
 		"status max": func(c *Config) {
@@ -128,6 +140,7 @@ func TestValidateRejectsBadInput(t *testing.T) {
 			c.IntegrityKeyPath = "/k"
 			c.HTTPSignatureKeyPath = "/h"
 			c.PolicyPath = "/p"
+			c.DatabaseURL = "postgres://gateway"
 			c.StatusWindow = time.Minute
 			c.StatusMaxPerWindow = 0
 		},

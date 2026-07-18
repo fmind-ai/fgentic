@@ -22,6 +22,8 @@ config:
   requestTimeout: 60s # transport deadline for one A2A SendMessage
   taskTimeout: 10m # overall deadline when polling a long-running task (GetTask)
   shutdownTimeout: 25s # HTTP drain on SIGTERM
+  activityRetention: 168h # bounded terminal inbox outcomes and payloads; pending work is retained
+  activityQueueCapacity: 32 # max pending + running 1 MiB bodies before deterministic backpressure
   logLevel: info
   logFormat: json
   listenPort: 8480 # public AP HTTP server (actor, WebFinger, inbox, outbox)
@@ -33,6 +35,14 @@ a2aAuthentication:
   enabled: true
   secretName: activitypub-agent-gateway-credential
   key: token
+
+# Postgres backs the durable activity-ID ledger and asynchronous inbox queue. Disable only for
+# local-only development with policy.enabled=false: a public federation border must never lose
+# accepted work or charge a duplicate retry after restart.
+database:
+  enabled: true
+  secretName: activitypub-agent-gateway-db
+  key: url
 
 # The ghost -> A2A agent routing map (WHICH agents are exposed as AP actors and WHERE they route).
 # Rendered into a ConfigMap. `description` becomes the actor summary. Local kagent targets only:

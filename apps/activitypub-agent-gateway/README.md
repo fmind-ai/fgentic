@@ -7,7 +7,7 @@ It is the first surface of **ActivityPub as a second, additive federation transp
 ## What it does today (M18 F1)
 
 - Serves each `agent-<name>` as an AP `Service` actor at `/ap/agents/<name>`, with `/.well-known/webfinger` resolving `acct:agent-<name>@<server_name>`.
-- Turns an inbound `Create(Note)` mention into one A2A `SendMessage`, threaded by a per-`(actor, thread)` `contextId` that is never reused across agents.
+- Durably accepts each identified inbound `Create(Note)` once, then runs one bounded A2A `SendMessage` asynchronously, threaded by a per-`(actor, thread)` `contextId` that is never reused across agents.
 - Publishes the reply as a `Create(Note)` `inReplyTo` the triggering object, in the agent's outbox.
 
 ## Federation policy border (M18 F3)
@@ -19,6 +19,16 @@ Inbound AP content is **untrusted** (prompt injection is threat #1). The border 
 - A strict, **fail-closed allowlist** (`policy.json`: signing domains + exact actor URIs) that **hot-reloads from git** without a pod restart — a parse error, unreadable file, or empty allowlist denies everything.
 
 An unsigned, off-allowlist, or mis-bound inbound is dropped with content-free evidence and **zero** A2A calls. Object integrity, per-actor budget admission, and bot/attribution audit ([fediverse spec §3](../../docs/fediverse.md)) land in later M18 issues; the public HTTPRoute stays **disabled by default** until the border is proven in force.
+
+## Durable asynchronous inbox
+
+Every delegating `Create` must carry an absolute HTTPS activity `id`. After signature, actor, allowlist, and object-integrity verification, the gateway atomically inserts that ID plus its bounded body into Postgres and returns `202 Accepted`; the A2A call and any group fan-out run off the request goroutine. `Location` is an opaque, unguessable status capability: it returns `202` while work is pending/running, a content-free terminal state for no-reply outcomes, or the exact persisted reply Activity after success. An exact retry returns the same status location without repeating any budget reservation or A2A call, including after restart. Reusing an ID with a different actor, route, target, or body returns `409 Conflict`.
+
+The single processor changes `pending` to `running` before any budget or A2A side effect. A process restart resumes pending work, preserves terminal outcomes and successful reply bytes, and keeps the reply's canonical Activity IRI dereferenceable from Postgres even though the collection cache is process-local. It marks interrupted running work failed without replay: an unknown prior A2A attempt is never repeated merely to obtain a reply. Raw inbox bodies are erased as soon as a row becomes terminal; a SHA-256 digest retains exact-retry collision detection. Terminal outcomes are pruned periodically after `ACTIVITY_RETENTION` (seven days by default), even when traffic stops.
+
+`ACTIVITY_QUEUE_CAPACITY` (32 by default) atomically caps all pending and running bodies, limiting the default worst-case retained input to 32 MiB. A new unique ID receives `503 Service Unavailable` plus `Retry-After` while full and consumes no budget; an already-recorded duplicate still resolves to its cached status. A valid non-mention is inserted directly as terminal `ignored`, never exposed to the worker and never charged.
+
+The chart reads `DATABASE_URL` from `database.secretName` / `database.key` (`activitypub-agent-gateway-db` / `url` by default). Disabling the database is local-only and requires the federation policy border to be off; any policy-gated deployment fails fast without durable dedup, and enabling the public HTTPRoute fails unless that signed policy border is enabled. The URL belongs in a SOPS-encrypted cluster Secret and must point to the gateway's own scoped Postgres database and role. `mise run test:postgres` runs the restart, collision, atomic-ignore, and concurrent-capacity contract against a disposable digest-pinned Postgres.
 
 ## Outbound signature negotiation
 
@@ -35,6 +45,7 @@ The gateway remains opt-in until issue #489 composes it into the demo profile, s
 - `cmd/gateway` — entrypoint (two HTTP servers: public AP + private metrics).
 - `internal/config` — typed, env-parsed, fail-fast configuration.
 - `internal/a2a` — thin wrapper over the official `a2a-go` client (local kagent targets only).
+- `internal/activitystate` — Postgres-backed unique activity ledger and asynchronous work queue.
 - `internal/apgateway` — the AP surface: agent registry, Service actor, WebFinger, inbox→A2A→outbox.
 - `chart/` — the Helm chart; `deploy/` — its Flux unit (Namespace + HelmRelease), opt-in.
 

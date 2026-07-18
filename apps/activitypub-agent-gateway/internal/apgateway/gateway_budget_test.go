@@ -5,6 +5,7 @@ import (
 	"crypto/rand"
 	"log/slog"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,20 +72,27 @@ func TestInboxTokenBudgetAdmission(t *testing.T) {
 	policyBody := `{"version":1,"allowed_domains":["mastodon.example"],"budgets":{"reservation_tokens":1000,"domains":{"mastodon.example":1500}}}`
 	g, del, reg := gatewayWithBudgetBorder(t, policyBody, priv)
 
-	serve := func() *httptest.ResponseRecorder {
+	serve := func(id string) *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
-		g.Handler().ServeHTTP(rec, signedInbox(t, priv, []byte(createNote)))
+		body := []byte(strings.Replace(createNote, "activities/1", "activities/"+id, 1))
+		g.Handler().ServeHTTP(rec, signedInbox(t, priv, body))
 		return rec
 	}
 
-	if rec := serve(); rec.Code != 202 {
+	if rec := serve("1"); rec.Code != 202 {
 		t.Fatalf("in-budget code = %d, body = %s", rec.Code, rec.Body)
 	}
 	if len(del.calls) != 1 {
 		t.Fatalf("in-budget must delegate once, got %d", len(del.calls))
 	}
-	if rec := serve(); rec.Code != 403 {
-		t.Fatalf("over-budget code = %d, want 403", rec.Code)
+	if rec := serve("1"); rec.Code != 202 {
+		t.Fatalf("duplicate code = %d, want cached 202", rec.Code)
+	}
+	if len(del.calls) != 1 {
+		t.Fatalf("duplicate must not delegate again, got %d calls", len(del.calls))
+	}
+	if rec := serve("2"); rec.Code != 202 {
+		t.Fatalf("over-budget activity code = %d, want prompt 202", rec.Code)
 	}
 	if len(del.calls) != 1 {
 		t.Errorf("over-budget must NOT delegate (no LLM spend), got %d calls", len(del.calls))
@@ -108,8 +116,8 @@ func TestInboxDeniesUnbudgetedAllowlistedDomain(t *testing.T) {
 
 	rec := httptest.NewRecorder()
 	g.Handler().ServeHTTP(rec, signedInbox(t, priv, []byte(createNote)))
-	if rec.Code != 403 {
-		t.Fatalf("unbudgeted domain code = %d, want 403", rec.Code)
+	if rec.Code != 202 {
+		t.Fatalf("unbudgeted domain code = %d, want prompt 202", rec.Code)
 	}
 	if len(del.calls) != 0 {
 		t.Errorf("deny-by-default must not delegate, got %d calls", len(del.calls))

@@ -7,6 +7,12 @@
 {{- if and .Values.budget.enabled (not .Values.policy.enabled) }}
 {{- fail "budget.enabled needs policy.enabled (budgets live in the border policy)" }}
 {{- end }}
+{{- if and .Values.policy.enabled (not .Values.database.enabled) }}
+{{- fail "policy.enabled needs database.enabled (public federation requires durable activity dedup)" }}
+{{- end }}
+{{- if and .Values.httpRoute.enabled (not .Values.policy.enabled) }}
+{{- fail "httpRoute.enabled needs policy.enabled (a public inbox requires the signed federation border)" }}
+{{- end }}
 {{- if and .Values.groups.enabled (or (not .Values.integrity.enabled) (not .Values.policy.enabled)) }}
 {{- fail "groups.enabled needs integrity.enabled (signing key) and policy.enabled (border)" }}
 {{- end }}
@@ -79,6 +85,10 @@ spec:
               value: {{ .Values.config.taskTimeout | quote }}
             - name: SHUTDOWN_TIMEOUT
               value: {{ .Values.config.shutdownTimeout | quote }}
+            - name: ACTIVITY_RETENTION
+              value: {{ .Values.config.activityRetention | quote }}
+            - name: ACTIVITY_QUEUE_CAPACITY
+              value: {{ .Values.config.activityQueueCapacity | quote }}
             - name: LOG_LEVEL
               value: {{ .Values.config.logLevel | quote }}
             - name: LOG_FORMAT
@@ -89,6 +99,13 @@ spec:
               value: {{ .Values.config.metricsPort | quote }}
             - name: AGENTS_PATH
               value: /etc/activitypub-agent-gateway/agents/agents.yaml
+            {{- if .Values.database.enabled }}
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.database.secretName }}
+                  key: {{ .Values.database.key }}
+            {{- end }}
             {{- if .Values.policy.enabled }}
             - name: POLICY_PATH
               value: /etc/activitypub-agent-gateway/policy/policy.json

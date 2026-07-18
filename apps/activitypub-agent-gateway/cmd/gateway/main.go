@@ -7,6 +7,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -20,6 +21,7 @@ import (
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/a2a"
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/activitystate"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/apgateway"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/budget"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/config"
@@ -62,6 +64,24 @@ func run() error {
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
+	activityStore := activitystate.Store(activitystate.NewMemory(cfg.ActivityRetention, cfg.ActivityQueueCapacity))
+	if cfg.DatabaseURL != "" {
+		activityStore, err = activitystate.OpenPostgres(ctx, cfg.DatabaseURL, cfg.ActivityRetention, cfg.ActivityQueueCapacity)
+		if err != nil {
+			return err
+		}
+		log.Info("durable activity inbox enabled", "retention", cfg.ActivityRetention, "queue_capacity", cfg.ActivityQueueCapacity)
+	} else {
+		log.Warn("DATABASE_URL not set — using in-memory activity dedup (local-only dev)")
+	}
+	defer func() {
+		if closeErr := activityStore.Close(); closeErr != nil {
+			log.Error("close activity state", "error", closeErr)
+		}
+	}()
+	if err := gateway.UseActivityStore(activityStore); err != nil {
+		return err
+	}
 
 	// Object integrity signing (FEP-8b32): when a key is mounted, outbound replies carry an
 	// eddsa-jcs-2022 proof and each actor publishes its assertionMethod Multikey. An empty
@@ -144,6 +164,10 @@ func run() error {
 			log.Info("agent status feed ENABLED", "window", cfg.StatusWindow, "maxPerWindow", cfg.StatusMaxPerWindow)
 		}
 	}
+	processorDone, err := gateway.StartActivityProcessor(ctx)
+	if err != nil {
+		return err
+	}
 
 	apServer := &http.Server{
 		Addr:              net.JoinHostPort(cfg.ListenHost, strconv.Itoa(cfg.ListenPort)),
@@ -170,11 +194,21 @@ func run() error {
 		"server_name", cfg.ServerName, "public", cfg.PublicBaseURL(),
 		"agents", registry.Ghosts())
 
+	var runErr error
+	processorStopped := false
 	select {
 	case <-ctx.Done():
 		log.Info("shutdown signal received")
 	case err := <-errCh:
-		return err
+		runErr = err
+		stop()
+	case err := <-processorDone:
+		processorStopped = true
+		if err == nil && ctx.Err() == nil {
+			err = errors.New("activity processor stopped unexpectedly")
+		}
+		runErr = err
+		stop()
 	}
 
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), cfg.ShutdownTimeout)
@@ -183,7 +217,19 @@ func run() error {
 	if err := apServer.Shutdown(shutdownCtx); err != nil {
 		return err
 	}
-	return nil
+	if !processorStopped {
+		select {
+		case err := <-processorDone:
+			if err != nil && runErr == nil {
+				runErr = err
+			}
+		case <-shutdownCtx.Done():
+			if runErr == nil {
+				runErr = fmt.Errorf("wait for activity processor: %w", shutdownCtx.Err())
+			}
+		}
+	}
+	return runErr
 }
 
 func serve(server *http.Server, name string, log *slog.Logger, errCh chan<- error) {

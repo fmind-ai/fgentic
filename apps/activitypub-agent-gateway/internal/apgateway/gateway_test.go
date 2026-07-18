@@ -32,6 +32,12 @@ func (f *fakeDelegator) Call(ctx context.Context, namespace, name, text, context
 	return f.reply, f.err
 }
 
+func (f *fakeDelegator) callCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return len(f.calls)
+}
+
 // userFromCtx reads the asserted user the gateway stamps via a2a.WithUser (best-effort; the a2a
 // package owns the key, so this only confirms non-empty threading in the happy path).
 func userFromCtx(ctx context.Context) string {
@@ -60,6 +66,7 @@ func newTestGateway(t *testing.T, del Delegator) *Gateway {
 
 const createNote = `{
   "@context": "https://www.w3.org/ns/activitystreams",
+  "id": "https://mastodon.example/activities/1",
   "type": "Create",
   "actor": "https://mastodon.example/users/bob",
   "object": {
@@ -213,13 +220,28 @@ func TestInboxDelegatesAndPublishes(t *testing.T) {
 func TestInboxNotMentionedIsNoop(t *testing.T) {
 	del := &fakeDelegator{reply: "should not run"}
 	g := newTestGateway(t, del)
-	body := `{"@context":"https://www.w3.org/ns/activitystreams","type":"Create","actor":"https://m.example/users/bob","object":{"type":"Note","id":"https://m.example/n/2","content":"unrelated chatter"}}`
+	body := `{"@context":"https://www.w3.org/ns/activitystreams","id":"https://m.example/activities/2","type":"Create","actor":"https://m.example/users/bob","object":{"type":"Note","id":"https://m.example/n/2","content":"unrelated chatter"}}`
 	rec := do(t, g, http.MethodPost, "/ap/agents/agent-docs-qa/inbox", body)
 	if rec.Code != http.StatusAccepted {
 		t.Fatalf("code = %d", rec.Code)
 	}
 	if len(del.calls) != 0 {
 		t.Errorf("must not delegate an un-mentioned note, got %d calls", len(del.calls))
+	}
+}
+
+func TestInboxRejectsConflictingActivityIDReplay(t *testing.T) {
+	del := &fakeDelegator{reply: "ok"}
+	g := newTestGateway(t, del)
+	if rec := do(t, g, http.MethodPost, "/ap/agents/agent-docs-qa/inbox", createNote); rec.Code != http.StatusAccepted {
+		t.Fatalf("first delivery code = %d", rec.Code)
+	}
+	changed := strings.Replace(createNote, "what is fgentic?", "run a different task", 1)
+	if rec := do(t, g, http.MethodPost, "/ap/agents/agent-docs-qa/inbox", changed); rec.Code != http.StatusConflict {
+		t.Fatalf("conflicting replay code = %d, want 409", rec.Code)
+	}
+	if got := del.callCount(); got != 1 {
+		t.Fatalf("delegations = %d, want exactly 1", got)
 	}
 }
 
@@ -230,10 +252,12 @@ func TestInboxRejections(t *testing.T) {
 		body string
 		want int
 	}{
-		"unknown agent": {"/ap/agents/agent-none/inbox", createNote, http.StatusNotFound},
-		"bad json":      {"/ap/agents/agent-docs-qa/inbox", "{not json", http.StatusBadRequest},
-		"not create":    {"/ap/agents/agent-docs-qa/inbox", `{"type":"Like","actor":"https://m/u","object":"https://m/o"}`, http.StatusBadRequest},
-		"empty content": {"/ap/agents/agent-docs-qa/inbox", `{"type":"Create","actor":"https://m.example/users/bob","object":{"type":"Note","id":"https://m.example/n/9","content":""}}`, http.StatusBadRequest},
+		"unknown agent":        {"/ap/agents/agent-none/inbox", createNote, http.StatusNotFound},
+		"bad json":             {"/ap/agents/agent-docs-qa/inbox", "{not json", http.StatusBadRequest},
+		"not create":           {"/ap/agents/agent-docs-qa/inbox", `{"type":"Like","actor":"https://m/u","object":"https://m/o"}`, http.StatusBadRequest},
+		"empty content":        {"/ap/agents/agent-docs-qa/inbox", `{"type":"Create","actor":"https://m.example/users/bob","object":{"type":"Note","id":"https://m.example/n/9","content":""}}`, http.StatusBadRequest},
+		"missing activity id":  {"/ap/agents/agent-docs-qa/inbox", `{"type":"Create","actor":"https://m.example/users/bob","object":{"type":"Note","id":"https://m.example/n/9","content":"@agent-docs-qa help"}}`, http.StatusBadRequest},
+		"insecure activity id": {"/ap/agents/agent-docs-qa/inbox", `{"id":"http://m.example/activities/9","type":"Create","actor":"https://m.example/users/bob","object":{"type":"Note","id":"https://m.example/n/9","content":"@agent-docs-qa help"}}`, http.StatusBadRequest},
 	}
 	for name, tc := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -249,8 +273,8 @@ func TestInboxDelegationError(t *testing.T) {
 	del := &fakeDelegator{err: errors.New("agent unreachable")}
 	g := newTestGateway(t, del)
 	rec := do(t, g, http.MethodPost, "/ap/agents/agent-docs-qa/inbox", createNote)
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("code = %d, want 502", rec.Code)
+	if rec.Code != http.StatusAccepted {
+		t.Fatalf("code = %d, want prompt 202", rec.Code)
 	}
 	if out := do(t, g, http.MethodGet, "/ap/agents/agent-docs-qa/outbox", ""); strings.Contains(out.Body.String(), "activities") {
 		t.Errorf("no reply must be published on delegation error: %s", out.Body)

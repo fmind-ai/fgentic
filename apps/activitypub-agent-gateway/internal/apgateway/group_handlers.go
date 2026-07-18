@@ -9,6 +9,7 @@ import (
 
 	vocab "github.com/go-ap/activitypub"
 
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/activitystate"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/integrity"
 )
 
@@ -170,7 +171,19 @@ func (g *Gateway) handleGroupInbox(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, "expected an inline Create(Note)", http.StatusBadRequest)
 			return
 		}
-		g.groupCreate(r.Context(), id, string(actorIRI), note)
+		if err := validateActivityID(activity.ID); err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		job := activitystate.Job{
+			ActivityID: string(activity.ID),
+			Route:      activitystate.RouteGroup,
+			Target:     id,
+			ActorURI:   string(actorIRI),
+			Body:       body,
+		}
+		g.acceptActivity(w, r, job)
+		return
 	}
 	w.WriteHeader(http.StatusAccepted)
 }
@@ -217,15 +230,8 @@ func (g *Gateway) groupCreate(ctx context.Context, id, actorURI string, note *vo
 		if !ok {
 			continue
 		}
-		if g.border != nil {
-			d := g.border.ReserveBudget(actorURI, "none")
-			if d.BudgetOutcome != "" {
-				g.metrics.reservations.WithLabelValues(ghost, d.BudgetOutcome).Inc()
-			}
-			if !d.Allowed {
-				g.metrics.rejected.WithLabelValues("group_" + d.Reason).Inc()
-				continue
-			}
+		if !g.reserveBudget(ghost, actorURI) {
+			continue
 		}
 		content := nlvText(note.Content)
 		contextID := deriveContextID(ghost, actorURI, groupActor+"\x00"+string(note.ID))

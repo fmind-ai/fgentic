@@ -73,6 +73,10 @@ gotestsum --format pkgname -- -race -coverprofile=coverage.out ./...
 bash scripts/check-coverage.sh coverage.out
 """
 
+[tasks."test:postgres"]
+description = "Prove durable inbox dedup, restart, and capacity against disposable Postgres"
+run = "bash scripts/test-postgres.sh"
+
 [tasks.interop]
 description = "Cross-check FEP-8b32 proofs against the apsig reference impl (needs uv + network)"
 # Deliberately NOT in check/test: those stay offline/deterministic. The Go golden vector already

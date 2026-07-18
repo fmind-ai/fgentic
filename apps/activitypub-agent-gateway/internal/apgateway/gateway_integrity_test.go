@@ -144,6 +144,7 @@ func objectSignedCreate(t *testing.T, objPriv ed25519.PrivateKey, verificationMe
 	t.Helper()
 	doc := map[string]any{
 		"@context": []any{integrity.ActivityStreamsContext, integrity.DataIntegrityContext},
+		"id":       "https://mastodon.example/activities/integrity-1",
 		"type":     "Create",
 		"actor":    borderTestActor,
 		"object": map[string]any{
