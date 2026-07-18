@@ -8,6 +8,8 @@ metadata:
 spec:
   interval: 30m
   timeout: 10m
+  dependsOn:
+    - name: kube-prometheus-stack
   install:
     remediation:
       retries: -1
