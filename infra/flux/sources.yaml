@@ -51,7 +51,7 @@ spec:
   interval: 24h
   url: oci://ghcr.io/element-hq/ess-helm/matrix-stack
   ref:
-    tag: "26.6.2"
+    tag: "26.7.0"
 ---
 apiVersion: source.toolkit.fluxcd.io/v1
 kind: OCIRepository

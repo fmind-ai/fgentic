@@ -71,7 +71,7 @@ type StagingInteraction = Callable[[DatabaseTransaction, str, str], bool]
 
 
 class ModuleApi(Protocol):
-    """The Synapse 1.155.0 registration method used by this module."""
+    """The Synapse 1.156.0 registration method used by this module."""
 
     @property
     def server_name(self) -> str: ...
