@@ -418,6 +418,39 @@ fi
 rg --fixed-strings 'malformed or stale teardown receipt' "${malformed_state}/output" >/dev/null
 rg --fixed-strings 'inspect only: jq .' "${malformed_state}/output" >/dev/null
 
+recovery_fail_commands="${WORK_DIR}/recovery-fail-commands"
+recovery_fail_output="${WORK_DIR}/recovery-fail-output"
+: >"${recovery_fail_commands}"
+if (
+	# A caller handles recovery with `|| die`, which disables Bash errexit inside the function.
+	# Prove an explicitly guarded identity parse still stops before any destructive command.
+	# shellcheck source=scripts/lib/demo-cluster.sh
+	source "${ROOT_DIR}/scripts/lib/demo-cluster.sh"
+	teardown_receipt_path() { printf '/tmp/fgentic-recovery-failure.json\n'; }
+	require_valid_teardown_receipt() { :; }
+	validate_teardown_receipt_resources() { :; }
+	cluster_exists() { return 1; }
+	validate_receipt_container() { return 0; }
+	jq() {
+		case "$*" in
+			*'.containers[]'*) printf '%s\n' '{"id":"container-id"}' ;;
+			*'.network'*) printf '%s\n' '{"id":"network-id"}' ;;
+			*'.volumes[]'* | *'.images[]'*) return 0 ;;
+			*'.id'*) return 42 ;;
+			*) return 43 ;;
+		esac
+	}
+	docker() { printf 'docker %s\n' "$*" >>"${recovery_fail_commands}"; }
+	recover_teardown_receipt
+) >"${recovery_fail_output}" 2>&1; then
+	fail 'teardown recovery masked a failed container identity parse'
+fi
+[ ! -s "${recovery_fail_commands}" ] \
+	|| fail 'teardown recovery mutated resources after a failed container identity parse'
+rg --fixed-strings 'teardown receipt container identity is invalid' \
+	"${recovery_fail_output}" >/dev/null \
+	|| fail 'teardown recovery lacked a failed container identity diagnostic'
+
 if rg --regexp 'stat -c|readlink -f|flock' "${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null; then
 	fail 'teardown receipt uses a Linux-only filesystem primitive'
 fi

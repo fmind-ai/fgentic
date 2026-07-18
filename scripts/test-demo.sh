@@ -276,11 +276,14 @@ rg --fixed-strings -- \
 	echo 'error: demo bootstrap does not install admission before namespaces' >&2
 	exit 1
 }
-rg --fixed-strings 'render_bootstrap_namespaces | kubectl apply --filename -' \
-	"${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null || {
-	echo 'error: demo bootstrap does not apply the rendered Namespace-only stream' >&2
-	exit 1
-}
+for contract in \
+	'bootstrap_namespaces="$(render_bootstrap_namespaces)"' \
+	'kubectl apply --filename -'; do
+	rg --fixed-strings "${contract}" "${ROOT_DIR}/scripts/lib/demo-cluster.sh" >/dev/null || {
+		echo 'error: demo bootstrap does not validate and apply the rendered Namespace-only stream' >&2
+		exit 1
+	}
+done
 (
 	# Exercise the exact lifecycle helper, not a parallel test-only composition. Bootstrap creates
 	# only the Namespaces needed by CA/secrets; Flux later owns substituted quota admission.

@@ -234,8 +234,8 @@ run = [
 
 [tasks."check:shell"]
 description = "Verify every owned shell script is formatted and lint-clean"
-# Keep the info/style debt explicit and exactly counted (#550): every error, warning, newly
-# introduced code, and count change blocks the gate while each allowlisted code is burned down.
+# Keep the complete scripts/ surface formatted and clean under ShellCheck's default rules plus
+# its optional checks; exclusions and untracked scripts must fail the gate.
 run = [
   "shfmt -d -i 0 -bn -ci scripts",
   "bash scripts/check-shellcheck.sh",
