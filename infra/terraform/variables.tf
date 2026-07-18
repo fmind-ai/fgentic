@@ -110,9 +110,9 @@ variable "master_authorized_networks" {
   validation {
     condition = alltrue([
       for network in var.master_authorized_networks :
-      try(cidrnetmask(network.cidr_block) != "0.0.0.0", false)
+      try(can(cidrnetmask(network.cidr_block)) && tonumber(split("/", network.cidr_block)[1]) >= 24, false)
     ])
-    error_message = "master_authorized_networks must contain valid IPv4 CIDRs and must not include any /0 representation; use a narrow CIDR (e.g. <your-ip>/32)."
+    error_message = "master_authorized_networks must contain valid IPv4 CIDRs no broader than /24 (for example, an office /24 or operator /32)."
   }
   validation {
     condition     = length(var.master_authorized_networks) > 0

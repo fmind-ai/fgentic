@@ -21,8 +21,66 @@ variables {
   ]
 }
 
-run "accepts_narrow_ipv4_cidr" {
+run "accepts_operator_ipv4_host" {
   command = plan
+}
+
+run "accepts_narrow_ipv4_network" {
+  command = plan
+
+  variables {
+    master_authorized_networks = [
+      {
+        cidr_block   = "198.51.100.0/24"
+        display_name = "office"
+      }
+    ]
+  }
+}
+
+run "rejects_ipv4_network_broader_than_limit" {
+  command = plan
+
+  variables {
+    master_authorized_networks = [
+      {
+        cidr_block   = "198.51.100.0/23"
+        display_name = "too-broad"
+      }
+    ]
+  }
+
+  expect_failures = [var.master_authorized_networks]
+}
+
+run "rejects_broad_ipv4_network" {
+  command = plan
+
+  variables {
+    master_authorized_networks = [
+      {
+        cidr_block   = "10.0.0.0/8"
+        display_name = "private-network"
+      }
+    ]
+  }
+
+  expect_failures = [var.master_authorized_networks]
+}
+
+run "rejects_half_ipv4_space" {
+  command = plan
+
+  variables {
+    master_authorized_networks = [
+      {
+        cidr_block   = "0.0.0.0/1"
+        display_name = "half-ipv4"
+      }
+    ]
+  }
+
+  expect_failures = [var.master_authorized_networks]
 }
 
 run "rejects_canonical_all_ipv4_cidr" {
