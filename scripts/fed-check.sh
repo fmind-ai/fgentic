@@ -138,9 +138,10 @@ software_name="$(jq --raw-output --exit-status '.server.name | select(type == "s
 	"${work_dir}/version.json")" || fail 'Matrix federation version omits server.name'
 software_version="$(jq --raw-output --exit-status '.server.version | select(type == "string" and length > 0)' \
 	"${work_dir}/version.json")" || fail 'Matrix federation version omits server.version'
+checked_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 
 jq --null-input \
-	--arg checked_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+	--arg checked_at "${checked_at}" \
 	--arg partner_domain "${partner_domain}" \
 	--arg delegated_server "${delegated_server}" \
 	--arg software_name "${software_name}" \

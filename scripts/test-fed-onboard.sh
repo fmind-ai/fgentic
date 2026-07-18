@@ -125,13 +125,14 @@ run_onboard() {
 }
 
 expect_failure() {
-	local label="$1" expected="$2"
+	local label="$1" expected="$2" failure_output
 	shift 2
 	if "$@" >"${WORK_DIR}/failure.out" 2>"${WORK_DIR}/failure.err"; then
 		fail "${label} unexpectedly passed"
 	fi
+	failure_output="$(<"${WORK_DIR}/failure.err")"
 	rg --fixed-strings "${expected}" "${WORK_DIR}/failure.err" >/dev/null \
-		|| fail "${label} omitted expected failure: ${expected} (got: $(cat "${WORK_DIR}/failure.err"))"
+		|| fail "${label} omitted expected failure: ${expected} (got: ${failure_output})"
 }
 
 # Success: connectivity + conformance both pass -> eligible for a reviewed registry admission.

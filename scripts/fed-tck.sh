@@ -80,7 +80,8 @@ if ! k3d kubeconfig get "${CLUSTER_NAME}" >"${KUBECONFIG_FILE}"; then
 	die "could not derive kubeconfig from the ownership-labelled federation lab"
 fi
 chmod 600 "${KUBECONFIG_FILE}"
-[ "$(kubectl --kubeconfig "${KUBECONFIG_FILE}" config current-context)" = "${KUBE_CONTEXT}" ] \
+current_context="$(kubectl --kubeconfig "${KUBECONFIG_FILE}" config current-context)"
+[ "${current_context}" = "${KUBE_CONTEXT}" ] \
 	|| die "derived federation kubeconfig has an unexpected current context"
 kubectl --kubeconfig "${KUBECONFIG_FILE}" --context "${KUBE_CONTEXT}" get --raw=/readyz >/dev/null \
 	|| die "${CLUSTER_NAME} API is not ready; run 'mise run fed:up'"
@@ -102,8 +103,9 @@ if [ "${actual_archive_sha256}" != "${TCK_ARCHIVE_SHA256}" ]; then
 	die "cached A2A TCK archive checksum mismatch; removed the poisoned cache entry"
 fi
 tar --extract --gzip --file "${ARCHIVE_FILE}" --directory "${SOURCE_DIR}" --strip-components=1
-[ "$(yq --input-format toml --output-format yaml --unwrapScalar '.project.version' \
-	"${SOURCE_DIR}/pyproject.toml")" = "${TCK_VERSION}" ] \
+source_version="$(yq --input-format toml --output-format yaml --unwrapScalar '.project.version' \
+	"${SOURCE_DIR}/pyproject.toml")"
+[ "${source_version}" = "${TCK_VERSION}" ] \
 	|| die "pinned A2A TCK source version mismatch"
 
 UV_BIN="$(mise --cd "${ROOT_DIR}/apps/synapse-federation-policy" which uv)"

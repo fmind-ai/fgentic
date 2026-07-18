@@ -609,7 +609,8 @@ validate_knowledge_ingestion() {
 validate_slack() {
 	local old_file="${SECRETS_DIR}/mautrix-slack.sops.yaml"
 	local new_file="${STAGE_DIR}/mautrix-slack.sops.yaml"
-	local old_password new_password database_uri registration runtime_as runtime_hs
+	local old_password new_password database_uri registration registration_as registration_hs
+	local runtime_as runtime_hs
 	local old_registration old_as old_hs old_sender new_sender
 	old_password="$(secret_value "${old_file}" postgres pg-slackbridge '.stringData.password')"
 	new_password="$(secret_value "${new_file}" postgres pg-slackbridge '.stringData.password')"
@@ -631,8 +632,10 @@ validate_slack() {
 		"${database_uri}" \
 		"postgres://slackbridge:${new_password}@platform-pg-rw.postgres.svc.cluster.local:5432/slackbridge?sslmode=require" \
 		"Slack database URI does not match its role password"
-	assert_equal "${runtime_as}" "$(yq -er '.as_token' <<<"${registration}")" "Slack as_token copies differ"
-	assert_equal "${runtime_hs}" "$(yq -er '.hs_token' <<<"${registration}")" "Slack hs_token copies differ"
+	registration_as="$(yq -er '.as_token' <<<"${registration}")"
+	registration_hs="$(yq -er '.hs_token' <<<"${registration}")"
+	assert_equal "${runtime_as}" "${registration_as}" "Slack as_token copies differ"
+	assert_equal "${runtime_hs}" "${registration_hs}" "Slack hs_token copies differ"
 	yq -e \
 		'.id == "slack" and
 		 .url == "http://mautrix-slack.bridges.svc.cluster.local:29335" and
@@ -650,7 +653,8 @@ validate_slack() {
 validate_telegram() {
 	local old_file="${SECRETS_DIR}/mautrix-telegram.sops.yaml"
 	local new_file="${STAGE_DIR}/mautrix-telegram.sops.yaml"
-	local old_password new_password database_uri registration runtime_as runtime_hs
+	local old_password new_password database_uri registration registration_as registration_hs
+	local runtime_as runtime_hs
 	local old_registration old_as old_hs old_sender new_sender old_api_id new_api_id old_api_hash new_api_hash
 	old_password="$(secret_value "${old_file}" postgres pg-telegrambridge '.stringData.password')"
 	new_password="$(secret_value "${new_file}" postgres pg-telegrambridge '.stringData.password')"
@@ -678,8 +682,10 @@ validate_telegram() {
 		"${database_uri}" \
 		"postgres://telegrambridge:${new_password}@platform-pg-rw.postgres.svc.cluster.local:5432/telegrambridge?sslmode=require" \
 		"Telegram database URI does not match its role password"
-	assert_equal "${runtime_as}" "$(yq -er '.as_token' <<<"${registration}")" "Telegram as_token copies differ"
-	assert_equal "${runtime_hs}" "$(yq -er '.hs_token' <<<"${registration}")" "Telegram hs_token copies differ"
+	registration_as="$(yq -er '.as_token' <<<"${registration}")"
+	registration_hs="$(yq -er '.hs_token' <<<"${registration}")"
+	assert_equal "${runtime_as}" "${registration_as}" "Telegram as_token copies differ"
+	assert_equal "${runtime_hs}" "${registration_hs}" "Telegram hs_token copies differ"
 	yq -e \
 		'.id == "telegram" and
 		 .url == "http://mautrix-telegram.bridges.svc.cluster.local:29317" and

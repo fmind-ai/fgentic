@@ -168,8 +168,9 @@ fi
 # Stage 2: A2A/AgentCard conformance (opt-in). Absent --a2a-url, connectivity alone is never enough
 # for registry review, so the record is emitted with eligible_for_registry_review=false.
 if [ -z "${a2a_url}" ]; then
+	checked_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 	jq --null-input \
-		--arg checked_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+		--arg checked_at "${checked_at}" \
 		--arg partner_domain "${partner_domain}" \
 		--slurpfile connectivity "${work_dir}/connectivity.json" \
 		'{
@@ -221,8 +222,9 @@ jq --exit-status --arg extension "${TOKEN_BUDGET_EXTENSION}" '
 ' "${work_dir}/agent-card.json" >/dev/null \
 	|| fail "AgentCard omits the required token-budget extension ${TOKEN_BUDGET_EXTENSION}"
 
+checked_at="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 jq --null-input \
-	--arg checked_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
+	--arg checked_at "${checked_at}" \
 	--arg partner_domain "${partner_domain}" \
 	--arg card_url "${card_url}" \
 	--arg interface_url "${a2a_url}" \

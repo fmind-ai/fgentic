@@ -477,6 +477,10 @@ assert_yq \
 	"${offboard_postgres_render}" "offboarding retained an external-bridge HBA login path"
 
 runtime_validate_bridge() {
+	local runtime_gid runtime_uid runtime_user
+	runtime_uid="$(id -u)"
+	runtime_gid="$(id -g)"
+	runtime_user="${runtime_uid}:${runtime_gid}"
 	version_json="$(docker run --rm --entrypoint "${BINARY}" "${IMAGE}" --version-json)"
 	jq -e \
 		'.Tag == "'"${TAG}"'" and
@@ -491,7 +495,7 @@ runtime_validate_bridge() {
 	chmod 0777 "${generated_data}" "${generated_output}"
 	cp "${CONFIG}" "${generated_data}/config.yaml"
 	chmod 0666 "${generated_data}/config.yaml"
-	docker run --rm --user "$(id -u):$(id -g)" --entrypoint "${BINARY}" \
+	docker run --rm --user "${runtime_user}" --entrypoint "${BINARY}" \
 		-v "${generated_data}:/data" -v "${generated_output}:/output" \
 		"${IMAGE}" --config /data/config.yaml --generate-registration \
 		--registration /output/registration.yaml >/dev/null
@@ -529,7 +533,7 @@ runtime_validate_bridge() {
 	fi
 	chmod -R a+rX "${runtime_secrets}" "${CONFIG}"
 	set +e
-	docker run --rm --user "$(id -u):$(id -g)" --read-only \
+	docker run --rm --user "${runtime_user}" --read-only \
 		--tmpfs /tmp:rw,noexec,nosuid,size=16m --entrypoint "${BINARY}" \
 		"${docker_env[@]}" \
 		-v "${CONFIG}:/data/config.yaml:ro" -v "${runtime_secrets}:/run/secrets:ro" \
