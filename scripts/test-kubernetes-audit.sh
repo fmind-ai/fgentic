@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Validate the local k3s API-audit contract. --runtime creates an owned, no-port k3d cluster and
 # never reads from or mutates the shared local cluster.
+# shellcheck disable=SC2016 # yq bindings and child-shell fixture variables are intentionally literal
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -292,7 +293,6 @@ EOF
 	export K3D_AUDIT_ROTATION_NAMESPACE="${namespace}"
 	export K3D_AUDIT_ROTATION_CONFIGMAP="${rotation_name}"
 	# The child bash, not this parent, expands its positional argument and exported kubectl target.
-	# shellcheck disable=SC2016 # child bash expands these intentionally literal variables
 	patch_command='
         value="$1"
         kubectl --namespace "${K3D_AUDIT_ROTATION_NAMESPACE}" patch configmap \

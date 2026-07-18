@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Render the opt-in production profile through Flux, then prove that every disruption budget
 # protects a replicated workload and that evaluation profiles retain their one-replica posture.
+# shellcheck disable=SC2016 # jq/yq bindings in rendered-manifest assertions are intentionally literal
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"

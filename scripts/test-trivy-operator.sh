@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Validate the pinned, structurally optional Trivy Operator contract. --runtime additionally uses
 # an ownership-guarded disposable k3d cluster; it never targets the shared local clusters.
+# shellcheck disable=SC2016 # jq/yq bindings in rendered-manifest assertions are intentionally literal
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

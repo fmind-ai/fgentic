@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Definition-only federation reload contracts sourced by scripts/test-federation.sh.
+# shellcheck disable=SC2016 # jq bindings and source-contract placeholders are intentionally literal
 check_federation_reload() {
 	# The reload drill must make its allow revision only in the disposable Git snapshot, reconcile it
 	# through the normal source, prove both Synapse pods survive, and restore the tracked deny policy.

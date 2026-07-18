@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Definition-only federation acceptance contracts sourced by scripts/test-federation.sh.
+# shellcheck disable=SC2016 # jq bindings and source-contract placeholders are intentionally literal
 check_federation_acceptance() {
 	local a2a_seed="${ROOT_DIR}/scripts/lib/federation-a2a.sh"
 	local quota_line receipt_verify_line
