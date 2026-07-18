@@ -12,7 +12,8 @@ fail() {
 }
 
 [[ -L "${root_dir}/AGENTS.md" ]] || fail "AGENTS.md must remain a symlink"
-[[ "$(readlink "${root_dir}/AGENTS.md")" == ".agents/AGENTS.md" ]] \
+agents_link="$(readlink "${root_dir}/AGENTS.md")"
+[[ "${agents_link}" == ".agents/AGENTS.md" ]] \
 	|| fail "AGENTS.md must target .agents/AGENTS.md"
 
 root_guidance="${root_dir}/.agents/AGENTS.md"
@@ -22,6 +23,7 @@ root_guidance_bytes="$(wc -c <"${root_guidance}")"
 
 largest_combined_bytes="${root_guidance_bytes}"
 largest_combined_path=".agents/AGENTS.md"
+guidance_files="$(git -C "${root_dir}" ls-files '*AGENTS.md' | sort)"
 while IFS= read -r guidance; do
 	case "${guidance}" in
 		AGENTS.md | .agents/AGENTS.md) continue ;;
@@ -44,12 +46,13 @@ while IFS= read -r guidance; do
 		largest_combined_bytes="${combined_guidance_bytes}"
 		largest_combined_path=".agents/AGENTS.md + ${guidance}"
 	fi
-done < <(git -C "${root_dir}" ls-files '*AGENTS.md' | sort)
+done <<<"${guidance_files}"
 
 [[ "$(<"${root_dir}/CLAUDE.md")" == "@AGENTS.md" ]] \
 	|| fail "CLAUDE.md must include the shared root instructions"
 [[ -L "${root_dir}/.claude/skills" ]] || fail ".claude/skills must remain a symlink"
-[[ "$(readlink "${root_dir}/.claude/skills")" == "../.agents/skills" ]] \
+claude_skills_link="$(readlink "${root_dir}/.claude/skills")"
+[[ "${claude_skills_link}" == "../.agents/skills" ]] \
 	|| fail ".claude/skills must target ../.agents/skills"
 
 jq -e '
