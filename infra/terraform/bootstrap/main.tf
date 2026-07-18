@@ -17,6 +17,11 @@ terraform {
 variable "project_id" {
   type        = string
   description = "The GCP Project ID"
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.project_id))
+    error_message = "project_id must be 6-30 characters, use only lowercase letters, numbers, and hyphens, start with a letter, and end with a letter or number."
+  }
 }
 
 variable "region" {
