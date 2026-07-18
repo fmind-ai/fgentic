@@ -96,9 +96,10 @@ resource_trace_sample_server() {
 
 resource_trace_sample_workloads() {
 	resource_trace_enabled || return 0
-	local phase server timestamp
+	local container_output phase server timestamp
 	server="k3d-${CLUSTER_NAME}-server-0"
-	docker ps --format '{{.Names}}' | rg --fixed-strings --line-regexp "${server}" >/dev/null || return 0
+	container_output="$(docker ps --format '{{.Names}}')" || return 1
+	rg --fixed-strings --line-regexp "${server}" <<<"${container_output}" >/dev/null || return 0
 	timestamp="$(date -u +'%Y-%m-%dT%H:%M:%SZ')"
 	phase="$(resource_trace_phase)"
 	docker exec "${server}" crictl stats --output json 2>/dev/null \

@@ -175,7 +175,8 @@ reset_delegation_quota_fixture() {
 
 verify_cross_org_delegation() {
 	local org_b_secret untrusted_secret wrong_audience_secret
-	local document status response before_tokens after_tokens denied_path_status missing_extension_status
+	local denied_document document status response before_tokens after_tokens denied_path_status
+	local missing_extension_status
 	local duplicate_content_type_status missing_content_type_status text_content_type_status
 	local before_receipts after_denials after_receipt receipt request request_hash tampered
 	reset_delegation_quota_fixture
@@ -242,12 +243,13 @@ verify_cross_org_delegation() {
 	done
 	document="$(a2a_document 1000 ListTasks)"
 	expect_a2a_status unsupported-method 403 "${ORG_B_A2A_TOKEN}" "${document}"
+	denied_document="$(a2a_document 1000)"
 	denied_path_status="$(request_status "${WORK_DIR}/a2a-denied-path.json" --request POST \
 		--header 'Content-Type: application/json' \
 		--header 'A2A-Version: 1.0' \
 		--header "A2A-Extensions: ${TOKEN_BUDGET_EXTENSION}" \
 		--header "Authorization: Bearer ${ORG_B_A2A_TOKEN}" \
-		--data "$(a2a_document 1000)" "${A2A_URL}/api/a2a/kagent/scribe")"
+		--data "${denied_document}" "${A2A_URL}/api/a2a/kagent/scribe")"
 	[ "${denied_path_status}" = "404" ] \
 		|| die "unpublished kagent path returned HTTP ${denied_path_status}, expected 404"
 	after_denials="$(usage_receipt_archive_count)"
