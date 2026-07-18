@@ -16,6 +16,7 @@ git-cliff = "latest"
 lefthook = "latest"
 promtool = "latest"
 actionlint = "latest"
+zizmor = "1.27.0"
 kubeconform = "latest"
 trivy = "latest"
 terraform = "latest"
@@ -196,6 +197,7 @@ depends = [
   "check:agent-readiness",
   "check:github-actions",
   "check:workflows",
+  "check:zizmor",
   "check:app",
   "check:gateway",
   "check:policy",
@@ -472,6 +474,11 @@ run = "bash scripts/test-mautrix-bridges.sh --runtime"
 alias = "cw"
 description = "Lint GitHub Actions workflows (actionlint)"
 run = "actionlint"
+
+[tasks."check:zizmor"]
+description = "Audit GitHub Actions workflow behavior (zizmor)"
+env = { ZIZMOR_OFFLINE = "true" }
+run = "zizmor --persona regular .github/workflows"
 
 [tasks."check:app"]
 description = "Run the application's static checks (delegates to apps/matrix-a2a-bridge)"
