@@ -3,6 +3,7 @@
 # `--runtime` additionally checks each exact pinned image's registration schema and proves its
 # non-root/read-only config reaches database initialization with mounted secret-file overrides.
 # shellcheck disable=SC2016 # yq bindings and bridged-sender fixture placeholders are intentionally literal
+# shellcheck disable=SC2312 # substitution output is consumed by explicit fixture assertions
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

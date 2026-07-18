@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2312 # substitution output is consumed by explicit fixture assertions
 # Keep the shared Codex/Claude discovery and worktree setup contract executable in CI.
 set -euo pipefail
 

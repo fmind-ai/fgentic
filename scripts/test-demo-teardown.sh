@@ -2,6 +2,7 @@
 # Deterministic command fakes for crash-resumable demo/federation teardown. No Docker daemon,
 # k3d cluster, kubeconfig, credential, or network endpoint is accessed by this test.
 # shellcheck disable=SC2030,SC2031 # fixture cases intentionally isolate injected globals in subshells
+# shellcheck disable=SC2312 # substitution output is consumed by explicit fixture assertions
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

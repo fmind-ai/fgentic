@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2312 # substitution output is consumed by explicit fixture assertions
 # Prove the optional Ketesa surface and its zero-footprint disabled profile without touching a
 # cluster. Live MAS login and admin/non-admin behavior remain target-cluster acceptance evidence.
 set -euo pipefail

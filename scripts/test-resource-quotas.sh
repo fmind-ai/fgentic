@@ -2,6 +2,7 @@
 # Validate namespace compute budgets offline, or prove ResourceQuota denial in an isolated kind
 # cluster. The runtime path owns a dedicated no-port cluster and never uses the active kubeconfig.
 # shellcheck disable=SC2016 # unresolved-substitution sentinels are intentionally literal
+# shellcheck disable=SC2312 # substitution output is consumed by explicit fixture assertions
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"

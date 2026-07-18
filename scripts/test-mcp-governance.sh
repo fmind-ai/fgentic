@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2312 # substitution output is consumed by explicit fixture assertions
 # Prove that kagent's managed agents use agentgateway for MCP, that every backend matches its
 # reviewed execution/routing/surface pin, that platform-helper's five-tool allowlist fails closed,
 # and that audit records omit arguments and results. --runtime uses disposable Docker containers.

@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2312 # substitution output is consumed by explicit fixture assertions
 # Deterministic, provider-free fixtures for scripts/fed-onboard.sh.
 #
 # The connectivity and card fetches are served by a fake xh (no network); the ES256/JCS signature
