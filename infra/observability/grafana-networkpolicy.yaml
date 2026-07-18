@@ -1,0 +1,44 @@
+# Grafana's web listener is public only through the shared Gateway. The pinned chart also exposes
+# its metrics on that listener, so preserve the existing scrape for the exact Prometheus workload.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: kube-prometheus-stack
+      app.kubernetes.io/name: grafana
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gateway
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: traefik-gateway
+              app.kubernetes.io/name: traefik
+      ports:
+        - protocol: TCP
+          port: 3000
+    - from:
+        - podSelector:
+            matchLabels:
+              fgentic.dev/metrics-reader: prometheus
+      ports:
+        - protocol: TCP
+          port: 3000
+    # Keep Grafana's clustering gossip scoped to exact peers if replicas are raised later.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: kube-prometheus-stack
+              app.kubernetes.io/name: grafana
+      ports:
+        - protocol: TCP
+          port: 9094
+        - protocol: UDP
+          port: 9094

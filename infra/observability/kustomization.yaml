@@ -6,6 +6,7 @@ resources:
   - tracing-helmreleases.yaml
   - tracing-networkpolicy.yaml
   - tracing-referencegrant.yaml
+  - grafana-networkpolicy.yaml
   - grafana-route.yaml
 
 # kube-prometheus-stack's Grafana sidecar watches this stable ConfigMap label in every namespace.
