@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Exercise agent:new in an isolated source tree; no cluster, model, or network is used.
+# shellcheck disable=SC2016 # yq mutations preserve placeholders for the generated fixture
 set -euo pipefail
 
 repo_root="$(git rev-parse --show-toplevel)"

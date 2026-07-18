@@ -2,6 +2,7 @@
 # Parse the committed Grafana dashboard JSON and the exact ConfigMap produced by Flux/Kustomize.
 # This is a static provisioning/query contract; live series and rendered panels remain a cluster
 # acceptance step because Prometheus cannot manufacture runtime bridge or provider traffic.
+# shellcheck disable=SC2016 # PromQL template variables and capture references are intentionally literal
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"

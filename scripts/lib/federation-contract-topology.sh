@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Definition-only federation topology contracts sourced by scripts/test-federation.sh.
+# shellcheck disable=SC2016 # jq bindings and source-contract placeholders are intentionally literal
 check_federation_topology() {
 	[ -x "${LIFECYCLE}" ] || fail 'scripts/federation.sh must exist and be executable'
 	[ -x "${SEED}" ] || fail 'scripts/seed-federation.sh must exist and be executable'

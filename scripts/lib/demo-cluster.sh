@@ -65,6 +65,7 @@ configure_federation_flux_controllers() {
 		# Keep a 256 MiB cgroup ceiling for short reconcile bursts; GOMEMLIMIT is a soft target.
 		patch='{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"GOMAXPROCS","value":"1"},{"name":"GOGC","value":"25"},{"name":"GOMEMLIMIT","value":null,"valueFrom":{"resourceFieldRef":{"containerName":"manager","resource":"requests.memory"}}}],"resources":{"limits":{"memory":"256Mi"},"requests":{"memory":"64Mi"}}}]}}}}'
 	else
+		# shellcheck disable=SC2016 # $patch is the literal strategic-merge deletion key
 		patch='{"spec":{"template":{"spec":{"containers":[{"name":"manager","env":[{"name":"GOMAXPROCS","$patch":"delete"},{"name":"GOGC","$patch":"delete"},{"name":"GOMEMLIMIT","value":null,"valueFrom":{"resourceFieldRef":{"containerName":"manager","resource":"limits.memory"}}}],"resources":{"limits":{"memory":"1Gi"},"requests":{"memory":"64Mi"}}}]}}}}'
 	fi
 	for deployment in "${deployments[@]}"; do

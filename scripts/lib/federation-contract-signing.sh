@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Definition-only federation signing contracts sourced by scripts/test-federation.sh.
+# shellcheck disable=SC2016 # jq bindings and source-contract placeholders are intentionally literal
 check_federation_signing() {
 	# The receipt binary adds gRPC to the shipped image. Preserve its upstream NOTICE attribution in
 	# the same file that the distroless image exposes with both production binaries.

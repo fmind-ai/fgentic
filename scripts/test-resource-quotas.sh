@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # Validate namespace compute budgets offline, or prove ResourceQuota denial in an isolated kind
 # cluster. The runtime path owns a dedicated no-port cluster and never uses the active kubeconfig.
+# shellcheck disable=SC2016 # unresolved-substitution sentinels are intentionally literal
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"

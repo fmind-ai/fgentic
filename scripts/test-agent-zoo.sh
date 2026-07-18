@@ -2,6 +2,7 @@
 # Render every composed in-repo Agent and bridge mapping, then assert their shared authoring and
 # sample-zoo security contracts. Rendered RBAC is inspected rather than trusting values names: an
 # upstream chart change must not silently restore cluster-admin or write-capable tools.
+# shellcheck disable=SC2016 # jq bindings in rendered-manifest assertions are intentionally literal
 set -euo pipefail
 
 tmp_dir="$(mktemp -d)"

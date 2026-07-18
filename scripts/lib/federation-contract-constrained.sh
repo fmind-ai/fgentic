@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Definition-only constrained-host contracts sourced by scripts/test-federation.sh.
+# shellcheck disable=SC2016 # jq bindings and source-contract placeholders are intentionally literal
 # shellcheck disable=SC2030,SC2031 # fixture cases intentionally isolate injected globals in subshells
 # shellcheck disable=SC2329 # nested fixture functions are invoked indirectly by sourced helpers
 

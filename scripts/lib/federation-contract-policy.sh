@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Definition-only federation policy contracts sourced by scripts/test-federation.sh.
+# shellcheck disable=SC2016 # jq bindings and source-contract placeholders are intentionally literal
 check_federation_policy() {
 	# The A homeserver is patched only in this disposable overlay. Its outbound trust and domain
 	# restrictions must mirror B, otherwise one direction of the lab can silently become open.

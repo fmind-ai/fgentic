@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 # Offline contract for the pinned, authenticated, deliberately scoped federation TCK gate.
+# shellcheck disable=SC2016 # source-contract placeholders are expanded only by the script under test
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
