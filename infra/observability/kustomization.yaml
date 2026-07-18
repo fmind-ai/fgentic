@@ -6,6 +6,7 @@ resources:
   - tracing-helmreleases.yaml
   - tracing-networkpolicy.yaml
   - tracing-referencegrant.yaml
+  - metrics-networkpolicy.yaml
   - grafana-networkpolicy.yaml
   - grafana-route.yaml
 
