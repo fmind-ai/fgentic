@@ -60,6 +60,11 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kagent
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: kagent
+              app.kubernetes.io/instance: kagent
+              app.kubernetes.io/component: controller
       ports:
         - protocol: TCP
           port: 8083
@@ -67,6 +72,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: agentgateway-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agentgateway-proxy
       ports:
         - protocol: TCP
           port: 8080
