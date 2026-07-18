@@ -480,18 +480,43 @@ static_contract() {
 		"observability monitors must not be availability-coupled to Trivy"
 
 	# Docker inspection failure is unknown state, never evidence that cleanup completed.
+	local cleanup_status cleanup_workdir discovery_status handler_status
 	if (
 		runtime_container_ids() { return 42; }
 		runtime_artifacts_exist
 	) >/dev/null 2>&1; then
 		fail "runtime artifact discovery accepted a failed container inventory"
+	else
+		discovery_status=$?
 	fi
+	[[ "${discovery_status}" -eq 2 ]] \
+		|| fail "runtime artifact discovery did not preserve unknown state"
 	if (
 		runtime_container_ids() { return 42; }
 		cleanup_runtime_cluster_artifacts
 	) >/dev/null 2>&1; then
 		fail "runtime cleanup accepted a failed container inventory"
+	else
+		cleanup_status=$?
 	fi
+	[[ "${cleanup_status}" -eq 2 ]] \
+		|| fail "runtime cleanup did not preserve unknown state"
+
+	cleanup_workdir="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-trivy-cleanup-test.XXXXXX")"
+	if (
+		runtime_owned_by_test() { return 1; }
+		runtime_cluster_exists() { return 1; }
+		runtime_container_ids() { return 42; }
+		cleanup_runtime_contract 0 "${cleanup_workdir}" false
+	) >/dev/null 2>&1; then
+		fail "runtime contract cleanup accepted unknown artifact state"
+	else
+		handler_status=$?
+	fi
+	[[ "${handler_status}" -eq 1 ]] \
+		|| fail "runtime contract cleanup did not report unknown artifact state"
+	[[ ! -e "${cleanup_workdir}" ]] \
+		|| fail "runtime contract cleanup leaked its work directory after inspection failure"
 
 	echo "Trivy Operator static contract passed"
 }
@@ -514,8 +539,10 @@ runtime_volume_exists() {
 
 runtime_artifacts_exist() {
 	local container_ids
-	container_ids="$(runtime_container_ids)" \
-		|| fail "could not inspect disposable Trivy containers"
+	if ! container_ids="$(runtime_container_ids)"; then
+		echo "error: could not inspect disposable Trivy containers" >&2
+		return 2
+	fi
 	[[ -n "${container_ids}" ]] || runtime_network_exists || runtime_volume_exists \
 		|| runtime_recorded_volumes_exist
 }
@@ -536,7 +563,17 @@ runtime_owned_by_test() {
 }
 
 runtime_cleanup_complete() {
-	! runtime_cluster_exists && ! runtime_artifacts_exist
+	local artifact_status
+	if runtime_cluster_exists; then
+		return 1
+	fi
+	if runtime_artifacts_exist; then
+		return 1
+	else
+		artifact_status=$?
+	fi
+	[[ "${artifact_status}" -eq 1 ]] && return 0
+	return "${artifact_status}"
 }
 
 stop_runtime_processes() {
@@ -625,13 +662,13 @@ collect_runtime_diagnostics() {
 }
 
 cleanup_runtime_cluster_artifacts() {
-	local attempt container_id_output network_owner volume volume_owner
+	local attempt cleanup_status container_id_output network_owner volume volume_owner
 	local -a container_ids=()
 	for attempt in {1..30}; do
 		container_ids=()
 		if ! container_id_output="$(runtime_container_ids)"; then
 			echo "error: could not inspect disposable Trivy containers during cleanup" >&2
-			return 1
+			return 2
 		fi
 		if [[ -n "${container_id_output}" ]]; then
 			mapfile -t container_ids <<<"${container_id_output}"
@@ -657,7 +694,10 @@ cleanup_runtime_cluster_artifacts() {
 		done
 		if runtime_cleanup_complete; then
 			return 0
+		else
+			cleanup_status=$?
 		fi
+		((cleanup_status == 1)) || return "${cleanup_status}"
 		[[ "${attempt}" -eq 30 ]] || sleep 2
 	done
 	# Docker can finish removing a large anonymous containerd volume just after `volume rm`
@@ -665,8 +705,10 @@ cleanup_runtime_cluster_artifacts() {
 	sleep 5
 	if runtime_cleanup_complete; then
 		return 0
+	else
+		cleanup_status=$?
 	fi
-	return 1
+	return "${cleanup_status}"
 }
 
 assert_service_account_access() {
@@ -944,14 +986,65 @@ synthetic_high_metric() {
       /image_repository="fgentic\/runtime-synthetic"/ &&
       /namespace="models"/ &&
       /severity="High"/ {print $NF}
-    '
+	    '
+}
+
+cleanup_runtime_contract() {
+	local result="$1"
+	local workdir="$2"
+	local cluster_owned="$3"
+	local artifact_status=1
+	local cleanup_failed=false
+	trap - EXIT INT TERM
+	stop_runtime_processes
+	if ((result != 0)); then
+		collect_runtime_diagnostics
+	fi
+
+	if [[ "${cluster_owned}" == false ]] && runtime_owned_by_test; then
+		# A failed k3d create can still leave its labeled server behind. The private token proves
+		# that a partial cluster belongs to this invocation before cleanup is claimed.
+		cluster_owned=true
+	fi
+	if [[ "${cluster_owned}" == true ]]; then
+		if ! runtime_owned_by_test; then
+			echo "error: refusing cleanup because the server ownership label no longer matches" >&2
+			cleanup_failed=true
+		else
+			k3d cluster delete "${RUNTIME_CLUSTER_NAME}" >/dev/null 2>&1 || true
+			if ! cleanup_runtime_cluster_artifacts; then
+				echo "error: disposable Trivy cluster cleanup did not complete" >&2
+				cleanup_failed=true
+			fi
+		fi
+	elif runtime_cluster_exists; then
+		echo "error: unowned same-name k3d artifacts remain; refusing destructive cleanup" >&2
+		cleanup_failed=true
+	elif runtime_artifacts_exist; then
+		echo "error: unowned same-name k3d artifacts remain; refusing destructive cleanup" >&2
+		cleanup_failed=true
+	else
+		artifact_status=$?
+		if ((artifact_status != 1)); then
+			echo "error: could not determine whether unowned Trivy artifacts remain" >&2
+			cleanup_failed=true
+		fi
+	fi
+
+	rm -rf "${workdir}"
+	if [[ "${cleanup_failed}" == true ]]; then
+		result=1
+	elif [[ "${cluster_owned}" == true ]]; then
+		echo "==> Deleted isolated Trivy cluster ${RUNTIME_CLUSTER_NAME} and exact runtime artifacts"
+	fi
+	exit "${result}"
 }
 
 runtime_contract() {
 	require_commands awk curl date diff docker helm jq k3d kubectl sed sha256sum sort yq
 	docker info >/dev/null 2>&1 || fail "Docker daemon is not available"
 
-	local actual_digest actual_owner chart_path container_count container_name
+	local actual_digest actual_owner artifact_status chart_path container_count container_name
 	local expected_deployment_image image_volume_owner k3s_image kubeconfig node_command
 	local operator_image_tag runtime_volume_output
 	local k3s_arg
@@ -970,50 +1063,20 @@ runtime_contract() {
 	RUNTIME_WORKDIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-trivy.XXXXXX")"
 	kubeconfig="${RUNTIME_WORKDIR}/kubeconfig"
 
-	cleanup() {
-		local result=$?
-		local cleanup_failed=false
-		trap - EXIT INT TERM
-		stop_runtime_processes
-		if ((result != 0)); then
-			collect_runtime_diagnostics
-		fi
-
-		if [[ "${RUNTIME_CLUSTER_OWNED}" == false ]] && runtime_owned_by_test; then
-			# A failed k3d create can still leave its labeled server behind. The private token proves
-			# that a partial cluster belongs to this invocation before cleanup is claimed.
-			RUNTIME_CLUSTER_OWNED=true
-		fi
-		if [[ "${RUNTIME_CLUSTER_OWNED}" == true ]]; then
-			if ! runtime_owned_by_test; then
-				echo "error: refusing cleanup because the server ownership label no longer matches" >&2
-				cleanup_failed=true
-			else
-				k3d cluster delete "${RUNTIME_CLUSTER_NAME}" >/dev/null 2>&1 || true
-				if ! cleanup_runtime_cluster_artifacts; then
-					echo "error: disposable Trivy cluster cleanup did not complete" >&2
-					cleanup_failed=true
-				fi
-			fi
-		elif runtime_cluster_exists || runtime_artifacts_exist; then
-			echo "error: unowned same-name k3d artifacts remain; refusing destructive cleanup" >&2
-			cleanup_failed=true
-		fi
-
-		rm -rf "${RUNTIME_WORKDIR}"
-		if [[ "${cleanup_failed}" == true ]]; then
-			result=1
-		elif [[ "${RUNTIME_CLUSTER_OWNED}" == true ]]; then
-			echo "==> Deleted isolated Trivy cluster ${RUNTIME_CLUSTER_NAME} and exact runtime artifacts"
-		fi
-		exit "${result}"
-	}
+	cleanup() { cleanup_runtime_contract "$?" "${RUNTIME_WORKDIR}" "${RUNTIME_CLUSTER_OWNED}"; }
 	trap cleanup EXIT
 	trap 'exit 130' INT TERM
 
-	if runtime_cluster_exists || runtime_artifacts_exist; then
+	if runtime_cluster_exists; then
 		fail "same-name k3d resources already exist; refusing to mutate them: ${RUNTIME_CLUSTER_NAME}"
 	fi
+	if runtime_artifacts_exist; then
+		fail "same-name k3d resources already exist; refusing to mutate them: ${RUNTIME_CLUSTER_NAME}"
+	else
+		artifact_status=$?
+	fi
+	((artifact_status == 1)) \
+		|| fail "could not determine whether same-name k3d artifacts already exist"
 
 	chart_path="${RUNTIME_WORKDIR}/trivy-operator-${CHART_VERSION}.tgz"
 	echo "==> Downloading and verifying Trivy Operator chart ${CHART_VERSION}"
