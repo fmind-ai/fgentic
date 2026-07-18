@@ -59,6 +59,14 @@ resource "google_container_cluster" "cluster" {
     channel = "REGULAR"
   }
 
+  # GKE otherwise exports every workload container's stdout/stderr to Cloud Logging by default.
+  # Keep provider-managed system diagnostics without exporting potentially content-bearing
+  # application logs or duplicating the platform's sovereign observability layer.
+  logging_service = "logging.googleapis.com/kubernetes"
+  logging_config {
+    enable_components = ["SYSTEM_COMPONENTS"]
+  }
+
   master_authorized_networks_config {
     gcp_public_cidrs_access_enabled = false
     dynamic "cidr_blocks" {
