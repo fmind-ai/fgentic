@@ -37,7 +37,7 @@ Appservice, A2A, MCP, database, and OIDC credentials have paired copies and orde
 1. Deliver through a reviewed commit and Flux. Wait for sources, namespaces/secrets, controllers, data plane, stateful services, and apps in DAG order.
 1. Capture target-cluster evidence separately. Static quotas are ceilings, not reservations or measured usage; rendered replicas are not availability proof.
 
-Version pins that bind each other move together: Gateway API v1.4.0 experimental, Traefik 39.x, and agentgateway/kagent compatibility are deliberate current constraints. kagent charts use an OCI-type HelmRepository. The bridge image is built, scanned, signed, and digest-pinned by CD; never edit that digest by hand.
+Version pins that bind each other move together: Gateway API v1.5.1 experimental, Traefik chart 41.0.2, and agentgateway v1.3.1 are the deliberate current compatibility set. kagent charts use an OCI-type HelmRepository. The bridge image is built, scanned, signed, and digest-pinned by CD; never edit that digest by hand.
 
 ## 4. Day-2 ownership
 

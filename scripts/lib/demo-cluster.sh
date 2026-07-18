@@ -1360,7 +1360,7 @@ demo_up() {
 		gateways.gateway.networking.k8s.io httproutes.gateway.networking.k8s.io \
 		>/dev/null 2>&1; then
 		kubectl apply --server-side --filename \
-			https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/experimental-install.yaml \
+			https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/experimental-install.yaml \
 			>/dev/null
 	fi
 	# Match the production Flux DAG: admission must protect the first managed Namespace creation,

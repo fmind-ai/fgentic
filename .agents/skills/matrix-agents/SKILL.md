@@ -47,7 +47,7 @@ Use `scripts/fed-check.sh partner.example` only to observe public Matrix discove
 ## Runbook: one-time bootstrap
 
 1. **(Optional) Provision a cluster** — `cd infra/terraform && cp terraform.tfvars.example terraform.tfvars` (set your `/32`), then `terraform init && terraform apply`. Or use any conformant cluster / local k3d (`mise run cluster:up`).
-1. **Gateway API CRDs** (the one out-of-band install): `kubectl apply -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/experimental-install.yaml`.
+1. **Gateway API CRDs** (the one out-of-band install): `kubectl apply --server-side -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/experimental-install.yaml`.
 1. **Choose the model profile and create secrets** — follow [docs/models.md](../../../docs/models.md), edit the environment's `llm_provider`/`llm_model`, export the selected API profile's key if applicable, then run `scripts/gen-secrets.sh <server_name> <local|gcp>`. It writes the consistent core SOPS set (Postgres roles, Keycloak bootstrap/demo/client credentials, appservice/A2A/MCP authorization, connection URLs, and the selected provider Secret) into `clusters/<env>/secrets/`; commit + push (Flux applies from git). Sovereign ingestion remains explicit: generate it only with `FGENTIC_SECRET_SET=knowledge-ingestion` when composing `infra/knowledge/cluster`.
 1. **SOPS-age key**: `kubectl -n flux-system create secret generic sops-age --from-file=age.agekey="$HOME/.config/sops/age/keys.txt"` (create the namespace first if bootstrapping later).
 1. **Local TLS (k3d only)**: `scripts/local-ca.sh` — generates + loads the `local-ca` CA secret (ESS bakes https URLs, so even local runs terminate real TLS at the Gateway on loopback 80/443).
