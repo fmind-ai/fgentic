@@ -36,6 +36,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 - [Agent Development Reference](agent-reference.md) - detailed status, layout, runtime protocols, and conventions linked from the concise root agent instructions
 - [Production Installation](production.md) - Flux-reconciled production path with SOPS secrets and acceptance gates
 - [Day-2 Operations Handbook](operations-handbook.md) - evidence-bound monitoring, scaling, recovery, incident, and upgrade procedures
+- [Demo Recording](demo-recording.md) - capture, disclosure, secret-review, and publication contract for the 30-second proof-of-life media
 - [Reading the Cost Dashboards](cost-dashboards.md) - interpreting aggregate tokens, delegation pressure, partner reservations, and unavailable attribution
 - [Partner Federation Onboarding](federation-onboarding.md) - bilateral checklist to federate with a partner org
 - [Partner Federation Offboarding](federation-offboarding.md) - bilateral checklist to revoke a partner across every plane

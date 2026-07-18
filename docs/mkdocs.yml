@@ -96,6 +96,7 @@ nav:
   - Operations:
       - Production installation: production.md
       - Day-2 handbook: operations-handbook.md
+      - Demo recording: demo-recording.md
       - Cost dashboards: cost-dashboards.md
       - Partner onboarding: federation-onboarding.md
       - Partner offboarding: federation-offboarding.md
