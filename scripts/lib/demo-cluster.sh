@@ -2,6 +2,7 @@
 # Definition-only cluster lifecycle helpers sourced by scripts/demo.sh.
 configure_ephemeral_flux_controllers() {
 	local deployment
+	local deployment_json
 	local deployment_output
 	local patch
 	local deployments=()
@@ -9,14 +10,15 @@ configure_ephemeral_flux_controllers() {
 	# Ephemeral profiles run on the same constrained workstation as clusters/local. Keep the
 	# single-replica controllers alive through API-server I/O stalls instead of flapping every
 	# dependent Kustomization after the default 15-second leader-election lease expires.
-	deployment_output="$(kubectl --namespace flux-system get deployments \
-		--selector app.kubernetes.io/part-of=flux --output json \
-		| jq --raw-output --arg lease \
-			"--leader-election-lease-duration=${FLUX_LEADER_ELECTION_LEASE_DURATION}" '
+	deployment_json="$(kubectl --namespace flux-system get deployments \
+		--selector app.kubernetes.io/part-of=flux --output json)" \
+		|| die 'could not inspect Flux controllers'
+	deployment_output="$(jq --raw-output --arg lease \
+		"--leader-election-lease-duration=${FLUX_LEADER_ELECTION_LEASE_DURATION}" '
         .items[] |
         select((((.spec.template.spec.containers[0].args // []) | index($lease)) == null)) |
         .metadata.name
-      ')" || die 'could not inspect Flux controller leader-election settings'
+      ' <<<"${deployment_json}")" || die 'could not inspect Flux controller leader-election settings'
 	while IFS= read -r deployment; do
 		[ -z "${deployment}" ] || deployments[${#deployments[@]}]="${deployment}"
 	done <<<"${deployment_output}"
@@ -43,6 +45,7 @@ configure_ephemeral_flux_controllers() {
 
 configure_federation_flux_controllers() {
 	local deployment
+	local deployment_json
 	local deployment_output
 	local patch
 	local deployments=()
@@ -52,10 +55,11 @@ configure_federation_flux_controllers() {
 	# Flux's generated controller Pods see every host CPU and derive a 1 GiB Go memory target. The
 	# constrained lab uses one scheduler thread and a request-sized soft heap, while the default
 	# profile explicitly restores the upstream runtime and resource values after constrained reuse.
-	deployment_output="$(kubectl --namespace flux-system get deployments \
-		--selector app.kubernetes.io/part-of=flux --output json \
-		| jq --raw-output '.items[].metadata.name')" \
+	deployment_json="$(kubectl --namespace flux-system get deployments \
+		--selector app.kubernetes.io/part-of=flux --output json)" \
 		|| die 'could not inspect Flux controllers for federation runtime tuning'
+	deployment_output="$(jq --raw-output '.items[].metadata.name' <<<"${deployment_json}")" \
+		|| die 'Flux returned an invalid controller inventory'
 	while IFS= read -r deployment; do
 		[ -z "${deployment}" ] || deployments[${#deployments[@]}]="${deployment}"
 	done <<<"${deployment_output}"
@@ -178,23 +182,25 @@ cluster_volume_exists() {
 }
 
 cluster_volume_identity() {
-	docker volume inspect "k3d-${CLUSTER_NAME}-images" 2>/dev/null \
-		| jq --exit-status --raw-output --arg cluster "${CLUSTER_NAME}" '
+	local volume_output
+	volume_output="$(docker volume inspect "k3d-${CLUSTER_NAME}-images" 2>/dev/null)" || return 1
+	jq --exit-status --raw-output --arg cluster "${CLUSTER_NAME}" '
       .[0] |
       select(.Labels.app == "k3d" and .Labels."k3d.cluster" == $cluster) |
       (.Name + "@" + .CreatedAt)
-    '
+    ' <<<"${volume_output}"
 }
 
 docker_volume_bytes() {
-	local bytes mountpoint reader_image volume="$1"
+	local bytes du_output mountpoint reader_image volume="$1"
 	docker volume inspect "${volume}" >/dev/null 2>&1 || return 1
 	# Linux exposes the named-volume mount directly. Docker Desktop does not, so use an already
 	# present lab image as a pull-free, network-free reader while the cluster is stopped.
 	mountpoint="$(docker volume inspect --format '{{.Mountpoint}}' \
 		"${volume}" 2>/dev/null || true)"
 	if [ -n "${mountpoint}" ] && [ -d "${mountpoint}" ] && du -sb "${mountpoint}" >/dev/null 2>&1; then
-		bytes="$(du -sb "${mountpoint}" | awk 'NR == 1 { print $1 }')"
+		du_output="$(du -sb "${mountpoint}")" || return 1
+		bytes="$(awk 'NR == 1 { print $1 }' <<<"${du_output}")"
 		[[ "${bytes}" =~ ^[0-9]+$ ]] || return 1
 		printf '%s\n' "${bytes}"
 		return
@@ -206,9 +212,10 @@ docker_volume_bytes() {
 	fi
 	[ -n "${reader_image}" ] || return 1
 	docker image inspect "${reader_image}" >/dev/null 2>&1 || return 1
-	bytes="$(docker run --rm --pull never --network none --entrypoint /bin/du \
+	du_output="$(docker run --rm --pull never --network none --entrypoint /bin/du \
 		--volume "${volume}:/volume:ro" "${reader_image}" -sb /volume \
-		2>/dev/null | awk 'NR == 1 { print $1 }')"
+		2>/dev/null)" || return 1
+	bytes="$(awk 'NR == 1 { print $1 }' <<<"${du_output}")"
 	[[ "${bytes}" =~ ^[0-9]+$ ]] || return 1
 	printf '%s\n' "${bytes}"
 }
@@ -228,7 +235,9 @@ cluster_attached_volume_names() {
 	inspect_output="$(docker container inspect "${container_ids[@]}")" || return 1
 	volume_output="$(jq --raw-output \
 		'.[].Mounts[]? | select(.Type == "volume") | .Name' <<<"${inspect_output}")" || return 1
-	printf '%s\n' "${volume_output}" | awk 'NF' | sort -u
+	volume_output="$(awk 'NF' <<<"${volume_output}")" || return 1
+	[ -n "${volume_output}" ] || return 0
+	sort -u <<<"${volume_output}"
 }
 
 cluster_retained_storage_bytes() {
@@ -254,7 +263,9 @@ cluster_owned_image_ids() {
 	local image_output
 	image_output="$(docker images \
 		--filter "label=dev.fgentic.demo.cluster=${CLUSTER_NAME}" --quiet)" || return 1
-	printf '%s\n' "${image_output}" | awk 'NF' | sort -u
+	image_output="$(awk 'NF' <<<"${image_output}")" || return 1
+	[ -n "${image_output}" ] || return 0
+	sort -u <<<"${image_output}"
 }
 
 cluster_owned_image_bytes() {
@@ -530,7 +541,7 @@ validate_receipt_network() {
 }
 
 validate_receipt_volume() {
-	local actual actual_created actual_kind attachment_id created kind name object="$1"
+	local actual actual_created actual_kind attachment_id attachments created kind name object="$1"
 	name="$(jq --raw-output '.name' <<<"${object}")"
 	created="$(jq --raw-output '.created_at' <<<"${object}")"
 	kind="$(jq --raw-output '.kind' <<<"${object}")"
@@ -555,6 +566,8 @@ validate_receipt_volume() {
 			'.[0].Labels."k3d.cluster" == $cluster' <<<"${actual}" >/dev/null \
 			|| teardown_receipt_fail "image-volume ownership changed for ${name}"
 	fi
+	attachments="$(jq --raw-output '.attachments[]' <<<"${object}")" \
+		|| teardown_receipt_fail "volume receipt attachments are invalid for ${name}"
 	while IFS= read -r attachment_id; do
 		[ -n "${attachment_id}" ] || continue
 		if actual="$(docker container inspect "${attachment_id}" 2>/dev/null)"; then
@@ -563,12 +576,12 @@ validate_receipt_volume() {
 				<<<"${actual}" >/dev/null \
 				|| teardown_receipt_fail "recorded attachment from ${attachment_id} to ${name} changed"
 		fi
-	done < <(jq --raw-output '.attachments[]' <<<"${object}")
+	done <<<"${attachments}"
 	return 0
 }
 
 validate_receipt_image() {
-	local actual actual_id id object="$1" ref
+	local actual actual_id id object="$1" ref repo_tags
 	id="$(jq --raw-output '.id' <<<"${object}")"
 	if actual="$(docker image inspect "${id}" 2>/dev/null)"; then
 		actual_id="$(jq --raw-output '.[0].Id' <<<"${actual}")"
@@ -579,6 +592,8 @@ validate_receipt_image() {
 			teardown_receipt_fail "local-image identity or ownership changed for ${id}"
 		fi
 	fi
+	repo_tags="$(jq --raw-output '.repo_tags[]' <<<"${object}")" \
+		|| teardown_receipt_fail "local-image receipt references are invalid for ${id}"
 	while IFS= read -r ref; do
 		[ -n "${ref}" ] || continue
 		if actual="$(docker image inspect "${ref}" 2>/dev/null)"; then
@@ -586,27 +601,41 @@ validate_receipt_image() {
 			[ "${actual_id}" = "${id}" ] \
 				|| teardown_receipt_fail "local-image reference ${ref} was reused by ${actual_id}"
 		fi
-	done < <(jq --raw-output '.repo_tags[]' <<<"${object}")
+	done <<<"${repo_tags}"
 	docker image inspect "${id}" >/dev/null 2>&1
 }
 
 validate_teardown_receipt_resources() {
-	local cluster_status generation generation_present=no object receipt
+	local cluster_status containers generation generation_present=no images network object object_id
+	local receipt volumes
 	receipt="$(teardown_receipt_path)"
 	generation="$(jq --raw-output '.generation' "${receipt}")"
+	containers="$(jq --compact-output '.containers[]' "${receipt}")" \
+		|| teardown_receipt_fail 'teardown receipt container inventory is invalid'
 	while IFS= read -r object; do
+		[ -n "${object}" ] || continue
 		if validate_receipt_container "${object}"; then
-			[ "$(jq --raw-output '.id' <<<"${object}")" != "${generation}" ] \
+			object_id="$(jq --raw-output '.id' <<<"${object}")" \
+				|| teardown_receipt_fail 'teardown receipt container identity is invalid'
+			[ "${object_id}" != "${generation}" ] \
 				|| generation_present=yes
 		fi
-	done < <(jq --compact-output '.containers[]' "${receipt}")
-	validate_receipt_network "$(jq --compact-output '.network' "${receipt}")" || true
+	done <<<"${containers}"
+	network="$(jq --compact-output '.network' "${receipt}")" \
+		|| teardown_receipt_fail 'teardown receipt network inventory is invalid'
+	validate_receipt_network "${network}" || true
+	volumes="$(jq --compact-output '.volumes[]' "${receipt}")" \
+		|| teardown_receipt_fail 'teardown receipt volume inventory is invalid'
 	while IFS= read -r object; do
+		[ -n "${object}" ] || continue
 		validate_receipt_volume "${object}" || true
-	done < <(jq --compact-output '.volumes[]' "${receipt}")
+	done <<<"${volumes}"
+	images="$(jq --compact-output '.images[]' "${receipt}")" \
+		|| teardown_receipt_fail 'teardown receipt image inventory is invalid'
 	while IFS= read -r object; do
+		[ -n "${object}" ] || continue
 		validate_receipt_image "${object}" || true
-	done < <(jq --compact-output '.images[]' "${receipt}")
+	done <<<"${images}"
 	if cluster_exists; then
 		[ "${generation_present}" = yes ] \
 			|| teardown_receipt_fail "live k3d metadata no longer matches receipt generation ${generation}"
@@ -618,7 +647,7 @@ validate_teardown_receipt_resources() {
 }
 
 teardown_receipt_complete() {
-	local cluster_status object receipt
+	local cluster_status containers images network object receipt volumes
 	receipt="$(teardown_receipt_path)"
 	if cluster_exists; then
 		return 1
@@ -626,38 +655,62 @@ teardown_receipt_complete() {
 		cluster_status=$?
 		[ "${cluster_status}" -eq 1 ] || return "${cluster_status}"
 	fi
+	containers="$(jq --compact-output '.containers[]' "${receipt}")" || return 2
 	while IFS= read -r object; do
+		[ -n "${object}" ] || continue
 		validate_receipt_container "${object}" && return 1
-	done < <(jq --compact-output '.containers[]' "${receipt}")
-	validate_receipt_network "$(jq --compact-output '.network' "${receipt}")" && return 1
+	done <<<"${containers}"
+	network="$(jq --compact-output '.network' "${receipt}")" || return 2
+	validate_receipt_network "${network}" && return 1
+	volumes="$(jq --compact-output '.volumes[]' "${receipt}")" || return 2
 	while IFS= read -r object; do
+		[ -n "${object}" ] || continue
 		validate_receipt_volume "${object}" && return 1
-	done < <(jq --compact-output '.volumes[]' "${receipt}")
+	done <<<"${volumes}"
+	images="$(jq --compact-output '.images[]' "${receipt}")" || return 2
 	while IFS= read -r object; do
+		[ -n "${object}" ] || continue
 		validate_receipt_image "${object}" && return 1
-	done < <(jq --compact-output '.images[]' "${receipt}")
+	done <<<"${images}"
 	return 0
 }
 
 print_teardown_recovery_diagnostics() {
-	local object receipt
+	local containers id images name network_id object receipt volumes
 	receipt="$(teardown_receipt_path)"
 	echo "error: ${CLUSTER_NAME} teardown remains pending; inspect exact recorded identities:" >&2
 	echo "  jq . ${receipt}" >&2
+	containers="$(jq --compact-output '.containers[]' "${receipt}")" \
+		|| teardown_receipt_fail 'teardown receipt container inventory is invalid'
 	while IFS= read -r object; do
-		echo "  docker container inspect $(jq --raw-output '.id' <<<"${object}")" >&2
-	done < <(jq --compact-output '.containers[]' "${receipt}")
-	echo "  docker network inspect $(jq --raw-output '.network.id' "${receipt}")" >&2
+		[ -n "${object}" ] || continue
+		id="$(jq --raw-output '.id' <<<"${object}")" \
+			|| teardown_receipt_fail 'teardown receipt container identity is invalid'
+		echo "  docker container inspect ${id}" >&2
+	done <<<"${containers}"
+	network_id="$(jq --raw-output '.network.id' "${receipt}")" \
+		|| teardown_receipt_fail 'teardown receipt network identity is invalid'
+	echo "  docker network inspect ${network_id}" >&2
+	volumes="$(jq --compact-output '.volumes[]' "${receipt}")" \
+		|| teardown_receipt_fail 'teardown receipt volume inventory is invalid'
 	while IFS= read -r object; do
-		echo "  docker volume inspect $(jq --raw-output '.name' <<<"${object}")" >&2
-	done < <(jq --compact-output '.volumes[]' "${receipt}")
+		[ -n "${object}" ] || continue
+		name="$(jq --raw-output '.name' <<<"${object}")" \
+			|| teardown_receipt_fail 'teardown receipt volume identity is invalid'
+		echo "  docker volume inspect ${name}" >&2
+	done <<<"${volumes}"
+	images="$(jq --compact-output '.images[]' "${receipt}")" \
+		|| teardown_receipt_fail 'teardown receipt image inventory is invalid'
 	while IFS= read -r object; do
-		echo "  docker image inspect $(jq --raw-output '.id' <<<"${object}")" >&2
-	done < <(jq --compact-output '.images[]' "${receipt}")
+		[ -n "${object}" ] || continue
+		id="$(jq --raw-output '.id' <<<"${object}")" \
+			|| teardown_receipt_fail 'teardown receipt image identity is invalid'
+		echo "  docker image inspect ${id}" >&2
+	done <<<"${images}"
 }
 
 recover_teardown_receipt() {
-	local attempt cluster_status id object receipt status
+	local attempt cluster_status containers id images name network object receipt status volumes
 	receipt="$(teardown_receipt_path)"
 	require_valid_teardown_receipt
 	validate_teardown_receipt_resources
@@ -668,29 +721,44 @@ recover_teardown_receipt() {
 		[ "${cluster_status}" -eq 1 ] \
 			|| teardown_receipt_fail "could not inspect k3d metadata before recovery"
 	fi
+	containers="$(jq --compact-output '.containers[]' "${receipt}")" \
+		|| teardown_receipt_fail 'teardown receipt container inventory is invalid'
+	network="$(jq --compact-output '.network' "${receipt}")" \
+		|| teardown_receipt_fail 'teardown receipt network inventory is invalid'
+	volumes="$(jq --compact-output '.volumes[]' "${receipt}")" \
+		|| teardown_receipt_fail 'teardown receipt volume inventory is invalid'
+	images="$(jq --compact-output '.images[]' "${receipt}")" \
+		|| teardown_receipt_fail 'teardown receipt image inventory is invalid'
 
 	for attempt in 1 2 3; do
 		while IFS= read -r object; do
+			[ -n "${object}" ] || continue
 			if validate_receipt_container "${object}"; then
 				id="$(jq --raw-output '.id' <<<"${object}")"
 				docker rm --force --volumes "${id}" >/dev/null 2>&1 || true
 			fi
-		done < <(jq --compact-output '.containers[]' "${receipt}")
-		object="$(jq --compact-output '.network' "${receipt}")"
-		if validate_receipt_network "${object}"; then
-			docker network rm "$(jq --raw-output '.id' <<<"${object}")" >/dev/null 2>&1 || true
+		done <<<"${containers}"
+		if validate_receipt_network "${network}"; then
+			id="$(jq --raw-output '.id' <<<"${network}")" \
+				|| teardown_receipt_fail 'teardown receipt network identity is invalid'
+			docker network rm "${id}" >/dev/null 2>&1 || true
 		fi
 		while IFS= read -r object; do
+			[ -n "${object}" ] || continue
 			if validate_receipt_volume "${object}"; then
-				docker volume rm "$(jq --raw-output '.name' <<<"${object}")" >/dev/null 2>&1 || true
+				name="$(jq --raw-output '.name' <<<"${object}")" \
+					|| teardown_receipt_fail 'teardown receipt volume identity is invalid'
+				docker volume rm "${name}" >/dev/null 2>&1 || true
 			fi
-		done < <(jq --compact-output '.volumes[]' "${receipt}")
+		done <<<"${volumes}"
 		while IFS= read -r object; do
+			[ -n "${object}" ] || continue
 			if validate_receipt_image "${object}"; then
-				docker image rm --force "$(jq --raw-output '.id' <<<"${object}")" \
-					>/dev/null 2>&1 || true
+				id="$(jq --raw-output '.id' <<<"${object}")" \
+					|| teardown_receipt_fail 'teardown receipt image identity is invalid'
+				docker image rm --force "${id}" >/dev/null 2>&1 || true
 			fi
-		done < <(jq --compact-output '.images[]' "${receipt}")
+		done <<<"${images}"
 		if teardown_receipt_complete; then
 			rm -f "${receipt}"
 			rmdir "${receipt%/*}" >/dev/null 2>&1 || true
@@ -821,23 +889,21 @@ EOF
 }
 
 load_bridge_image_if_requested() {
-	local requested_image
+	local requested_image workload_json
 	case "${PROFILE}" in
 		demo)
-			requested_image="$(
-				kubectl --namespace bridge get helmrelease matrix-a2a-bridge --output json 2>/dev/null \
-					| jq --exit-status --raw-output \
-						'.spec.values.image | "\(.repository):\(.tag)"' 2>/dev/null
-			)" || return 1
+			workload_json="$(kubectl --namespace bridge get helmrelease \
+				matrix-a2a-bridge --output json 2>/dev/null)" || return 1
+			requested_image="$(jq --exit-status --raw-output \
+				'.spec.values.image | "\(.repository):\(.tag)"' \
+				<<<"${workload_json}" 2>/dev/null)" || return 1
 			;;
 		federation)
-			requested_image="$(
-				kubectl --namespace agentgateway-system get deployment \
-					federation-usage-receipt --output json 2>/dev/null \
-					| jq --exit-status --raw-output \
-						'.spec.template.spec.containers[] | select(.name == "usage-receipt") | .image' \
-						2>/dev/null
-			)" || return 1
+			workload_json="$(kubectl --namespace agentgateway-system get deployment \
+				federation-usage-receipt --output json 2>/dev/null)" || return 1
+			requested_image="$(jq --exit-status --raw-output \
+				'.spec.template.spec.containers[] | select(.name == "usage-receipt") | .image' \
+				<<<"${workload_json}" 2>/dev/null)" || return 1
 			;;
 		*) return 0 ;;
 	esac
@@ -1152,7 +1218,7 @@ collect_platform_milestones() {
 
 wait_for_platform_constrained() {
 	local after before bridge_image_loaded bridge_image_status expected_revision hard_deadline
-	local helmreleases kustomizations
+	local diagnostic_timeout helmreleases kustomizations
 	local last_progress milestones no_progress_seconds max_seconds now request_timeout
 	expected_revision="main@sha1:${SOURCE_REVISION}"
 	no_progress_seconds="${FEDERATION_NO_PROGRESS_SECONDS}"
@@ -1185,21 +1251,22 @@ wait_for_platform_constrained() {
 				helmreleases --all-namespaces --output json)"; then
 			now="${SECONDS}"
 			if ((now - last_progress >= no_progress_seconds)); then
+				diagnostic_timeout="$(deadline_diagnostic_timeout "${hard_deadline}")"
 				print_platform_wait_diagnostics \
 					"Flux made no observable progress for ${FEDERATION_NO_PROGRESS_TIMEOUT}" \
-					"$(deadline_diagnostic_timeout "${hard_deadline}")"
+					"${diagnostic_timeout}"
 				return 1
 			fi
 			sleep_before_deadline "${hard_deadline}"
 			continue
 		fi
 
-		before="$(wc -l <"${milestones}" | tr -d ' ')"
+		before="$(awk 'END { print NR }' "${milestones}")"
 		collect_platform_milestones "${expected_revision}" "${kustomizations}" \
 			"${helmreleases}" >>"${milestones}"
 		LC_ALL=C sort -u "${milestones}" >"${milestones}.next"
 		mv "${milestones}.next" "${milestones}"
-		after="$(wc -l <"${milestones}" | tr -d ' ')"
+		after="$(awk 'END { print NR }' "${milestones}")"
 		if ((after > before)); then
 			last_progress="${SECONDS}"
 			echo "Flux convergence progress: ${after} immutable milestones observed."
@@ -1210,9 +1277,10 @@ wait_for_platform_constrained() {
 			return
 		fi
 		if ((SECONDS - last_progress >= no_progress_seconds)); then
+			diagnostic_timeout="$(deadline_diagnostic_timeout "${hard_deadline}")"
 			print_platform_wait_diagnostics \
 				"Flux made no observable progress for ${FEDERATION_NO_PROGRESS_TIMEOUT}" \
-				"$(deadline_diagnostic_timeout "${hard_deadline}")"
+				"${diagnostic_timeout}"
 			return 1
 		fi
 		sleep_before_deadline "${hard_deadline}"
@@ -1233,6 +1301,7 @@ wait_for_platform() {
 
 render_bootstrap_namespaces() {
 	local namespace_layer="${SNAPSHOT_DIR}/infra/namespaces"
+	local rendered_namespaces
 	if [ "${PROFILE}" = "federation" ]; then
 		namespace_layer="${SNAPSHOT_DIR}/infra/federation/namespace-layer"
 	fi
@@ -1240,13 +1309,15 @@ render_bootstrap_namespaces() {
 	# Secrets and the local CA need their target Namespaces before Flux starts. Apply only those
 	# cluster-scoped objects here: the early Flux namespace layer owns quotas and LimitRanges after
 	# platform-settings substitution, before any dependent workload can reconcile.
-	kubectl kustomize "${namespace_layer}" \
-		| PROFILE="${PROFILE}" yq 'select(.kind == "Namespace" and
-      (strenv(PROFILE) != "demo" or .metadata.name != "trivy-system"))'
+	rendered_namespaces="$(kubectl kustomize "${namespace_layer}")" || return 1
+	PROFILE="${PROFILE}" yq 'select(.kind == "Namespace" and
+      (strenv(PROFILE) != "demo" or .metadata.name != "trivy-system"))' \
+		<<<"${rendered_namespaces}"
 }
 
 demo_up() {
-	local actual_capacity_mode artifact_status cluster_present=no container_output current_container_ids
+	local actual_capacity_mode artifact_status bootstrap_namespaces cluster_present=no container_output
+	local current_container_ids federation_gateway_json
 	local current_volume_identity reused_container_ids="" reused_volume_identity="" running_status
 	local runtime_labels=()
 	for command in base64 curl docker git jq k3d kubectl flux yq openssl rg tar; do
@@ -1355,10 +1426,13 @@ demo_up() {
 	export KUBECONFIG="${KUBECONFIG_FILE}"
 	configure_federation_metrics_server
 	if [ "${PROFILE}" = "federation" ]; then
+		federation_gateway_json="$(docker inspect "k3d-${CLUSTER_NAME}-serverlb")" \
+			|| die 'could not inspect the federation gateway address'
 		# shellcheck disable=SC2034 # sourced federation helpers consume the discovered gateway address
-		FEDERATION_GATEWAY_IP="$(docker inspect "k3d-${CLUSTER_NAME}-serverlb" \
-			| jq -er --arg network "k3d-${CLUSTER_NAME}" \
-				'.[0].NetworkSettings.Networks[$network].IPAddress')"
+		FEDERATION_GATEWAY_IP="$(jq -er --arg network "k3d-${CLUSTER_NAME}" \
+			'.[0].NetworkSettings.Networks[$network].IPAddress' \
+			<<<"${federation_gateway_json}")" \
+			|| die 'the federation gateway address is invalid'
 		prepare_federation_agent_card_key
 	fi
 
@@ -1380,7 +1454,9 @@ demo_up() {
 	# retained disposable cluster hands those same canonical fields back to this bootstrap step.
 	kubectl apply --server-side --force-conflicts \
 		--kustomize "${SNAPSHOT_DIR}/infra/policies" >/dev/null
-	render_bootstrap_namespaces | kubectl apply --filename - >/dev/null
+	bootstrap_namespaces="$(render_bootstrap_namespaces)" \
+		|| die 'could not render bootstrap Namespaces'
+	printf '%s\n' "${bootstrap_namespaces}" | kubectl apply --filename - >/dev/null
 	"${ROOT_DIR}/scripts/local-ca.sh"
 	create_ephemeral_secrets
 	apply_source_server
@@ -1418,13 +1494,14 @@ require_cluster_runtime() {
 }
 
 demo_status() {
-	local artifact_status capacity_mode container_output image_bytes retained_bytes running_output state
+	local artifact_status capacity_mode container_output image_bytes receipt retained_bytes running_output state
 	local total_containers running_containers volume_bytes
 	require_cluster_runtime
 	if teardown_receipt_exists; then
 		require_valid_teardown_receipt
 		validate_teardown_receipt_resources
-		echo "Cluster ${CLUSTER_NAME}: state=recovery-pending receipt=$(teardown_receipt_path); run the matching down command to resume exact cleanup."
+		receipt="$(teardown_receipt_path)"
+		echo "Cluster ${CLUSTER_NAME}: state=recovery-pending receipt=${receipt}; run the matching down command to resume exact cleanup."
 		return
 	fi
 	if ! cluster_exists; then
