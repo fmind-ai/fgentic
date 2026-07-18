@@ -1,5 +1,6 @@
 # The model data plane is closed by default. Only the gateway can submit prompts and Prometheus
-# can scrape metrics; the serving Pod receives no egress allowance at all.
+# can scrape metrics through its dedicated workload identity; the serving Pod receives no egress
+# allowance at all.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -35,6 +36,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              fgentic.dev/metrics-reader: prometheus
       ports:
         - protocol: TCP
           port: 8000

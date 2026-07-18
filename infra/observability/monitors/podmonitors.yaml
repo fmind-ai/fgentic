@@ -13,7 +13,7 @@ spec:
     - port: metrics
 ---
 # vLLM exposes Prometheus metrics on its OpenAI API port; the Service stays cluster-internal and
-# the models NetworkPolicy admits only this monitoring namespace plus agentgateway (SPEC §9).
+# the models NetworkPolicy admits only the labeled Prometheus workload plus agentgateway (SPEC §9).
 apiVersion: monitoring.coreos.com/v1
 kind: PodMonitor
 metadata:
