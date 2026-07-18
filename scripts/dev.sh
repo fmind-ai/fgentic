@@ -43,11 +43,11 @@ EOF
 }
 
 validate_cluster_name() {
-	[[ "${CLUSTER_NAME}" =~ ^[a-z0-9][a-z0-9-]{0,47}$ ]] ||
-		die "invalid FGENTIC_DEMO_CLUSTER"
+	[[ "${CLUSTER_NAME}" =~ ^[a-z0-9][a-z0-9-]{0,47}$ ]] \
+		|| die "invalid FGENTIC_DEMO_CLUSTER"
 	case "${CLUSTER_NAME}" in
-	fgentic-demo | fgentic-demo-*) ;;
-	*) die "FGENTIC_DEMO_CLUSTER must be fgentic-demo or start with fgentic-demo-" ;;
+		fgentic-demo | fgentic-demo-*) ;;
+		*) die "FGENTIC_DEMO_CLUSTER must be fgentic-demo or start with fgentic-demo-" ;;
 	esac
 }
 
@@ -61,8 +61,8 @@ require_runtime() {
 
 require_owned_cluster() {
 	cluster_exists || die "${CLUSTER_NAME} does not exist (run 'mise run dev:up')"
-	cluster_owned_by_demo ||
-		die "refusing to manage ${CLUSTER_NAME}: it was not created by scripts/demo.sh"
+	cluster_owned_by_demo \
+		|| die "refusing to manage ${CLUSTER_NAME}: it was not created by scripts/demo.sh"
 }
 
 cluster_running() {
@@ -82,8 +82,8 @@ start_cluster() {
 	require_owned_cluster
 	k3d cluster start "${CLUSTER_NAME}" >/dev/null 2>&1 || true
 	configure_kubeconfig
-	kubectl wait --for=condition=Ready nodes --all --timeout=2m >/dev/null ||
-		die "${CLUSTER_NAME} did not become ready within 2 minutes"
+	kubectl wait --for=condition=Ready nodes --all --timeout=2m >/dev/null \
+		|| die "${CLUSTER_NAME} did not become ready within 2 minutes"
 }
 
 print_access() {
@@ -120,8 +120,8 @@ dev_reload() {
 	require_runtime
 	require_command kubectl
 	start_cluster
-	image="$(kubectl --namespace bridge get helmrelease matrix-a2a-bridge --output json |
-		jq --exit-status --raw-output '
+	image="$(kubectl --namespace bridge get helmrelease matrix-a2a-bridge --output json \
+		| jq --exit-status --raw-output '
       .spec.values.image |
       select(.repository == "matrix-a2a-bridge" and .pullPolicy == "Never") |
       "\(.repository):\(.tag)"
@@ -175,14 +175,14 @@ dev_stop() {
 
 validate_cluster_name
 case "${1:-}" in
-up) dev_up ;;
-reload) dev_reload ;;
-status) dev_status ;;
-stop) dev_stop ;;
-down) exec "${ROOT_DIR}/scripts/demo.sh" down ;;
--h | --help) usage ;;
-*)
-	usage >&2
-	exit 2
-	;;
+	up) dev_up ;;
+	reload) dev_reload ;;
+	status) dev_status ;;
+	stop) dev_stop ;;
+	down) exec "${ROOT_DIR}/scripts/demo.sh" down ;;
+	-h | --help) usage ;;
+	*)
+		usage >&2
+		exit 2
+		;;
 esac

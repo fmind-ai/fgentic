@@ -28,6 +28,8 @@ k3d = "5.9.0"
 kubectl = "1.35.0"
 python = "3.14.6"
 ripgrep = "latest"
+shellcheck = "0.11.0"
+shfmt = "3.13.1"
 sops = "latest"
 watchexec = "2.5.1"
 yq = "latest"
@@ -82,9 +84,10 @@ run = "bash scripts/new-agent.sh"
 
 [tasks.format]
 alias = "f"
-description = "Format everything (config/markup, Terraform, and applications)"
+description = "Format everything (config/markup, shell, Terraform, and applications)"
 depends = [
   "format:dprint",
+  "format:shell",
   "format:terraform",
   "format:a2a-tck",
   "format:knowledge-ingestion",
@@ -96,6 +99,12 @@ depends = [
 [tasks."format:dprint"]
 description = "Format JSON, Markdown, TOML, YAML at the repo root + infra/docs (dprint)"
 run = "dprint fmt"
+
+# Preserve the established tab-indented Bash style: -i 0 keeps tabs, while -bn and -ci
+# normalize split binary operators and case bodies without changing the indentation model.
+[tasks."format:shell"]
+description = "Format every owned shell script (shfmt)"
+run = "shfmt -w -i 0 -bn -ci scripts"
 
 [tasks."format:terraform"]
 description = "Canonicalise Terraform formatting"
@@ -137,6 +146,7 @@ alias = "c"
 description = "Run every static check (config, Terraform, manifests, scans, workflows, and apps)"
 depends = [
   "check:format",
+  "check:shell",
   "check:terraform",
   "check:terraform-hermetic",
   "check:manifests",
@@ -184,6 +194,15 @@ depends = [
 alias = "cf"
 description = "Verify config/markup formatting (dprint)"
 run = "dprint check"
+
+[tasks."check:shell"]
+description = "Verify every owned shell script is formatted and lint-clean"
+# Block all ShellCheck errors and warnings across the full tree. Informational/style findings stay
+# non-blocking because the acceptance fixtures intentionally embed literal shell and jq snippets.
+run = [
+  "shfmt -d -i 0 -bn -ci scripts",
+  "rg --files scripts -g '*.sh' -0 | xargs -0 shellcheck -x --severity=warning",
+]
 
 [tasks."check:agent-readiness"]
 description = "Validate shared Codex/Claude discovery and non-mutating worktree setup"

@@ -6,8 +6,10 @@
 # card signed here with a freshly generated P-256 key, so the acceptance semantics match the bridge.
 set -euo pipefail
 
-readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-readonly WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-fed-onboard-test.XXXXXX")"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly ROOT_DIR
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-fed-onboard-test.XXXXXX")"
+readonly WORK_DIR
 trap 'rm -rf "${WORK_DIR}"' EXIT INT TERM
 
 fail() {
@@ -61,10 +63,10 @@ sign_card() {
 	local bundle="${WORK_DIR}/bundle.json"
 	openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "${key_pem}" 2>/dev/null
 	"${SIGN}" sign --input "${resolved}" --private-key "${key_pem}" \
-		--key-id "${key_id}" --output "${bundle}" ||
-		fail "signing fixture card failed for ${key_id}"
-	jq --exit-status '.agentCard | select(type == "object")' "${bundle}" >"${signed_out}" ||
-		fail 'signed bundle missing agentCard'
+		--key-id "${key_id}" --output "${bundle}" \
+		|| fail "signing fixture card failed for ${key_id}"
+	jq --exit-status '.agentCard | select(type == "object")' "${bundle}" >"${signed_out}" \
+		|| fail 'signed bundle missing agentCard'
 	jq --exit-status '.publicJwk | select(type == "object" and (has("d") | not))' \
 		"${bundle}" >"${jwk_out}" || fail 'signed bundle missing public JWK'
 }
@@ -128,8 +130,8 @@ expect_failure() {
 	if "$@" >"${WORK_DIR}/failure.out" 2>"${WORK_DIR}/failure.err"; then
 		fail "${label} unexpectedly passed"
 	fi
-	rg --fixed-strings "${expected}" "${WORK_DIR}/failure.err" >/dev/null ||
-		fail "${label} omitted expected failure: ${expected} (got: $(cat "${WORK_DIR}/failure.err"))"
+	rg --fixed-strings "${expected}" "${WORK_DIR}/failure.err" >/dev/null \
+		|| fail "${label} omitted expected failure: ${expected} (got: $(cat "${WORK_DIR}/failure.err"))"
 }
 
 # Success: connectivity + conformance both pass -> eligible for a reviewed registry admission.
@@ -152,8 +154,8 @@ jq --exit-status --arg url "${A2A_URL}" --arg budget "${TOKEN_BUDGET}" '
 
 # Connectivity-only: opt-in conformance omitted -> never eligible, and it does not overclaim.
 run_onboard success "${WORK_DIR}/good.json" \
-	--expect-server matrix.partner.example:443 partner.example >"${WORK_DIR}/probe.json" ||
-	fail 'connectivity-only run failed'
+	--expect-server matrix.partner.example:443 partner.example >"${WORK_DIR}/probe.json" \
+	|| fail 'connectivity-only run failed'
 jq --exit-status '
   .trust_level == "public_unauthenticated_probe" and
   .agentcard_conformance == null and

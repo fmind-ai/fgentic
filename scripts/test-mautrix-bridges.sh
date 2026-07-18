@@ -50,35 +50,35 @@ assert_yq() { # assert_yq <expression> <file> <message>
 set_bridge() { # set_bridge <slack|telegram>
 	NETWORK="$1"
 	case "${NETWORK}" in
-	slack)
-		DISPLAY_NAME=Slack
-		PORT=29335
-		ROLE=slackbridge
-		BOT=slackbot
-		GHOST_PREFIX=slack_
-		IMAGE="dock.mau.dev/mautrix/slack@sha256:f1de44e723a13484a6b09a26b93127e494c25a70d4d21c2300bfddf49a7dae03"
-		BINARY=/usr/bin/mautrix-slack
-		TAG=v0.2606.0
-		COMMIT=813cabaa9382a07ac3515b0dbc484fb0fe138385
-		ENV_PREFIX=MAUTRIX_SLACK_
-		EXPECTED_ENV="MAUTRIX_SLACK_APPSERVICE__AS_TOKEN_FILE,MAUTRIX_SLACK_APPSERVICE__HS_TOKEN_FILE,MAUTRIX_SLACK_DATABASE__URI_FILE"
-		EXPECTED_SECRET_KEYS="as-token,database-uri,hs-token"
-		;;
-	telegram)
-		DISPLAY_NAME=Telegram
-		PORT=29317
-		ROLE=telegrambridge
-		BOT=telegrambot
-		GHOST_PREFIX=telegram_
-		IMAGE="dock.mau.dev/mautrix/telegram@sha256:8c6c559446f049c1f3c4cbc4b284aed14c27aefde9b88a785d262633bdafe510"
-		BINARY=/usr/bin/mautrix-telegram
-		TAG=v0.2606.0
-		COMMIT=dbcbfc66dec816d56fa3373e93f1a0c8483baa1f
-		ENV_PREFIX=MAUTRIX_TELEGRAM_
-		EXPECTED_ENV="MAUTRIX_TELEGRAM_APPSERVICE__AS_TOKEN_FILE,MAUTRIX_TELEGRAM_APPSERVICE__HS_TOKEN_FILE,MAUTRIX_TELEGRAM_DATABASE__URI_FILE,MAUTRIX_TELEGRAM_NETWORK__API_HASH_FILE,MAUTRIX_TELEGRAM_NETWORK__API_ID_FILE"
-		EXPECTED_SECRET_KEYS="api-hash,api-id,as-token,database-uri,hs-token"
-		;;
-	*) fail "unsupported bridge fixture: ${NETWORK}" ;;
+		slack)
+			DISPLAY_NAME=Slack
+			PORT=29335
+			ROLE=slackbridge
+			BOT=slackbot
+			GHOST_PREFIX=slack_
+			IMAGE="dock.mau.dev/mautrix/slack@sha256:f1de44e723a13484a6b09a26b93127e494c25a70d4d21c2300bfddf49a7dae03"
+			BINARY=/usr/bin/mautrix-slack
+			TAG=v0.2606.0
+			COMMIT=813cabaa9382a07ac3515b0dbc484fb0fe138385
+			ENV_PREFIX=MAUTRIX_SLACK_
+			EXPECTED_ENV="MAUTRIX_SLACK_APPSERVICE__AS_TOKEN_FILE,MAUTRIX_SLACK_APPSERVICE__HS_TOKEN_FILE,MAUTRIX_SLACK_DATABASE__URI_FILE"
+			EXPECTED_SECRET_KEYS="as-token,database-uri,hs-token"
+			;;
+		telegram)
+			DISPLAY_NAME=Telegram
+			PORT=29317
+			ROLE=telegrambridge
+			BOT=telegrambot
+			GHOST_PREFIX=telegram_
+			IMAGE="dock.mau.dev/mautrix/telegram@sha256:8c6c559446f049c1f3c4cbc4b284aed14c27aefde9b88a785d262633bdafe510"
+			BINARY=/usr/bin/mautrix-telegram
+			TAG=v0.2606.0
+			COMMIT=dbcbfc66dec816d56fa3373e93f1a0c8483baa1f
+			ENV_PREFIX=MAUTRIX_TELEGRAM_
+			EXPECTED_ENV="MAUTRIX_TELEGRAM_APPSERVICE__AS_TOKEN_FILE,MAUTRIX_TELEGRAM_APPSERVICE__HS_TOKEN_FILE,MAUTRIX_TELEGRAM_DATABASE__URI_FILE,MAUTRIX_TELEGRAM_NETWORK__API_HASH_FILE,MAUTRIX_TELEGRAM_NETWORK__API_ID_FILE"
+			EXPECTED_SECRET_KEYS="api-hash,api-id,as-token,database-uri,hs-token"
+			;;
+		*) fail "unsupported bridge fixture: ${NETWORK}" ;;
 	esac
 	NAME="mautrix-${NETWORK}"
 	RELEASE="${ROOT_DIR}/infra/bridges/${NETWORK}/helmrelease.yaml"
@@ -88,8 +88,8 @@ set_bridge() { # set_bridge <slack|telegram>
 }
 
 render_and_validate_bridge() {
-	yq -e '.spec.values' "${RELEASE}" |
-		helm template "${NAME}" "${ROOT_DIR}/infra/bridges/chart" \
+	yq -e '.spec.values' "${RELEASE}" \
+		| helm template "${NAME}" "${ROOT_DIR}/infra/bridges/chart" \
 			--namespace bridges --values - >"${RENDERED}"
 	kubeconform -strict -ignore-missing-schemas -summary "${RENDERED}" >/dev/null
 
@@ -153,21 +153,21 @@ render_and_validate_bridge() {
 		 .logging.writers[0].type == "stdout" and .logging.writers[0].format == "json"' \
 		"${CONFIG}" "${DISPLAY_NAME} config lost its common fail-closed defaults"
 	case "${NETWORK}" in
-	slack)
-		assert_yq '.network.backfill.conversation_count == 0' "${CONFIG}" \
-			"Slack login would enumerate visible conversations"
-		;;
-	telegram)
-		assert_yq \
-			'.network.sync.update_limit == 0 and
+		slack)
+			assert_yq '.network.backfill.conversation_count == 0' "${CONFIG}" \
+				"Slack login would enumerate visible conversations"
+			;;
+		telegram)
+			assert_yq \
+				'.network.sync.update_limit == 0 and
 			 .network.sync.create_limit == 0 and
 			 .network.sync.login_sync_limit == 0 and
 			 .network.sync.direct_chats == false and
 			 .network.takeout.dialog_sync == false and
 			 .network.takeout.forward_backfill == false and
 			 .network.takeout.backward_backfill == false' \
-			"${CONFIG}" "Telegram login/history sync widened beyond explicit portal selection"
-		;;
+				"${CONFIG}" "Telegram login/history sync widened beyond explicit portal selection"
+			;;
 	esac
 	if yq -e '.. | select(tag == "!!str" and . == "generate")' "${CONFIG}" >/dev/null 2>&1; then
 		fail "read-only ${DISPLAY_NAME} config contains a generated-at-startup value"

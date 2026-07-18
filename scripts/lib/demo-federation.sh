@@ -7,13 +7,13 @@ snapshot_source() {
 		echo "Note: the ephemeral demo snapshot includes the current uncommitted working tree."
 	fi
 	(
-		cd "${ROOT_DIR}"
-		git ls-files --cached --others --exclude-standard -z |
-			while IFS= read -r -d '' path; do
+		cd "${ROOT_DIR}" || exit
+		git ls-files --cached --others --exclude-standard -z \
+			| while IFS= read -r -d '' path; do
 				[ -e "${path}" ] || [ -L "${path}" ] || continue
 				printf '%s\0' "${path}"
-			done |
-			tar --null --files-from=- --create --file=-
+			done \
+			| tar --null --files-from=- --create --file=-
 	) | tar --directory "${SNAPSHOT_DIR}" --extract --file=-
 
 	LLM_PROVIDER="${LLM_PROVIDER}" LLM_MODEL="${LLM_MODEL}" GCP_PROJECT="${GCP_PROJECT}" \
@@ -64,8 +64,8 @@ prepare_federation_agent_card_key() {
 	# The signing key is needed before the ephemeral Git snapshot exists. Keep it only in the
 	# lifecycle-owned bootstrap Secret; neither the signed source nor a workload namespace ever
 	# receives private material. Reusing the key keeps the public trust anchor stable across up.
-	kubectl create namespace flux-system --dry-run=client --output=yaml |
-		kubectl apply --filename - >/dev/null
+	kubectl create namespace flux-system --dry-run=client --output=yaml \
+		| kubectl apply --filename - >/dev/null
 	bootstrap_json="$(kubectl --namespace flux-system get secret fgentic-demo-bootstrap \
 		--output json 2>/dev/null || printf '{}')"
 	public_artifacts_exist=false
@@ -74,14 +74,14 @@ prepare_federation_agent_card_key() {
 		public_artifacts_exist=true
 		EXISTING_AGENT_CARD_JWK_FILE="${WORK_DIR}/existing-public-jwk.json"
 		jq -er '.data["public-jwk.json"] | select(type == "string" and length > 0)' \
-			<<<"${configmap_json}" >"${EXISTING_AGENT_CARD_JWK_FILE}" ||
-			die "existing federation AgentCard public JWK is invalid"
+			<<<"${configmap_json}" >"${EXISTING_AGENT_CARD_JWK_FILE}" \
+			|| die "existing federation AgentCard public JWK is invalid"
 		jq -e '
       keys == ["alg", "crv", "key_ops", "kid", "kty", "use", "x", "y"] and
       .kty == "EC" and .crv == "P-256" and .alg == "ES256" and
       .use == "sig" and .key_ops == ["verify"] and (has("d") | not)
-    ' "${EXISTING_AGENT_CARD_JWK_FILE}" >/dev/null ||
-			die "existing federation AgentCard public JWK is invalid"
+    ' "${EXISTING_AGENT_CARD_JWK_FILE}" >/dev/null \
+			|| die "existing federation AgentCard public JWK is invalid"
 		existing_receipt_jwk="${WORK_DIR}/existing-usage-receipt-public-jwk.json"
 		if jq -er '
           .data["usage-receipt-public-jwk.json"] |
@@ -91,8 +91,8 @@ prepare_federation_agent_card_key() {
           keys == ["alg", "crv", "key_ops", "kid", "kty", "use", "x", "y"] and
           .kty == "EC" and .crv == "P-256" and .alg == "ES256" and
           .use == "sig" and .key_ops == ["verify"] and (has("d") | not)
-        ' "${existing_receipt_jwk}" >/dev/null ||
-				die "existing federation usage-receipt public JWK is invalid"
+        ' "${existing_receipt_jwk}" >/dev/null \
+				|| die "existing federation usage-receipt public JWK is invalid"
 			EXISTING_USAGE_RECEIPT_JWK_FILE="${existing_receipt_jwk}"
 		else
 			rm -f "${existing_receipt_jwk}"
@@ -105,11 +105,11 @@ prepare_federation_agent_card_key() {
 		<<<"${bootstrap_json}")"
 	if [ -n "${encoded_private_key}" ]; then
 		printf '%s' "${encoded_private_key}" | base64 --decode >"${AGENT_CARD_PRIVATE_KEY}"
-		[ -n "${AGENT_CARD_KEY_ID}" ] ||
-			die "federation AgentCard key ID is missing from the bootstrap Secret"
+		[ -n "${AGENT_CARD_KEY_ID}" ] \
+			|| die "federation AgentCard key ID is missing from the bootstrap Secret"
 	else
-		[ "${public_artifacts_exist}" = false ] ||
-			die "refusing to rotate a missing AgentCard key while public artifacts still exist"
+		[ "${public_artifacts_exist}" = false ] \
+			|| die "refusing to rotate a missing AgentCard key while public artifacts still exist"
 		AGENT_CARD_KEY_ID="${FEDERATION_AGENT_CARD_DEFAULT_KEY_ID}"
 		openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
 			-out "${AGENT_CARD_PRIVATE_KEY}" 2>/dev/null
@@ -122,11 +122,11 @@ prepare_federation_agent_card_key() {
 		<<<"${bootstrap_json}")"
 	if [ -n "${encoded_receipt_key}" ]; then
 		printf '%s' "${encoded_receipt_key}" | base64 --decode >"${USAGE_RECEIPT_PRIVATE_KEY}"
-		[ -n "${USAGE_RECEIPT_KEY_ID}" ] ||
-			die "federation usage-receipt key ID is missing from the bootstrap Secret"
+		[ -n "${USAGE_RECEIPT_KEY_ID}" ] \
+			|| die "federation usage-receipt key ID is missing from the bootstrap Secret"
 	else
-		[ -z "${EXISTING_USAGE_RECEIPT_JWK_FILE}" ] ||
-			die "refusing to rotate a missing usage-receipt key while public artifacts still exist"
+		[ -z "${EXISTING_USAGE_RECEIPT_JWK_FILE}" ] \
+			|| die "refusing to rotate a missing usage-receipt key while public artifacts still exist"
 		USAGE_RECEIPT_KEY_ID="${FEDERATION_USAGE_RECEIPT_DEFAULT_KEY_ID}"
 		openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
 			-out "${USAGE_RECEIPT_PRIVATE_KEY}" 2>/dev/null
@@ -139,11 +139,11 @@ prepare_federation_agent_card_key() {
 			--from-literal="agent-card-key-id=${AGENT_CARD_KEY_ID}" \
 			--from-file="usage-receipt-private-key=${USAGE_RECEIPT_PRIVATE_KEY}" \
 			--from-literal="usage-receipt-key-id=${USAGE_RECEIPT_KEY_ID}" \
-			--dry-run=client --output=json |
-			jq --compact-output '{data: .data}' |
-			kubectl --namespace flux-system patch secret fgentic-demo-bootstrap \
+			--dry-run=client --output=json \
+			| jq --compact-output '{data: .data}' \
+			| kubectl --namespace flux-system patch secret fgentic-demo-bootstrap \
 				--type=merge --patch-file /dev/stdin \
-			>/dev/null
+				>/dev/null
 	else
 		apply_secret flux-system fgentic-demo-bootstrap \
 			--from-file="agent-card-private-key=${AGENT_CARD_PRIVATE_KEY}" \
@@ -170,12 +170,12 @@ sign_federation_agent_card_snapshot() {
 	[ -f "${policy}" ] || die "federation AgentCard policy not found"
 	marker_count="$(rg --only-matching --fixed-strings "${FEDERATION_AGENT_CARD_MARKER}" \
 		"${policy}" | wc -l | tr -d ' ')"
-	[ "${marker_count}" = "1" ] ||
-		die "federation AgentCard policy must contain exactly one signed-card marker"
+	[ "${marker_count}" = "1" ] \
+		|| die "federation AgentCard policy must contain exactly one signed-card marker"
 	card_server="$(yq --unwrapScalar '.data.server_name' "${settings}")"
 	card_partner="$(yq --unwrapScalar '.data.federation_partner_server_name' "${settings}")"
-	[ -n "${card_server}" ] && [ -n "${card_partner}" ] ||
-		die "federation AgentCard domains are missing from platform settings"
+	[ -n "${card_server}" ] && [ -n "${card_partner}" ] \
+		|| die "federation AgentCard domains are missing from platform settings"
 	CARD_SERVER="${card_server}" CARD_PARTNER="${card_partner}" yq --inplace '
       (... | select(tag == "!!str")) |=
         sub("\\$\\{server_name\\}"; strenv(CARD_SERVER)) |
@@ -192,8 +192,8 @@ sign_federation_agent_card_snapshot() {
       keys == ["alg", "crv", "key_ops", "kid", "kty", "use", "x", "y"] and
       .kty == "EC" and .crv == "P-256" and .alg == "ES256" and
       .use == "sig" and .key_ops == ["verify"] and (has("d") | not)
-    ' "${USAGE_RECEIPT_JWK_FILE}" >/dev/null ||
-		die "generated federation usage-receipt public JWK is invalid"
+    ' "${USAGE_RECEIPT_JWK_FILE}" >/dev/null \
+		|| die "generated federation usage-receipt public JWK is invalid"
 	RECEIPT_EXTENSION="${FEDERATION_USAGE_RECEIPT_EXTENSION}" \
 		RECEIPT_KEY_ID="${USAGE_RECEIPT_KEY_ID}" \
 		RECEIPT_JWK_FILE="${USAGE_RECEIPT_JWK_FILE}" yq --inplace '
@@ -219,13 +219,13 @@ sign_federation_agent_card_snapshot() {
 		--key-id "${AGENT_CARD_KEY_ID}"
 	if [ -n "${EXISTING_AGENT_CARD_JWK_FILE}" ]; then
 		jq --exit-status --slurp '.[0] == .[1]' \
-			"${EXISTING_AGENT_CARD_JWK_FILE}" "${AGENT_CARD_JWK_FILE}" >/dev/null ||
-			die "refusing to replace the independently pinnable AgentCard public JWK"
+			"${EXISTING_AGENT_CARD_JWK_FILE}" "${AGENT_CARD_JWK_FILE}" >/dev/null \
+			|| die "refusing to replace the independently pinnable AgentCard public JWK"
 	fi
 	if [ -n "${EXISTING_USAGE_RECEIPT_JWK_FILE}" ]; then
 		jq --exit-status --slurp '.[0] == .[1]' \
-			"${EXISTING_USAGE_RECEIPT_JWK_FILE}" "${USAGE_RECEIPT_JWK_FILE}" >/dev/null ||
-			die "refusing to replace the independently pinnable usage-receipt public JWK"
+			"${EXISTING_USAGE_RECEIPT_JWK_FILE}" "${USAGE_RECEIPT_JWK_FILE}" >/dev/null \
+			|| die "refusing to replace the independently pinnable usage-receipt public JWK"
 	fi
 
 	signed_card="$(<"${AGENT_CARD_PUBLIC_FILE}")"
@@ -246,31 +246,31 @@ publish_federation_agent_card_artifacts() {
 		--from-file="agent-card.json=${AGENT_CARD_PUBLIC_FILE}" \
 		--from-file="public-jwk.json=${AGENT_CARD_JWK_FILE}" \
 		--from-file="usage-receipt-public-jwk.json=${USAGE_RECEIPT_JWK_FILE}" \
-		--dry-run=client --output=yaml |
-		kubectl apply --filename - >/dev/null
+		--dry-run=client --output=yaml \
+		| kubectl apply --filename - >/dev/null
 }
 
 configure_federation_policy_snapshot() {
 	local policy_file="${SNAPSHOT_DIR}/${FEDERATION_POLICY_PATH}"
 	local next_policy
 	[ -f "${policy_file}" ] || die "federation policy not found: ${FEDERATION_POLICY_PATH}"
-	jq -e '.allowed_event_types | type == "array"' "${policy_file}" >/dev/null ||
-		die "federation policy allowed_event_types must be an array"
+	jq -e '.allowed_event_types | type == "array"' "${policy_file}" >/dev/null \
+		|| die "federation policy allowed_event_types must be an array"
 
 	case "${FEDERATION_POLICY_PROBE}" in
-	deny)
-		jq -e --arg event_type "${FEDERATION_POLICY_EVENT_TYPE}" \
-			'.allowed_event_types | index($event_type) == null' "${policy_file}" >/dev/null ||
-			die "canonical federation policy must deny ${FEDERATION_POLICY_EVENT_TYPE}"
-		;;
-	allow)
-		next_policy="${policy_file}.next"
-		jq --arg event_type "${FEDERATION_POLICY_EVENT_TYPE}" \
-			'.allowed_event_types |= (. + [$event_type] | unique)' \
-			"${policy_file}" >"${next_policy}"
-		mv "${next_policy}" "${policy_file}"
-		;;
-	*) die "unsupported federation policy probe mode: ${FEDERATION_POLICY_PROBE}" ;;
+		deny)
+			jq -e --arg event_type "${FEDERATION_POLICY_EVENT_TYPE}" \
+				'.allowed_event_types | index($event_type) == null' "${policy_file}" >/dev/null \
+				|| die "canonical federation policy must deny ${FEDERATION_POLICY_EVENT_TYPE}"
+			;;
+		allow)
+			next_policy="${policy_file}.next"
+			jq --arg event_type "${FEDERATION_POLICY_EVENT_TYPE}" \
+				'.allowed_event_types |= (. + [$event_type] | unique)' \
+				"${policy_file}" >"${next_policy}"
+			mv "${next_policy}" "${policy_file}"
+			;;
+		*) die "unsupported federation policy probe mode: ${FEDERATION_POLICY_PROBE}" ;;
 	esac
 }
 
@@ -358,8 +358,8 @@ create_federation_secrets() {
 	# cert-manager, and both runtime and config-check pods mount this ConfigMap read-only.
 	for namespace in matrix matrix-b matrix-c; do
 		kubectl --namespace "${namespace}" create configmap fgentic-local-ca \
-			--from-file="ca.crt=${ca_cert}" --dry-run=client --output=yaml |
-			kubectl apply --filename - >/dev/null
+			--from-file="ca.crt=${ca_cert}" --dry-run=client --output=yaml \
+			| kubectl apply --filename - >/dev/null
 	done
 	publish_federation_agent_card_artifacts
 }

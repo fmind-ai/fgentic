@@ -69,29 +69,29 @@ fetch_json() {
 	local size
 	size="$(wc -c <"${output}")"
 	((size <= MAX_RESPONSE_BYTES)) || fail "${label} response exceeds ${MAX_RESPONSE_BYTES} bytes"
-	jq --exit-status 'type == "object"' "${output}" >/dev/null ||
-		fail "${label} response is not a JSON object"
+	jq --exit-status 'type == "object"' "${output}" >/dev/null \
+		|| fail "${label} response is not a JSON object"
 }
 
 expected_server=''
 partner_domain=''
 while (($# > 0)); do
 	case "$1" in
-	--expect-server)
-		(($# >= 2)) || fail '--expect-server requires a value'
-		expected_server="${2,,}"
-		shift 2
-		;;
-	-h | --help)
-		usage
-		exit 0
-		;;
-	-*) fail "unknown option: $1" ;;
-	*)
-		[ -z "${partner_domain}" ] || fail 'exactly one partner domain is required'
-		partner_domain="${1,,}"
-		shift
-		;;
+		--expect-server)
+			(($# >= 2)) || fail '--expect-server requires a value'
+			expected_server="${2,,}"
+			shift 2
+			;;
+		-h | --help)
+			usage
+			exit 0
+			;;
+		-*) fail "unknown option: $1" ;;
+		*)
+			[ -z "${partner_domain}" ] || fail 'exactly one partner domain is required'
+			partner_domain="${1,,}"
+			shift
+			;;
 	esac
 done
 
@@ -107,14 +107,15 @@ fi
 
 readonly timeout_seconds="${FGENTIC_FED_CHECK_TIMEOUT:-${DEFAULT_TIMEOUT_SECONDS}}"
 [[ "${timeout_seconds}" =~ ^[1-9][0-9]*$ ]] || fail 'FGENTIC_FED_CHECK_TIMEOUT must be a positive integer'
-((timeout_seconds <= MAX_TIMEOUT_SECONDS)) ||
-	fail "FGENTIC_FED_CHECK_TIMEOUT must not exceed ${MAX_TIMEOUT_SECONDS} seconds"
+((timeout_seconds <= MAX_TIMEOUT_SECONDS)) \
+	|| fail "FGENTIC_FED_CHECK_TIMEOUT must not exceed ${MAX_TIMEOUT_SECONDS} seconds"
 
 for command in jq timeout xh; do
 	command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
 done
 
-readonly work_dir="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-fed-check.XXXXXX")"
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-fed-check.XXXXXX")"
+readonly work_dir
 trap 'rm -rf "${work_dir}"' EXIT INT TERM
 
 readonly well_known_url="https://${partner_domain}/.well-known/matrix/server"
@@ -122,10 +123,10 @@ fetch_json 'Matrix server discovery' "${well_known_url}" "${work_dir}/well-known
 delegated_server="$(jq --raw-output --exit-status '."m.server" | select(type == "string" and length > 0)' \
 	"${work_dir}/well-known.json")" || fail 'Matrix server discovery omits a non-empty m.server'
 delegated_server="${delegated_server,,}"
-validate_server_name "${delegated_server}" ||
-	fail "Matrix server discovery returned an invalid DNS server name: ${delegated_server}"
-[[ "${delegated_server}" == *:* ]] ||
-	fail 'Matrix server discovery must include an explicit port; SRV-only delegation is outside this bounded preflight'
+validate_server_name "${delegated_server}" \
+	|| fail "Matrix server discovery returned an invalid DNS server name: ${delegated_server}"
+[[ "${delegated_server}" == *:* ]] \
+	|| fail 'Matrix server discovery must include an explicit port; SRV-only delegation is outside this bounded preflight'
 
 if [ -n "${expected_server}" ] && [ "${delegated_server}" != "${expected_server}" ]; then
 	fail "Matrix server delegation mismatch: expected ${expected_server}, received ${delegated_server}"

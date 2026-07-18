@@ -19,8 +19,8 @@ assert_federation_env_rejected() {
 		"${LIFECYCLE}" "${action}" >"${output}" 2>&1; then
 		fail "federation lifecycle accepted invalid ${label} configuration"
 	fi
-	rg --fixed-strings "${expected}" "${output}" >/dev/null ||
-		fail "federation lifecycle did not explain invalid ${label} configuration"
+	rg --fixed-strings "${expected}" "${output}" >/dev/null \
+		|| fail "federation lifecycle did not explain invalid ${label} configuration"
 	if rg --fixed-strings 'offline guard reached' "${output}" >/dev/null; then
 		fail "federation lifecycle consulted the runtime before validating ${label} configuration"
 	fi
@@ -62,8 +62,8 @@ extract_demo_functions() {
       copying && $0 == "}" { exit }
     ' "${DEMO_CLUSTER}" >>"${output}"
 		printf '\n' >>"${output}"
-		rg --fixed-strings --line-regexp "${function_name}() {" "${output}" >/dev/null ||
-			fail "could not extract ${function_name} for the federation contract"
+		rg --fixed-strings --line-regexp "${function_name}() {" "${output}" >/dev/null \
+			|| fail "could not extract ${function_name} for the federation contract"
 	done
 }
 
@@ -84,8 +84,8 @@ check_federation_constrained_cli() {
 		'FGENTIC_FED_MAX_TIMEOUT' \
 		'FGENTIC_FED_TRACE' \
 		'retaining the exact owned cluster'; do
-		rg --fixed-strings "${contract}" "${WORK_DIR}/constrained-help.txt" >/dev/null ||
-			fail "federation help omits ${contract}"
+		rg --fixed-strings "${contract}" "${WORK_DIR}/constrained-help.txt" >/dev/null \
+			|| fail "federation help omits ${contract}"
 	done
 
 	yq -p toml -o yaml --exit-status \
@@ -130,44 +130,44 @@ check_federation_constrained_lifecycle_guards() {
 		>"${WORK_DIR}/federation-metrics-server.sh"
 
 	for contract in cluster_exists cluster_owned_by_demo cluster_volume_identity; do
-		rg --fixed-strings "${contract}" "${WORK_DIR}/owned-cluster-guard.sh" >/dev/null ||
-			fail "shared lifecycle ownership guard omits ${contract}"
+		rg --fixed-strings "${contract}" "${WORK_DIR}/owned-cluster-guard.sh" >/dev/null \
+			|| fail "shared lifecycle ownership guard omits ${contract}"
 	done
 	for contract in require_owned_evaluation_cluster cluster_running_container_ids \
 		cluster_retained_storage_bytes; do
-		rg --fixed-strings "${contract}" "${WORK_DIR}/demo-status.sh" >/dev/null ||
-			fail "federation status omits ${contract}"
+		rg --fixed-strings "${contract}" "${WORK_DIR}/demo-status.sh" >/dev/null \
+			|| fail "federation status omits ${contract}"
 	done
 	for contract in require_owned_evaluation_cluster cluster_running_container_ids \
 		cluster_volume_identity 'k3d cluster stop' 'after_identity' 'before_identity'; do
-		rg --fixed-strings "${contract}" "${WORK_DIR}/demo-stop.sh" >/dev/null ||
-			fail "federation stop omits ${contract}"
+		rg --fixed-strings "${contract}" "${WORK_DIR}/demo-stop.sh" >/dev/null \
+			|| fail "federation stop omits ${contract}"
 	done
 	guard_line="$(rg --line-number --fixed-strings 'require_owned_evaluation_cluster' \
 		"${WORK_DIR}/demo-stop.sh" | cut -d: -f1)"
 	stop_line="$(rg --line-number --fixed-strings 'k3d cluster stop' \
 		"${WORK_DIR}/demo-stop.sh" | cut -d: -f1)"
-	((guard_line < stop_line)) ||
-		fail 'federation stop mutates the cluster before proving ownership and volume identity'
+	((guard_line < stop_line)) \
+		|| fail 'federation stop mutates the cluster before proving ownership and volume identity'
 	for contract in 'PROFILE' 'FEDERATION_CONSTRAINED' 'GOMAXPROCS' 'GOGC' '25' 'GOMEMLIMIT' \
 		'256Mi' 'requests.memory' 'limits.memory' '1Gi' '64Mi' '"$patch":"delete"' \
 		'value":null' 'rollout status'; do
-		rg --fixed-strings "${contract}" "${WORK_DIR}/federation-flux.sh" >/dev/null ||
-			fail "federation Flux profile lifecycle omits ${contract}"
+		rg --fixed-strings "${contract}" "${WORK_DIR}/federation-flux.sh" >/dev/null \
+			|| fail "federation Flux profile lifecycle omits ${contract}"
 	done
-	rg --fixed-strings 'configure_federation_flux_controllers' "${WORK_DIR}/demo-up.sh" >/dev/null ||
-		fail 'federation up does not apply the Flux runtime profile lifecycle'
+	rg --fixed-strings 'configure_federation_flux_controllers' "${WORK_DIR}/demo-up.sh" >/dev/null \
+		|| fail 'federation up does not apply the Flux runtime profile lifecycle'
 	for contract in 'PROFILE' 'FEDERATION_CONSTRAINED' 'desired=1' 'desired=0' \
 		'scale deployment metrics-server' '--replicas "${desired}"' 'wait --for=delete pod' \
 		'rollout status deployment/metrics-server'; do
 		rg --fixed-strings -- "${contract}" "${WORK_DIR}/federation-metrics-server.sh" \
 			>/dev/null || fail "federation metrics-server lifecycle omits ${contract}"
 	done
-	rg --fixed-strings 'configure_federation_metrics_server' "${WORK_DIR}/demo-up.sh" >/dev/null ||
-		fail 'federation up does not apply the metrics-server profile lifecycle'
+	rg --fixed-strings 'configure_federation_metrics_server' "${WORK_DIR}/demo-up.sh" >/dev/null \
+		|| fail 'federation up does not apply the metrics-server profile lifecycle'
 	rg --fixed-strings 'prune_stale_node_images "${SOURCE_IMAGE}"' \
-		"${WORK_DIR}/demo-up.sh" >/dev/null ||
-		fail 'federation reuse does not prune stale node-side source images after rollout'
+		"${WORK_DIR}/demo-up.sh" >/dev/null \
+		|| fail 'federation reuse does not prune stale node-side source images after rollout'
 	trace_line="$(rg --line-number --fixed-strings 'resource_trace_start' \
 		"${WORK_DIR}/demo-up.sh" | cut -d: -f1)"
 	artifact_line="$(rg --line-number --fixed-strings 'cluster_artifacts_exist' \
@@ -176,13 +176,13 @@ check_federation_constrained_lifecycle_guards() {
 		"${WORK_DIR}/demo-up.sh" | cut -d: -f1)"
 	create_line="$(rg --line-number --fixed-strings 'k3d cluster create' \
 		"${WORK_DIR}/demo-up.sh" | cut -d: -f1)"
-	((artifact_line < trace_line && ownership_line < trace_line && trace_line < create_line)) ||
-		fail 'federation boot does not preflight ownership and orphans before tracing and creation'
+	((artifact_line < trace_line && ownership_line < trace_line && trace_line < create_line)) \
+		|| fail 'federation boot does not preflight ownership and orphans before tracing and creation'
 	for contract in '--request-timeout="${request_timeout}"' 'deadline_timeout' \
 		'sleep_before_deadline' 'deadline_diagnostic_timeout' \
 		'absolute ${FEDERATION_MAX_TIMEOUT} cap" 0s'; do
-		rg --fixed-strings -- "${contract}" "${DEMO_CLUSTER}" >/dev/null ||
-			fail "constrained hard deadline omits ${contract}"
+		rg --fixed-strings -- "${contract}" "${DEMO_CLUSTER}" >/dev/null \
+			|| fail "constrained hard deadline omits ${contract}"
 	done
 }
 
@@ -195,7 +195,6 @@ check_federation_constrained_state_transitions() {
 	awk '/^collect_platform_milestones\(\)/,/^}/' "${DEMO_CLUSTER}" \
 		>"${WORK_DIR}/collect-platform-milestones.sh"
 	(
-		# shellcheck disable=SC1090
 		source "${WORK_DIR}/federation-flux.sh"
 		kubectl() {
 			local argument
@@ -235,11 +234,10 @@ check_federation_constrained_state_transitions() {
       any($default.env[]; .name == "GOGC" and ."$patch" == "delete") and
       any($default.env[]; .name == "GOMEMLIMIT" and
         .valueFrom.resourceFieldRef.resource == "limits.memory"))
-  ' "${flux_patches}" >/dev/null ||
-		fail 'Flux runtime patches do not converge constrained and default profiles in both directions'
+  ' "${flux_patches}" >/dev/null \
+		|| fail 'Flux runtime patches do not converge constrained and default profiles in both directions'
 
 	(
-		# shellcheck disable=SC1090
 		source "${WORK_DIR}/federation-metrics-server.sh"
 		METRICS_ATTEMPTS="${WORK_DIR}/metrics-attempts"
 		printf '0\n' >"${METRICS_ATTEMPTS}"
@@ -247,52 +245,50 @@ check_federation_constrained_state_transitions() {
 		kubectl() {
 			local attempts
 			case "$*" in
-			*'get deployment metrics-server --ignore-not-found --output name'*)
-				attempts="$(<"${METRICS_ATTEMPTS}")"
-				printf '%s\n' "$((attempts + 1))" >"${METRICS_ATTEMPTS}"
-				[ "${attempts}" -ge 2 ] && printf 'deployment.apps/metrics-server\n'
-				;;
-			*'get deployment metrics-server --output jsonpath'*) printf '1' ;;
-			*'scale deployment metrics-server'*) printf '%s\n' "$*" >>"${metrics_events}" ;;
-			*'get pods --selector k8s-app=metrics-server'*) printf 'pod/metrics-server\n' ;;
-			*'wait --for=delete pod'*) printf '%s\n' "$*" >>"${metrics_events}" ;;
+				*'get deployment metrics-server --ignore-not-found --output name'*)
+					attempts="$(<"${METRICS_ATTEMPTS}")"
+					printf '%s\n' "$((attempts + 1))" >"${METRICS_ATTEMPTS}"
+					[ "${attempts}" -ge 2 ] && printf 'deployment.apps/metrics-server\n'
+					;;
+				*'get deployment metrics-server --output jsonpath'*) printf '1' ;;
+				*'scale deployment metrics-server'*) printf '%s\n' "$*" >>"${metrics_events}" ;;
+				*'get pods --selector k8s-app=metrics-server'*) printf 'pod/metrics-server\n' ;;
+				*'wait --for=delete pod'*) printf '%s\n' "$*" >>"${metrics_events}" ;;
 			esac
 		}
 		PROFILE=federation
 		FEDERATION_CONSTRAINED=yes
 		configure_federation_metrics_server
 	)
-	rg --fixed-strings -- '--replicas 0' "${metrics_events}" >/dev/null ||
-		fail 'cold constrained startup does not wait for and pause metrics-server'
-	rg --fixed-strings -- '--for=delete pod' "${metrics_events}" >/dev/null ||
-		fail 'constrained metrics-server lifecycle does not prove Pod deletion'
+	rg --fixed-strings -- '--replicas 0' "${metrics_events}" >/dev/null \
+		|| fail 'cold constrained startup does not wait for and pause metrics-server'
+	rg --fixed-strings -- '--for=delete pod' "${metrics_events}" >/dev/null \
+		|| fail 'constrained metrics-server lifecycle does not prove Pod deletion'
 
 	: >"${metrics_events}"
 	(
-		# shellcheck disable=SC1090
 		source "${WORK_DIR}/federation-metrics-server.sh"
 		kubectl() {
 			case "$*" in
-			*'get deployment metrics-server --ignore-not-found --output name'*)
-				printf 'deployment.apps/metrics-server\n'
-				;;
-			*'get deployment metrics-server --output jsonpath'*) printf '0' ;;
-			*'scale deployment metrics-server'*) printf '%s\n' "$*" >>"${metrics_events}" ;;
-			*'rollout status deployment/metrics-server'*) printf '%s\n' "$*" >>"${metrics_events}" ;;
+				*'get deployment metrics-server --ignore-not-found --output name'*)
+					printf 'deployment.apps/metrics-server\n'
+					;;
+				*'get deployment metrics-server --output jsonpath'*) printf '0' ;;
+				*'scale deployment metrics-server'*) printf '%s\n' "$*" >>"${metrics_events}" ;;
+				*'rollout status deployment/metrics-server'*) printf '%s\n' "$*" >>"${metrics_events}" ;;
 			esac
 		}
 		PROFILE=federation
 		FEDERATION_CONSTRAINED=no
 		configure_federation_metrics_server
 	)
-	rg --fixed-strings -- '--replicas 1' "${metrics_events}" >/dev/null ||
-		fail 'default federation reuse does not restore metrics-server'
-	rg --fixed-strings 'rollout status deployment/metrics-server' "${metrics_events}" >/dev/null ||
-		fail 'default metrics-server restoration does not wait for its rollout'
+	rg --fixed-strings -- '--replicas 1' "${metrics_events}" >/dev/null \
+		|| fail 'default federation reuse does not restore metrics-server'
+	rg --fixed-strings 'rollout status deployment/metrics-server' "${metrics_events}" >/dev/null \
+		|| fail 'default metrics-server restoration does not wait for its rollout'
 
 	local metrics_failure="${WORK_DIR}/metrics-query-failure.txt"
 	if (
-		# shellcheck disable=SC1090
 		source "${WORK_DIR}/federation-metrics-server.sh"
 		die() {
 			echo "error: $*" >&2
@@ -300,13 +296,13 @@ check_federation_constrained_state_transitions() {
 		}
 		kubectl() {
 			case "$*" in
-			*'get deployment metrics-server --ignore-not-found --output name'*)
-				printf 'deployment.apps/metrics-server\n'
-				;;
-			*'get deployment metrics-server --output jsonpath'*) printf '1' ;;
-			*'scale deployment metrics-server'*) return 0 ;;
-			*'get pods --selector k8s-app=metrics-server'*) return 42 ;;
-			*) return 0 ;;
+				*'get deployment metrics-server --ignore-not-found --output name'*)
+					printf 'deployment.apps/metrics-server\n'
+					;;
+				*'get deployment metrics-server --output jsonpath'*) printf '1' ;;
+				*'scale deployment metrics-server'*) return 0 ;;
+				*'get pods --selector k8s-app=metrics-server'*) return 42 ;;
+				*) return 0 ;;
 			esac
 		}
 		PROFILE=federation
@@ -316,8 +312,8 @@ check_federation_constrained_state_transitions() {
 		fail 'constrained metrics-server lifecycle ignored a failed Pod inventory query'
 	fi
 	rg --fixed-strings 'could not inspect metrics-server Pods after scaling to zero' \
-		"${metrics_failure}" >/dev/null ||
-		fail 'constrained metrics-server lifecycle did not explain its failed Pod inventory query'
+		"${metrics_failure}" >/dev/null \
+		|| fail 'constrained metrics-server lifecycle did not explain its failed Pod inventory query'
 
 	kustomizations="$(jq --null-input --arg revision "${expected_revision}" '{items: [
       {
@@ -338,7 +334,6 @@ check_federation_constrained_state_transitions() {
       "status":{"observedGeneration":2,"conditions":[{"type":"Ready","status":"True"}]}}
   ]}'
 	milestones="$({
-		# shellcheck disable=SC1090
 		source "${WORK_DIR}/collect-platform-milestones.sh"
 		collect_platform_milestones "${expected_revision}" "${kustomizations}" "${helmreleases}"
 	})"
@@ -351,15 +346,15 @@ check_federation_constrained_state_transitions() {
 		'kustomization/current/generation/2/revision/main@sha1:deadbeef/ready' \
 		'helmrelease/test/current/generation/2/observed' \
 		'helmrelease/test/current/generation/2/ready'; do
-		rg --fixed-strings --line-regexp "${milestone}" <<<"${milestones}" >/dev/null ||
-			fail "current-generation progress omits ${milestone}"
+		rg --fixed-strings --line-regexp "${milestone}" <<<"${milestones}" >/dev/null \
+			|| fail "current-generation progress omits ${milestone}"
 	done
 
 	local constrained_wait_helpers="${WORK_DIR}/constrained-wait-image.sh"
 	extract_demo_functions "${constrained_wait_helpers}" \
 		bridge_image_wait_required load_bridge_image_for_platform wait_for_platform_constrained
 	(
-		# shellcheck disable=SC1090
+		# shellcheck disable=SC1090 # fixture path is generated from the extracted helper at runtime
 		source "${constrained_wait_helpers}"
 		image_attempts=0
 		load_bridge_image_if_requested() {
@@ -379,27 +374,30 @@ check_federation_constrained_state_transitions() {
 		FEDERATION_NO_PROGRESS_SECONDS=10
 		FEDERATION_MAX_SECONDS=10
 		wait_for_platform_constrained
-		[ "${image_attempts}" -eq 2 ] ||
-			fail 'constrained reconciliation returned before importing the receipt image'
+		[ "${image_attempts}" -eq 2 ] \
+			|| fail 'constrained reconciliation returned before importing the receipt image'
 	)
 	local constrained_image_failure="${WORK_DIR}/constrained-image-import-failure.txt"
 	if (
-		# shellcheck disable=SC1090
+		# shellcheck disable=SC1090 # fixture path is generated from the extracted helper at runtime
 		source "${constrained_wait_helpers}"
 		load_bridge_image_if_requested() { return 2; }
 		flux() { :; }
 		PROFILE=federation
+		# shellcheck disable=SC2034 # sourced wait helper consumes this injected fixture revision
 		SOURCE_REVISION=deadbeef
 		BRIDGE_IMAGE=matrix-a2a-bridge:test
+		# shellcheck disable=SC2034 # sourced wait helper consumes this injected progress timeout
 		FEDERATION_NO_PROGRESS_SECONDS=10
+		# shellcheck disable=SC2034 # sourced wait helper consumes this injected absolute timeout
 		FEDERATION_MAX_SECONDS=10
 		wait_for_platform_constrained
 	) >"${constrained_image_failure}" 2>&1; then
 		fail 'constrained reconciliation ignored a failed receipt image import'
 	fi
 	rg --fixed-strings 'matrix-a2a-bridge:test, but its image import failed' \
-		"${constrained_image_failure}" >/dev/null ||
-		fail 'constrained receipt image import failure lacks a bounded diagnostic'
+		"${constrained_image_failure}" >/dev/null \
+		|| fail 'constrained receipt image import failure lacks a bounded diagnostic'
 }
 
 check_federation_constrained_node_capacity() {
@@ -431,8 +429,8 @@ check_federation_constrained_node_capacity() {
 		'dev.fgentic.demo.capacity=${FEDERATION_CAPACITY_MODE}@server:*' \
 		'[ "${actual_capacity_mode}" = "${FEDERATION_CAPACITY_MODE}" ]' \
 		'run fed:down first'; do
-		rg --fixed-strings "${contract}" "${DEMO_CLUSTER}" >/dev/null ||
-			fail "federation capacity lifecycle omits ${contract}"
+		rg --fixed-strings "${contract}" "${DEMO_CLUSTER}" >/dev/null \
+			|| fail "federation capacity lifecycle omits ${contract}"
 	done
 }
 
@@ -453,7 +451,7 @@ check_federation_constrained_failure_guards() {
 		cluster_attached_volume_names cluster_retained_storage_bytes \
 		cluster_owned_image_ids cluster_owned_image_bytes
 	if (
-		# shellcheck disable=SC1090
+		# shellcheck disable=SC1090 # fixture path is generated from the extracted helper at runtime
 		source "${storage_helpers}"
 		cluster_container_ids() { return 41; }
 		cluster_attached_volume_names
@@ -461,7 +459,7 @@ check_federation_constrained_failure_guards() {
 		fail 'attached-volume inventory masked a failed container producer'
 	fi
 	if (
-		# shellcheck disable=SC1090
+		# shellcheck disable=SC1090 # fixture path is generated from the extracted helper at runtime
 		source "${storage_helpers}"
 		cluster_attached_volume_names() { return 42; }
 		cluster_retained_storage_bytes
@@ -469,7 +467,7 @@ check_federation_constrained_failure_guards() {
 		fail 'retained-storage accounting masked a failed volume producer'
 	fi
 	if (
-		# shellcheck disable=SC1090
+		# shellcheck disable=SC1090 # fixture path is generated from the extracted helper at runtime
 		source "${storage_helpers}"
 		cluster_attached_volume_names() { return 0; }
 		cluster_container_ids() { return 43; }
@@ -478,7 +476,7 @@ check_federation_constrained_failure_guards() {
 		fail 'retained-storage accounting masked a failed container producer'
 	fi
 	if (
-		# shellcheck disable=SC1090
+		# shellcheck disable=SC1090 # fixture path is generated from the extracted helper at runtime
 		source "${storage_helpers}"
 		docker() { return 44; }
 		CLUSTER_NAME=fgentic-fed
@@ -487,7 +485,7 @@ check_federation_constrained_failure_guards() {
 		fail 'owned-image inventory masked a failed Docker producer'
 	fi
 	if (
-		# shellcheck disable=SC1090
+		# shellcheck disable=SC1090 # fixture path is generated from the extracted helper at runtime
 		source "${storage_helpers}"
 		cluster_owned_image_ids() { return 45; }
 		cluster_owned_image_bytes
@@ -496,7 +494,7 @@ check_federation_constrained_failure_guards() {
 	fi
 	extract_demo_functions "${cleanup_helpers}" teardown_receipt_complete
 	if (
-		# shellcheck disable=SC1090
+		# shellcheck disable=SC1090 # fixture path is generated from the extracted helper at runtime
 		source "${cleanup_helpers}"
 		cluster_exists() { return 42; }
 		teardown_receipt_path() { printf '/does/not/matter\n'; }
@@ -505,14 +503,14 @@ check_federation_constrained_failure_guards() {
 		fail 'receipt cleanup converted a failed cluster inventory into success'
 	else
 		cleanup_status=$?
-		[ "${cleanup_status}" -eq 42 ] ||
-			fail 'receipt cleanup did not preserve its cluster-inventory failure status'
+		[ "${cleanup_status}" -eq 42 ] \
+			|| fail 'receipt cleanup did not preserve its cluster-inventory failure status'
 	fi
 
 	extract_demo_functions "${artifact_helpers}" \
 		cluster_runtime_artifacts_exist cluster_artifacts_exist demo_status demo_stop demo_down
 	if (
-		# shellcheck disable=SC1090
+		# shellcheck disable=SC1090 # fixture path is generated from the extracted helper at runtime
 		source "${artifact_helpers}"
 		die() {
 			echo "error: $*" >&2
@@ -533,7 +531,7 @@ check_federation_constrained_failure_guards() {
 	rg --fixed-strings 'refusing orphan inspection for fgentic-fed' "${orphan_output}" \
 		>/dev/null || fail 'federation status did not identify an image-only orphan'
 	if (
-		# shellcheck disable=SC1090
+		# shellcheck disable=SC1090 # fixture path is generated from the extracted helper at runtime
 		source "${artifact_helpers}"
 		die() {
 			echo "error: $*" >&2
@@ -558,7 +556,7 @@ check_federation_constrained_failure_guards() {
 	rg --fixed-strings 'refusing orphan cleanup for fgentic-fed' "${orphan_output}" \
 		>/dev/null || fail 'federation teardown did not refuse an image-only orphan'
 	if (
-		# shellcheck disable=SC1090
+		# shellcheck disable=SC1090 # fixture path is generated from the extracted helper at runtime
 		source "${artifact_helpers}"
 		die() {
 			echo "error: $*" >&2
@@ -599,7 +597,7 @@ check_federation_constrained_failure_guards() {
 		prune_owned_host_images build_and_load_images load_bridge_image_if_requested
 	: >"${image_events}"
 	(
-		# shellcheck disable=SC1090
+		# shellcheck disable=SC1090 # fixture path is generated from the extracted helper at runtime
 		source "${image_helpers}"
 		build_image() { printf 'build %s\n' "$1" >>"${image_events}"; }
 		k3d() { printf 'k3d %s\n' "$*" >>"${image_events}"; }
@@ -626,8 +624,8 @@ check_federation_constrained_failure_guards() {
 		'build matrix-a2a-bridge:test' \
 		'k3d image import --mode auto --cluster fgentic-fed fgentic-demo-source-fgentic-fed:test' \
 		'docker image rm fgentic-demo-source-fgentic-fed:test fgentic-demo-source-fgentic-fed:stale'; do
-		rg --fixed-strings --line-regexp "${event}" "${image_events}" >/dev/null ||
-			fail "successful source side-load omits ${event}"
+		rg --fixed-strings --line-regexp "${event}" "${image_events}" >/dev/null \
+			|| fail "successful source side-load omits ${event}"
 	done
 	import_line="$(rg --line-number --fixed-strings \
 		'k3d image import --mode auto --cluster fgentic-fed fgentic-demo-source-fgentic-fed:test' \
@@ -637,7 +635,7 @@ check_federation_constrained_failure_guards() {
 		"${image_events}" | cut -d: -f1)"
 	((import_line < remove_line)) || fail 'source host image is removed before its successful import'
 	(
-		# shellcheck disable=SC1090
+		# shellcheck disable=SC1090 # fixture path is generated from the extracted helper at runtime
 		source "${image_helpers}"
 		kubectl() {
 			jq --null-input '{spec: {values: {image: {
@@ -660,8 +658,8 @@ check_federation_constrained_failure_guards() {
 	for event in \
 		'k3d image import --mode auto --cluster fgentic-demo matrix-a2a-bridge:test' \
 		'docker image rm matrix-a2a-bridge:test matrix-a2a-bridge:stale'; do
-		rg --fixed-strings --line-regexp "${event}" "${image_events}" >/dev/null ||
-			fail "successful bridge side-load omits ${event}"
+		rg --fixed-strings --line-regexp "${event}" "${image_events}" >/dev/null \
+			|| fail "successful bridge side-load omits ${event}"
 	done
 	import_line="$(rg --line-number --fixed-strings \
 		'k3d image import --mode auto --cluster fgentic-demo matrix-a2a-bridge:test' \
@@ -671,7 +669,7 @@ check_federation_constrained_failure_guards() {
 		"${image_events}" | cut -d: -f1)"
 	((import_line < remove_line)) || fail 'bridge host image is removed before its successful import'
 	(
-		# shellcheck disable=SC1090
+		# shellcheck disable=SC1090 # fixture path is generated from the extracted helper at runtime
 		source "${image_helpers}"
 		kubectl() {
 			jq --null-input '{spec: {template: {spec: {containers: [{
@@ -693,14 +691,14 @@ check_federation_constrained_failure_guards() {
 	)
 	rg --fixed-strings --line-regexp \
 		'k3d image import --mode auto --cluster fgentic-fed matrix-a2a-bridge:test' \
-		"${image_events}" >/dev/null ||
-		fail 'federation receipt image is not side-loaded after its Deployment requests it'
+		"${image_events}" >/dev/null \
+		|| fail 'federation receipt image is not side-loaded after its Deployment requests it'
 
 	extract_demo_functions "${node_helpers}" prune_stale_node_images
 	printf 'stale\n' >"${node_state}"
 	: >"${node_events}"
 	(
-		# shellcheck disable=SC1090
+		# shellcheck disable=SC1090 # fixture path is generated from the extracted helper at runtime
 		source "${node_helpers}"
 		die() {
 			echo "error: $*" >&2
@@ -708,23 +706,23 @@ check_federation_constrained_failure_guards() {
 		}
 		docker() {
 			case "$*" in
-			'ps --filter label=k3d.cluster=fgentic-fed --format {{.Names}}')
-				printf 'k3d-fgentic-fed-server-0\n'
-				;;
-			'exec k3d-fgentic-fed-server-0 crictl images --output json')
-				if [ "$(<"${node_state}")" = stale ]; then
-					jq --null-input \
-						'{images: [{repoTags: ["docker.io/library/fgentic-demo-source-fgentic-fed:test"]}, {repoTags: ["docker.io/library/fgentic-demo-source-fgentic-fed:stale"]}]}'
-				else
-					jq --null-input \
-						'{images: [{repoTags: ["docker.io/library/fgentic-demo-source-fgentic-fed:test"]}]}'
-				fi
-				;;
-			'exec k3d-fgentic-fed-server-0 crictl rmi docker.io/library/fgentic-demo-source-fgentic-fed:stale')
-				printf '%s\n' "$*" >>"${node_events}"
-				printf 'clean\n' >"${node_state}"
-				;;
-			*) return 1 ;;
+				'ps --filter label=k3d.cluster=fgentic-fed --format {{.Names}}')
+					printf 'k3d-fgentic-fed-server-0\n'
+					;;
+				'exec k3d-fgentic-fed-server-0 crictl images --output json')
+					if [ "$(<"${node_state}")" = stale ]; then
+						jq --null-input \
+							'{images: [{repoTags: ["docker.io/library/fgentic-demo-source-fgentic-fed:test"]}, {repoTags: ["docker.io/library/fgentic-demo-source-fgentic-fed:stale"]}]}'
+					else
+						jq --null-input \
+							'{images: [{repoTags: ["docker.io/library/fgentic-demo-source-fgentic-fed:test"]}]}'
+					fi
+					;;
+				'exec k3d-fgentic-fed-server-0 crictl rmi docker.io/library/fgentic-demo-source-fgentic-fed:stale')
+					printf '%s\n' "$*" >>"${node_events}"
+					printf 'clean\n' >"${node_state}"
+					;;
+				*) return 1 ;;
 			esac
 		}
 		CLUSTER_NAME=fgentic-fed
@@ -732,18 +730,18 @@ check_federation_constrained_failure_guards() {
 	)
 	rg --fixed-strings --line-regexp \
 		'exec k3d-fgentic-fed-server-0 crictl rmi docker.io/library/fgentic-demo-source-fgentic-fed:stale' \
-		"${node_events}" >/dev/null ||
-		fail 'successful federation reuse does not prune its stale node-side source image'
+		"${node_events}" >/dev/null \
+		|| fail 'successful federation reuse does not prune its stale node-side source image'
 }
 
 check_federation_constrained_render() {
-	[ -f "${CONSTRAINED_OVERLAY}/kustomization.yaml" ] ||
-		fail 'clusters/federation-constrained is missing'
-	[ -f "${CONSTRAINED_COMPONENT}/kustomization.yaml" ] ||
-		fail 'constrained federation component is missing'
+	[ -f "${CONSTRAINED_OVERLAY}/kustomization.yaml" ] \
+		|| fail 'clusters/federation-constrained is missing'
+	[ -f "${CONSTRAINED_COMPONENT}/kustomization.yaml" ] \
+		|| fail 'constrained federation component is missing'
 	for component in agentgateway controllers kagent keycloak matrix postgres; do
-		[ -f "${CONSTRAINED_COMPONENT}/${component}/kustomization.yaml" ] ||
-			fail "constrained ${component} component is missing"
+		[ -f "${CONSTRAINED_COMPONENT}/${component}/kustomization.yaml" ] \
+			|| fail "constrained ${component} component is missing"
 	done
 
 	render_federation_contract "${CLUSTER_OVERLAY}" default
@@ -768,23 +766,23 @@ check_federation_constrained_render() {
 		'[.] | map(select(.kind == "Kustomization")) |
 	  map(.spec.components[]? // "") | map(select(contains("constrained"))) |
 	  length == 8' \
-			"${WORK_DIR}/constrained-cluster.yaml" \
-			'constrained profile does not compose all eight workload tunings'
+		"${WORK_DIR}/constrained-cluster.yaml" \
+		'constrained profile does not compose all eight workload tunings'
 
 	write_federation_inventory "${WORK_DIR}/default-cluster.yaml" \
 		"${WORK_DIR}/default-cluster-inventory.json"
 	write_federation_inventory "${WORK_DIR}/constrained-cluster.yaml" \
 		"${WORK_DIR}/constrained-cluster-inventory.json"
 	cmp -s "${WORK_DIR}/default-cluster-inventory.json" \
-		"${WORK_DIR}/constrained-cluster-inventory.json" ||
-		fail 'constrained profile changes the canonical Flux-layer inventory'
+		"${WORK_DIR}/constrained-cluster-inventory.json" \
+		|| fail 'constrained profile changes the canonical Flux-layer inventory'
 	write_federation_inventory "${WORK_DIR}/default-recursive.yaml" \
 		"${WORK_DIR}/default-resource-inventory.json"
 	write_federation_inventory "${WORK_DIR}/constrained-recursive.yaml" \
 		"${WORK_DIR}/constrained-resource-inventory.json"
 	cmp -s "${WORK_DIR}/default-resource-inventory.json" \
-		"${WORK_DIR}/constrained-resource-inventory.json" ||
-		fail 'constrained profile adds or removes a canonical runtime object'
+		"${WORK_DIR}/constrained-resource-inventory.json" \
+		|| fail 'constrained profile adds or removes a canonical runtime object'
 
 	for homeserver in matrix-stack matrix-stack-b matrix-stack-c; do
 		assert_yq \
@@ -947,21 +945,21 @@ check_federation_trace_helpers() (
 	# helpers construct allowlisted objects instead of serializing raw Docker or Kubernetes input.
 	docker() {
 		case "${1:-}" in
-		ps)
-			if [ "${2:-}" = '--filter' ]; then
-				printf '%s\n' k3d-fgentic-fed-server-0 k3d-fgentic-fed-server-1 \
-					k3d-fgentic-fed-agent-0
-			else
-				printf '%s\n' k3d-fgentic-fed-server-0
-			fi
-			;;
-		stats)
-			printf '%s\n' \
-				'k3d-fgentic-fed-server-0|1MiB / 4GiB' \
-				'k3d-fgentic-fed-server-1|2MiB / 4GiB'
-			;;
-		exec)
-			jq --null-input --compact-output --arg sentinel "${sentinel}" '{
+			ps)
+				if [ "${2:-}" = '--filter' ]; then
+					printf '%s\n' k3d-fgentic-fed-server-0 k3d-fgentic-fed-server-1 \
+						k3d-fgentic-fed-agent-0
+				else
+					printf '%s\n' k3d-fgentic-fed-server-0
+				fi
+				;;
+			stats)
+				printf '%s\n' \
+					'k3d-fgentic-fed-server-0|1MiB / 4GiB' \
+					'k3d-fgentic-fed-server-1|2MiB / 4GiB'
+				;;
+			exec)
+				jq --null-input --compact-output --arg sentinel "${sentinel}" '{
           stats: [{
             attributes: {
               labels: {
@@ -975,8 +973,8 @@ check_federation_trace_helpers() (
             unapproved: $sentinel
           }]
         }'
-			;;
-		*) return 1 ;;
+				;;
+			*) return 1 ;;
 		esac
 	}
 	date() {
@@ -1024,14 +1022,14 @@ check_federation_trace_helpers() (
 	jq --slurp --exit-status '
     length == 1 and .[0].memory_bytes == 3145728 and
     (.[0] | keys) == ["memory_bytes", "phase", "timestamp"]
-  ' "${RESOURCE_TRACE_DIR}/server.jsonl" >/dev/null ||
-		fail 'server resource trace is not a minimal deterministic allowlisted record'
+  ' "${RESOURCE_TRACE_DIR}/server.jsonl" >/dev/null \
+		|| fail 'server resource trace is not a minimal deterministic allowlisted record'
 	jq --slurp --exit-status '
     length == 1 and .[0].working_set_bytes == 4194304 and
     (.[0] | keys) ==
       ["container", "namespace", "phase", "pod", "timestamp", "working_set_bytes"]
-  ' "${RESOURCE_TRACE_DIR}/workloads.jsonl" >/dev/null ||
-		fail 'workload resource trace is not a minimal deterministic allowlisted record'
+  ' "${RESOURCE_TRACE_DIR}/workloads.jsonl" >/dev/null \
+		|| fail 'workload resource trace is not a minimal deterministic allowlisted record'
 	jq --slurp --exit-status '
     length == 1 and .[0].bytes == 2048 and .[0].volume_identity == "fgentic-fed-images" and
     .[0].retained_cluster_bytes == 8192 and .[0].local_image_virtual_bytes == 4096 and
@@ -1039,13 +1037,13 @@ check_federation_trace_helpers() (
       "bytes", "local_image_virtual_bytes", "phase", "retained_cluster_bytes", "timestamp",
       "volume_identity"
     ]
-  ' "${RESOURCE_TRACE_DIR}/volume.jsonl" >/dev/null ||
-		fail 'volume resource trace is not a minimal deterministic allowlisted record'
+  ' "${RESOURCE_TRACE_DIR}/volume.jsonl" >/dev/null \
+		|| fail 'volume resource trace is not a minimal deterministic allowlisted record'
 	jq --slurp --exit-status '
     length == 1 and .[0].layer == "matrix" and
     (.[0] | keys) == ["layer", "observed_at", "ready_at", "revision"]
-  ' "${RESOURCE_TRACE_DIR}/layers.jsonl" >/dev/null ||
-		fail 'layer resource trace is not a minimal deterministic allowlisted record'
+  ' "${RESOURCE_TRACE_DIR}/layers.jsonl" >/dev/null \
+		|| fail 'layer resource trace is not a minimal deterministic allowlisted record'
 	if rg --fixed-strings "${sentinel}" "${RESOURCE_TRACE_DIR}" >/dev/null; then
 		fail 'resource trace exposed unapproved runtime or Kubernetes content'
 	fi
@@ -1082,8 +1080,8 @@ check_federation_trace_helpers() (
 	      "owned_disk_upper_bound_peak_bytes", "retained_cluster_peak_bytes", "schema",
 	      "server_samples"
     ]
-  ' "${RESOURCE_TRACE_DIR}/summary.json" >/dev/null ||
-		fail 'resource trace summary does not report deterministic peaks and twelve-sample idle median'
+  ' "${RESOURCE_TRACE_DIR}/summary.json" >/dev/null \
+		|| fail 'resource trace summary does not report deterministic peaks and twelve-sample idle median'
 
 	local complete_trace="${RESOURCE_TRACE_DIR}"
 	RESOURCE_TRACE_DIR="${WORK_DIR}/failed-sample-trace"
@@ -1097,9 +1095,9 @@ check_federation_trace_helpers() (
 	if resource_trace_summarize >/dev/null 2>&1; then
 		fail 'resource trace accepted a run with a required sampling failure'
 	fi
-	[ ! -e "${RESOURCE_TRACE_DIR}/summary.json" ] &&
-		[ ! -e "${RESOURCE_TRACE_DIR}/summary.json.tmp" ] ||
-		fail 'failed resource sampling published a partial summary artifact'
+	[ ! -e "${RESOURCE_TRACE_DIR}/summary.json" ] \
+		&& [ ! -e "${RESOURCE_TRACE_DIR}/summary.json.tmp" ] \
+		|| fail 'failed resource sampling published a partial summary artifact'
 
 	RESOURCE_TRACE_DIR="${WORK_DIR}/incomplete-trace"
 	mkdir -p "${RESOURCE_TRACE_DIR}"
@@ -1110,9 +1108,9 @@ check_federation_trace_helpers() (
 	if resource_trace_summarize >/dev/null 2>&1; then
 		fail 'resource trace accepted a summary without current-revision layer evidence'
 	fi
-	[ ! -e "${RESOURCE_TRACE_DIR}/summary.json" ] &&
-		[ ! -e "${RESOURCE_TRACE_DIR}/summary.json.tmp" ] ||
-		fail 'failed resource trace published a partial summary artifact'
+	[ ! -e "${RESOURCE_TRACE_DIR}/summary.json" ] \
+		&& [ ! -e "${RESOURCE_TRACE_DIR}/summary.json.tmp" ] \
+		|| fail 'failed resource trace published a partial summary artifact'
 
 	FGENTIC_FED_TRACE_DIR="${WORK_DIR}/existing-volume-trace"
 	FEDERATION_CONSTRAINED=yes
@@ -1123,8 +1121,8 @@ check_federation_trace_helpers() (
 	jq --slurp --exit-status '
 	  length == 1 and .[0].kind == "volume" and
 	  (.[0] | keys) == ["kind", "phase", "timestamp"]
-	' "${RESOURCE_TRACE_DIR}/failures.jsonl" >/dev/null ||
-		fail 'failed existing-volume trace start did not record its sampling failure'
+	' "${RESOURCE_TRACE_DIR}/failures.jsonl" >/dev/null \
+		|| fail 'failed existing-volume trace start did not record its sampling failure'
 
 	RESOURCE_TRACE_DIR="${WORK_DIR}/normal-sampler-stop"
 	mkdir -p "${RESOURCE_TRACE_DIR}"

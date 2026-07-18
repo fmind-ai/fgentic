@@ -88,69 +88,69 @@ duplicate_record() {
 
 mock_kubectl() {
 	case "$*" in
-	"-n bridge logs deploy/matrix-a2a-bridge --since=15m")
-		case "${AUDIT_SCENARIO:-success}" in
-		success) bridge_record "task-1" ;;
-		absent) printf '%s\n' '{"level":"INFO","msg":"ordinary diagnostic"}' ;;
-		ambiguous)
-			bridge_record "task-1"
-			bridge_record "task-2"
+		"-n bridge logs deploy/matrix-a2a-bridge --since=15m")
+			case "${AUDIT_SCENARIO:-success}" in
+				success) bridge_record "task-1" ;;
+				absent) printf '%s\n' '{"level":"INFO","msg":"ordinary diagnostic"}' ;;
+				ambiguous)
+					bridge_record "task-1"
+					bridge_record "task-2"
+					;;
+				redelivered)
+					bridge_record "task-1"
+					duplicate_record
+					;;
+				duplicate_only) duplicate_record ;;
+				empty_task) bridge_record "" ;;
+				missing_version) bridge_record "task-1" "" ;;
+				mismatched_version) bridge_record "task-1" "sha256:0000000000000000000000000000000000000000000000000000000000000000" ;;
+				legacy_local) bridge_record "task-1" "${AUDIT_LEGACY_AGENT_VERSION}" "" ;;
+				revision_mismatch | kagent_not_ready) bridge_record "task-1" ;;
+				*)
+					printf 'unknown audit test scenario: %s\n' "${AUDIT_SCENARIO}" >&2
+					return 2
+					;;
+			esac
 			;;
-		redelivered)
-			bridge_record "task-1"
-			duplicate_record
+		"-n bridge get configmap matrix-a2a-bridge-agents -o json")
+			if [ "${AUDIT_SCENARIO:-success}" = "legacy_local" ]; then
+				fixture_agents "" | jq -Rs '{data: {"agents.yaml": .}}'
+			else
+				fixture_agents | jq -Rs '{data: {"agents.yaml": .}}'
+			fi
 			;;
-		duplicate_only) duplicate_record ;;
-		empty_task) bridge_record "" ;;
-		missing_version) bridge_record "task-1" "" ;;
-		mismatched_version) bridge_record "task-1" "sha256:0000000000000000000000000000000000000000000000000000000000000000" ;;
-		legacy_local) bridge_record "task-1" "${AUDIT_LEGACY_AGENT_VERSION}" "" ;;
-		revision_mismatch | kagent_not_ready) bridge_record "task-1" ;;
+		"-n flux-system get kustomizations bridge kagent -o json")
+			case "${AUDIT_SCENARIO:-success}" in
+				revision_mismatch)
+					printf '%s\n' '{"items":[{"metadata":{"name":"bridge","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"kagent","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:fedcba9876543210","conditions":[{"type":"Ready","status":"True"}]}}]}'
+					;;
+				kagent_not_ready)
+					printf '%s\n' '{"items":[{"metadata":{"name":"bridge","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"kagent","generation":2},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}}]}'
+					;;
+				*)
+					printf '%s\n' '{"items":[{"metadata":{"name":"bridge","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"kagent","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}}]}'
+					;;
+			esac
+			;;
+		"get --raw "*"/tasks?user_id="*)
+			printf '%s\n' '{"error":false,"data":[{"contextId":"context-1","id":"task-1","kind":"task","metadata":{"kagent_app_name":"kagent__NS__platform_assistant","kagent_invocation_id":"invocation-1","kagent_session_id":"context-1","kagent_user_id":"@alice:fgentic.localhost","kagent_usage_metadata":{"promptTokenCount":10,"candidatesTokenCount":2,"totalTokenCount":12}},"status":{"state":"completed","timestamp":"2026-07-11T09:00:02Z"},"history":[{}],"artifacts":[]}],"message":"ok"}'
+			;;
+		"get --raw "*"/api/sessions/context-1?user_id="*)
+			printf '%s\n' '{"error":false,"data":{"session":{"id":"context-1","user_id":"@alice:fgentic.localhost","agent_id":"kagent__NS__platform_assistant","created_at":"2026-07-11T09:00:00Z","updated_at":"2026-07-11T09:00:02Z"},"events":[{},{}]},"message":"ok"}'
+			;;
+		"-n agentgateway-system logs deploy/agentgateway-proxy --since=15m")
+			printf '%s\n' '{"level":"info","time":"2026-07-11T09:00:01Z","scope":"request","route":"agentgateway-system/llm","http.method":"POST","http.path":"/v1/chat/completions","http.status":200,"protocol":"llm","gen_ai.operation.name":"chat","gen_ai.provider.name":"test","gen_ai.request.model":"test-model","gen_ai.response.model":"test-model","gen_ai.usage.input_tokens":10,"gen_ai.usage.output_tokens":2,"duration":"1ms"}'
+			;;
+		"get --raw "*"fgentic_delegations_total"*)
+			printf '%s\n' '{"status":"success","data":{"resultType":"vector","result":[{"metric":{"ghost":"agent-assistant","outcome":"ok"},"value":[1,"1"]}]}}'
+			;;
+		"get --raw "*"agentgateway_gen_ai_client_token_usage_sum"*)
+			printf '%s\n' '{"status":"success","data":{"resultType":"vector","result":[{"metric":{"gen_ai_token_type":"input","gen_ai_request_model":"test-model"},"value":[1,"10"]}]}}'
+			;;
 		*)
-			printf 'unknown audit test scenario: %s\n' "${AUDIT_SCENARIO}" >&2
+			printf 'unexpected kubectl call: %s\n' "$*" >&2
 			return 2
 			;;
-		esac
-		;;
-	"-n bridge get configmap matrix-a2a-bridge-agents -o json")
-		if [ "${AUDIT_SCENARIO:-success}" = "legacy_local" ]; then
-			fixture_agents "" | jq -Rs '{data: {"agents.yaml": .}}'
-		else
-			fixture_agents | jq -Rs '{data: {"agents.yaml": .}}'
-		fi
-		;;
-	"-n flux-system get kustomizations bridge kagent -o json")
-		case "${AUDIT_SCENARIO:-success}" in
-		revision_mismatch)
-			printf '%s\n' '{"items":[{"metadata":{"name":"bridge","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"kagent","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:fedcba9876543210","conditions":[{"type":"Ready","status":"True"}]}}]}'
-			;;
-		kagent_not_ready)
-			printf '%s\n' '{"items":[{"metadata":{"name":"bridge","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"kagent","generation":2},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}}]}'
-			;;
-		*)
-			printf '%s\n' '{"items":[{"metadata":{"name":"bridge","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}},{"metadata":{"name":"kagent","generation":1},"status":{"observedGeneration":1,"lastAppliedRevision":"main@sha1:0123456789abcdef","conditions":[{"type":"Ready","status":"True"}]}}]}'
-			;;
-		esac
-		;;
-	"get --raw "*"/tasks?user_id="*)
-		printf '%s\n' '{"error":false,"data":[{"contextId":"context-1","id":"task-1","kind":"task","metadata":{"kagent_app_name":"kagent__NS__platform_assistant","kagent_invocation_id":"invocation-1","kagent_session_id":"context-1","kagent_user_id":"@alice:fgentic.localhost","kagent_usage_metadata":{"promptTokenCount":10,"candidatesTokenCount":2,"totalTokenCount":12}},"status":{"state":"completed","timestamp":"2026-07-11T09:00:02Z"},"history":[{}],"artifacts":[]}],"message":"ok"}'
-		;;
-	"get --raw "*"/api/sessions/context-1?user_id="*)
-		printf '%s\n' '{"error":false,"data":{"session":{"id":"context-1","user_id":"@alice:fgentic.localhost","agent_id":"kagent__NS__platform_assistant","created_at":"2026-07-11T09:00:00Z","updated_at":"2026-07-11T09:00:02Z"},"events":[{},{}]},"message":"ok"}'
-		;;
-	"-n agentgateway-system logs deploy/agentgateway-proxy --since=15m")
-		printf '%s\n' '{"level":"info","time":"2026-07-11T09:00:01Z","scope":"request","route":"agentgateway-system/llm","http.method":"POST","http.path":"/v1/chat/completions","http.status":200,"protocol":"llm","gen_ai.operation.name":"chat","gen_ai.provider.name":"test","gen_ai.request.model":"test-model","gen_ai.response.model":"test-model","gen_ai.usage.input_tokens":10,"gen_ai.usage.output_tokens":2,"duration":"1ms"}'
-		;;
-	"get --raw "*"fgentic_delegations_total"*)
-		printf '%s\n' '{"status":"success","data":{"resultType":"vector","result":[{"metric":{"ghost":"agent-assistant","outcome":"ok"},"value":[1,"1"]}]}}'
-		;;
-	"get --raw "*"agentgateway_gen_ai_client_token_usage_sum"*)
-		printf '%s\n' '{"status":"success","data":{"resultType":"vector","result":[{"metric":{"gen_ai_token_type":"input","gen_ai_request_model":"test-model"},"value":[1,"10"]}]}}'
-		;;
-	*)
-		printf 'unexpected kubectl call: %s\n' "$*" >&2
-		return 2
-		;;
 	esac
 }
 

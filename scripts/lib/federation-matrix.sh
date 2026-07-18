@@ -13,8 +13,8 @@ register_user() {
 		--output 'go-template={{index .data "SYNAPSE_REGISTRATION_SHARED_SECRET" | base64decode}}')"
 	nonce="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 		"${matrix_url}/_synapse/admin/v1/register" | jq -er '.nonce')"
-	digest="$(printf '%s\0%s\0%s\0%s' "${nonce}" "${username}" "${password}" notadmin |
-		openssl sha1 -hmac "${secret}")"
+	digest="$(printf '%s\0%s\0%s\0%s' "${nonce}" "${username}" "${password}" notadmin \
+		| openssl sha1 -hmac "${secret}")"
 	mac="${digest##* }"
 	document="$(jq --null-input --compact-output \
 		--arg nonce "${nonce}" --arg username "${username}" --arg displayname "${display_name}" \
@@ -27,21 +27,21 @@ register_user() {
 	secret=""
 	document=""
 	case "${status}" in
-	200)
-		# The registration API creates a bootstrap session. Revoke it; the proof logs in normally.
-		registration_token="$(jq -r '.access_token // empty' "${response}")"
-		if [ -n "${registration_token}" ]; then
-			curl --silent --show-error --cacert "${CA_CERT}" --request POST \
-				--header "Authorization: Bearer ${registration_token}" \
-				"${matrix_url}/_matrix/client/v3/logout" >/dev/null
-			registration_token=""
-		fi
-		;;
-	400)
-		jq -e '.errcode == "M_USER_IN_USE"' "${response}" >/dev/null ||
-			die "${username} registration failed (HTTP 400)"
-		;;
-	*) die "${username} registration failed (HTTP ${status})" ;;
+		200)
+			# The registration API creates a bootstrap session. Revoke it; the proof logs in normally.
+			registration_token="$(jq -r '.access_token // empty' "${response}")"
+			if [ -n "${registration_token}" ]; then
+				curl --silent --show-error --cacert "${CA_CERT}" --request POST \
+					--header "Authorization: Bearer ${registration_token}" \
+					"${matrix_url}/_matrix/client/v3/logout" >/dev/null
+				registration_token=""
+			fi
+			;;
+		400)
+			jq -e '.errcode == "M_USER_IN_USE"' "${response}" >/dev/null \
+				|| die "${username} registration failed (HTTP 400)"
+			;;
+		*) die "${username} registration failed (HTTP ${status})" ;;
 	esac
 }
 login_user() {
@@ -69,14 +69,14 @@ verify_server() {
 	local matrix_url="https://matrix.${server}"
 	local expected="matrix.${server}:443"
 	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
-		"https://${server}/.well-known/matrix/server" |
-		jq -e --arg expected "${expected}" '."m.server" == $expected' >/dev/null
+		"https://${server}/.well-known/matrix/server" \
+		| jq -e --arg expected "${expected}" '."m.server" == $expected' >/dev/null
 	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
-		"${matrix_url}/_matrix/federation/v1/version" |
-		jq -e '.server.name | type == "string" and length > 0' >/dev/null
+		"${matrix_url}/_matrix/federation/v1/version" \
+		| jq -e '.server.name | type == "string" and length > 0' >/dev/null
 	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
-		"${matrix_url}/_matrix/key/v2/server" |
-		jq -e --arg server "${server}" '.server_name == $server' >/dev/null
+		"${matrix_url}/_matrix/key/v2/server" \
+		| jq -e --arg server "${server}" '.server_name == $server' >/dev/null
 }
 
 verify_whitelist() {
@@ -84,9 +84,9 @@ verify_whitelist() {
 	local token="$2"
 	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 		--header "Authorization: Bearer ${token}" \
-		"${matrix_url}/_synapse/client/v1/config/federation_whitelist" |
-		jq -e --arg a "${SERVER_A}" --arg b "${SERVER_B}" \
-		'.whitelist_enabled == true and (.whitelist | sort) == ([$a, $b] | sort)' >/dev/null
+		"${matrix_url}/_synapse/client/v1/config/federation_whitelist" \
+		| jq -e --arg a "${SERVER_A}" --arg b "${SERVER_B}" \
+			'.whitelist_enabled == true and (.whitelist | sort) == ([$a, $b] | sort)' >/dev/null
 }
 
 verify_control_whitelist() {
@@ -94,9 +94,9 @@ verify_control_whitelist() {
 	local token="$2"
 	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 		--header "Authorization: Bearer ${token}" \
-		"${matrix_url}/_synapse/client/v1/config/federation_whitelist" |
-		jq -e --arg a "${SERVER_A}" --arg b "${SERVER_B}" --arg c "${SERVER_C}" \
-		'.whitelist_enabled == true and (.whitelist | sort) == ([$a, $b, $c] | sort)' >/dev/null
+		"${matrix_url}/_synapse/client/v1/config/federation_whitelist" \
+		| jq -e --arg a "${SERVER_A}" --arg b "${SERVER_B}" --arg c "${SERVER_C}" \
+			'.whitelist_enabled == true and (.whitelist | sort) == ([$a, $b, $c] | sort)' >/dev/null
 }
 
 wait_for_mounted_policy_mode() {
@@ -126,8 +126,8 @@ initial_sync_token() {
 	local token="$2"
 	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 		--header "Authorization: Bearer ${token}" \
-		"${matrix_url}/_matrix/client/v3/sync?timeout=0" |
-		jq -er '.next_batch | select(type == "string" and length > 0)'
+		"${matrix_url}/_matrix/client/v3/sync?timeout=0" \
+		| jq -er '.next_batch | select(type == "string" and length > 0)'
 }
 
 wait_for_event() {
@@ -194,14 +194,14 @@ verify_federated_room_policy() {
 	creation="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 		--header "Authorization: Bearer ${token}" \
 		"${matrix_url}/_matrix/client/v3/rooms/${encoded_room}/state/m.room.create")"
-	jq -e '.room_version == "12" and ."m.federate" == true' <<<"${creation}" >/dev/null ||
-		die "federated room is not explicitly federated at room version 12"
+	jq -e '.room_version == "12" and ."m.federate" == true' <<<"${creation}" >/dev/null \
+		|| die "federated room is not explicitly federated at room version 12"
 
 	join_rules="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 		--header "Authorization: Bearer ${token}" \
 		"${matrix_url}/_matrix/client/v3/rooms/${encoded_room}/state/m.room.join_rules")"
-	jq -e '.join_rule == "public"' <<<"${join_rules}" >/dev/null ||
-		die "federated proof room is not public for the negative join test"
+	jq -e '.join_rule == "public"' <<<"${join_rules}" >/dev/null \
+		|| die "federated proof room is not public for the negative join test"
 }
 
 verify_denied_membership() {
@@ -313,10 +313,10 @@ wait_for_policy_violation() {
 			--since=10m 2>/dev/null || true)"
 		# Parse the module's structured record instead of matching a Matrix event ID as shell text.
 		# Event IDs are opaque and commonly begin with `$`.
-		payload="$(printf '%s\n' "${logs}" |
-			sed -n "s/^.*${POLICY_LOG_PREFIX}//p" |
-			jq --compact-output --arg event_id "${event_id}" \
-			'select(.event == $event_id)' | tail -n 1 || true)"
+		payload="$(printf '%s\n' "${logs}" \
+			| sed -n "s/^.*${POLICY_LOG_PREFIX}//p" \
+			| jq --compact-output --arg event_id "${event_id}" \
+				'select(.event == $event_id)' | tail -n 1 || true)"
 		if [ -z "${payload}" ]; then
 			sleep 2
 			continue
@@ -336,8 +336,8 @@ wait_for_policy_violation() {
 	      (.allowed_event_type_count | type == "number" and . > 0) and
 	      (.allowed_server_count | type == "number" and . == 2) and
 	      (.policy_digest | type == "string" and test("^[0-9a-f]{64}$"))
-	    ' <<<"${payload}" >/dev/null ||
-			die "federation policy violation log is not the content-free canonical record"
+	    ' <<<"${payload}" >/dev/null \
+			|| die "federation policy violation log is not the content-free canonical record"
 		return
 	done
 	die "homeserver A did not log policy denial for ${event_id} within 3 minutes"
@@ -355,12 +355,12 @@ verify_remote_policy_event_absent() {
 			--header "Authorization: Bearer ${ALICE_TOKEN}" \
 			"${MATRIX_A_URL}/_matrix/client/v3/rooms/${encoded_room}/event/${encoded_event}")"
 		case "${status}" in
-		404)
-			jq -e '.errcode == "M_NOT_FOUND"' "${response}" >/dev/null ||
-				die "homeserver A returned a non-Matrix missing-event response"
-			;;
-		200) die "homeserver A retained policy-denied event ${event_id}" ;;
-		*) die "homeserver A event lookup failed while proving denial (HTTP ${status})" ;;
+			404)
+				jq -e '.errcode == "M_NOT_FOUND"' "${response}" >/dev/null \
+					|| die "homeserver A returned a non-Matrix missing-event response"
+				;;
+			200) die "homeserver A retained policy-denied event ${event_id}" ;;
+			*) die "homeserver A event lookup failed while proving denial (HTTP ${status})" ;;
 		esac
 		sleep 2
 	done
@@ -379,26 +379,26 @@ wait_for_remote_policy_event() {
 			--header "Authorization: Bearer ${ALICE_TOKEN}" \
 			"${MATRIX_A_URL}/_matrix/client/v3/rooms/${encoded_room}/event/${encoded_event}")"
 		case "${status}" in
-		200)
-			jq -e --arg event_id "${event_id}" --arg sender "@bob:${SERVER_B}" \
-				--arg type "${POLICY_EVENT_TYPE}" --arg marker "${marker}" '
+			200)
+				jq -e --arg event_id "${event_id}" --arg sender "@bob:${SERVER_B}" \
+					--arg type "${POLICY_EVENT_TYPE}" --arg marker "${marker}" '
 		        .event_id == $event_id and .sender == $sender and .type == $type and
 		        .content.probe_id == $marker
-		      ' "${response}" >/dev/null ||
-				die "homeserver A returned an invalid allowed policy probe"
-			logs="$(kubectl --namespace matrix logs statefulset/ess-synapse-main \
-				--since=10m 2>/dev/null || true)"
-			if printf '%s\n' "${logs}" | rg --fixed-strings "${POLICY_LOG_PREFIX}" |
-				rg --fixed-strings "\"event\":\"${event_id}\"" >/dev/null; then
-				die "homeserver A logged an allowed policy probe as a violation"
-			fi
-			return
-			;;
-		404)
-			jq -e '.errcode == "M_NOT_FOUND"' "${response}" >/dev/null ||
-				die "homeserver A returned a non-Matrix missing-event response"
-			;;
-		*) die "homeserver A event lookup failed while proving allow (HTTP ${status})" ;;
+		      ' "${response}" >/dev/null \
+					|| die "homeserver A returned an invalid allowed policy probe"
+				logs="$(kubectl --namespace matrix logs statefulset/ess-synapse-main \
+					--since=10m 2>/dev/null || true)"
+				if printf '%s\n' "${logs}" | rg --fixed-strings "${POLICY_LOG_PREFIX}" \
+					| rg --fixed-strings "\"event\":\"${event_id}\"" >/dev/null; then
+					die "homeserver A logged an allowed policy probe as a violation"
+				fi
+				return
+				;;
+			404)
+				jq -e '.errcode == "M_NOT_FOUND"' "${response}" >/dev/null \
+					|| die "homeserver A returned a non-Matrix missing-event response"
+				;;
+			*) die "homeserver A event lookup failed while proving allow (HTTP ${status})" ;;
 		esac
 		sleep 2
 	done

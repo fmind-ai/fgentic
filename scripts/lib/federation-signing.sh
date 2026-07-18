@@ -13,8 +13,8 @@ sign_federation_request() {
       destination: $destination, content: $content}')"
 	# The private key never leaves Synapse C. Its pinned signedjson dependency produces the exact
 	# canonical Matrix signature; only the public key id and request signature return to the host.
-	signature_line="$(printf '%s' "${signable}" |
-		kubectl --namespace matrix-c exec --stdin statefulset/ess-synapse-main -- \
+	signature_line="$(printf '%s' "${signable}" \
+		| kubectl --namespace matrix-c exec --stdin statefulset/ess-synapse-main -- \
 			python -c '
 import json
 import sys

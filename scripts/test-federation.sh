@@ -63,7 +63,6 @@ readonly -a SEED_SOURCES=(
 	"${ROOT_DIR}/scripts/lib/federation-signing.sh"
 )
 
-
 # shellcheck source=scripts/lib/federation-contract-topology.sh
 source "${ROOT_DIR}/scripts/lib/federation-contract-topology.sh"
 

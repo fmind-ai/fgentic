@@ -60,7 +60,6 @@ not a language model and is never a production option.
 EOF
 }
 
-
 # shellcheck source=scripts/lib/demo-config.sh
 source "${ROOT_DIR}/scripts/lib/demo-config.sh"
 # shellcheck source=scripts/lib/demo-cluster.sh
@@ -79,23 +78,23 @@ fi
 
 PROFILE="${FGENTIC_DEMO_PROFILE:-demo}"
 case "${PROFILE}" in
-demo)
-	CLUSTER_NAME="${FGENTIC_DEMO_CLUSTER:-${DEFAULT_CLUSTER_NAME}}"
-	OVERLAY_PATH="clusters/demo"
-	PLATFORM_SETTINGS_PATH="${OVERLAY_PATH}/platform-settings.yaml"
-	SEED_SCRIPT="scripts/seed-demo.sh"
-	OWNER_LABEL="true"
-	;;
-federation)
-	CLUSTER_NAME="${FGENTIC_DEMO_CLUSTER:-${FEDERATION_CLUSTER_NAME}}"
-	FEDERATION_CONSTRAINED="${FGENTIC_FED_CONSTRAINED:-no}"
-	OVERLAY_PATH="clusters/federation"
-	[ "${FEDERATION_CONSTRAINED}" = "yes" ] && OVERLAY_PATH="clusters/federation-constrained"
-	PLATFORM_SETTINGS_PATH="clusters/federation/platform-settings.yaml"
-	SEED_SCRIPT="scripts/seed-federation.sh"
-	OWNER_LABEL="federation"
-	;;
-*) die "unsupported internal evaluation profile: ${PROFILE}" ;;
+	demo)
+		CLUSTER_NAME="${FGENTIC_DEMO_CLUSTER:-${DEFAULT_CLUSTER_NAME}}"
+		OVERLAY_PATH="clusters/demo"
+		PLATFORM_SETTINGS_PATH="${OVERLAY_PATH}/platform-settings.yaml"
+		SEED_SCRIPT="scripts/seed-demo.sh"
+		OWNER_LABEL="true"
+		;;
+	federation)
+		CLUSTER_NAME="${FGENTIC_DEMO_CLUSTER:-${FEDERATION_CLUSTER_NAME}}"
+		FEDERATION_CONSTRAINED="${FGENTIC_FED_CONSTRAINED:-no}"
+		OVERLAY_PATH="clusters/federation"
+		[ "${FEDERATION_CONSTRAINED}" = "yes" ] && OVERLAY_PATH="clusters/federation-constrained"
+		PLATFORM_SETTINGS_PATH="clusters/federation/platform-settings.yaml"
+		SEED_SCRIPT="scripts/seed-federation.sh"
+		OWNER_LABEL="federation"
+		;;
+	*) die "unsupported internal evaluation profile: ${PROFILE}" ;;
 esac
 DEMO_TIMEOUT="${FGENTIC_DEMO_TIMEOUT:-15m}"
 FEDERATION_POLICY_PROBE="${FGENTIC_FED_POLICY_PROBE:-deny}"
@@ -114,8 +113,8 @@ BRIDGE_IMAGE="matrix-a2a-bridge:${BRIDGE_TAG}"
 [[ "${CLUSTER_NAME}" =~ ^[a-z0-9][a-z0-9-]{0,47}$ ]] || die "invalid FGENTIC_DEMO_CLUSTER"
 if [ "${PROFILE}" = "demo" ]; then
 	case "${CLUSTER_NAME}" in
-	fgentic-demo | fgentic-demo-*) ;;
-	*) die "FGENTIC_DEMO_CLUSTER must be fgentic-demo or start with fgentic-demo-" ;;
+		fgentic-demo | fgentic-demo-*) ;;
+		*) die "FGENTIC_DEMO_CLUSTER must be fgentic-demo or start with fgentic-demo-" ;;
 	esac
 elif [ "${CLUSTER_NAME}" != "${FEDERATION_CLUSTER_NAME}" ]; then
 	die "the federation profile cluster must be ${FEDERATION_CLUSTER_NAME}"
@@ -123,39 +122,39 @@ fi
 [[ "${DEMO_TIMEOUT}" =~ ^[1-9][0-9]*[smh]$ ]] || die "invalid FGENTIC_DEMO_TIMEOUT"
 if [ "${PROFILE}" = "federation" ]; then
 	case "${FEDERATION_POLICY_PROBE}" in
-	allow | deny) ;;
-	*) die "FGENTIC_FED_POLICY_PROBE must be allow or deny" ;;
+		allow | deny) ;;
+		*) die "FGENTIC_FED_POLICY_PROBE must be allow or deny" ;;
 	esac
 	case "${FEDERATION_CONSTRAINED}" in
-	yes | no) ;;
-	*) die "FGENTIC_FED_CONSTRAINED must be yes or no" ;;
+		yes | no) ;;
+		*) die "FGENTIC_FED_CONSTRAINED must be yes or no" ;;
 	esac
 	case "${FGENTIC_FED_TRACE:-no}" in
-	yes | no) ;;
-	*) die "FGENTIC_FED_TRACE must be yes or no" ;;
+		yes | no) ;;
+		*) die "FGENTIC_FED_TRACE must be yes or no" ;;
 	esac
-	[[ "${FEDERATION_NO_PROGRESS_TIMEOUT}" =~ ^[1-9][0-9]*[smh]$ ]] ||
-		die "invalid FGENTIC_FED_NO_PROGRESS_TIMEOUT"
-	[[ "${FEDERATION_MAX_TIMEOUT}" =~ ^[1-9][0-9]*[smh]$ ]] ||
-		die "invalid FGENTIC_FED_MAX_TIMEOUT"
+	[[ "${FEDERATION_NO_PROGRESS_TIMEOUT}" =~ ^[1-9][0-9]*[smh]$ ]] \
+		|| die "invalid FGENTIC_FED_NO_PROGRESS_TIMEOUT"
+	[[ "${FEDERATION_MAX_TIMEOUT}" =~ ^[1-9][0-9]*[smh]$ ]] \
+		|| die "invalid FGENTIC_FED_MAX_TIMEOUT"
 	FEDERATION_NO_PROGRESS_SECONDS="$(timeout_seconds "${FEDERATION_NO_PROGRESS_TIMEOUT}")"
 	FEDERATION_MAX_SECONDS="$(timeout_seconds "${FEDERATION_MAX_TIMEOUT}")"
-	if [ "${FEDERATION_CONSTRAINED}" = "yes" ] &&
-		((FEDERATION_NO_PROGRESS_SECONDS >= FEDERATION_MAX_SECONDS)); then
+	if [ "${FEDERATION_CONSTRAINED}" = "yes" ] \
+		&& ((FEDERATION_NO_PROGRESS_SECONDS >= FEDERATION_MAX_SECONDS)); then
 		die "FGENTIC_FED_NO_PROGRESS_TIMEOUT must be shorter than FGENTIC_FED_MAX_TIMEOUT"
 	fi
 fi
 
 case "$1" in
-up) demo_up ;;
-status) demo_status ;;
-stop) demo_stop ;;
-down) demo_down ;;
--h | --help)
-	usage
-	;;
-*)
-	usage >&2
-	exit 2
-	;;
+	up) demo_up ;;
+	status) demo_status ;;
+	stop) demo_stop ;;
+	down) demo_down ;;
+	-h | --help)
+		usage
+		;;
+	*)
+		usage >&2
+		exit 2
+		;;
 esac

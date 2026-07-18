@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-readonly root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly root_dir
 readonly workflow="${root_dir}/.github/workflows/smoke.yml"
 readonly diagnostics="${root_dir}/scripts/collect-smoke-diagnostics.sh"
-readonly work_dir="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-smoke-workflow.XXXXXX")"
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-smoke-workflow.XXXXXX")"
+readonly work_dir
 
 cleanup() {
 	rm -rf "${work_dir}"

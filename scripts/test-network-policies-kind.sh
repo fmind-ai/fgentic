@@ -21,10 +21,10 @@ KUBECONFIG="$(mktemp -t fgentic-network-policy-kind.XXXXXX)"
 export KUBECONFIG
 
 for command in curl docker flux jq kind kubectl; do
-  if ! command -v "${command}" >/dev/null 2>&1; then
-    echo "error: required command not found: ${command}" >&2
-    exit 2
-  fi
+	if ! command -v "${command}" >/dev/null 2>&1; then
+		echo "error: required command not found: ${command}" >&2
+		exit 2
+	fi
 done
 
 sha256_file() {
@@ -58,11 +58,11 @@ assert_connection() {
 	local observed
 
 	case "${expectation}" in
-	reachable | denied) ;;
-	*)
-		echo "error: invalid connection expectation: ${expectation}" >&2
-		return 2
-		;;
+		reachable | denied) ;;
+		*)
+			echo "error: invalid connection expectation: ${expectation}" >&2
+			return 2
+			;;
 	esac
 
 	observed="$(
@@ -82,56 +82,56 @@ readonly CALICO_MANIFEST="${DIAGNOSTICS_DIR}/calico-${CALICO_VERSION}.yaml"
 readonly CONNECTOR_NETWORK_POLICY="${DIAGNOSTICS_DIR}/knowledge-connector-networkpolicy.yaml"
 
 diagnose() {
-  {
-    echo "==> Cluster overview"
-    kubectl cluster-info || true
-    kubectl get nodes,namespaces --output=wide || true
-    kubectl get pods,services,networkpolicies --all-namespaces --output=wide || true
-    echo "==> Events"
-    kubectl get events --all-namespaces --sort-by=.lastTimestamp || true
-  } >"${DIAGNOSTICS_DIR}/cluster-overview.log" 2>&1
-  kubectl get pods,services,networkpolicies --all-namespaces --output=yaml \
-    >"${DIAGNOSTICS_DIR}/resources.yaml" 2>&1 || true
-  kubectl describe pods --all-namespaces >"${DIAGNOSTICS_DIR}/pods.describe.log" 2>&1 || true
-  kind export logs "${DIAGNOSTICS_DIR}/kind" --name "${CLUSTER_NAME}" \
-    >"${DIAGNOSTICS_DIR}/kind-export.log" 2>&1 || true
+	{
+		echo "==> Cluster overview"
+		kubectl cluster-info || true
+		kubectl get nodes,namespaces --output=wide || true
+		kubectl get pods,services,networkpolicies --all-namespaces --output=wide || true
+		echo "==> Events"
+		kubectl get events --all-namespaces --sort-by=.lastTimestamp || true
+	} >"${DIAGNOSTICS_DIR}/cluster-overview.log" 2>&1
+	kubectl get pods,services,networkpolicies --all-namespaces --output=yaml \
+		>"${DIAGNOSTICS_DIR}/resources.yaml" 2>&1 || true
+	kubectl describe pods --all-namespaces >"${DIAGNOSTICS_DIR}/pods.describe.log" 2>&1 || true
+	kind export logs "${DIAGNOSTICS_DIR}/kind" --name "${CLUSTER_NAME}" \
+		>"${DIAGNOSTICS_DIR}/kind-export.log" 2>&1 || true
 }
 
 cleanup() {
-  local result=$?
-  trap - EXIT
-  diagnose
-  if [[ "${KEEP_KIND_CLUSTER:-0}" == "1" ]]; then
-    echo "==> Keeping kind cluster ${CLUSTER_NAME}; use KUBECONFIG=${KUBECONFIG}"
-  else
-    kind delete cluster --name "${CLUSTER_NAME}" >/dev/null 2>&1 || true
-    rm -f "${KUBECONFIG}"
-  fi
-  exit "${result}"
+	local result=$?
+	trap - EXIT
+	diagnose
+	if [[ "${KEEP_KIND_CLUSTER:-0}" == "1" ]]; then
+		echo "==> Keeping kind cluster ${CLUSTER_NAME}; use KUBECONFIG=${KUBECONFIG}"
+	else
+		kind delete cluster --name "${CLUSTER_NAME}" >/dev/null 2>&1 || true
+		rm -f "${KUBECONFIG}"
+	fi
+	exit "${result}"
 }
 trap cleanup EXIT
 
 docker info >/dev/null 2>&1 || {
-  echo "error: Docker daemon is not available" >&2
-  exit 1
+	echo "error: Docker daemon is not available" >&2
+	exit 1
 }
 
 {
 	date -u +"started_at=%Y-%m-%dT%H:%M:%SZ"
-  docker version --format 'docker_client={{.Client.Version}} docker_server={{.Server.Version}}'
-  kind version
-  kubectl version --client=true
-  echo "calico=${CALICO_VERSION}"
+	docker version --format 'docker_client={{.Client.Version}} docker_server={{.Server.Version}}'
+	kind version
+	kubectl version --client=true
+	echo "calico=${CALICO_VERSION}"
 } >"${DIAGNOSTICS_DIR}/versions.log" 2>&1
 
 echo "==> Fetching the checksum-pinned Calico manifest"
 curl --fail --silent --show-error --location \
-  --output "${CALICO_MANIFEST}" \
-  "https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/calico.yaml"
+	--output "${CALICO_MANIFEST}" \
+	"https://raw.githubusercontent.com/projectcalico/calico/${CALICO_VERSION}/manifests/calico.yaml"
 calico_manifest_digest="$(sha256_file "${CALICO_MANIFEST}")"
 if [[ "${calico_manifest_digest}" != "${CALICO_MANIFEST_SHA256}" ]]; then
-  echo "error: Calico manifest checksum mismatch: ${calico_manifest_digest}" >&2
-  exit 1
+	echo "error: Calico manifest checksum mismatch: ${calico_manifest_digest}" >&2
+	exit 1
 fi
 
 # This cluster is disposable test state. A dedicated kubeconfig prevents kind from changing the
@@ -139,12 +139,12 @@ fi
 kind delete cluster --name "${CLUSTER_NAME}" >/dev/null 2>&1 || true
 echo "==> Creating policy-capable kind cluster ${CLUSTER_NAME}"
 kind create cluster \
-  --name "${CLUSTER_NAME}" \
-  --image "${KIND_NODE_IMAGE}" \
-  --config "${KIND_CONFIG}"
+	--name "${CLUSTER_NAME}" \
+	--image "${KIND_NODE_IMAGE}" \
+	--config "${KIND_CONFIG}"
 api_endpoint_ip="$(
-  docker inspect "${CLUSTER_NAME}-control-plane" |
-    jq -er '
+	docker inspect "${CLUSTER_NAME}-control-plane" \
+		| jq -er '
       .[0].NetworkSettings.Networks
       | to_entries
       | map(select(.value.IPAddress != ""))
@@ -152,7 +152,7 @@ api_endpoint_ip="$(
     '
 )"
 kubernetes_api_egress_cidr="${api_endpoint_ip}/32" kubernetes_api_egress_port=6443 \
-  flux envsubst --strict <"${CONNECTOR_NETWORK_POLICY_SOURCE}" >"${CONNECTOR_NETWORK_POLICY}"
+	flux envsubst --strict <"${CONNECTOR_NETWORK_POLICY_SOURCE}" >"${CONNECTOR_NETWORK_POLICY}"
 echo "==> Installing Calico ${CALICO_VERSION}"
 kubectl apply --filename "${CALICO_MANIFEST}"
 kubectl --namespace kube-system rollout status daemonset/calico-node --timeout=240s
@@ -165,21 +165,21 @@ kubectl apply --filename "${ROOT_DIR}/infra/kagent/networkpolicy.yaml"
 kubectl apply --filename "${ROOT_DIR}/infra/agentgateway/networkpolicy.yaml"
 kubectl apply --filename "${ROOT_DIR}/infra/models/vllm/networkpolicy.yaml"
 kubectl apply --filename \
-  "${ROOT_DIR}/infra/agentgateway/providers/profiles/vllm/networkpolicy.yaml"
+	"${ROOT_DIR}/infra/agentgateway/providers/profiles/vllm/networkpolicy.yaml"
 kubectl apply --filename "${ROOT_DIR}/infra/knowledge/base/networkpolicy.yaml"
 kubectl apply --filename "${CONNECTOR_NETWORK_POLICY}"
 kubectl wait \
-  --for=condition=Ready \
-  pods \
-  --all-namespaces \
-  --selector=fgentic.dev/network-policy-fixture=server \
-  --timeout=90s
+	--for=condition=Ready \
+	pods \
+	--all-namespaces \
+	--selector=fgentic.dev/network-policy-fixture=server \
+	--timeout=90s
 kubectl wait \
-  --for=condition=Ready \
-  pods \
-  --all-namespaces \
-  --selector=fgentic.dev/network-policy-fixture=client \
-  --timeout=90s
+	--for=condition=Ready \
+	pods \
+	--all-namespaces \
+	--selector=fgentic.dev/network-policy-fixture=client \
+	--timeout=90s
 
 # NetworkPolicy has no status condition. Once Calico is ready, allow one reconciliation interval
 # before the first negative probe so startup latency cannot look like a policy regression.
@@ -187,11 +187,11 @@ sleep 2
 
 echo "==> Running NetworkPolicy conformance"
 NETWORK_POLICY_EGRESS_TARGET_HOST="${EGRESS_TARGET_HOST}" \
-  NETWORK_POLICY_EGRESS_TARGET_PORT="${EGRESS_TARGET_PORT}" \
-  NETWORK_POLICY_POD_TIMEOUT_SECONDS=90 \
-  NETWORK_POLICY_REQUIRE_TEST_FIXTURES=true \
-  bash "${CONFORMANCE_SCRIPT}" --require-vllm \
-  2>&1 | tee "${DIAGNOSTICS_DIR}/baseline.log"
+	NETWORK_POLICY_EGRESS_TARGET_PORT="${EGRESS_TARGET_PORT}" \
+	NETWORK_POLICY_POD_TIMEOUT_SECONDS=90 \
+	NETWORK_POLICY_REQUIRE_TEST_FIXTURES=true \
+	bash "${CONFORMANCE_SCRIPT}" --require-vllm \
+	2>&1 | tee "${DIAGNOSTICS_DIR}/baseline.log"
 
 echo "==> Running knowledge-ingestion NetworkPolicy conformance"
 assert_dns_reachable knowledge knowledge-ingestion kubernetes.default.svc.cluster.local

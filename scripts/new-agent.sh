@@ -6,17 +6,17 @@ repo_root="${FGENTIC_REPO_ROOT:-$(git rev-parse --show-toplevel)}"
 source_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 fail() {
-  echo "agent:new failed: $*" >&2
-  exit 1
+	echo "agent:new failed: $*" >&2
+	exit 1
 }
 
 if [[ $# -ne 1 ]]; then
-  fail "usage: mise run agent:new <lowercase-agent-name>"
+	fail "usage: mise run agent:new <lowercase-agent-name>"
 fi
 
 name="$1"
 [[ "${name}" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]] \
-  || fail "name must be a lowercase Kubernetes DNS label of at most 63 characters"
+	|| fail "name must be a lowercase Kubernetes DNS label of at most 63 characters"
 
 agent_dir="${repo_root}/infra/kagent/agents/${name}"
 mapping_dir="${repo_root}/apps/matrix-a2a-bridge/deploy/agents/${name}"
@@ -25,10 +25,10 @@ kagent_kustomization="${repo_root}/infra/kagent/kustomization.yaml"
 bridge_kustomization="${repo_root}/apps/matrix-a2a-bridge/deploy/kustomization.yaml"
 
 for path in "${agent_dir}" "${mapping_dir}" "${eval_dir}"; do
-  [[ ! -e "${path}" ]] || fail "refusing to overwrite existing path ${path#"${repo_root}/"}"
+	[[ ! -e "${path}" ]] || fail "refusing to overwrite existing path ${path#"${repo_root}/"}"
 done
 for path in "${kagent_kustomization}" "${bridge_kustomization}"; do
-  [[ -f "${path}" ]] || fail "required composition file is missing: ${path#"${repo_root}/"}"
+	[[ -f "${path}" ]] || fail "required composition file is missing: ${path#"${repo_root}/"}"
 done
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-agent-new.XXXXXX")"
@@ -36,33 +36,33 @@ committed=false
 kagent_replaced=false
 bridge_replaced=false
 cleanup() {
-  if [[ "${committed}" != true ]]; then
-    if [[ "${kagent_replaced}" == true ]]; then
-      cp "${tmp_dir}/original-kagent-kustomization.yaml" "${kagent_kustomization}"
-    fi
-    if [[ "${bridge_replaced}" == true ]]; then
-      cp "${tmp_dir}/original-bridge-kustomization.yaml" "${bridge_kustomization}"
-    fi
-    rm -rf "${agent_dir}" "${mapping_dir}" "${eval_dir}"
-  fi
-  rm -rf "${tmp_dir}"
+	if [[ "${committed}" != true ]]; then
+		if [[ "${kagent_replaced}" == true ]]; then
+			cp "${tmp_dir}/original-kagent-kustomization.yaml" "${kagent_kustomization}"
+		fi
+		if [[ "${bridge_replaced}" == true ]]; then
+			cp "${tmp_dir}/original-bridge-kustomization.yaml" "${bridge_kustomization}"
+		fi
+		rm -rf "${agent_dir}" "${mapping_dir}" "${eval_dir}"
+	fi
+	rm -rf "${tmp_dir}"
 }
 trap cleanup EXIT
 
 kubectl kustomize "${repo_root}/infra/kagent" >"${tmp_dir}/current-kagent.yaml" \
-  || fail "current kagent resources do not render"
+	|| fail "current kagent resources do not render"
 kubectl kustomize "${repo_root}/apps/matrix-a2a-bridge/deploy" >"${tmp_dir}/current-bridge.yaml" \
-  || fail "current bridge resources do not render"
+	|| fail "current bridge resources do not render"
 if AGENT_NAME="${name}" yq eval-all -e \
-  'select(.kind == "Agent" and .metadata.name == strenv(AGENT_NAME))' \
-  "${tmp_dir}/current-kagent.yaml" >/dev/null 2>&1; then
-  fail "rendered kagent resources already define Agent ${name}"
+	'select(.kind == "Agent" and .metadata.name == strenv(AGENT_NAME))' \
+	"${tmp_dir}/current-kagent.yaml" >/dev/null 2>&1; then
+	fail "rendered kagent resources already define Agent ${name}"
 fi
 if AGENT_GHOST="agent-${name}" yq eval-all -e \
-  'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") |
+	'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") |
    .spec.values.agents | has(strenv(AGENT_GHOST))' \
-  "${tmp_dir}/current-bridge.yaml" >/dev/null 2>&1; then
-  fail "effective bridge values already define ghost agent-${name}"
+	"${tmp_dir}/current-bridge.yaml" >/dev/null 2>&1; then
+	fail "effective bridge values already define ghost agent-${name}"
 fi
 
 mkdir -p "${agent_dir}" "${mapping_dir}" "${eval_dir}"
@@ -178,19 +178,19 @@ cp "${bridge_kustomization}" "${tmp_dir}/original-bridge-kustomization.yaml"
 cp "${kagent_kustomization}" "${tmp_dir}/new-kagent-kustomization.yaml"
 cp "${bridge_kustomization}" "${tmp_dir}/new-bridge-kustomization.yaml"
 AGENT_RESOURCE="agents/${name}" yq -i \
-  '.resources = ((.resources // []) + [strenv(AGENT_RESOURCE)] | unique)' \
-  "${tmp_dir}/new-kagent-kustomization.yaml"
+	'.resources = ((.resources // []) + [strenv(AGENT_RESOURCE)] | unique)' \
+	"${tmp_dir}/new-kagent-kustomization.yaml"
 AGENT_COMPONENT="agents/${name}" yq -i \
-  '.components = ((.components // []) + [strenv(AGENT_COMPONENT)] | unique)' \
-  "${tmp_dir}/new-bridge-kustomization.yaml"
+	'.components = ((.components // []) + [strenv(AGENT_COMPONENT)] | unique)' \
+	"${tmp_dir}/new-bridge-kustomization.yaml"
 
 yq eval-all -e 'select(.kind == "Agent") | .metadata.name == "'"${name}"'" and .metadata.namespace == "kagent"' \
-  "${agent_dir}/agent.yaml" >/dev/null
+	"${agent_dir}/agent.yaml" >/dev/null
 jq -e --arg name "${name}" \
-  '.schema_version == "fgentic.agent.eval.v1" and .agent == $name and
+	'.schema_version == "fgentic.agent.eval.v1" and .agent == $name and
    (.scenarios | length) == 1 and .scenarios[0].agent == $name and
    .scenarios[0].rubric.kind == "exact" and (.scenarios[0].rubric.expected | length) == 1' \
-  "${eval_dir}/golden.json" >/dev/null
+	"${eval_dir}/golden.json" >/dev/null
 kubectl kustomize "${agent_dir}" >/dev/null
 cat >"${tmp_dir}/agents.yaml" <<EOF
 schemaVersion: 1
@@ -205,9 +205,9 @@ agents:
       - "@alice:\${server_name}"
 EOF
 mise --cd "${source_root}/apps/matrix-a2a-bridge" exec -- \
-  go run ./cmd/validate-agents \
-  --schema agents.schema.json \
-  --config "${tmp_dir}/agents.yaml"
+	go run ./cmd/validate-agents \
+	--schema agents.schema.json \
+	--config "${tmp_dir}/agents.yaml"
 
 kagent_replaced=true
 cp "${tmp_dir}/new-kagent-kustomization.yaml" "${kagent_kustomization}"
@@ -217,58 +217,58 @@ cp "${tmp_dir}/new-bridge-kustomization.yaml" "${bridge_kustomization}"
 # Pin the effective Agent spec plus every imported prompt fragment. The digest makes later prompt,
 # tool, model, and deployment drift an explicit golden-fixture review instead of a silent change.
 kubectl kustomize "${repo_root}/infra/kagent" >"${tmp_dir}/effective-kagent.yaml" \
-  || fail "scaffolded kagent resources do not render"
+	|| fail "scaffolded kagent resources do not render"
 contract_sha256="$(
-  mise --cd "${source_root}/apps/matrix-a2a-bridge" exec -- \
-    go run ./cmd/agent-contract \
-    --agent "${name}" \
-    --manifest "${tmp_dir}/effective-kagent.yaml"
+	mise --cd "${source_root}/apps/matrix-a2a-bridge" exec -- \
+		go run ./cmd/agent-contract \
+		--agent "${name}" \
+		--manifest "${tmp_dir}/effective-kagent.yaml"
 )" || fail "could not calculate the scaffolded Agent contract digest"
 [[ "${contract_sha256}" =~ ^[0-9a-f]{64}$ ]] \
-  || fail "scaffolded Agent contract digest is invalid"
+	|| fail "scaffolded Agent contract digest is invalid"
 jq --arg digest "${contract_sha256}" \
-  '.agent_contract_sha256 = $digest' \
-  "${eval_dir}/golden.json" >"${tmp_dir}/golden.json"
+	'.agent_contract_sha256 = $digest' \
+	"${eval_dir}/golden.json" >"${tmp_dir}/golden.json"
 cp "${tmp_dir}/golden.json" "${eval_dir}/golden.json"
 
 # Bind the bridge mapping to the same effective Agent contract, then prove the composed live
 # mapping derives a valid version-in-effect. The final version is calculated after Flux substitutes
 # environment-specific mapping values, so it is not stored as a stale pre-substitution constant.
 AGENT_CONTRACT_SHA256="${contract_sha256}" yq -i \
-  '.patches[0].patch |= (from_yaml |
+	'.patches[0].patch |= (from_yaml |
     .[0].value.agentContractSHA256 = strenv(AGENT_CONTRACT_SHA256) | to_yaml)' \
-  "${mapping_dir}/kustomization.yaml"
+	"${mapping_dir}/kustomization.yaml"
 kubectl kustomize "${repo_root}/apps/matrix-a2a-bridge/deploy" >"${tmp_dir}/effective-bridge-release.yaml" \
-  || fail "scaffolded bridge resources do not render"
+	|| fail "scaffolded bridge resources do not render"
 export server_name=scaffold.fgentic.example
 # The authoring render is environment-neutral: it validates the generated mapping, not an
 # environment's optional delayed-event capability. Keep that deployment-only feature disabled.
 export bridge_dead_man_switch_delay=0s
 yq eval-all -o=yaml \
-  'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") | .spec.values' \
-  "${tmp_dir}/effective-bridge-release.yaml" \
-  | flux envsubst --strict \
-  | helm template matrix-a2a-bridge "${repo_root}/apps/matrix-a2a-bridge/chart" --values - \
-    >"${tmp_dir}/effective-bridge.yaml"
+	'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") | .spec.values' \
+	"${tmp_dir}/effective-bridge-release.yaml" \
+	| flux envsubst --strict \
+	| helm template matrix-a2a-bridge "${repo_root}/apps/matrix-a2a-bridge/chart" --values - \
+		>"${tmp_dir}/effective-bridge.yaml"
 yq eval-all -er \
-  'select(.kind == "ConfigMap" and .metadata.name == "matrix-a2a-bridge-agents") | .data."agents.yaml"' \
-  "${tmp_dir}/effective-bridge.yaml" >"${tmp_dir}/effective-agents.yaml"
+	'select(.kind == "ConfigMap" and .metadata.name == "matrix-a2a-bridge-agents") | .data."agents.yaml"' \
+	"${tmp_dir}/effective-bridge.yaml" >"${tmp_dir}/effective-agents.yaml"
 mise --cd "${source_root}/apps/matrix-a2a-bridge" exec -- \
-  go run ./cmd/validate-agents \
-  --schema agents.schema.json \
-  --config "${tmp_dir}/effective-agents.yaml"
+	go run ./cmd/validate-agents \
+	--schema agents.schema.json \
+	--config "${tmp_dir}/effective-agents.yaml"
 agent_version="$(
-  mise --cd "${source_root}/apps/matrix-a2a-bridge" exec -- \
-    go run ./cmd/agent-version \
-    --config "${tmp_dir}/effective-agents.yaml" \
-    --ghost "agent-${name}"
+	mise --cd "${source_root}/apps/matrix-a2a-bridge" exec -- \
+		go run ./cmd/agent-version \
+		--config "${tmp_dir}/effective-agents.yaml" \
+		--ghost "agent-${name}"
 )" || fail "could not derive the scaffolded Agent version-in-effect"
 [[ "${agent_version}" =~ ^sha256:[0-9a-f]{64}$ ]] \
-  || fail "scaffolded Agent version-in-effect is invalid"
+	|| fail "scaffolded Agent version-in-effect is invalid"
 committed=true
 
 printf '%s\n' \
-  "Scaffolded agent-${name} -> /api/a2a/kagent/${name}" \
-  "  infra/kagent/agents/${name}/" \
-  "  apps/matrix-a2a-bridge/deploy/agents/${name}/" \
-  "  evals/${name}/"
+	"Scaffolded agent-${name} -> /api/a2a/kagent/${name}" \
+	"  infra/kagent/agents/${name}/" \
+	"  apps/matrix-a2a-bridge/deploy/agents/${name}/" \
+	"  evals/${name}/"

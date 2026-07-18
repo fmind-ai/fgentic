@@ -9,8 +9,8 @@ client_credentials_token() {
 	[[ "${client_secret}" =~ ^[0-9a-f]+$ ]] || die "invalid A2A client secret encoding"
 	response="$(
 		printf 'grant_type=client_credentials&client_id=%s&client_secret=%s' \
-			"${client_id}" "${client_secret}" |
-			curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
+			"${client_id}" "${client_secret}" \
+			| curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 				--request POST --header 'Content-Type: application/x-www-form-urlencoded' \
 				--data-binary @- \
 				"${IDP_B_URL}/realms/fgentic-federation/protocol/openid-connect/token"
@@ -67,8 +67,8 @@ expect_a2a_status() {
 	local output="${WORK_DIR}/a2a-${label}.json"
 	local status
 	status="$(a2a_status "${output}" "${token}" "${document}")"
-	[ "${status}" = "${expected}" ] ||
-		die "${label} A2A request returned HTTP ${status}, expected ${expected}"
+	[ "${status}" = "${expected}" ] \
+		|| die "${label} A2A request returned HTTP ${status}, expected ${expected}"
 }
 
 agentgateway_token_total() {
@@ -98,8 +98,8 @@ verify_public_agent_card() {
 	kubectl --namespace agentgateway-system get configmap "${AGENT_CARD_CONFIGMAP}" \
 		--output 'go-template={{index .data "usage-receipt-public-jwk.json"}}' \
 		>"${USAGE_RECEIPT_PUBLIC_JWK}"
-	cmp --silent "${served_card}" "${expected_card}" ||
-		die "public AgentCard bytes differ from the signed bootstrap artifact"
+	cmp --silent "${served_card}" "${expected_card}" \
+		|| die "public AgentCard bytes differ from the signed bootstrap artifact"
 	key_id="$(jq -er '.kid | select(type == "string" and length > 0)' "${public_jwk}")"
 	"${ROOT_DIR}/scripts/sign-agent-card.sh" verify --input "${served_card}" \
 		--public-key "${public_jwk}" --key-id "${key_id}"
@@ -150,8 +150,8 @@ verify_kagent_not_public() {
       (.spec.type // "ClusterIP") == "ClusterIP" and
       ((.spec.externalIPs // []) | length) == 0 and
       all(.spec.ports[]; has("nodePort") | not))
-  ' <<<"${services}" >/dev/null ||
-		die "kagent exposes a non-ClusterIP, external IP, or node port"
+  ' <<<"${services}" >/dev/null \
+		|| die "kagent exposes a non-ClusterIP, external IP, or node port"
 	routes="$(kubectl get httproutes.gateway.networking.k8s.io --all-namespaces --output json)"
 	jq -e '
     all(.items[];
@@ -202,8 +202,8 @@ verify_cross_org_delegation() {
 		--header "A2A-Extensions: ${TOKEN_BUDGET_EXTENSION}, ${USAGE_RECEIPT_EXTENSION}" \
 		--header "Authorization: Bearer ${ORG_B_A2A_TOKEN}" --data "${document}" \
 		"${A2A_URL}${A2A_AGENT_PATH}")"
-	[ "${text_content_type_status}" = "403" ] ||
-		die "text/plain A2A request returned HTTP ${text_content_type_status}, expected 403"
+	[ "${text_content_type_status}" = "403" ] \
+		|| die "text/plain A2A request returned HTTP ${text_content_type_status}, expected 403"
 	duplicate_content_type_status="$(
 		request_status "${WORK_DIR}/a2a-duplicate-content-type.json" \
 			--request POST \
@@ -215,16 +215,16 @@ verify_cross_org_delegation() {
 			--data "${document}" \
 			"${A2A_URL}${A2A_AGENT_PATH}"
 	)"
-	[ "${duplicate_content_type_status}" = "403" ] ||
-		die "duplicate Content-Type A2A request returned HTTP ${duplicate_content_type_status}, expected 403"
+	[ "${duplicate_content_type_status}" = "403" ] \
+		|| die "duplicate Content-Type A2A request returned HTTP ${duplicate_content_type_status}, expected 403"
 	missing_content_type_status="$(request_status "${WORK_DIR}/a2a-missing-content-type.json" \
 		--request POST --header 'Content-Type:' \
 		--header 'A2A-Version: 1.0' \
 		--header "A2A-Extensions: ${TOKEN_BUDGET_EXTENSION}, ${USAGE_RECEIPT_EXTENSION}" \
 		--header "Authorization: Bearer ${ORG_B_A2A_TOKEN}" --data-binary "${document}" \
 		"${A2A_URL}${A2A_AGENT_PATH}")"
-	[ "${missing_content_type_status}" = "403" ] ||
-		die "A2A request without Content-Type returned HTTP ${missing_content_type_status}, expected 403"
+	[ "${missing_content_type_status}" = "403" ] \
+		|| die "A2A request without Content-Type returned HTTP ${missing_content_type_status}, expected 403"
 	expect_a2a_status missing-token 401 "" "${document}"
 	expect_a2a_status malformed-token 401 not-a-jwt "${document}"
 	expect_a2a_status wrong-audience 401 "${WRONG_AUDIENCE_A2A_TOKEN}" "${document}"
@@ -234,8 +234,8 @@ verify_cross_org_delegation() {
 		--header 'A2A-Version: 1.0' \
 		--header "Authorization: Bearer ${ORG_B_A2A_TOKEN}" --data "${document}" \
 		"${A2A_URL}${A2A_AGENT_PATH}")"
-	[ "${missing_extension_status}" = "403" ] ||
-		die "missing A2A extension activation returned HTTP ${missing_extension_status}, expected 403"
+	[ "${missing_extension_status}" = "403" ] \
+		|| die "missing A2A extension activation returned HTTP ${missing_extension_status}, expected 403"
 	for invalid in 'null' '"1000"' '1.5' '0' '-1' '4097'; do
 		document="$(a2a_document "${invalid}")"
 		expect_a2a_status "invalid-budget-${RANDOM}" 403 "${ORG_B_A2A_TOKEN}" "${document}"
@@ -248,11 +248,11 @@ verify_cross_org_delegation() {
 		--header "A2A-Extensions: ${TOKEN_BUDGET_EXTENSION}" \
 		--header "Authorization: Bearer ${ORG_B_A2A_TOKEN}" \
 		--data "$(a2a_document 1000)" "${A2A_URL}/api/a2a/kagent/scribe")"
-	[ "${denied_path_status}" = "404" ] ||
-		die "unpublished kagent path returned HTTP ${denied_path_status}, expected 404"
+	[ "${denied_path_status}" = "404" ] \
+		|| die "unpublished kagent path returned HTTP ${denied_path_status}, expected 404"
 	after_denials="$(usage_receipt_archive_count)"
-	[ "${after_denials}" = "${before_receipts}" ] ||
-		die "unauthorized or unpublished prompts triggered a seller receipt"
+	[ "${after_denials}" = "${before_receipts}" ] \
+		|| die "unauthorized or unpublished prompts triggered a seller receipt"
 
 	before_tokens="$(agentgateway_token_total)"
 	document="$(a2a_document 3000)"
@@ -268,21 +268,21 @@ verify_cross_org_delegation() {
 	jq -e '
       .jsonrpc == "2.0" and .error == null and
       .result.task.status.state == "TASK_STATE_COMPLETED"
-    ' "${response}" >/dev/null ||
-		die "authorized org B delegation did not return a completed Task"
+    ' "${response}" >/dev/null \
+		|| die "authorized org B delegation did not return a completed Task"
 	jq -e --arg reply "${EXPECTED_DEMO_REPLY}" '
       .jsonrpc == "2.0" and .error == null and
       ([.. | objects | .text? // empty] | any(. == $reply))
     ' "${response}" >/dev/null || die "authorized org B delegation returned no model reply"
 	after_tokens="$(agentgateway_token_total)"
 	awk -v before="${before_tokens}" -v after="${after_tokens}" \
-		'BEGIN {exit !(after > before)}' ||
-		die "authorized delegation did not increase aggregate model-token metrics"
+		'BEGIN {exit !(after > before)}' \
+		|| die "authorized delegation did not increase aggregate model-token metrics"
 	receipt="${WORK_DIR}/usage-receipt.json"
 	jq -e --arg extension "${USAGE_RECEIPT_EXTENSION}" \
 		'.result.task.metadata[$extension]' \
-		"${response}" >"${receipt}" ||
-		die "authorized org B delegation returned no signed usage receipt"
+		"${response}" >"${receipt}" \
+		|| die "authorized org B delegation returned no signed usage receipt"
 	"${ROOT_DIR}/scripts/usage-receipt.sh" verify --input "${receipt}" \
 		--public-key "${USAGE_RECEIPT_PUBLIC_JWK}" --key-id "${USAGE_RECEIPT_KEY_ID}"
 	request_hash="$("${ROOT_DIR}/scripts/usage-receipt.sh" request-hash --input "${request}")"
@@ -302,8 +302,8 @@ verify_cross_org_delegation() {
       $receipt[0].receipt.taskId == $result.id and
       $receipt[0].receipt.contextId == $result.contextId and
       $receipt[0].receipt.outcome == $result.status.state
-    ' "${response}" >/dev/null ||
-		die "signed usage receipt does not match the authorized A2A result"
+    ' "${response}" >/dev/null \
+		|| die "signed usage receipt does not match the authorized A2A result"
 	tampered="${WORK_DIR}/usage-receipt-tampered.json"
 	jq '.receipt.tokensReserved += 1' "${receipt}" >"${tampered}"
 	if "${ROOT_DIR}/scripts/usage-receipt.sh" verify --input "${tampered}" \
@@ -312,6 +312,6 @@ verify_cross_org_delegation() {
 		die "tampered usage receipt passed ES256/JCS verification"
 	fi
 	after_receipt="$(usage_receipt_archive_count)"
-	[ "${after_receipt}" -eq "$((after_denials + 1))" ] ||
-		die "authorized terminal delegation or quota denial changed the receipt archive unexpectedly"
+	[ "${after_receipt}" -eq "$((after_denials + 1))" ] \
+		|| die "authorized terminal delegation or quota denial changed the receipt archive unexpectedly"
 }

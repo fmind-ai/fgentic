@@ -37,20 +37,20 @@ SECRET_SET="${FGENTIC_SECRET_SET:-all}"
 
 validate_secret_environment "${ENV}"
 case "${FORCE}" in
-"" | --force) ;;
-*)
-	echo "error: third argument must be --force when set" >&2
-	exit 2
-	;;
+	"" | --force) ;;
+	*)
+		echo "error: third argument must be --force when set" >&2
+		exit 2
+		;;
 esac
 case "${SECRET_SET}" in
-all | rotatable | appservice | a2a | mcp | db-core | keycloak-db | knowledge-db | \
-	knowledge-ingestion | \
-	provider | bootstrap | slack | telegram) ;;
-*)
-	echo "error: unsupported internal secret set: ${SECRET_SET}" >&2
-	exit 2
-	;;
+	all | rotatable | appservice | a2a | mcp | db-core | keycloak-db | knowledge-db | \
+		knowledge-ingestion | \
+		provider | bootstrap | slack | telegram) ;;
+	*)
+		echo "error: unsupported internal secret set: ${SECRET_SET}" >&2
+		exit 2
+		;;
 esac
 validate_server_name "${SERVER_NAME}"
 if [ ! -f "${SOPS_CONFIG}" ]; then
@@ -125,8 +125,8 @@ encrypt_to() { # encrypt_to <file> <content>: plaintext remains in the pipeline,
 	local file tmp
 	file="$1"
 	tmp="$(mktemp "${DIR}/.encrypted.XXXXXX")"
-	if ! printf '%s\n' "$2" |
-		sops --config "${SOPS_CONFIG}" --filename-override "${file}" --encrypt /dev/stdin \
+	if ! printf '%s\n' "$2" \
+		| sops --config "${SOPS_CONFIG}" --filename-override "${file}" --encrypt /dev/stdin \
 			>"${tmp}"; then
 		rm -f "${tmp}"
 		return 1
