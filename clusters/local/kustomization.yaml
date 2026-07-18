@@ -10,6 +10,7 @@ resources:
   - secrets.yaml
 components:
   - ../base/provider-selection
+  - ../base/observability-dependencies
 patches:
   # Production-shaped profiles opt into the finite Synapse retention fragment. Its durations
   # come from this cluster's platform-settings; demo/federation do not compose the component.

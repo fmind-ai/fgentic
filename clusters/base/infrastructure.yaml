@@ -226,9 +226,11 @@ spec:
   timeout: 10m
   dependsOn:
     - name: gateway
-    - name: observability # KeycloakX now renders a ServiceMonitor CR; its CRD must exist first.
     - name: postgres
     - name: platform-secrets
+  # Production-shaped profiles append the ServiceMonitor opt-in through the same Component that
+  # adds the observability dependency. Keeping the list present makes that JSON patch fail fast.
+  patches: []
   sourceRef:
     kind: GitRepository
     name: flux-system
@@ -315,7 +317,6 @@ spec:
   timeout: 10m
   dependsOn:
     - name: controllers
-    - name: observability # Tracing policy needs the Collector Service and its ReferenceGrant.
   sourceRef:
     kind: GitRepository
     name: flux-system
