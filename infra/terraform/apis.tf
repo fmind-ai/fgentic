@@ -1,14 +1,14 @@
 # Enable the required Google APIs declaratively.
 locals {
-  services = [
+  required_services = [
     "aiplatform.googleapis.com", # Vertex AI — the model behind agentgateway's LLM chokepoint
     "compute.googleapis.com",
     "container.googleapis.com",
-    "dns.googleapis.com", # only exercised when var.manage_dns is set
     "iam.googleapis.com",
     "iamcredentials.googleapis.com", # GKE WIF prerequisite; also used by CNPG's GSA impersonation
     "storage.googleapis.com",        # tfstate + CNPG backup buckets
   ]
+  services = concat(local.required_services, var.manage_dns ? ["dns.googleapis.com"] : [])
 }
 
 resource "google_project_service" "enabled_services" {

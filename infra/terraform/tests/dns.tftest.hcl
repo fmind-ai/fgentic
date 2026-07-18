@@ -25,6 +25,11 @@ run "defaults_to_six_public_hosts_without_admin" {
   command = plan
 
   assert {
+    condition     = length(google_project_service.enabled_services) == 7 && contains(keys(google_project_service.enabled_services), "dns.googleapis.com")
+    error_message = "Managed DNS must enable Cloud DNS in addition to every required platform API."
+  }
+
+  assert {
     condition     = length(google_dns_record_set.platform) == 6
     error_message = "Managed DNS must keep the six default platform A records."
   }
@@ -79,8 +84,20 @@ run "unmanaged_dns_has_zero_records" {
   }
 
   assert {
-    condition     = length(google_dns_record_set.platform) == 0
-    error_message = "Disabling managed DNS must create no platform records."
+    condition = toset(keys(google_project_service.enabled_services)) == toset([
+      "aiplatform.googleapis.com",
+      "compute.googleapis.com",
+      "container.googleapis.com",
+      "iam.googleapis.com",
+      "iamcredentials.googleapis.com",
+      "storage.googleapis.com",
+    ])
+    error_message = "External DNS must retain every required platform API without enabling Cloud DNS."
+  }
+
+  assert {
+    condition     = length(google_dns_managed_zone.platform) == 0 && length(google_dns_record_set.platform) == 0
+    error_message = "Disabling managed DNS must create no Cloud DNS zone or platform records."
   }
 }
 
