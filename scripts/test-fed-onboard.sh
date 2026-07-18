@@ -125,7 +125,7 @@ run_onboard() {
 }
 
 expect_failure() {
-	local label="$1" expected="$2"
+	local label="$1" expected="$2" failure_output
 	shift 2
 	if "$@" >"${WORK_DIR}/failure.out" 2>"${WORK_DIR}/failure.err"; then
 		fail "${label} unexpectedly passed"
