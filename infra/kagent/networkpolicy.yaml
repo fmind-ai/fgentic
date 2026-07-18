@@ -1,10 +1,10 @@
 # kagent's A2A endpoint is UNAUTHENTICATED by default (auth.mode: unsecure, NoopAuthorizer —
-# SPEC §4 F11), so this NetworkPolicy is a load-bearing security control: only agentgateway
-# (the governed A2A route), the bridge (direct-dial fallback), kagent's own agent pods (they
-# call the controller's session/persistence APIs) may reach the kagent namespace. The pinned chart
-# renders no Prometheus monitor; future scraping must add an exact Prometheus pod identity and only
-# its metrics ports. The exact policy passes the isolated kind+Calico deny/allow and deletion guard;
-# repeat `mise run test:network-policies` on each installed target CNI before acceptance.
+# SPEC §4 F11), so this NetworkPolicy is a load-bearing security control. Preserve one all-Pod
+# policy so the deletion guard remains meaningful, but bind cross-namespace access to exact callers
+# and the pinned controller/tool ports. Same-namespace traffic remains open for generated agent
+# runtimes, controller discovery, and KMCP internals. The chart renders no Prometheus monitor;
+# future scraping must add an exact Prometheus identity and only its metrics ports. Repeat
+# `mise run test:network-policies` on each installed target CNI before acceptance.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -19,9 +19,34 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: agentgateway-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agentgateway-proxy
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: bridge
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: matrix-a2a-bridge
+              app.kubernetes.io/name: matrix-a2a-bridge
+      ports:
+        - protocol: TCP
+          port: 8083
+    # The controller discovers tools directly, while managed agent Pods are forced through this
+    # exact proxy identity by the agent-zoo egress policy below.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentgateway-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: agentgateway-proxy
+      ports:
+        - protocol: TCP
+          port: 8084
+    # kagent owns several generated workloads whose internal ports are controller-managed. Keep
+    # their existing same-namespace communication without granting another namespace that breadth.
+    - from:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kagent
