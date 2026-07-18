@@ -110,7 +110,7 @@
           "uniqueItems": true,
           "items": {
             "type": "string",
-            "pattern": "^[!#][^:\\s]+:[^\\s]+$"
+            "pattern": "^(![A-Za-z0-9_-]{43}|[!#][^:\\s]+:[^\\s]+)$"
           }
         }
       },

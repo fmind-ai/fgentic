@@ -74,7 +74,7 @@ func TestAgentsSchemaStage(t *testing.T) {
 
 func TestAgentsSchemaAllowedRooms(t *testing.T) {
 	schema := compileAgentsSchema(t)
-	valid := []byte("schemaVersion: 1\nagents:\n  agent-local:\n    namespace: kagent\n    name: k8s\n    allowedRooms: ['!managed:example.org', '#bootstrap:example.org']\n")
+	valid := []byte("schemaVersion: 1\nagents:\n  agent-local:\n    namespace: kagent\n    name: k8s\n    allowedRooms: ['!managed:example.org', '!zXHs5QUbsdmsiRf0fEfZDdKFl6HfFcAXQoFJ9ZBM_ow', '#bootstrap:example.org']\n")
 	if err := schema.Validate(yamlInstance(t, valid)); err != nil {
 		t.Fatalf("valid allowedRooms rejected: %v", err)
 	}

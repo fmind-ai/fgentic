@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,7 +31,10 @@ import (
 
 const agentsSchemaVersion = 1
 
-var sha256HexRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var (
+	sha256HexRE        = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	domainlessRoomIDRE = regexp.MustCompile(`^![A-Za-z0-9_-]{43}$`)
+)
 
 // AgentRef identifies one immutable local or remote A2A target and carries the per-agent sender
 // policy (SPEC §4 F6): which homeservers and which users may invoke it. The bridge's own server
@@ -309,10 +313,23 @@ func (a *AgentRef) compileRooms(ghost string) error {
 }
 
 func validateMatrixRoomReference(room string) error {
-	if len(room) < 4 || (room[0] != '!' && room[0] != '#') {
+	if len(room) < 2 || len(room) > 255 || (room[0] != '!' && room[0] != '#') {
 		return fmt.Errorf("must be a Matrix room ID or alias")
 	}
 	separator := strings.IndexByte(room, ':')
+	if room[0] == '!' && separator == -1 {
+		// Room v12 replaces the legacy domain component with the unpadded URL-safe
+		// base64 SHA-256 hash of the create event. Membership checks later prove that
+		// this opaque identifier names a room visible to the homeserver.
+		if !domainlessRoomIDRE.MatchString(room) {
+			return fmt.Errorf("domainless room ID must contain an unpadded URL-safe base64 SHA-256 hash")
+		}
+		decoded, err := base64.RawURLEncoding.Strict().DecodeString(room[1:])
+		if err != nil || len(decoded) != sha256.Size {
+			return fmt.Errorf("domainless room ID must contain an unpadded URL-safe base64 SHA-256 hash")
+		}
+		return nil
+	}
 	if separator < 2 || separator == len(room)-1 {
 		return fmt.Errorf("must contain a non-empty localpart and server name")
 	}
