@@ -22,6 +22,8 @@ Fgentic ships opt-in, digest-pinned GitOps units for **Slack** and **Telegram** 
 
 > **Evaluating adoption?** Start with the vendor-neutral [adopter decision brief and parameterized TCO worksheet](docs/adopter-decision-brief.md); it separates the controls Fgentic owns from the open-source systems it composes and requires your own measured usage, labor, and contracted rates.
 
+> **Writing procurement requirements?** Use the [sovereign agent platform reference architecture](docs/reference-architecture.md) for a vendor-neutral requirements matrix, evidence questions, architecture views, honest scale boundary, and copy-ready RFP checklist.
+
 > **Moving from a tenant-anchored agent platform?** Use the [inbound migration guide](docs/migration-guide.md) to rebuild identity and authorization, parallel-run one Agent, cut over per room or organization, preserve rollback, and decommission the old scope deliberately.
 
 > **Joining an evaluation?** Choose the [security lead, DPO, platform engineer, developer, or end-user onboarding path](docs/onboarding/index.md) for a short route to the controls and evidence your role owns.
