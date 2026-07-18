@@ -70,7 +70,7 @@ spec:
           serviceAccountName: knowledge-embeddings
           runtimeClassName: ""
           repository: vllm/vllm-openai-cpu
-          tag: v0.24.0@sha256:b0e6f8604413a8bfcca8836bb4b57b47f1aa653957e07f8903ece531309981a1
+          tag: v0.25.1@sha256:6b301f040db8152dfb8ff55e06fd348aa5d0d9a311f58118160c7058262c8628
           modelURL: /models/bge-reranker-v2-m3
           replicaCount: 1
           enableLoRA: false
@@ -88,7 +88,7 @@ spec:
           shmSize: 1Gi
           initContainer:
             name: wait-for-model
-            image: vllm/vllm-openai-cpu:v0.24.0@sha256:b0e6f8604413a8bfcca8836bb4b57b47f1aa653957e07f8903ece531309981a1
+            image: vllm/vllm-openai-cpu:v0.25.1@sha256:6b301f040db8152dfb8ff55e06fd348aa5d0d9a311f58118160c7058262c8628
             command:
               - python3
               - -c
@@ -130,8 +130,8 @@ spec:
             maxNumSeqs: 4
             extraArgs:
               # The pooling runner auto-detects this cross-encoder (num_labels == 1) and exposes the
-              # /score and /rerank endpoints (vLLM v0.24.0 replaced the removed --task flag with
-              # --runner). The served name matches the governed catalog entry so retrieval callers
+              # /score and /rerank endpoints (vLLM v0.25.1 uses --runner for pooling workloads).
+              # The served name matches the governed catalog entry so retrieval callers
               # never see the local path.
               - --runner
               - pooling
