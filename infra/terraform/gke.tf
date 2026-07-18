@@ -13,6 +13,15 @@ resource "google_container_cluster" "cluster" {
   remove_default_node_pool = true
   initial_node_count       = 1
   deletion_protection      = var.deletion_protection
+  enable_legacy_abac       = false
+
+  # Operators authenticate through short-lived Google credentials and authorize through IAM/RBAC;
+  # never mint the retrievable legacy cluster client certificate.
+  master_auth {
+    client_certificate_config {
+      issue_client_certificate = false
+    }
+  }
 
   resource_labels = {
     application = "fgentic"
