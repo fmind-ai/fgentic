@@ -6,6 +6,7 @@ import (
 	"strings"
 	"unicode"
 
+	"maunium.net/go/mautrix/appservice"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -136,6 +137,16 @@ func (b *Bridge) handleCommandNotice(
 	scope string,
 	body func() string,
 ) bool {
+	return b.handleCommandNoticeAs(ctx, evt, scope, b.as.BotIntent(), body)
+}
+
+func (b *Bridge) handleCommandNoticeAs(
+	ctx context.Context,
+	evt *event.Event,
+	scope string,
+	intent *appservice.IntentAPI,
+	body func() string,
+) bool {
 	sender := b.agents.IdentifySender(evt.Sender)
 	if !b.allowNotice(sender, evt.RoomID, scope) {
 		b.log.Info(
@@ -145,9 +156,8 @@ func (b *Bridge) handleCommandNotice(
 		)
 		return false
 	}
-	intent := b.as.BotIntent()
 	if intent == nil {
-		b.log.Error("create bot intent for command response")
+		b.log.Error("create intent for command response")
 		return false
 	}
 	if err := intent.EnsureRegistered(ctx); err != nil {

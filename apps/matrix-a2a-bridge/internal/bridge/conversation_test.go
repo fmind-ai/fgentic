@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"maunium.net/go/mautrix/event"
+	"maunium.net/go/mautrix/id"
 
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/state"
 )
@@ -49,7 +50,11 @@ func TestForgetCommandPurgesEveryOwnerBeforeReset(t *testing.T) {
 	b, _, evt, _, recorder := pollingHarness(t, &scriptedA2AClient{})
 	purger := &recordingSessionPurger{}
 	b.SetSessionPurger(purger)
-	prepareDirectoryBot(t, b, evt.RoomID)
+	ghost := b.as.Intent(id.NewUserID("agent-k8s", ownServer))
+	ghost.Registered = true
+	if err := b.as.StateStore.SetMembership(t.Context(), evt.RoomID, ghost.UserID, event.MembershipJoin); err != nil {
+		t.Fatal(err)
+	}
 	if err := b.store.SetContext(t.Context(), evt.RoomID.String(), "agent-k8s", "ctx-1", "@alice:"+ownServer); err != nil {
 		t.Fatal(err)
 	}

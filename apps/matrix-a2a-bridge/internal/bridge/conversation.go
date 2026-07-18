@@ -54,20 +54,27 @@ func (b *Bridge) handleForgetCommand(ctx context.Context, evt *event.Event, agen
 		})
 		return
 	}
+	// A forgettable context exists only after this local ghost has participated in the room. Reply
+	// through that already-joined identity: the generic command bot is not automatically invited to
+	// private rooms and must not gain broader membership just to acknowledge a deletion.
+	intent := b.as.Intent(id.NewUserID(localpart, b.cfg.ServerName))
+	notice := func(noticeCtx context.Context, body func() string) {
+		b.handleCommandNoticeAs(noticeCtx, evt, forgetCommand, intent, body)
+	}
 	runCtx := b.runCtx
 	if runCtx == nil {
 		runCtx = ctx
 	}
 	result := b.dispatcher.Enqueue(runCtx, evt.RoomID, func(jobCtx context.Context) {
 		message := b.forgetConversation(jobCtx, evt.RoomID.String(), localpart)
-		b.handleCommandNotice(jobCtx, evt, forgetCommand, func() string { return message })
+		notice(jobCtx, func() string { return message })
 	}, func() {
-		b.handleCommandNotice(context.WithoutCancel(ctx), evt, forgetCommand, func() string {
+		notice(context.WithoutCancel(ctx), func() string {
 			return "The conversation could not be forgotten because the bridge is stopping. Retry after it is ready."
 		})
 	})
 	if result != enqueueAccepted {
-		b.handleCommandNotice(ctx, evt, forgetCommand, func() string {
+		notice(ctx, func() string {
 			return "The conversation forget request could not be queued. Retry after current room work finishes."
 		})
 	}
