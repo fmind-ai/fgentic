@@ -42,6 +42,11 @@ resource "google_storage_bucket" "tfstate" {
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
 
+  # Pin the recovery window instead of inheriting a mutable Cloud Storage or organization default.
+  soft_delete_policy {
+    retention_duration_seconds = 604800 # 7 days
+  }
+
   versioning {
     enabled = true # roll back a corrupted/destroyed state
   }
