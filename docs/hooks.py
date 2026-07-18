@@ -13,10 +13,10 @@ from mkdocs.structure.pages import Page
 
 _DOCS_ROOT = Path(__file__).resolve().parent
 _REPO_ROOT = _DOCS_ROOT.parent
-_FENCED_BLOCK = re.compile(
-    r"^[ \t]*(?P<fence>`{3,}|~{3,})[^\n]*\n.*?^[ \t]*(?P=fence)[ \t]*$",
-    flags=re.MULTILINE | re.DOTALL,
+_FENCE_DELIMITER = re.compile(
+    r"^(?:[ \t]*>[ \t]?)*[ \t]*(?P<fence>`{3,}|~{3,})(?P<tail>[^\n]*)",
 )
+_INDENTED_CODE = re.compile(r"^(?:[ \t]*>[ \t]?)*(?: {4}|\t)")
 _HTML_CODE_BLOCK = re.compile(
     r"<(?P<tag>pre|code)\b[^>]*>.*?</(?P=tag)>\s*",
     flags=re.IGNORECASE | re.DOTALL,
@@ -67,7 +67,7 @@ def _rewrite_links_in_prose(markdown: str, source_path: Path) -> str:
 
     rendered: list[str] = []
     for line in markdown.splitlines(keepends=True):
-        if line.startswith(("    ", "\t")):
+        if _INDENTED_CODE.match(line):
             rendered.append(line)
             continue
 
@@ -98,12 +98,33 @@ def _rewrite_links_outside_html_code(markdown: str, source_path: Path) -> str:
 def _rewrite_links(markdown: str, source_path: Path) -> str:
     """Rewrite Markdown links outside all Markdown and HTML code contexts."""
     rendered: list[str] = []
-    cursor = 0
-    for fenced_block in _FENCED_BLOCK.finditer(markdown):
-        rendered.append(_rewrite_links_outside_html_code(markdown[cursor : fenced_block.start()], source_path))
-        rendered.append(fenced_block.group(0))
-        cursor = fenced_block.end()
-    rendered.append(_rewrite_links_outside_html_code(markdown[cursor:], source_path))
+    prose: list[str] = []
+    fence_character = ""
+    fence_length = 0
+
+    def flush_prose() -> None:
+        rendered.append(_rewrite_links_outside_html_code("".join(prose), source_path))
+        prose.clear()
+
+    for line in markdown.splitlines(keepends=True):
+        delimiter = _FENCE_DELIMITER.match(line)
+        if fence_character:
+            rendered.append(line)
+            if delimiter:
+                fence = delimiter.group("fence")
+                if fence[0] == fence_character and len(fence) >= fence_length and not delimiter.group("tail").strip():
+                    fence_character = ""
+                    fence_length = 0
+            continue
+        if delimiter:
+            flush_prose()
+            rendered.append(line)
+            fence = delimiter.group("fence")
+            fence_character = fence[0]
+            fence_length = len(fence)
+            continue
+        prose.append(line)
+    flush_prose()
     return "".join(rendered)
 
 

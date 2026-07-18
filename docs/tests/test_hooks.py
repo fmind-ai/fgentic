@@ -41,6 +41,11 @@ class RewriteLinksTest(TestCase):
 
         self.assertEqual(_rewrite_links(markdown, Path("site.md")), markdown)
 
+    def test_preserves_fenced_code_in_blockquote(self) -> None:
+        markdown = "> ```markdown\n> [workflow](../.github/workflows/docs.yml)\n> ```"
+
+        self.assertEqual(_rewrite_links(markdown, Path("site.md")), markdown)
+
     def test_preserves_inline_code(self) -> None:
         markdown = "Use `[workflow](../.github/workflows/docs.yml)` as an example."
 
@@ -48,6 +53,11 @@ class RewriteLinksTest(TestCase):
 
     def test_preserves_indented_code(self) -> None:
         markdown = "    [workflow](../.github/workflows/docs.yml)\n"
+
+        self.assertEqual(_rewrite_links(markdown, Path("site.md")), markdown)
+
+    def test_preserves_indented_code_in_blockquote(self) -> None:
+        markdown = ">     [workflow](../.github/workflows/docs.yml)\n"
 
         self.assertEqual(_rewrite_links(markdown, Path("site.md")), markdown)
 
