@@ -54,7 +54,7 @@ An in-repo Agent version binds the effective kagent Agent CRD and imported promp
 
 ## Version pins that bind each other (bump deliberately, together)
 
-1. Gateway API CRDs **v1.4.0 experimental** ↔ agentgateway v1.3.1 (watches TCPRoute v1alpha2, removed in v1.6) ↔ traefik chart **39.x** (proxy v3.6; v3.7 expects Gateway API v1.6). CRDs are the one out-of-band install (see the matrix-agents bootstrap runbook).
+1. Gateway API CRDs **v1.5.1 experimental** ↔ agentgateway v1.3.1 (officially supports Gateway API 1.3–1.5 and still watches TCPRoute v1alpha2) ↔ Traefik chart **41.0.2** (proxy v3.7.6; supports Gateway API v1.5.1). Gateway API v1.6 deprecates rather than removes TCPRoute v1alpha2, but is outside agentgateway 1.3.x's supported range; advance it with agentgateway v1.4 after that controller's TCPRoute v1 transition. CRDs are the one out-of-band install (see the matrix-agents bootstrap runbook).
 1. kagent charts come via an **OCI-type HelmRepository**, never `chartRef` → OCIRepository (Flux appends digest build-metadata that kagent stamps into a label, which breaks the release).
 1. The bridge deploys by **immutable digest** written by CD — the local overlay swaps it for the side-loaded `matrix-a2a-bridge:local` image.
 

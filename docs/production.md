@@ -47,11 +47,11 @@ For the optional GKE reference, apply [`infra/terraform/bootstrap/`](../infra/te
    mise run cluster:up
    ```
 
-1. Install the pinned experimental Gateway API v1.4.0 CRDs. This is the only out-of-band CRD bundle:
+1. Install the pinned experimental Gateway API v1.5.1 CRDs. This is the only out-of-band CRD bundle:
 
    ```bash
    kubectl apply --server-side \
-     -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.4.0/experimental-install.yaml
+     -f https://github.com/kubernetes-sigs/gateway-api/releases/download/v1.5.1/experimental-install.yaml
    ```
 
 1. Set the chosen `llm_provider` and `llm_model` in `clusters/<env>/platform-settings.yaml`, export the selected API key if applicable, and generate the complete encrypted secret set:
