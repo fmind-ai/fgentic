@@ -1,0 +1,134 @@
+# yaml-language-server: $schema=https://squidfunk.github.io/mkdocs-material/schema.json
+site_name: Fgentic
+site_description: Sovereignty-first AI-agent collaboration on open standards
+site_url: https://fmind-ai.github.io/fgentic/
+repo_url: https://github.com/fmind-ai/fgentic
+repo_name: fmind-ai/fgentic
+edit_uri: edit/main/docs/
+docs_dir: .
+site_dir: ../.agents/tmp/docs-site
+exclude_docs: |
+  __pycache__/
+  hooks.py
+  mkdocs.yml
+  pyproject.toml
+  tests/
+  uv.lock
+strict: true
+hooks:
+  - hooks.py
+theme:
+  name: material
+  font: false
+  features:
+    - content.action.edit
+    - content.action.view
+    - navigation.indexes
+    - navigation.sections
+    - navigation.top
+    - search.highlight
+    - search.suggest
+plugins:
+  - search
+markdown_extensions:
+  - admonition
+  - attr_list
+  - md_in_html
+  - meta
+  - pymdownx.details
+  - pymdownx.highlight:
+      anchor_linenums: true
+      line_spans: __span
+  - pymdownx.inlinehilite
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+  - pymdownx.tabbed:
+      alternate_style: true
+  - tables
+  - toc:
+      permalink: true
+      slugify: !!python/object/apply:pymdownx.slugs.slugify
+        kwds:
+          case: lower-ascii
+validation:
+  links:
+    anchors: warn
+    absolute_links: warn
+    not_found: warn
+    unrecognized_links: warn
+nav:
+  - Home: index.md
+  - Adoption:
+      - Adopter decision brief: adopter-decision-brief.md
+      - Inbound migration: migration-guide.md
+      - Open agentic stack: open-stack.md
+      - Incumbent chat coexistence: chat-coexistence.md
+      - Forking and adapting: forking.md
+      - Exit strategy: exit-strategy.md
+      - Persona onboarding:
+          - Overview: onboarding/index.md
+          - Security lead: onboarding/security-lead.md
+          - Data protection officer: onboarding/dpo.md
+          - Platform engineer: onboarding/platform-engineer.md
+          - Developer: onboarding/developer.md
+          - End user: onboarding/end-user.md
+  - Architecture:
+      - Architecture and vision: architecture.md
+      - Design decisions D1-D20: design-decisions.md
+      - Bridge specification: bridge.md
+      - Identity and SSO: identity.md
+      - Model profiles: models.md
+      - Sovereign grounding: grounding.md
+      - Federation: federation.md
+      - Fediverse interop: fediverse.md
+      - External-network interop: interop.md
+      - Observability: observability.md
+      - Licensing: licensing.md
+      - Roadmap: roadmap.md
+      - Stability contract: stability.md
+  - Operations:
+      - Production installation: production.md
+      - Day-2 handbook: operations-handbook.md
+      - Cost dashboards: cost-dashboards.md
+      - Partner onboarding: federation-onboarding.md
+      - Partner offboarding: federation-offboarding.md
+      - Attribution audit: audit.md
+      - Retention and erasure: retention.md
+      - Administrator console: admin-console.md
+      - Slack walkthrough: interop-slack.md
+      - Performance evidence: performance.md
+      - Hosted coding agents: hosted-agents.md
+      - Agent development reference: agent-reference.md
+      - Documentation site: site.md
+  - Security:
+      - Security boundaries: security.md
+      - Security and auditor dossier: security-whitepaper.md
+      - Deep dives:
+          - Overview: security/index.md
+          - Threat model: security/threat-model.md
+          - Prompt injection: security/prompt-injection.md
+          - Supply chain: security/supply-chain.md
+  - Architecture decisions:
+      - Index: adr/index.md
+      - 0001 Open-standard agent platform: adr/0001-open-standard-agent-platform.md
+      - 0002 Matrix collaboration fabric: adr/0002-matrix-collaboration-fabric.md
+      - 0003 Synapse, MAS, and Element: adr/0003-synapse-mas-element-ess.md
+      - 0004 A2A delegation: adr/0004-a2a-delegation.md
+      - 0005 Matrix-to-A2A bridge: adr/0005-matrix-a2a-bridge-appservice.md
+      - 0006 Agentgateway chokepoint: adr/0006-agentgateway-chokepoint.md
+      - 0007 Shared Postgres: adr/0007-shared-postgres-db-per-service.md
+      - 0008 Unencrypted agent rooms: adr/0008-unencrypted-agent-rooms.md
+      - 0009 Agent authorization: adr/0009-agent-authorization-model.md
+      - 0010 Defer SPIFFE: adr/0010-defer-spiffe-workload-identity.md
+      - 0011 Teams coexistence: adr/0011-teams-coexistence-not-bridge.md
+      - 0012 Bridge decomposition budget: adr/0012-bridge-decomposition-surface-budget.md
+      - 0013 Federation acceptance rig: adr/0013-federation-lab-acceptance-rig.md
+      - 0014 ActivityPub transport: adr/0014-activitypub-second-federation-transport.md
+      - 0015 Federated-room encryption: adr/0015-federated-room-encryption.md
+      - 0016 Durable delegation ledger: adr/0016-durable-delegation-ledger.md
+      - 0017 Permission-aware identity: adr/0017-permission-aware-identity-binding.md
+      - 0018 Content-bounded identity audit: adr/0018-content-bounded-identity-audit.md
+      - 0019 Synapse media store: adr/0019-synapse-media-store.md
