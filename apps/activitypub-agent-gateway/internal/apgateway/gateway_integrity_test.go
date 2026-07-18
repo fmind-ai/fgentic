@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"encoding/json"
 	"log/slog"
 	"net/http"
@@ -12,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/delivery"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/integrity"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/policy"
@@ -92,6 +94,47 @@ func TestUnsignedGatewayServesNoProof(t *testing.T) {
 	out := do(t, g, http.MethodGet, "/ap/agents/agent-docs-qa/outbox", "")
 	if strings.Contains(out.Body.String(), "DataIntegrityProof") {
 		t.Errorf("unsigned gateway must not emit a proof: %s", out.Body)
+	}
+}
+
+func TestAgentActorPublishesResolvableTransportKey(t *testing.T) {
+	g := newTestGateway(t, &fakeDelegator{})
+	transportKey, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	if err := g.UseDelivery(delivery.New(http.DefaultClient, transportKey, slog.Default()), http.DefaultClient); err != nil {
+		t.Fatalf("UseDelivery: %v", err)
+	}
+
+	actor := do(t, g, http.MethodGet, "/ap/agents/agent-docs-qa", "")
+	var doc map[string]any
+	if err := json.Unmarshal(actor.Body.Bytes(), &doc); err != nil {
+		t.Fatalf("unmarshal actor: %v", err)
+	}
+	publicKey, ok := doc["publicKey"].(map[string]any)
+	if !ok {
+		t.Fatalf("publicKey = %v", doc["publicKey"])
+	}
+	actorID := "https://fgentic.localhost/ap/agents/agent-docs-qa"
+	if publicKey["id"] != actorID+"#main-key" || publicKey["owner"] != actorID {
+		t.Errorf("publicKey identity = %+v", publicKey)
+	}
+	parsed, err := httpsig.ParsePublicKeyPEM(publicKey["publicKeyPem"].(string))
+	if err != nil {
+		t.Fatalf("ParsePublicKeyPEM: %v", err)
+	}
+	rsaPublic, ok := parsed.(*rsa.PublicKey)
+	if !ok || rsaPublic.N.Cmp(transportKey.N) != 0 {
+		t.Errorf("published key = %T, want configured RSA key", parsed)
+	}
+}
+
+func TestGatewayRejectsNonRSATransportKey(t *testing.T) {
+	g := newTestGateway(t, &fakeDelegator{})
+	_, key, _ := ed25519.GenerateKey(rand.Reader)
+	if err := g.UseDelivery(delivery.New(http.DefaultClient, key, slog.Default()), http.DefaultClient); err == nil {
+		t.Fatal("gateway must reject a non-RSA transport key")
 	}
 }
 

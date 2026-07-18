@@ -67,6 +67,9 @@ func (d *Deliverer) Deliver(ctx context.Context, inboxURL, senderActorID string,
 	if parsedURL.Host == "" {
 		return fmt.Errorf("parse delivery inbox %q: missing authority", inboxURL)
 	}
+	if !strings.EqualFold(parsedURL.Scheme, "https") {
+		return fmt.Errorf("parse delivery inbox %q: public federation requires https", inboxURL)
+	}
 	server := strings.ToLower(parsedURL.Host)
 	first := d.profiles.get(server)
 	status, err := d.deliver(ctx, inboxURL, senderActorID, activity, first)
@@ -84,6 +87,14 @@ func (d *Deliverer) Deliver(ctx context.Context, inboxURL, senderActorID string,
 	}
 	d.profiles.set(server, second)
 	return nil
+}
+
+// PublicKey returns the transport key remote actors must discover as #main-key.
+func (d *Deliverer) PublicKey() crypto.PublicKey {
+	if d == nil || d.priv == nil {
+		return nil
+	}
+	return d.priv.Public()
 }
 
 func (d *Deliverer) deliver(

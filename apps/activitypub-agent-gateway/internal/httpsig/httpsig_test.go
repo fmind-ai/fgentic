@@ -13,6 +13,8 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -266,6 +268,43 @@ func TestHTTPKeyResolver(t *testing.T) {
 
 	if _, err := resolver.Resolve(context.Background(), "#frag-only"); err == nil {
 		t.Errorf("expected error for empty document URL")
+	}
+}
+
+func TestLoadRSAPrivateKeyFromFile(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	der, err := x509.MarshalPKCS8PrivateKey(key)
+	if err != nil {
+		t.Fatalf("MarshalPKCS8PrivateKey: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "rsa.pem")
+	if err := os.WriteFile(path, pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	loaded, err := LoadRSAPrivateKeyFromFile(path)
+	if err != nil {
+		t.Fatalf("LoadRSAPrivateKeyFromFile: %v", err)
+	}
+	if loaded.N.Cmp(key.N) != 0 {
+		t.Error("loaded RSA key does not match source key")
+	}
+}
+
+func TestLoadRSAPrivateKeyRejectsWeakKey(t *testing.T) {
+	key, err := rsa.GenerateKey(rand.Reader, 1024)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "weak.pem")
+	data := pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)})
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatalf("write key: %v", err)
+	}
+	if _, err := LoadRSAPrivateKeyFromFile(path); err == nil {
+		t.Fatal("weak RSA key must be rejected")
 	}
 }
 

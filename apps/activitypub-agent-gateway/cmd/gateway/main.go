@@ -65,8 +65,8 @@ func run() error {
 
 	// Object integrity signing (FEP-8b32): when a key is mounted, outbound replies carry an
 	// eddsa-jcs-2022 proof and each actor publishes its assertionMethod Multikey. An empty
-	// INTEGRITY_KEY_PATH serves replies without a proof — valid for local-only dev. The same key is
-	// reused for Group HTTP-Signature delivery (one platform identity).
+	// INTEGRITY_KEY_PATH serves replies without a proof — valid for local-only dev. Transport HTTP
+	// signatures deliberately use the separate RSA key loaded below.
 	var signer *integrity.Signer
 	if cfg.IntegrityKeyPath != "" {
 		signer, err = integrity.LoadSignerFromFile(cfg.IntegrityKeyPath, cfg.IntegrityKeyFragment)
@@ -116,19 +116,26 @@ func run() error {
 		log.Warn("federation policy border DISABLED (POLICY_PATH empty) — local-only dev posture")
 	}
 
-	// Outbound federation (issues #217, #219): group fan-out and the agent status feed both sign
-	// deliveries with the object-integrity key and share the follower store. Config validation
-	// guarantees the signer and border are present whenever either is enabled.
+	// Outbound federation (issues #217, #219): group fan-out and the agent status feed share one
+	// dedicated RSA HTTP-signature key and follower store. The Ed25519 key above remains scoped to
+	// long-lived object proofs. Config validation guarantees both keys and the border are present.
 	if cfg.GroupsPath != "" || cfg.StatusFeedEnabled {
-		deliverer := delivery.New(&http.Client{Timeout: cfg.RequestTimeout}, signer.PrivateKey(), log)
-		gateway.UseDelivery(deliverer, &http.Client{Timeout: cfg.RequestTimeout})
+		httpSigner, loadErr := httpsig.LoadRSAPrivateKeyFromFile(cfg.HTTPSignatureKeyPath)
+		if loadErr != nil {
+			return loadErr
+		}
+		deliverer := delivery.New(&http.Client{Timeout: cfg.RequestTimeout}, httpSigner, log)
 		if cfg.GroupsPath != "" {
 			groupRegistry, gerr := apgateway.LoadGroupRegistry(cfg.GroupsPath)
 			if gerr != nil {
 				return gerr
 			}
-			gateway.UseGroups(groupRegistry, deliverer, &http.Client{Timeout: cfg.RequestTimeout})
+			if gerr := gateway.UseGroups(groupRegistry, deliverer, &http.Client{Timeout: cfg.RequestTimeout}); gerr != nil {
+				return gerr
+			}
 			log.Info("group collaboration ENABLED", "groups", groupRegistry.Groups())
+		} else if derr := gateway.UseDelivery(deliverer, &http.Client{Timeout: cfg.RequestTimeout}); derr != nil {
+			return derr
 		}
 		if cfg.StatusFeedEnabled {
 			// Two keys per agent (actor + domain), so the limiter capacity scales with the roster.

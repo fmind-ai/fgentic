@@ -105,6 +105,10 @@ spec:
             - name: INTEGRITY_REQUIRE_INBOUND
               value: {{ .Values.integrity.requireInbound | quote }}
             {{- end }}
+            {{- if or .Values.groups.enabled .Values.statusFeed.enabled }}
+            - name: HTTP_SIGNATURE_KEY_PATH
+              value: /etc/activitypub-agent-gateway/http-signature-key/{{ .Values.httpSignature.secretKey }}
+            {{- end }}
             {{- if .Values.identity.enabled }}
             - name: IDENTITY_KEY_PATH
               value: /etc/activitypub-agent-gateway/identity-key/{{ .Values.identity.secretKey }}
@@ -143,6 +147,11 @@ spec:
             {{- if .Values.integrity.enabled }}
             - name: signing-key
               mountPath: /etc/activitypub-agent-gateway/signing-key
+              readOnly: true
+            {{- end }}
+            {{- if or .Values.groups.enabled .Values.statusFeed.enabled }}
+            - name: http-signature-key
+              mountPath: /etc/activitypub-agent-gateway/http-signature-key
               readOnly: true
             {{- end }}
             {{- if .Values.identity.enabled }}
@@ -184,6 +193,12 @@ spec:
         - name: signing-key
           secret:
             secretName: {{ .Values.integrity.secretName }}
+            defaultMode: 0400
+        {{- end }}
+        {{- if or .Values.groups.enabled .Values.statusFeed.enabled }}
+        - name: http-signature-key
+          secret:
+            secretName: {{ .Values.httpSignature.secretName }}
             defaultMode: 0400
         {{- end }}
         {{- if .Values.identity.enabled }}

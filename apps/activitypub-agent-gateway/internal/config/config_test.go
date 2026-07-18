@@ -86,19 +86,47 @@ func TestValidateRejectsBadInput(t *testing.T) {
 			c.BudgetWindow = time.Minute
 			c.BudgetCapacity = 0
 		},
-		"groups no key": func(c *Config) { c.GroupsPath = "/g"; c.IntegrityKeyPath = ""; c.PolicyPath = "/p" },
-		"groups no pol": func(c *Config) { c.GroupsPath = "/g"; c.IntegrityKeyPath = "/k"; c.PolicyPath = "" },
-		"status no key": func(c *Config) { c.StatusFeedEnabled = true; c.IntegrityKeyPath = ""; c.PolicyPath = "/p" },
-		"status no pol": func(c *Config) { c.StatusFeedEnabled = true; c.IntegrityKeyPath = "/k"; c.PolicyPath = "" },
+		"groups no object key": func(c *Config) {
+			c.GroupsPath = "/g"
+			c.HTTPSignatureKeyPath = "/h"
+			c.PolicyPath = "/p"
+		},
+		"groups no http key": func(c *Config) {
+			c.GroupsPath = "/g"
+			c.IntegrityKeyPath = "/k"
+			c.PolicyPath = "/p"
+		},
+		"groups no pol": func(c *Config) {
+			c.GroupsPath = "/g"
+			c.IntegrityKeyPath = "/k"
+			c.HTTPSignatureKeyPath = "/h"
+		},
+		"status no object key": func(c *Config) {
+			c.StatusFeedEnabled = true
+			c.HTTPSignatureKeyPath = "/h"
+			c.PolicyPath = "/p"
+		},
+		"status no http key": func(c *Config) {
+			c.StatusFeedEnabled = true
+			c.IntegrityKeyPath = "/k"
+			c.PolicyPath = "/p"
+		},
+		"status no pol": func(c *Config) {
+			c.StatusFeedEnabled = true
+			c.IntegrityKeyPath = "/k"
+			c.HTTPSignatureKeyPath = "/h"
+		},
 		"status window": func(c *Config) {
 			c.StatusFeedEnabled = true
 			c.IntegrityKeyPath = "/k"
+			c.HTTPSignatureKeyPath = "/h"
 			c.PolicyPath = "/p"
 			c.StatusWindow = 0
 		},
 		"status max": func(c *Config) {
 			c.StatusFeedEnabled = true
 			c.IntegrityKeyPath = "/k"
+			c.HTTPSignatureKeyPath = "/h"
 			c.PolicyPath = "/p"
 			c.StatusWindow = time.Minute
 			c.StatusMaxPerWindow = 0

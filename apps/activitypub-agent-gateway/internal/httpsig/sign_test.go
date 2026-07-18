@@ -78,6 +78,26 @@ func TestSignWithProfileReplacesOtherProfileHeaders(t *testing.T) {
 	}
 }
 
+func TestRFC9421TargetURIUsesRequestScheme(t *testing.T) {
+	req, err := http.NewRequest(http.MethodPost, "http://remote.example/inbox?shared=true", nil)
+	if err != nil {
+		t.Fatalf("NewRequest: %v", err)
+	}
+	parsed := parsedSignature{
+		components:      []string{"@target-uri"},
+		signatureParams: `("@target-uri");created=1;keyid="key";alg="ed25519"`,
+	}
+	got, err := parsed.signingStringRFC9421(req)
+	if err != nil {
+		t.Fatalf("signingStringRFC9421: %v", err)
+	}
+	want := "\"@target-uri\": http://remote.example/inbox?shared=true\n" +
+		"\"@signature-params\": " + parsed.signatureParams
+	if got != want {
+		t.Errorf("signing string = %q, want %q", got, want)
+	}
+}
+
 func (r signResolver) Resolve(context.Context, string) (PublicKey, error) {
 	return PublicKey{Key: r.key, Owner: r.owner}, nil
 }

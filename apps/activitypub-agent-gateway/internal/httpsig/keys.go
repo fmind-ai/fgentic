@@ -3,17 +3,55 @@ package httpsig
 import (
 	"context"
 	"crypto"
+	"crypto/rsa"
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 )
 
 // maxKeyDocBytes bounds an untrusted actor/key document fetch.
 const maxKeyDocBytes = 1 << 20 // 1 MiB
+
+// LoadRSAPrivateKeyFromFile loads the dedicated HTTP-signature key. Transport authentication uses
+// RSA independently from the Ed25519 object-integrity key because RSA PKCS#1 v1.5 with SHA-256 is
+// the Fediverse interoperability baseline.
+func LoadRSAPrivateKeyFromFile(path string) (*rsa.PrivateKey, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, fmt.Errorf("read HTTP-signature key %s: %w", path, err)
+	}
+	block, _ := pem.Decode(data)
+	if block == nil {
+		return nil, fmt.Errorf("decode HTTP-signature key %s: no PEM block", path)
+	}
+
+	var key *rsa.PrivateKey
+	parsed, parseErr := x509.ParsePKCS8PrivateKey(block.Bytes)
+	if parseErr == nil {
+		var ok bool
+		key, ok = parsed.(*rsa.PrivateKey)
+		if !ok {
+			return nil, fmt.Errorf("parse HTTP-signature key %s: PKCS#8 key is %T, want RSA", path, parsed)
+		}
+	} else {
+		key, err = x509.ParsePKCS1PrivateKey(block.Bytes)
+		if err != nil {
+			return nil, fmt.Errorf("parse HTTP-signature key %s as PKCS#8 (%w) or PKCS#1: %w", path, parseErr, err)
+		}
+	}
+	if key.N.BitLen() < 2048 {
+		return nil, fmt.Errorf("parse HTTP-signature key %s: RSA modulus is %d bits, want at least 2048", path, key.N.BitLen())
+	}
+	if err := key.Validate(); err != nil {
+		return nil, fmt.Errorf("validate HTTP-signature key %s: %w", path, err)
+	}
+	return key, nil
+}
 
 // HTTPKeyResolver fetches the signing actor's public key from its keyId URL. The fetched key is
 // untrusted trust material: the caller still binds the returned owner to the activity actor and

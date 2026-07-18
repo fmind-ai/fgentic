@@ -24,7 +24,9 @@ An unsigned, off-allowlist, or mis-bound inbound is dropped with content-free ev
 
 Outbound inbox delivery prefers **RFC 9421**, signing `@method`, `@target-uri`, and the RFC 9530 `Content-Digest` with a `created` timestamp. A synchronous `401` triggers one Cavage retry; the successful profile is remembered per remote authority in a bounded, process-local cache. Network errors and 5xx responses are never retried with the other profile because the remote may already have processed the activity.
 
-Both profiles support RSA PKCS#1 v1.5 with SHA-256, the Mastodon interoperability baseline, while retaining Ed25519 for the gateway's existing sovereign actor key. FEP-8b32/844e/c390 object-layer proofs are independent of this hop-by-hop transport negotiation.
+Both profiles use a dedicated RSA PKCS#1 v1.5/SHA-256 transport key, the Mastodon interoperability baseline, published as each delivering actor's `#main-key`. The separate Ed25519 key continues to sign FEP-8b32 object proofs, so FEP-8b32/844e/c390 object-layer identities remain independent of this hop-by-hop negotiation.
+
+When Group or status-feed delivery is enabled, set `HTTP_SIGNATURE_KEY_PATH` to a PKCS#8 or PKCS#1 RSA private key of at least 2048 bits. The Helm chart mounts `httpSignature.secretKey` (`rsa.pem`) from the SOPS-backed signing Secret alongside—but never in place of—the Ed25519 integrity key.
 
 ## Layout
 

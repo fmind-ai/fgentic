@@ -2,8 +2,10 @@ package delivery
 
 import (
 	"context"
+	"crypto"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/rsa"
 	"io"
 	"log/slog"
 	"net/http"
@@ -27,7 +29,7 @@ type captureInbox struct {
 }
 
 type fixedResolver struct {
-	key   ed25519.PublicKey
+	key   crypto.PublicKey
 	owner string
 }
 
@@ -53,13 +55,13 @@ func (c *captureInbox) handler(t *testing.T) http.HandlerFunc {
 }
 
 func TestDeliverSignsAndPosts(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	const sender = "https://fgentic.localhost/ap/groups/collab"
-	inbox := &captureInbox{verifier: httpsig.NewVerifier(fixedResolver{key: pub, owner: sender}, time.Hour), status: http.StatusAccepted}
-	srv := httptest.NewServer(inbox.handler(t))
+	inbox := &captureInbox{verifier: httpsig.NewVerifier(fixedResolver{key: &priv.PublicKey, owner: sender}, time.Hour), status: http.StatusAccepted}
+	srv := httptest.NewTLSServer(inbox.handler(t))
 	defer srv.Close()
 
 	d := New(srv.Client(), priv, slog.Default())
@@ -76,16 +78,16 @@ func TestDeliverSignsAndPosts(t *testing.T) {
 }
 
 func TestDeliverFallsBackAndRemembersProfilePerServer(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	priv, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	const sender = "https://fgentic.localhost/ap/groups/collab"
-	verifier := httpsig.NewVerifier(fixedResolver{key: pub, owner: sender}, time.Hour)
+	verifier := httpsig.NewVerifier(fixedResolver{key: &priv.PublicKey, owner: sender}, time.Hour)
 	var mu sync.Mutex
 	var profiles []string
 
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		body, readErr := io.ReadAll(r.Body)
 		if readErr != nil {
 			t.Errorf("read body: %v", readErr)
@@ -116,7 +118,6 @@ func TestDeliverFallsBackAndRemembersProfilePerServer(t *testing.T) {
 			t.Fatalf("Deliver: %v", deliverErr)
 		}
 	}
-
 	mu.Lock()
 	defer mu.Unlock()
 	want := []string{string(httpsig.ProfileRFC9421), string(httpsig.ProfileCavage), string(httpsig.ProfileCavage)}
@@ -133,7 +134,7 @@ func TestDeliverFallsBackAndRemembersProfilePerServer(t *testing.T) {
 func TestDeliverErrorsOnNon2xx(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	var requests atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
@@ -150,7 +151,7 @@ func TestDeliverErrorsOnNon2xx(t *testing.T) {
 func TestDeliverReturnsBothProfileFailures(t *testing.T) {
 	_, priv, _ := ed25519.GenerateKey(rand.Reader)
 	var requests atomic.Int32
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		requests.Add(1)
 		w.WriteHeader(http.StatusUnauthorized)
 	}))
@@ -181,13 +182,21 @@ func TestProfileMemoryIsBounded(t *testing.T) {
 	}
 }
 
+func TestDeliverRejectsPlainHTTP(t *testing.T) {
+	_, priv, _ := ed25519.GenerateKey(rand.Reader)
+	d := New(http.DefaultClient, priv, slog.Default())
+	if err := d.Deliver(context.Background(), "http://remote.example/inbox", "https://sender.example/actor", nil); err == nil {
+		t.Fatal("plain HTTP delivery must be rejected before any request")
+	}
+}
+
 func TestFanoutIsBestEffort(t *testing.T) {
 	pub, priv, _ := ed25519.GenerateKey(rand.Reader)
 	const sender = "https://fgentic.localhost/ap/groups/collab"
 	inbox := &captureInbox{verifier: httpsig.NewVerifier(fixedResolver{key: pub, owner: sender}, time.Hour), status: http.StatusOK}
-	good := httptest.NewServer(inbox.handler(t))
+	good := httptest.NewTLSServer(inbox.handler(t))
 	defer good.Close()
-	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) }))
+	bad := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) }))
 	defer bad.Close()
 
 	d := New(good.Client(), priv, slog.Default())
