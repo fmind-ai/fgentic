@@ -113,6 +113,11 @@ variable "dns_zone_name" {
   type        = string
   default     = "fgentic"
   description = "Name of the Cloud DNS managed zone Terraform creates for var.domain"
+
+  validation {
+    condition     = length(var.dns_zone_name) <= 63 && can(regex("^[a-z]([a-z0-9-]*[a-z0-9])?$", var.dns_zone_name))
+    error_message = "dns_zone_name must be 1-63 characters, use only lowercase letters, numbers, and hyphens, start with a letter, and end with a letter or number."
+  }
 }
 
 variable "master_authorized_networks" {
