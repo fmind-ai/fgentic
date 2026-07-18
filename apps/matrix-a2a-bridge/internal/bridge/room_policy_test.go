@@ -140,7 +140,23 @@ func TestRoomAdmissionResolvesLocalBootstrapAlias(t *testing.T) {
 			return
 		}
 		if strings.Contains(req.URL.Path, "missing") {
-			http.NotFound(w, req)
+			w.WriteHeader(http.StatusNotFound)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"errcode": "M_NOT_FOUND",
+				"error":   "Room alias not found",
+			})
+			return
+		}
+		if strings.Contains(req.URL.Path, "unavailable") {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"errcode": "M_UNKNOWN",
+				"error":   "Alias directory unavailable",
+			})
+			return
+		}
+		if strings.Contains(req.URL.Path, "malformed") {
+			_ = json.NewEncoder(w).Encode(map[string]any{})
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]any{"room_id": roomID, "servers": []string{ownServer}})
@@ -176,8 +192,8 @@ func TestRoomAdmissionResolvesLocalBootstrapAlias(t *testing.T) {
 	if reason := b.roomAdmission(t.Context(), ref, "agent-k8s", roomID); reason != "" {
 		t.Fatalf("resolved alias admission reason = %q", reason)
 	}
-	if reason := b.roomAdmission(t.Context(), ref, "agent-k8s", "!unbound:"+ownServer); reason != errorRoomBindingUnavailable {
-		t.Fatalf("partially resolved aliases reason = %q, want %q", reason, errorRoomBindingUnavailable)
+	if reason := b.roomAdmission(t.Context(), ref, "agent-k8s", "!unbound:"+ownServer); reason != errorRoomBinding {
+		t.Fatalf("missing and non-matching aliases reason = %q, want %q", reason, errorRoomBinding)
 	}
 
 	resolvedAgents, err := LoadAgents(writeTemp(t, `agents:
@@ -192,5 +208,23 @@ func TestRoomAdmissionResolvesLocalBootstrapAlias(t *testing.T) {
 	resolvedRef, _ := resolvedAgents.Lookup("agent-k8s")
 	if reason := b.roomAdmission(t.Context(), resolvedRef, "agent-k8s", "!unbound:"+ownServer); reason != errorRoomBinding {
 		t.Fatalf("resolved non-matching aliases reason = %q, want %q", reason, errorRoomBinding)
+	}
+
+	for _, alias := range []string{"unavailable", "malformed"} {
+		t.Run(alias, func(t *testing.T) {
+			unavailableAgents, err := LoadAgents(writeTemp(t, `agents:
+  agent-k8s:
+    namespace: kagent
+    name: k8s-agent
+    allowedRooms: ["#`+alias+`:fgentic.fmind.ai"]
+`))
+			if err != nil {
+				t.Fatalf("LoadAgents %s alias: %v", alias, err)
+			}
+			unavailableRef, _ := unavailableAgents.Lookup("agent-k8s")
+			if reason := b.roomAdmission(t.Context(), unavailableRef, "agent-k8s", "!unbound:"+ownServer); reason != errorRoomBindingUnavailable {
+				t.Fatalf("%s alias reason = %q, want %q", alias, reason, errorRoomBindingUnavailable)
+			}
+		})
 	}
 }

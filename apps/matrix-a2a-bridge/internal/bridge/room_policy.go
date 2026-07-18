@@ -2,8 +2,10 @@ package bridge
 
 import (
 	"context"
+	"errors"
 	"strings"
 
+	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -69,7 +71,14 @@ func (b *Bridge) roomBound(ctx context.Context, ref *AgentRef, roomID id.RoomID)
 			continue
 		}
 		resolved, err := intent.ResolveAlias(ctx, alias)
+		if errors.Is(err, mautrix.MNotFound) {
+			continue
+		}
 		if err != nil || resolved == nil {
+			lookupFailed = true
+			continue
+		}
+		if resolved.RoomID == "" || resolved.RoomID[0] != '!' || validateMatrixRoomReference(resolved.RoomID.String()) != nil {
 			lookupFailed = true
 			continue
 		}

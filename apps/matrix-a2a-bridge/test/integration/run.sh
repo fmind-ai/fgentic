@@ -12,6 +12,7 @@ readonly FIXTURE_SETTINGS="${FIXTURE_SETTINGS:-}"
 readonly DRIVER_MANIFEST="${DRIVER_MANIFEST:-driver-job.yaml}"
 readonly DRIVER_JOB_NAME="${DRIVER_JOB_NAME:-integration-driver}"
 readonly DRIVER_WAIT_TIMEOUT="${DRIVER_WAIT_TIMEOUT:-240s}"
+readonly PRE_KILL_AUDIT_EXPECTED='{"managed_room_reasons":["ghost_membership_required","room_binding_rejected"],"unauthorized_invites":1,"agent_card_denials":1,"content_bearing_records":0}'
 # Kubernetes 1.34 is the newest line that supports both cgroup v1 developer hosts and the
 # cgroup v2 GitHub runner. Kubernetes 1.35 intentionally refuses to start on cgroup v1.
 readonly KIND_NODE_IMAGE="kindest/node:v1.34.0@sha256:7416a61b42b1662ca6ca89f02028ac133a309a2a30ba309614e8ec94d976dc5a"
@@ -221,6 +222,63 @@ wait_for_dead_man_armed() {
   done
   echo "Error: integration driver did not durably arm exactly one delayed-event dead-man switch within 60s (jobs=${armed_jobs:-unknown})" >&2
   print_driver_logs
+  return 1
+}
+
+pre_kill_audit_summary() {
+  jq -Rsc '
+    [split("\n")[] | fromjson?] as $records
+    | ([$records[] | select(
+        .log_stream == "audit"
+        and .msg == "delegation audit"
+        and .ghost == "agent-integration"
+        and .terminal_stage == "room_authorization"
+        and (.terminal_reason == "room_binding_rejected" or
+          .terminal_reason == "ghost_membership_required")
+        and .rate_limit_verdict == "not_checked"
+        and .a2a_attempted == false
+      )]) as $managed
+    | ([$records[] | select(
+        .log_stream == "audit"
+        and .audit_schema == "fgentic.managed_room_invite.v1"
+        and .outcome == "denied"
+        and .reason == "invite_sender_rejected"
+      )]) as $invites
+    | ([$records[] | select(
+        .log_stream == "audit"
+        and .msg == "delegation audit"
+        and .ghost == "agent-plain"
+        and .outcome == "denied"
+        and .terminal_stage == "agent_card"
+        and .terminal_reason == "agent_card_untrusted"
+        and .rate_limit_verdict == "not_checked"
+        and .a2a_attempted == false
+      )]) as $cards
+    | {
+        managed_room_reasons: ([$managed[] | .terminal_reason] | sort),
+        unauthorized_invites: ($invites | length),
+        agent_card_denials: ($cards | length),
+        content_bearing_records: ([$managed + $invites + $cards | .[] | select(
+          has("content") or has("body") or has("prompt")
+        )] | length)
+      }
+  '
+}
+
+wait_for_pre_kill_audits() {
+  local deadline=$((SECONDS + 60))
+  local bridge_logs=""
+  local summary=""
+  while ((SECONDS < deadline)); do
+    if bridge_logs="$(
+      kubectl --request-timeout=5s --namespace "${NAMESPACE}" logs deployment/bridge \
+        --container bridge 2>/dev/null
+    )" && summary="$(pre_kill_audit_summary <<<"${bridge_logs}")" && [[ "${summary}" == "${PRE_KILL_AUDIT_EXPECTED}" ]]; then
+      return 0
+    fi
+    sleep 0.5
+  done
+  echo "Error: bridge did not emit the complete pre-kill audit contract within 60s: ${summary:-unavailable}" >&2
   return 1
 }
 
@@ -658,6 +716,8 @@ fi
 echo "==> Running ${SCENARIO} scenario"
 kubectl apply --filename "${SCRIPT_DIR}/${DRIVER_MANIFEST}"
 if [[ "${SCENARIO}" == "integration" ]]; then
+  echo "==> Waiting for the complete pre-kill audit contract"
+  wait_for_pre_kill_audits
   echo "==> Waiting for the server-owned delayed-event timer"
   wait_for_dead_man_armed
   hard_kill_dead_man_bridge
@@ -721,80 +781,11 @@ if [[ "${SCENARIO}" == "crash-recovery" ]]; then
 fi
 
 if [[ "${SCENARIO}" == "integration" ]]; then
-  echo "==> Verifying managed-room fail-closed audit"
-  managed_room_audits="$(
-    jq -Rsc '
-    [
-      split("\n")[]
-      | fromjson?
-      | select(
-          .log_stream == "audit"
-          and .msg == "delegation audit"
-          and .ghost == "agent-integration"
-          and .terminal_stage == "room_authorization"
-          and (.terminal_reason == "room_binding_rejected" or .terminal_reason == "ghost_membership_required")
-          and .rate_limit_verdict == "not_checked"
-          and .a2a_attempted == false
-          and (has("content") | not)
-          and (has("body") | not)
-          and (has("prompt") | not)
-        )
-      | .terminal_reason
-    ]
-    | unique
-    | sort
-    ' <"${dead_man_log_file}"
-  )"
-  readonly managed_room_audits
-  if [[ "${managed_room_audits}" != '["ghost_membership_required","room_binding_rejected"]' ]]; then
-    echo "Error: missing content-free managed-room denial evidence: ${managed_room_audits}" >&2
-    exit 1
-  fi
-  unauthorized_invites="$(
-    jq -Rsc '
-    [
-      split("\n")[]
-      | fromjson?
-      | select(
-          .log_stream == "audit"
-          and .audit_schema == "fgentic.managed_room_invite.v1"
-          and .outcome == "denied"
-          and .reason == "invite_sender_rejected"
-          and (has("content") | not)
-          and (has("body") | not)
-        )
-    ]
-    | length
-    ' <"${dead_man_log_file}"
-  )"
-  readonly unauthorized_invites
-  if [[ "${unauthorized_invites}" != "1" ]]; then
-    echo "Error: expected one content-free unauthorized invite audit, got ${unauthorized_invites}" >&2
-    exit 1
-  fi
-  echo "==> Verifying fail-closed remote AgentCard audit"
-  untrusted_audits="$(
-    jq -Rsc '
-    [
-      split("\n")[]
-      | fromjson?
-      | select(
-          .log_stream == "audit"
-          and .msg == "delegation audit"
-          and .ghost == "agent-plain"
-          and .outcome == "denied"
-          and .terminal_stage == "agent_card"
-          and .terminal_reason == "agent_card_untrusted"
-          and .rate_limit_verdict == "not_checked"
-          and .a2a_attempted == false
-        )
-    ]
-    | length
-    ' <"${dead_man_log_file}"
-  )"
-  readonly untrusted_audits
-  if [[ "${untrusted_audits}" != "1" ]]; then
-    echo "Error: expected one content-free agent_card_untrusted audit, got ${untrusted_audits}" >&2
+  echo "==> Verifying complete content-free pre-kill audit contract"
+  pre_kill_summary="$(pre_kill_audit_summary <"${dead_man_log_file}")"
+  readonly pre_kill_summary
+  if [[ "${pre_kill_summary}" != "${PRE_KILL_AUDIT_EXPECTED}" ]]; then
+    echo "Error: incomplete content-free pre-kill audit contract: ${pre_kill_summary}" >&2
     exit 1
   fi
 fi
