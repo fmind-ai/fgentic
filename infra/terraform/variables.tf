@@ -46,6 +46,11 @@ variable "node_count" {
   type        = number
   default     = 2
   description = "Nodes in the pool (2 gives the full stack room; raise for HA/headroom)"
+
+  validation {
+    condition     = var.node_count >= 1 && floor(var.node_count) == var.node_count
+    error_message = "node_count must be a positive whole number; regional clusters create this many nodes per zone."
+  }
 }
 
 variable "deletion_protection" {
