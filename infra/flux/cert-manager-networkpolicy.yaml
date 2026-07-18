@@ -35,8 +35,8 @@ spec:
           port: 9402
 ---
 # The webhook shares one Pod between admission, health, and unauthenticated metrics. Kubernetes
-# API-server source addresses vary between k3d and GKE, so keep only the authenticated TLS
-# admission port source-unrestricted. Kubelet probes on :6080 remain covered by Kubernetes'
+# API-server source addresses vary between k3d and GKE, so keep only the TLS admission port
+# source-unrestricted. Kubelet probes on :6080 remain covered by Kubernetes'
 # explicit local-node traffic exception; unrelated Pods receive no health-listener allowance.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
