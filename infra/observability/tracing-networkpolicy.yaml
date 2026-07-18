@@ -1,5 +1,6 @@
-# Every workload namespace may submit OTLP to the central Collector, as required by the platform
-# trace contract. Only Prometheus in this namespace may scrape its internal telemetry.
+# Only the explicitly instrumented workloads may submit OTLP to the central Collector. Keep the
+# transport grants exact: agentgateway and kagent use gRPC, while the bridge uses HTTP. Prometheus
+# in this namespace may scrape only the Collector's internal telemetry.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -13,9 +14,19 @@ spec:
   policyTypes: [Ingress, Egress]
   ingress:
     - from:
-        - namespaceSelector: {}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentgateway-system
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kagent
       ports:
         - { protocol: TCP, port: 4317 }
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: bridge
+      ports:
         - { protocol: TCP, port: 4318 }
     - from:
         - podSelector: {}
