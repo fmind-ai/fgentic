@@ -11,7 +11,7 @@ metadata:
   name: fgentic
 servers: 1
 agents: 0
-image: rancher/k3s:v1.35.5-k3s1
+image: rancher/k3s:v1.35.6-k3s1
 files:
   # k3d copies both files before k3s starts. The marker creates the log directory without a
   # host bind mount, so audit records stay inside the disposable node container.
