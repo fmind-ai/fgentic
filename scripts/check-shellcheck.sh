@@ -18,7 +18,7 @@ readonly SCRIPT_LIST
 
 # Exact counts make both debt growth and burn-down explicit in review while #550 is active.
 readonly EXPECTED_COUNTS_JSON='{
-  "SC2312": 101
+  "SC2312": 87
 }'
 
 cd "${ROOT_DIR}"
