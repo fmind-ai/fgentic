@@ -226,7 +226,6 @@ spec:
   timeout: 10m
   dependsOn:
     - name: gateway
-    - name: observability # KeycloakX now renders a ServiceMonitor CR; its CRD must exist first.
     - name: postgres
     - name: platform-secrets
   sourceRef:
@@ -315,7 +314,6 @@ spec:
   timeout: 10m
   dependsOn:
     - name: controllers
-    - name: observability # Tracing policy needs the Collector Service and its ReferenceGrant.
   sourceRef:
     kind: GitRepository
     name: flux-system

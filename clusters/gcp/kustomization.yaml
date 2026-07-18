@@ -13,6 +13,7 @@ resources:
   - synapse-media-snapshot-class.yaml
 components:
   - ../base/provider-selection
+  - ../base/observability-dependencies
   - ../../infra/production-ha/cluster
 patches:
   # Keep policy durations deployment-configurable while making the production reference finite.
