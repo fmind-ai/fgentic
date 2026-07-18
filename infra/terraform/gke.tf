@@ -79,15 +79,9 @@ resource "google_service_account" "gke_node_sa" {
   depends_on   = [google_project_service.enabled_services]
 }
 
-resource "google_project_iam_member" "node_log_writer" {
+resource "google_project_iam_member" "gke_node_default" {
   project = var.project_id
-  role    = "roles/logging.logWriter"
-  member  = "serviceAccount:${google_service_account.gke_node_sa.email}"
-}
-
-resource "google_project_iam_member" "node_metric_writer" {
-  project = var.project_id
-  role    = "roles/monitoring.metricWriter"
+  role    = "roles/container.defaultNodeServiceAccount"
   member  = "serviceAccount:${google_service_account.gke_node_sa.email}"
 }
 
@@ -96,6 +90,9 @@ resource "google_container_node_pool" "primary" {
   location   = local.location
   cluster    = google_container_cluster.cluster.name
   node_count = var.node_count # per zone when var.regional is set
+
+  # Fresh nodes need the complete GKE system-task role before the pool starts provisioning.
+  depends_on = [google_project_iam_member.gke_node_default]
 
   management {
     auto_repair  = true
