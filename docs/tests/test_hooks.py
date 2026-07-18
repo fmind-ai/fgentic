@@ -61,8 +61,18 @@ class RewriteLinksTest(TestCase):
 
         self.assertEqual(_rewrite_links(markdown, Path("site.md")), markdown)
 
+    def test_preserves_indented_code_starting_with_blockquote_marker(self) -> None:
+        markdown = "    > [workflow](../.github/workflows/docs.yml)\n"
+
+        self.assertEqual(_rewrite_links(markdown, Path("site.md")), markdown)
+
+    def test_preserves_nested_indented_code_starting_with_blockquote_marker(self) -> None:
+        markdown = ">     > [workflow](../.github/workflows/docs.yml)\n"
+
+        self.assertEqual(_rewrite_links(markdown, Path("site.md")), markdown)
+
     def test_handles_long_blockquote_prefix_in_linear_pass(self) -> None:
-        prefix = " \t>" * 5_000
+        prefix = "> " * 5_000
         markdown = f"{prefix} [workflow](../.github/workflows/docs.yml)\n"
 
         rewritten = _rewrite_links(markdown, Path("site.md"))

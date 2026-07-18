@@ -35,9 +35,9 @@ def _content_after_blockquotes(line: str) -> str:
     cursor = 0
     while cursor < len(line):
         marker = cursor
-        while marker < len(line) and line[marker] in " \t":
+        while marker < len(line) and marker - cursor < 4 and line[marker] == " ":
             marker += 1
-        if marker >= len(line) or line[marker] != ">":
+        if marker - cursor > 3 or marker >= len(line) or line[marker] != ">":
             break
         cursor = marker + 1
         if cursor < len(line) and line[cursor] in " \t":
