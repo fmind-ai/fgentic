@@ -47,7 +47,13 @@ def _content_after_blockquotes(line: str) -> str:
 
 def _fence_delimiter(line: str) -> tuple[str, str] | None:
     """Parse a fenced-code delimiter after optional blockquote prefixes."""
-    content = _content_after_blockquotes(line).lstrip(" \t")
+    content = _content_after_blockquotes(line)
+    indentation = 0
+    while indentation < len(content) and indentation < 4 and content[indentation] == " ":
+        indentation += 1
+    if indentation > 3:
+        return None
+    content = content[indentation:]
     if not content or content[0] not in "`~":
         return None
     fence_character = content[0]

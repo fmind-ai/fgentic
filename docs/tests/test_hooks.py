@@ -46,6 +46,21 @@ class RewriteLinksTest(TestCase):
 
         self.assertEqual(_rewrite_links(markdown, Path("site.md")), markdown)
 
+    def test_indented_fence_looking_line_does_not_open_fence(self) -> None:
+        markdown = "    ```\n[workflow](../.github/workflows/docs.yml)\n"
+
+        rewritten = _rewrite_links(markdown, Path("site.md"))
+
+        self.assertEqual(
+            rewritten,
+            "    ```\n[workflow](https://github.com/fmind-ai/fgentic/blob/main/.github/workflows/docs.yml)\n",
+        )
+
+    def test_indented_fence_looking_line_does_not_close_fence(self) -> None:
+        markdown = "```markdown\n    ````\n[workflow](../.github/workflows/docs.yml)\n```"
+
+        self.assertEqual(_rewrite_links(markdown, Path("site.md")), markdown)
+
     def test_preserves_inline_code(self) -> None:
         markdown = "Use `[workflow](../.github/workflows/docs.yml)` as an example."
 
