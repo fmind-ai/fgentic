@@ -1,0 +1,37 @@
+# The controller and CA injector expose unauthenticated HTTP metrics through separate Services.
+# Select only those two chart components and admit the exact platform Prometheus identity. The
+# webhook is deliberately absent: its Pod also serves Kubernetes admission traffic on :10250,
+# whose API-server source cannot be selected portably across k3d and GKE with NetworkPolicy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cert-manager-metrics-ingress
+  namespace: cert-manager
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: cert-manager
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values:
+          - cainjector
+          - controller
+      - key: app.kubernetes.io/name
+        operator: In
+        values:
+          - cainjector
+          - cert-manager
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              fgentic.dev/metrics-reader: prometheus
+      ports:
+        - protocol: TCP
+          port: 9402
