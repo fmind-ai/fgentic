@@ -1,5 +1,7 @@
 ---
-okf_version: "0.1"
+type: Guide
+title: Documentation Site
+description: The generator decision, authoring checks, and human-gated GitHub Pages publication contract.
 ---
 
 # Documentation Site

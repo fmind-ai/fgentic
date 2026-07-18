@@ -104,10 +104,10 @@ description = "Format JSON, Markdown, TOML, YAML at the repo root + infra/docs (
 run = "dprint fmt"
 
 [tasks."format:docs"]
-description = "Format and auto-fix the documentation render hook"
+description = "Format and auto-fix the documentation render hook and tests"
 run = [
-  "uv run --project docs --frozen ruff check --fix docs/hooks.py",
-  "uv run --project docs --frozen ruff format docs/hooks.py",
+  "uv run --project docs --frozen ruff check --fix docs/hooks.py docs/tests",
+  "uv run --project docs --frozen ruff format docs/hooks.py docs/tests",
 ]
 
 # Preserve the established tab-indented Bash style: -i 0 keeps tabs, while -bn and -ci
@@ -210,18 +210,23 @@ run = "dprint check"
 description = "Build the version-locked documentation site"
 # The acknowledged Material maintenance notice is recorded in docs/site.md. Use its supported
 # opt-out so warning-free hooks preserve signal for actual MkDocs build diagnostics.
-run = "env NO_MKDOCS_2_WARNING=1 uv run --project docs --frozen mkdocs build --strict --config-file docs/mkdocs.yml"
+run = [
+  "env NO_MKDOCS_2_WARNING=1 PYTHONDONTWRITEBYTECODE=1 uv run --project docs --frozen mkdocs build --strict --config-file docs/mkdocs.yml",
+  "test -z \"$(rg --files .agents/tmp/docs-site -g '*.pyc')\"",
+  "test ! -e .agents/tmp/docs-site/hooks.py && test ! -e .agents/tmp/docs-site/mkdocs.yml && test ! -e .agents/tmp/docs-site/pyproject.toml && test ! -e .agents/tmp/docs-site/uv.lock",
+]
 
 [tasks."docs:serve"]
 description = "Serve the version-locked documentation site locally"
-run = "uv run --project docs --frozen mkdocs serve --config-file docs/mkdocs.yml"
+run = "env NO_MKDOCS_2_WARNING=1 PYTHONDONTWRITEBYTECODE=1 uv run --project docs --frozen mkdocs serve --config-file docs/mkdocs.yml"
 
 [tasks."check:docs"]
 description = "Lint, type-check, and build every documentation page without warnings"
 run = [
-  "uv run --project docs --frozen ruff check docs/hooks.py",
-  "uv run --project docs --frozen ruff format --check docs/hooks.py",
-  "uv run --project docs --frozen ty check docs/hooks.py",
+  "uv run --project docs --frozen ruff check docs/hooks.py docs/tests",
+  "uv run --project docs --frozen ruff format --check docs/hooks.py docs/tests",
+  "uv run --project docs --frozen ty check docs/hooks.py docs/tests",
+  "env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=docs uv run --project docs --frozen python -m unittest discover -s docs/tests -p 'test_*.py'",
   "uv run --project docs --frozen pip-audit --cache-dir .agents/tmp/pip-audit-cache/docs --progress-spinner off",
   "mise run docs:build",
 ]

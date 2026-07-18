@@ -17,6 +17,11 @@ _FENCED_BLOCK = re.compile(
     r"^[ \t]*(?P<fence>`{3,}|~{3,})[^\n]*\n.*?^[ \t]*(?P=fence)[ \t]*$",
     flags=re.MULTILINE | re.DOTALL,
 )
+_HTML_CODE_BLOCK = re.compile(
+    r"<(?P<tag>pre|code)\b[^>]*>.*?</(?P=tag)>\s*",
+    flags=re.IGNORECASE | re.DOTALL,
+)
+_INLINE_CODE = re.compile(r"(?P<ticks>`+)(?P<code>[^\n]*?)(?P=ticks)")
 _MARKDOWN_LINK = re.compile(
     r"(?P<prefix>!?\[[^\]\n]*\]\()"
     r"(?P<target><[^>\n]+>|[^)\s\n]+)"
@@ -57,20 +62,48 @@ def _rewrite_target(target: str, source_path: Path) -> str:
     return f"<{rewritten}>" if wrapped else rewritten
 
 
+def _rewrite_links_in_prose(markdown: str, source_path: Path) -> str:
+    """Rewrite links in prose while preserving inline and indented code."""
+
+    rendered: list[str] = []
+    for line in markdown.splitlines(keepends=True):
+        if line.startswith(("    ", "\t")):
+            rendered.append(line)
+            continue
+
+        inline_code_ranges = [match.span() for match in _INLINE_CODE.finditer(line)]
+
+        def replace_link(match: re.Match[str], code_ranges: list[tuple[int, int]] = inline_code_ranges) -> str:
+            if any(start <= match.start() and match.end() <= end for start, end in code_ranges):
+                return match.group(0)
+            target = _rewrite_target(match.group("target"), source_path)
+            return f"{match.group('prefix')}{target}{match.group('suffix')}"
+
+        rendered.append(_MARKDOWN_LINK.sub(replace_link, line))
+    return "".join(rendered)
+
+
+def _rewrite_links_outside_html_code(markdown: str, source_path: Path) -> str:
+    """Rewrite prose outside raw HTML code and preformatted blocks."""
+    rendered: list[str] = []
+    cursor = 0
+    for html_code in _HTML_CODE_BLOCK.finditer(markdown):
+        rendered.append(_rewrite_links_in_prose(markdown[cursor : html_code.start()], source_path))
+        rendered.append(html_code.group(0))
+        cursor = html_code.end()
+    rendered.append(_rewrite_links_in_prose(markdown[cursor:], source_path))
+    return "".join(rendered)
+
+
 def _rewrite_links(markdown: str, source_path: Path) -> str:
-    """Rewrite Markdown links outside fenced code blocks."""
-
-    def replace_link(match: re.Match[str]) -> str:
-        target = _rewrite_target(match.group("target"), source_path)
-        return f"{match.group('prefix')}{target}{match.group('suffix')}"
-
+    """Rewrite Markdown links outside all Markdown and HTML code contexts."""
     rendered: list[str] = []
     cursor = 0
     for fenced_block in _FENCED_BLOCK.finditer(markdown):
-        rendered.append(_MARKDOWN_LINK.sub(replace_link, markdown[cursor : fenced_block.start()]))
+        rendered.append(_rewrite_links_outside_html_code(markdown[cursor : fenced_block.start()], source_path))
         rendered.append(fenced_block.group(0))
         cursor = fenced_block.end()
-    rendered.append(_MARKDOWN_LINK.sub(replace_link, markdown[cursor:]))
+    rendered.append(_rewrite_links_outside_html_code(markdown[cursor:], source_path))
     return "".join(rendered)
 
 
