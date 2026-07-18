@@ -2,7 +2,7 @@
 
 `fgentic_federation_policy` is Fgentic's fail-closed policy border for events received over Matrix federation. It registers Synapse's `federated_user_may_invite` and `should_drop_federated_event` spam-checker callbacks and evaluates only content-free event metadata against a git-declared JSON policy.
 
-The module targets the platform-pinned Synapse 1.155.0 callback contract and its Python 3.13 runtime. It uses the Python standard library plus the stable `NOT_SPAM` and `errors.Codes.FORBIDDEN` decisions provided by the host's Synapse module API. It has no separately installed runtime dependencies: the deployed artifact is one Python source file mounted into the unchanged Synapse container.
+The module targets the platform-pinned Synapse 1.156.0 callback contract and its Python 3.13 runtime. It uses the Python standard library plus the stable `NOT_SPAM` and `errors.Codes.FORBIDDEN` decisions provided by the host's Synapse module API. It has no separately installed runtime dependencies: the deployed artifact is one Python source file mounted into the unchanged Synapse container.
 
 ## Policy
 
@@ -41,7 +41,7 @@ Source ConfigMap names are versioned because Kubernetes immutable resources cann
 
 ## Staged-event stability
 
-Synapse 1.155.0 calls `should_drop_federated_event` both before inserting a new inbound event and again while draining its staging queue. Applying a stricter policy between those calls would otherwise leave an already-staged event at the front of the queue indefinitely.
+Synapse 1.156.0 calls `should_drop_federated_event` both before inserting a new inbound event and again while draining its staging queue. Applying a stricter policy between those calls would otherwise leave an already-staged event at the front of the queue indefinitely.
 
 The module therefore uses the public `ModuleApi.run_db_interaction` API only after the active policy denies an event:
 
@@ -51,7 +51,7 @@ The module therefore uses the public `ModuleApi.run_db_interaction` API only aft
 
 This is a stable staging decision, not a policy bypass for newly received events: the pre-insert callback cannot find a row and still drops the event. It also lets a restarted module drain rows staged under an earlier policy, including while a replacement policy is temporarily invalid.
 
-The table name and its `room_id`/`event_id` columns are a deliberate private-schema dependency pinned to Synapse 1.155.0. Every Synapse upgrade must verify the inbound staging schema and both callback sites in `federation_server.py`, run the staging regression suite, and bump the immutable source ConfigMap version when compatibility changes. An upgrade must not proceed on the assumption that the private schema is stable.
+The table name and its `room_id`/`event_id` columns are a deliberate private-schema dependency pinned to Synapse 1.156.0. Every Synapse upgrade must verify the inbound staging schema and both callback sites in `federation_server.py`, run the staging regression suite, and bump the immutable source ConfigMap version when compatibility changes. An upgrade must not proceed on the assumption that the private schema is stable.
 
 ## Development
 

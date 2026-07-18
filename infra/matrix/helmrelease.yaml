@@ -3,7 +3,7 @@
 # well-known delegation, all maintained by Element. See ADR 0003 and docs/licensing.md §10.2 (open-core
 # caveats + the Apache-2.0 homeserver alternatives).
 #
-# Values are validated against the 26.6.2 chart schema (`helm show values`): external Postgres
+# Values are validated against the 26.7.0 chart schema (`helm show values`): external Postgres
 # uses `password: {secret, secretKey}`, appservices use `{secret, secretKey}` entries, and
 # well-known additions are JSON strings. Ingress hosts are REQUIRED (they derive the public
 # URLs baked into Synapse/MAS/Element config); the Ingress objects ESS creates carry no
@@ -53,7 +53,7 @@ spec:
       appservices:
         - secret: matrix-a2a-bridge-registration
           secretKey: registration.yaml
-      # Synapse 1.155.0 advertises org.matrix.msc4140 only when this ceiling is non-null. The
+      # Synapse 1.156.0 advertises org.matrix.msc4140 only when this ceiling is non-null. The
       # bridge independently probes that capability and stays disabled when it is absent.
       additional:
         00-delayed-events:
@@ -73,10 +73,12 @@ spec:
         password:
           secret: pg-mas
           secretKey: password
-      # ESS 26.6.2 merges ordered MAS fragments. The upstream provider itself is kept in the
-      # SOPS-backed Secret because it contains the Keycloak client secret; only non-secret policy
-      # is inline. A required, IdP-managed localpart makes first-login provisioning deterministic,
-      # while `on_conflict: fail` prevents an upstream identity from taking over an existing MXID.
+      # ESS 26.7.0 merges ordered MAS fragments and preserves its session-limit underride
+      # (soft/hard 50). The bridge bot uses Synapse's appservice token path, not a MAS user session.
+      # The upstream provider itself is kept in the SOPS-backed Secret because it contains the
+      # Keycloak client secret; only non-secret policy is inline. A required, IdP-managed localpart
+      # makes first-login provisioning deterministic, while `on_conflict: fail` prevents an
+      # upstream identity from taking over an existing MXID.
       additional:
         00-login-policy:
           config: |
