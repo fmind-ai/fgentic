@@ -66,6 +66,11 @@ print_crash_delegation_state() {
   kubectl --request-timeout=5s --namespace "${NAMESPACE}" exec deployment/postgres -- \
     psql -U postgres -d bridge -At -F '|' -c \
     "SELECT matrix_event_id, state, lease_generation, COALESCE(lease_expires_at::text, ''), attempt_count, poll_count, next_attempt_at, error_code, admission_checked, admission_allowed, admission_reason, matrix_reply_event_id <> '', matrix_placeholder_event_id <> '', matrix_edit_event_id <> '', created_at, updated_at, COALESCE(terminal_at::text, '') FROM bridge_delegations WHERE appservice_transaction_id LIKE 'crash-%' ORDER BY intake_sequence;" || true
+  echo "==> Content-free crash control state"
+  echo "matrix_event_id|kind|state|slot|lease_generation|recovery_count|error_code|payload_bytes|terminal_at"
+  kubectl --request-timeout=5s --namespace "${NAMESPACE}" exec deployment/postgres -- \
+    psql -U postgres -d bridge -At -F '|' -c \
+    "SELECT jobs.matrix_event_id, controls.kind, controls.state, controls.slot, controls.lease_generation, controls.recovery_count, controls.error_code, octet_length(controls.payload), COALESCE(controls.terminal_at::text, '') FROM bridge_delegation_controls AS controls JOIN bridge_delegations AS jobs ON jobs.job_id = controls.job_id WHERE jobs.appservice_transaction_id LIKE 'crash-%' ORDER BY jobs.intake_sequence, controls.created_at, controls.control_id;" || true
 }
 
 crash_driver_terminal_status() {

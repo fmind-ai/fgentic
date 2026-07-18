@@ -168,6 +168,16 @@ func TestClaimSQLLocksOneFIFOHead(t *testing.T) {
 	}
 }
 
+func TestPlanControlLocksParentForFenceAndCapacityDecision(t *testing.T) {
+	for _, required := range []string{
+		"FROM bridge_delegations", "WHERE job_id = $1", "FOR UPDATE",
+	} {
+		if !strings.Contains(planControlParentSQL, required) {
+			t.Errorf("plan-control parent query does not contain %q", required)
+		}
+	}
+}
+
 func TestPostgresTransitionWritesContextInSameTransaction(t *testing.T) {
 	recorder := &databaseRecorder{}
 	db := recorder.database(t)

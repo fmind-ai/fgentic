@@ -126,7 +126,8 @@ func (m *Memory) AdmitTransaction(_ context.Context, admission TransactionAdmiss
 				ControlIDFor(jobID, control.Kind, control.SourceMatrixEventID, control.Slot))
 			continue
 		}
-		if m.controlCountLocked(jobID)+plannedControlCounts[jobID] >= admission.ControlCapacity {
+		if m.controlCountLocked(jobID)+plannedControlCounts[jobID] >=
+			controlCapacityLimit(admission.ControlCapacity, control.Kind) {
 			result.UnmatchedControlIDs = append(result.UnmatchedControlIDs,
 				ControlIDFor(jobID, control.Kind, control.SourceMatrixEventID, control.Slot))
 			continue
@@ -162,6 +163,7 @@ func (m *Memory) AdmitTransaction(_ context.Context, admission TransactionAdmiss
 		control := newControl(
 			controlID,
 			item.jobID,
+			admission.TransactionID,
 			item.control.SourceMatrixEventID,
 			item.control.SenderMXID,
 			item.control.Kind,
@@ -322,11 +324,12 @@ func (m *Memory) PlanControl(_ context.Context, request PlanControlRequest) (Con
 		}
 		return cloneControl(existing), nil
 	}
-	if m.controlCountLocked(request.Lease.JobID) >= request.Capacity {
+	if m.controlCountLocked(request.Lease.JobID) >= controlCapacityLimit(request.Capacity, request.Kind) {
 		return Control{}, fmt.Errorf("%w: job_id=%q", ErrControlCapacity, request.Lease.JobID)
 	}
 	control := newControl(
-		controlID, request.Lease.JobID, "", job.SenderMXID, request.Kind, request.Slot,
+		controlID, request.Lease.JobID, job.AppserviceTransactionID, "", job.SenderMXID,
+		request.Kind, request.Slot,
 		request.Payload, request.At,
 	)
 	m.controls[controlID] = control
@@ -519,6 +522,7 @@ func (m *Memory) Transition(_ context.Context, request TransitionRequest) error 
 		job.InputWaitExpiresAt = time.Time{}
 		job.TerminalAt = request.At
 		clearLease(&job)
+		m.terminalizeControlsLocked(job.JobID, request.At)
 	}
 	m.jobs[job.JobID] = job
 	return nil
@@ -571,10 +575,12 @@ func (m *Memory) CleanupTerminal(_ context.Context, now time.Time) (CleanupResul
 	cutoff := now.Add(-TerminalRetention)
 	var result CleanupResult
 	deleted := make(map[string]struct{})
+	terminalJobs := make(map[string]struct{})
 	for jobID, job := range m.jobs {
 		if !job.State.Terminal() || job.TerminalAt.IsZero() {
 			continue
 		}
+		terminalJobs[jobID] = struct{}{}
 		if job.Prompt != "" || len(job.Payload) > 0 || job.ResultText != "" {
 			clearJobContent(&job)
 			job.UpdatedAt = now
@@ -590,7 +596,13 @@ func (m *Memory) CleanupTerminal(_ context.Context, now time.Time) (CleanupResul
 	}
 	deletedControls := make(map[string]struct{})
 	for controlID, control := range m.controls {
-		if control.State.Terminal() && len(control.Payload) > 0 {
+		_, parentTerminal := terminalJobs[control.JobID]
+		if parentTerminal && (!control.State.Terminal() || len(control.Payload) > 0) {
+			if !control.State.Terminal() {
+				control.State = ControlDead
+				control.ErrorCode = parentTerminalControlError
+				control.TerminalAt = now
+			}
 			control.Payload = nil
 			control.UpdatedAt = now
 			m.controls[controlID] = control
@@ -623,6 +635,9 @@ func (m *Memory) CleanupTerminal(_ context.Context, now time.Time) (CleanupResul
 	referencedTransactions := make(map[string]struct{}, len(m.jobs))
 	for _, job := range m.jobs {
 		referencedTransactions[job.AppserviceTransactionID] = struct{}{}
+	}
+	for _, control := range m.controls {
+		referencedTransactions[control.AppserviceTransactionID] = struct{}{}
 	}
 	for transactionID, transaction := range m.transactions {
 		if _, referenced := referencedTransactions[transactionID]; referenced || transaction.committedAt.After(cutoff) {
@@ -697,6 +712,22 @@ func clearLease(job *Job) {
 	job.LeaseExpiresAt = time.Time{}
 }
 
+func (m *Memory) terminalizeControlsLocked(jobID string, at time.Time) {
+	for controlID, control := range m.controls {
+		if control.JobID != jobID {
+			continue
+		}
+		if !control.State.Terminal() {
+			control.State = ControlDead
+			control.ErrorCode = parentTerminalControlError
+			control.TerminalAt = at
+		}
+		control.Payload = nil
+		control.UpdatedAt = at
+		m.controls[controlID] = control
+	}
+}
+
 func (m *Memory) controlTargetJobLocked(matrixEventID, roomID string) (string, bool) {
 	for _, jobID := range m.jobOrder {
 		job := m.jobs[jobID]
@@ -733,15 +764,16 @@ func controlWasAuthorized(control Control) bool {
 }
 
 func newControl(
-	controlID, jobID, sourceEventID, sender string,
+	controlID, jobID, appserviceTransactionID, sourceEventID, sender string,
 	kind ControlKind,
 	slot int,
 	payload []byte,
 	at time.Time,
 ) Control {
 	return Control{
-		ControlID: controlID, JobID: jobID, SourceMatrixEventID: sourceEventID,
-		AuthorizedSender: sender, Kind: kind, State: ControlPending, Slot: slot,
+		ControlID: controlID, JobID: jobID, AppserviceTransactionID: appserviceTransactionID,
+		SourceMatrixEventID: sourceEventID,
+		AuthorizedSender:    sender, Kind: kind, State: ControlPending, Slot: slot,
 		Payload: append([]byte(nil), payload...), A2AMessageID: ControlA2AMessageIDFor(controlID),
 		MatrixTxnID: ControlMatrixTransactionIDFor(controlID), CreatedAt: at, UpdatedAt: at,
 	}

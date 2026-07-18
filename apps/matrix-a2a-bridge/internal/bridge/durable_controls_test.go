@@ -75,7 +75,8 @@ func TestDurableInputContinuationSurvivesWorkerRestart(t *testing.T) {
 	b.executeDurableJob(t.Context(), restarted)
 	stored := loadDurableJob(t, b, job.JobID)
 	if stored.State != state.StateDelivered || client.continueCount != 1 ||
-		client.continueText != "kube-system" || client.continueTaskID != "task-input" ||
+		client.continueText != expectedDurableContinuationPrompt("kube-system") ||
+		client.continueTaskID != "task-input" ||
 		client.continueContextID != "context-input" {
 		t.Fatalf("continued durable task = state %s calls %d text %q task %q context %q",
 			stored.State, client.continueCount, client.continueText, client.continueTaskID, client.continueContextID)
@@ -231,7 +232,7 @@ func TestDurableInputAppliesOnlyOneAuthorizedAnswerPerQuestion(t *testing.T) {
 		}
 	}
 	if stored.State != state.StateAwaitingTask || client.continueCount != 1 ||
-		client.continueText != "kube-system" || len(continuations) != 1 ||
+		client.continueText != expectedDurableContinuationPrompt("kube-system") || len(continuations) != 1 ||
 		continuations[0].State != state.ControlApplied || len(continuations[0].Payload) != 0 {
 		t.Fatalf("racing continuations = job %s calls %d text %q controls %+v",
 			stored.State, client.continueCount, client.continueText, continuations)
@@ -389,6 +390,58 @@ func TestDurablePinConvergesBeforeTerminalDelivery(t *testing.T) {
 		controls[1].State != state.ControlApplied {
 		t.Fatalf("durable pin controls = %+v", controls)
 	}
+}
+
+func TestDurableControlCapacityReservesTerminalUnpin(t *testing.T) {
+	client := &scriptedA2AClient{callResult: a2aclient.Result{
+		TaskID: "task-pin-capacity", ContextID: "context-pin-capacity",
+	}}
+	b, _, _, _, pins := pinningHarness(t, client)
+	configureDurableTestBridge(b)
+	b.cfg.ControlCapacityPerJob = 5
+	b.cfg.PinInFlightTasks = true
+	b.cfg.MaxTaskProgressPosts = 0
+	job := admitAndClaimDurableJob(t, b, "$durable-pin-capacity")
+	b.executeDurableJob(t.Context(), job)
+	running := loadDurableJob(t, b, job.JobID)
+	claimed := claimDurableJob(t, b, running.NextAttemptAt.Add(time.Millisecond))
+
+	for slot := 1; slot <= 3; slot++ {
+		if _, err := b.store.PlanControl(t.Context(), state.PlanControlRequest{
+			Lease: claimed.LeaseToken(), At: time.Now().UTC(), Kind: state.ControlPin,
+			Slot: slot, Capacity: b.durableControlCapacity(),
+		}); err != nil {
+			t.Fatalf("fill ordinary control slot %d: %v", slot, err)
+		}
+	}
+	if _, err := b.store.PlanControl(t.Context(), state.PlanControlRequest{
+		Lease: claimed.LeaseToken(), At: time.Now().UTC(), Kind: state.ControlPin,
+		Slot: 4, Capacity: b.durableControlCapacity(),
+	}); !errors.Is(err, state.ErrControlCapacity) {
+		t.Fatalf("ordinary control consumed terminal reserve: %v", err)
+	}
+	if err := b.ensureDurablePin(t.Context(), &claimed, false); err != nil {
+		t.Fatalf("terminal unpin at capacity: %v", err)
+	}
+
+	pinned, _ := pins.snapshot()
+	controls, err := b.store.Controls(t.Context(), job.JobID)
+	if err != nil || len(pinned) != 0 || len(controls) != 5 ||
+		controls[len(controls)-1].Kind != state.ControlUnpin ||
+		controls[len(controls)-1].State != state.ControlApplied {
+		t.Fatalf("terminal unpin reserve = pinned %v controls %+v err %v", pinned, controls, err)
+	}
+}
+
+func expectedDurableContinuationPrompt(content string) string {
+	return fmt.Sprintf(`--- BEGIN FGENTIC BRIDGE PROVENANCE ---
+sender_mxid: "@alice:fgentic.fmind.ai"
+sender_homeserver: "fgentic.fmind.ai"
+room_id: "!room:fgentic.fmind.ai"
+--- END FGENTIC BRIDGE PROVENANCE ---
+--- BEGIN UNTRUSTED MATRIX CONTENT ---
+%s
+--- END UNTRUSTED MATRIX CONTENT ---`, content)
 }
 
 func claimDurableJob(t *testing.T, b *Bridge, now time.Time) state.Job {

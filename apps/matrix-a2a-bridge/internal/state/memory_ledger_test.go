@@ -398,6 +398,34 @@ func TestMemoryTransactionReplayHashAndAtomicTargetAdmission(t *testing.T) {
 	}
 }
 
+func TestMemoryTerminalTransitionScrubsPendingAndPreparedControls(t *testing.T) {
+	store, job, at := memoryJobAtState(t, StatePending)
+	for slot, kind := range []ControlKind{ControlQuestion, ControlProgress} {
+		if _, err := store.PlanControl(t.Context(), PlanControlRequest{
+			Lease: job.LeaseToken(), At: at.Add(time.Duration(slot+1) * time.Second),
+			Kind: kind, Slot: slot, Capacity: 5, Payload: []byte("sensitive control content"),
+		}); err != nil {
+			t.Fatalf("PlanControl(%s): %v", kind, err)
+		}
+	}
+	if _, found, err := store.ClaimControl(t.Context(), job.LeaseToken(), at.Add(3*time.Second)); err != nil || !found {
+		t.Fatalf("ClaimControl before terminal transition = (%t, %v)", found, err)
+	}
+	mustTransition(
+		t, store, job.LeaseToken(), StatePending, StateDead, at.Add(4*time.Second), TransitionPatch{},
+	)
+	controls, err := store.Controls(t.Context(), job.JobID)
+	if err != nil || len(controls) != 2 {
+		t.Fatalf("terminal controls = (%+v, %v)", controls, err)
+	}
+	for _, control := range controls {
+		if control.State != ControlDead || control.ErrorCode != parentTerminalControlError ||
+			len(control.Payload) != 0 || control.TerminalAt.IsZero() {
+			t.Errorf("terminal control retained content or pending work: %+v", control)
+		}
+	}
+}
+
 func TestMemoryCapacityCountsLeasedAndDelayedJobsWithRoomPrecedence(t *testing.T) {
 	store := NewMemory()
 	leasing := testDelegation("$leased", "agent", "!room-full")
@@ -1076,5 +1104,37 @@ func TestMemoryCleanupBoundsTransactionsAndLegacyTombstones(t *testing.T) {
 	}
 	if _, ok := store.processed["$legacy-boundary"]; !ok {
 		t.Error("24-hour boundary legacy tombstone was deleted early")
+	}
+}
+
+func TestMemoryCleanupRetainsTransactionReferencedOnlyByRetainedControl(t *testing.T) {
+	store, job, at := memoryJobAtState(t, StatePending)
+	placeholderID := "$retained-control-placeholder"
+	if err := store.RecordMatrixEvent(t.Context(), MatrixEventRequest{
+		Lease: job.LeaseToken(), At: at.Add(time.Second), Stage: MatrixEventPlaceholder, EventID: placeholderID,
+	}); err != nil {
+		t.Fatalf("RecordMatrixEvent: %v", err)
+	}
+	controlAdmission := testAdmission("txn-retained-control", at.Add(2*time.Second))
+	controlAdmission.ControlCapacity = 5
+	controlAdmission.Controls = []NewControl{{
+		TargetMatrixEventID: placeholderID, SourceMatrixEventID: "$retained-control",
+		RoomID: job.RoomID, SenderMXID: job.SenderMXID, Kind: ControlContinuation, Authorized: true,
+		Payload: []byte("answer"),
+	}}
+	result := mustAdmit(t, store, controlAdmission)
+	if len(result.InsertedControlIDs) != 1 {
+		t.Fatalf("control admission = %+v", result)
+	}
+	mustTransition(
+		t, store, job.LeaseToken(), StatePending, StateDead, at.Add(3*time.Second), TransitionPatch{},
+	)
+	if _, err := store.CleanupTerminal(t.Context(), at.Add(48*time.Hour)); err != nil {
+		t.Fatalf("CleanupTerminal: %v", err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if _, ok := store.transactions["txn-retained-control"]; !ok {
+		t.Fatal("transaction referenced by a retained control was deleted")
 	}
 }

@@ -171,7 +171,8 @@ func (b *Bridge) executeDurableContinuation(ctx context.Context, job *state.Job,
 	defer cancelOverall()
 	callCtx, cancel := context.WithTimeout(a2aCtx, b.cfg.RequestTimeout)
 	result, err := client.ContinueWithMessageID(
-		callCtx, ref.Target(), control.A2AMessageID, string(control.Payload), job.A2AContextID, job.A2ATaskID,
+		callCtx, ref.Target(), control.A2AMessageID, provenancePrompt(evt, string(control.Payload)),
+		job.A2AContextID, job.A2ATaskID,
 	)
 	cancel()
 	if err != nil {

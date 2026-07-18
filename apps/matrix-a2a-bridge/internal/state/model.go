@@ -14,8 +14,9 @@ import (
 const (
 	// TerminalRetention is the minimum non-content tombstone window for ordinary terminal jobs.
 	// Ambiguous and dead-letter evidence is never removed by ordinary cleanup.
-	TerminalRetention = 24 * time.Hour
-	maxErrorCodeLen   = 128
+	TerminalRetention          = 24 * time.Hour
+	maxErrorCodeLen            = 128
+	parentTerminalControlError = "parent_terminal"
 )
 
 var (
@@ -357,25 +358,38 @@ type NewControl struct {
 
 // Control is one replayable interaction intent or projection tied to an immutable job.
 type Control struct {
-	ControlID           string
-	JobID               string
-	SourceMatrixEventID string
-	IntakeFingerprint   TransactionHash
-	AuthorizedSender    string
-	Kind                ControlKind
-	State               ControlState
-	Slot                int
-	LeaseGeneration     uint64
-	RecoveryCount       int
-	Payload             []byte
-	A2AMessageID        string
-	MatrixTxnID         string
-	MatrixEventID       string
-	ErrorCode           string
-	PreparedAt          time.Time
-	CreatedAt           time.Time
-	UpdatedAt           time.Time
-	TerminalAt          time.Time
+	ControlID               string
+	JobID                   string
+	AppserviceTransactionID string
+	SourceMatrixEventID     string
+	IntakeFingerprint       TransactionHash
+	AuthorizedSender        string
+	Kind                    ControlKind
+	State                   ControlState
+	Slot                    int
+	LeaseGeneration         uint64
+	RecoveryCount           int
+	Payload                 []byte
+	A2AMessageID            string
+	MatrixTxnID             string
+	MatrixEventID           string
+	ErrorCode               string
+	PreparedAt              time.Time
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
+	TerminalAt              time.Time
+}
+
+// controlCapacityLimit reserves one slot from ordinary controls so terminal unpin can always
+// converge without exceeding the configured per-job bound.
+func controlCapacityLimit(capacity int, kind ControlKind) int {
+	if kind == ControlUnpin {
+		return capacity
+	}
+	if capacity <= 1 {
+		return 0
+	}
+	return capacity - 1
 }
 
 // PlanControlRequest creates a worker-originated control under the current delegation fence.

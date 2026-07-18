@@ -431,18 +431,63 @@ func provePostgresControlFencing(
 		controls[0].RecoveryCount != 1 || len(controls[0].Payload) != 0 {
 		return fmt.Errorf("persisted control-proof evidence = %+v: %w", controls, err)
 	}
+	// Race worker planning against terminal takeover on the real database. Either the plan commits
+	// first and the terminal transition atomically scrubs it, or terminal wins and the stale planner
+	// is rejected. A pending or content-bearing control is never a valid outcome.
+	raceAt := takeoverAt.Add(3 * time.Second)
 	terminalCode := "control_proof_complete"
-	if err := store.Transition(ctx, state.TransitionRequest{
-		Lease: takeover.LeaseToken(), From: state.StatePending, To: state.StateDenied,
-		At: takeoverAt.Add(3 * time.Second), Patch: state.TransitionPatch{ErrorCode: &terminalCode},
-	}); err != nil {
-		return fmt.Errorf("terminalize control-proof delegation: %w", err)
+	startRace := make(chan struct{})
+	planResult := make(chan error, 1)
+	terminalResult := make(chan error, 1)
+	go func() {
+		<-startRace
+		_, planErr := store.PlanControl(ctx, state.PlanControlRequest{
+			Lease: takeover.LeaseToken(), At: raceAt, Kind: state.ControlQuestion,
+			Slot: 0, Capacity: 8, Payload: []byte("content that must be scrubbed"),
+		})
+		planResult <- planErr
+	}()
+	go func() {
+		<-startRace
+		terminalResult <- store.Transition(ctx, state.TransitionRequest{
+			Lease: takeover.LeaseToken(), From: state.StatePending, To: state.StateDead,
+			At: raceAt, Patch: state.TransitionPatch{ErrorCode: &terminalCode},
+		})
+	}()
+	close(startRace)
+	if err := <-terminalResult; err != nil {
+		return fmt.Errorf("terminalize control-proof delegation during planner race: %w", err)
+	}
+	if err := <-planResult; err != nil && !errors.Is(err, state.ErrLeaseLost) {
+		return fmt.Errorf("planner race returned unexpected error: %w", err)
+	}
+	controls, err = store.Controls(ctx, jobID)
+	if err != nil {
+		return fmt.Errorf("load terminal controls after planner race: %w", err)
+	}
+	for _, control := range controls {
+		if !control.State.Terminal() || len(control.Payload) != 0 {
+			return fmt.Errorf("planner race retained pending or content-bearing control: %+v", control)
+		}
+	}
+	cleanup, err := store.CleanupTerminal(ctx, raceAt.Add(48*time.Hour))
+	if err != nil {
+		return fmt.Errorf("clean retained control transaction references: %w", err)
+	}
+	if cleanup.TombstonesDeleted != 1 || cleanup.TransactionsDeleted != 1 {
+		return fmt.Errorf("control retention cleanup = %+v, want one ordinary proof tombstone and transaction", cleanup)
+	}
+	retained, found, err := store.Job(ctx, jobID)
+	if err != nil || !found || retained.State != state.StateDead {
+		return fmt.Errorf("retained control-proof delegation = (%+v, %t): %w", retained, found, err)
 	}
 	slog.Info(
 		"postgres control fencing scenario passed",
 		"control_fencing", "passed",
 		"concurrent_claim_winners", winners,
 		"stale_transition", "rejected",
+		"stale_planner_race", "serialized",
+		"control_transaction_retention", "passed",
 		"recovery_count", recovered.RecoveryCount,
 	)
 	return nil

@@ -57,7 +57,8 @@ var jobColumnNames = []string{
 }
 
 var controlColumnNames = []string{
-	"control_id", "job_id", "source_matrix_event_id", "intake_fingerprint", "authorized_sender", "kind", "state",
+	"control_id", "job_id", "appservice_transaction_id", "source_matrix_event_id", "intake_fingerprint",
+	"authorized_sender", "kind", "state",
 	"slot", "lease_generation", "recovery_count", "payload", "a2a_message_id", "matrix_txn_id", "matrix_event_id",
 	"error_code", "prepared_at", "created_at", "updated_at", "terminal_at",
 }
@@ -72,6 +73,7 @@ const (
 		FROM bridge_delegations
 		WHERE terminal_at IS NULL
 		GROUP BY room_id`
+	planControlParentSQL = `SELECT %s FROM bridge_delegations WHERE job_id = $1 FOR UPDATE`
 )
 
 // Claim uses one locking statement so concurrent workers cannot observe or claim the same row. The
@@ -220,11 +222,12 @@ func insertAdmittedControl(
 		SELECT COUNT(*) FROM bridge_delegation_controls WHERE job_id = $1`, jobID).Scan(&count); err != nil {
 		return "", 0, fmt.Errorf("count durable controls for job %q: %w", jobID, err)
 	}
-	if count >= admission.ControlCapacity {
+	if count >= controlCapacityLimit(admission.ControlCapacity, input.Kind) {
 		return controlID, controlUnmatched, nil
 	}
 	control := newControl(
-		controlID, jobID, input.SourceMatrixEventID, input.SenderMXID, input.Kind, input.Slot,
+		controlID, jobID, admission.TransactionID, input.SourceMatrixEventID, input.SenderMXID,
+		input.Kind, input.Slot,
 		input.Payload, admission.CommittedAt,
 	)
 	control.IntakeFingerprint = controlFingerprint(input)
@@ -604,11 +607,15 @@ func (p *Postgres) PlanControl(ctx context.Context, request PlanControlRequest) 
 	}
 	var planned Control
 	err := p.db.DoTxn(ctx, nil, func(txCtx context.Context) error {
-		job, found, err := p.Job(txCtx, request.Lease.JobID)
-		if err != nil {
-			return err
+		jobQuery := fmt.Sprintf(planControlParentSQL, qualifiedJobColumns(""))
+		job, err := scanJob(p.db.QueryRow(txCtx, jobQuery, request.Lease.JobID))
+		if errors.Is(err, sql.ErrNoRows) {
+			return &LeaseLostError{JobID: request.Lease.JobID}
 		}
-		if !found || !leaseCurrent(job, request.Lease, request.At) {
+		if err != nil {
+			return fmt.Errorf("lock durable control parent: %w", err)
+		}
+		if !leaseCurrent(job, request.Lease, request.At) {
 			return &LeaseLostError{JobID: request.Lease.JobID}
 		}
 		controlID := ControlIDFor(request.Lease.JobID, request.Kind, "", request.Slot)
@@ -635,11 +642,12 @@ func (p *Postgres) PlanControl(ctx context.Context, request PlanControlRequest) 
 			SELECT COUNT(*) FROM bridge_delegation_controls WHERE job_id = $1`, request.Lease.JobID).Scan(&count); err != nil {
 			return fmt.Errorf("count durable controls: %w", err)
 		}
-		if count >= request.Capacity {
+		if count >= controlCapacityLimit(request.Capacity, request.Kind) {
 			return fmt.Errorf("%w: job_id=%q", ErrControlCapacity, request.Lease.JobID)
 		}
 		planned = newControl(
-			controlID, request.Lease.JobID, "", job.SenderMXID, request.Kind, request.Slot,
+			controlID, request.Lease.JobID, job.AppserviceTransactionID, "", job.SenderMXID,
+			request.Kind, request.Slot,
 			request.Payload, request.At,
 		)
 		_, err = p.db.Exec(
@@ -1145,6 +1153,11 @@ func (p *Postgres) Transition(ctx context.Context, request TransitionRequest) er
 			}
 			return &LeaseLostError{JobID: request.Lease.JobID}
 		}
+		if request.To.Terminal() {
+			if err := p.terminalizeControls(txCtx, request.Lease.JobID, request.At); err != nil {
+				return err
+			}
+		}
 		if request.Patch.A2AContextID == nil || *request.Patch.A2AContextID == "" {
 			return nil
 		}
@@ -1174,10 +1187,30 @@ func (p *Postgres) Transition(ctx context.Context, request TransitionRequest) er
 	}
 	eventPatch := request.Patch.MatrixReplyEventID != nil ||
 		request.Patch.MatrixPlaceholderEventID != nil || request.Patch.MatrixEditEventID != nil
-	if eventPatch || (request.Patch.A2AContextID != nil && *request.Patch.A2AContextID != "") {
+	if request.To.Terminal() || eventPatch ||
+		(request.Patch.A2AContextID != nil && *request.Patch.A2AContextID != "") {
 		return p.db.DoTxn(ctx, nil, transition)
 	}
 	return transition(ctx)
+}
+
+func (p *Postgres) terminalizeControls(ctx context.Context, jobID string, at time.Time) error {
+	_, err := p.db.Exec(
+		ctx, `
+		UPDATE bridge_delegation_controls
+		SET state = CASE WHEN terminal_at IS NULL THEN 'dead' ELSE state END,
+			error_code = CASE WHEN terminal_at IS NULL THEN $3 ELSE error_code END,
+			payload = '\x',
+			updated_at = $2,
+			terminal_at = COALESCE(terminal_at, $2)
+		WHERE job_id = $1
+		  AND (terminal_at IS NULL OR octet_length(payload) > 0)`,
+		jobID, at, parentTerminalControlError,
+	)
+	if err != nil {
+		return fmt.Errorf("terminalize durable controls: %w", err)
+	}
+	return nil
 }
 
 // ScheduleRetry implements Ledger.
@@ -1247,6 +1280,29 @@ func (p *Postgres) CleanupTerminal(ctx context.Context, now time.Time) (CleanupR
 			return fmt.Errorf("read cleared terminal content count: %w", err)
 		}
 
+		result, err = p.db.Exec(
+			txCtx, `
+			UPDATE bridge_delegation_controls AS controls
+			SET state = CASE WHEN controls.terminal_at IS NULL THEN 'dead' ELSE controls.state END,
+				error_code = CASE WHEN controls.terminal_at IS NULL THEN $2 ELSE controls.error_code END,
+				payload = '\x',
+				updated_at = $1,
+				terminal_at = COALESCE(controls.terminal_at, $1)
+			FROM bridge_delegations AS delegations
+			WHERE controls.job_id = delegations.job_id
+			  AND delegations.terminal_at IS NOT NULL
+			  AND (controls.terminal_at IS NULL OR octet_length(controls.payload) > 0)`,
+			now, parentTerminalControlError,
+		)
+		if err != nil {
+			return fmt.Errorf("clear terminal control content: %w", err)
+		}
+		clearedControls, err := result.RowsAffected()
+		if err != nil {
+			return fmt.Errorf("read cleared terminal control count: %w", err)
+		}
+		cleanup.ContentCleared += clearedControls
+
 		result, err = p.db.Exec(txCtx, `
 			DELETE FROM bridge_delegations
 			WHERE state IN ('delivered', 'denied')
@@ -1266,6 +1322,11 @@ func (p *Postgres) CleanupTerminal(ctx context.Context, now time.Time) (CleanupR
 				SELECT 1
 				FROM bridge_delegations AS delegations
 				WHERE delegations.appservice_transaction_id = transactions.transaction_id
+			  )
+			  AND NOT EXISTS (
+				SELECT 1
+				FROM bridge_delegation_controls AS controls
+				WHERE controls.appservice_transaction_id = transactions.transaction_id
 			  )`, now.Add(-TerminalRetention))
 		if err != nil {
 			return fmt.Errorf("delete expired unreferenced appservice transactions: %w", err)
@@ -1321,7 +1382,8 @@ func scanControl(row rowScanner) (Control, error) {
 		preparedAt        sql.NullTime
 	)
 	if err := row.Scan(
-		&control.ControlID, &control.JobID, &control.SourceMatrixEventID, &intakeFingerprint,
+		&control.ControlID, &control.JobID, &control.AppserviceTransactionID,
+		&control.SourceMatrixEventID, &intakeFingerprint,
 		&control.AuthorizedSender, &kindValue, &stateValue, &control.Slot,
 		&leaseGeneration, &recoveryCount, &control.Payload, &control.A2AMessageID, &control.MatrixTxnID,
 		&control.MatrixEventID, &control.ErrorCode, &preparedAt, &control.CreatedAt, &control.UpdatedAt,
