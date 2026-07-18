@@ -30,6 +30,11 @@ run "defaults_to_six_public_hosts_without_admin" {
   }
 
   assert {
+    condition     = google_dns_managed_zone.platform[0].project == google_project_service.enabled_services["dns.googleapis.com"].project
+    error_message = "The managed zone must depend on the exact Cloud DNS API service resource."
+  }
+
+  assert {
     condition     = length(google_dns_record_set.platform) == 6
     error_message = "Managed DNS must keep the six default platform A records."
   }
