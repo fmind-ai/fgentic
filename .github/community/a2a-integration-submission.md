@@ -29,7 +29,7 @@ A2A Integration submission: Fgentic Matrix-to-A2A bridge
 
 - **Requested category:** A2A Integrations
 - **Role:** A2A client/host bridge; it is not an SDK or an A2A server implementation
-- **Protocol:** A2A AgentCard/service protocol v1.0 over JSON-RPC/HTTP; the contract suite tracks the A2A v1.0.1 specification while preserving its v1.0 service version
+- **Protocol:** A2A AgentCard/service protocol v1.0; local routing uses JSON-RPC over HTTP, while pinned remote AgentCards may select JSON-RPC or HTTP+JSON (the Go SDK's REST transport). The contract suite tracks the A2A v1.0.1 specification while preserving its v1.0 service version
 - **Operations:** non-streaming `SendMessage`, with `GetTask` polling for long-running tasks
 - **SDK:** [`github.com/a2aproject/a2a-go/v2` v2.3.1](https://github.com/fmind-ai/fgentic/blob/main/apps/matrix-a2a-bridge/go.mod)
 - **Trust boundary:** local agents are reached through agentgateway; explicitly configured remote agents require an exact endpoint and a verified ES256/JCS Signed AgentCard
@@ -44,7 +44,7 @@ A2A Integration submission: Fgentic Matrix-to-A2A bridge
 - Public OCI artifacts: [bridge image](https://github.com/orgs/fmind-ai/packages/container/package/matrix-a2a-bridge) and [Helm chart](https://github.com/orgs/fmind-ai/packages/container/package/charts%2Fmatrix-a2a-bridge)
 - [Apache-2.0 license](https://github.com/fmind-ai/fgentic/blob/main/LICENSE), DCO contributions, and public maintenance history
 
-The current scope is deliberately JSON-RPC/HTTP and non-streaming; it does not claim REST, gRPC, streaming, server-SDK, or full A2A TCK coverage.
+The current scope is deliberately non-streaming and limited to JSON-RPC plus HTTP+JSON; it does not claim gRPC, streaming, server-SDK, or full A2A TCK coverage.
 
 Would the project accept Fgentic in the A2A Integrations list? If so, I am happy to open the one-line documentation PR below and address review feedback.
 ```
