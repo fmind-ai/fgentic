@@ -23,7 +23,6 @@ readonly EXPECTED_COUNTS_JSON='{
   "SC2016": 127,
   "SC2030": 21,
   "SC2031": 81,
-  "SC2248": 4,
   "SC2249": 13,
   "SC2312": 345,
   "SC2329": 64

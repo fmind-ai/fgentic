@@ -581,14 +581,14 @@ collect_runtime_diagnostics() {
 			--prefix --max-log-requests=20 >"${destination}/scan-jobs.log" 2>&1 || true
 		{
 			kubectl auth can-i list pods --namespace models \
-				--as=system:serviceaccount:${OPERATOR_NAMESPACE}:trivy-operator
+				--as="system:serviceaccount:${OPERATOR_NAMESPACE}:trivy-operator"
 			kubectl auth can-i create vulnerabilityreports.aquasecurity.github.io \
-				--namespace models --as=system:serviceaccount:${OPERATOR_NAMESPACE}:trivy-operator
+				--namespace models --as="system:serviceaccount:${OPERATOR_NAMESPACE}:trivy-operator"
 			kubectl auth can-i list pods --namespace "${OUT_OF_SCOPE_NAMESPACE}" \
-				--as=system:serviceaccount:${OPERATOR_NAMESPACE}:trivy-operator
+				--as="system:serviceaccount:${OPERATOR_NAMESPACE}:trivy-operator"
 			kubectl auth can-i create vulnerabilityreports.aquasecurity.github.io \
 				--namespace "${OUT_OF_SCOPE_NAMESPACE}" \
-				--as=system:serviceaccount:${OPERATOR_NAMESPACE}:trivy-operator
+				--as="system:serviceaccount:${OPERATOR_NAMESPACE}:trivy-operator"
 		} >"${destination}/authorization.txt" 2>&1 || true
 	fi
 
