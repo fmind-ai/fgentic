@@ -29,7 +29,9 @@ spec:
       ports:
         - { protocol: TCP, port: 4318 }
     - from:
-        - podSelector: {}
+        - podSelector:
+            matchLabels:
+              fgentic.dev/metrics-reader: prometheus
       ports:
         - { protocol: TCP, port: 8888 }
   egress:
@@ -73,8 +75,16 @@ spec:
       ports:
         - { protocol: TCP, port: 4317 }
     - from:
-        - podSelector: {}
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: kube-prometheus-stack
+              app.kubernetes.io/name: grafana
       ports:
         - { protocol: TCP, port: 16686 }
+    - from:
+        - podSelector:
+            matchLabels:
+              fgentic.dev/metrics-reader: prometheus
+      ports:
         - { protocol: TCP, port: 8888 }
   egress: []

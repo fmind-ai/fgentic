@@ -58,6 +58,9 @@ spec:
     prometheus:
       prometheusSpec:
         retention: 7d
+        podMetadata:
+          labels:
+            fgentic.dev/metrics-reader: prometheus
         # Discover every PodMonitor/ServiceMonitor/Rule in the cluster, not only labelled ones —
         # the platform's monitors live in their component namespaces.
         podMonitorSelectorNilUsesHelmValues: false
