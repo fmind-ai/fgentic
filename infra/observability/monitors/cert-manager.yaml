@@ -1,6 +1,4 @@
-# Scrape only cert-manager's controller and CA-injector metrics Services. The webhook Service also
-# exposes :9402, but remains intentionally outside this selector because its Pod shares the
-# admission listener whose API-server ingress cannot be isolated portably with NetworkPolicy.
+# Scrape cert-manager's controller and CA-injector metrics Services on their shared named port.
 apiVersion: monitoring.coreos.com/v1
 kind: ServiceMonitor
 metadata:
@@ -21,5 +19,26 @@ spec:
           - controller
   endpoints:
     - port: http-metrics
+      path: /metrics
+      scheme: http
+---
+# The webhook Service names its metrics port differently. Keep a separate exact selector so the
+# monitor cannot accidentally attach admission traffic or future cert-manager components.
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: cert-manager-webhook
+  namespace: monitoring
+spec:
+  namespaceSelector:
+    matchNames:
+      - cert-manager
+  selector:
+    matchLabels:
+      app.kubernetes.io/component: webhook
+      app.kubernetes.io/instance: cert-manager
+      app.kubernetes.io/name: webhook
+  endpoints:
+    - port: metrics
       path: /metrics
       scheme: http
