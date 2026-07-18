@@ -734,7 +734,8 @@ recover_teardown_receipt() {
 		while IFS= read -r object; do
 			[ -n "${object}" ] || continue
 			if validate_receipt_container "${object}"; then
-				id="$(jq --raw-output '.id' <<<"${object}")"
+				id="$(jq --raw-output '.id' <<<"${object}")" \
+					|| teardown_receipt_fail 'teardown receipt container identity is invalid'
 				docker rm --force --volumes "${id}" >/dev/null 2>&1 || true
 			fi
 		done <<<"${containers}"
