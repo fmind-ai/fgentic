@@ -90,7 +90,7 @@ agentgateway_version="$(
 agentgateway_image="${AGENTGATEWAY_IMAGE:-cr.agentgateway.dev/agentgateway:${agentgateway_version}}"
 
 workdir="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-a2a-authorization.XXXXXX")"
-container="fgentic-a2a-authorization-$RANDOM-$$"
+container="fgentic-a2a-authorization-${RANDOM}-$$"
 cleanup() {
 	docker rm -f "${container}" >/dev/null 2>&1 || true
 	rm -rf "${workdir}"
