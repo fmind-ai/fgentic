@@ -1,5 +1,19 @@
-# Default-deny Keycloak. Only the shared Gateway can reach its public listener; egress is limited
-# to cluster DNS and Keycloak's scoped database in the shared CNPG cluster.
+# Fail closed for every current and future Pod in the identity namespace. The additive workload
+# policy below is the only network allowance; an unlabelled Pod therefore receives no ambient
+# ingress or egress merely because it landed in the Keycloak namespace.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: keycloak-default-deny
+  namespace: keycloak
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# Only the shared Gateway can reach Keycloak's public listener; egress is limited to cluster DNS
+# and Keycloak's scoped database in the shared CNPG cluster.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
