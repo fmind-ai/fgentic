@@ -185,7 +185,8 @@ func (m *Memory) ConversationsBefore(_ context.Context, ghost string, cutoff tim
 	defer m.mu.Unlock()
 	conversations := make([]Conversation, 0, limit)
 	for _, conversation := range m.contexts {
-		if conversation.Ghost != ghost || !conversation.UpdatedAt.Before(cutoff) {
+		if conversation.Ghost != ghost || !conversation.OwnersComplete ||
+			!conversation.UpdatedAt.Before(cutoff) || m.conversationBusyLocked(conversation.RoomID, conversation.Ghost) {
 			continue
 		}
 		conversation.Owners = slices.Clone(conversation.Owners)
@@ -215,12 +216,16 @@ func (m *Memory) DeleteConversation(_ context.Context, observed Conversation) (b
 func (m *Memory) ConversationBusy(_ context.Context, roomID, ghost string) (bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	return m.conversationBusyLocked(roomID, ghost), nil
+}
+
+func (m *Memory) conversationBusyLocked(roomID, ghost string) bool {
 	for _, job := range m.jobs {
 		if job.RoomID == roomID && job.GhostLocalpart == ghost && !job.State.Terminal() {
-			return true, nil
+			return true
 		}
 	}
-	return false, nil
+	return false
 }
 
 // MarkEventProcessed implements Store.

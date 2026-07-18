@@ -8,7 +8,8 @@ ALTER TABLE bridge_contexts
 	ADD CONSTRAINT bridge_contexts_owners_bound CHECK (jsonb_array_length(owners) <= 256);
 
 CREATE INDEX bridge_contexts_retention
-	ON bridge_contexts (ghost, updated_at);
+	ON bridge_contexts (ghost, updated_at)
+	WHERE owners_complete;
 
 -- Existing pre-governance rows deliberately retain an incomplete owner set. Recording later
 -- invokers cannot reconstruct historical identities, so those rows remain fail-closed until the

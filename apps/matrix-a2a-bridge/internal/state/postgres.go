@@ -167,10 +167,16 @@ func (p *Postgres) lockConversation(ctx context.Context, roomID, ghost string) (
 // ConversationsBefore implements Store.
 func (p *Postgres) ConversationsBefore(ctx context.Context, ghost string, cutoff time.Time, limit int) (_ []Conversation, returnedErr error) {
 	rows, err := p.db.Query(ctx, `
-		SELECT room_id, ghost, context_id, owners, owners_complete, updated_at
-		FROM bridge_contexts
-		WHERE ghost = $1 AND updated_at < $2
-		ORDER BY updated_at, room_id
+		SELECT contexts.room_id, contexts.ghost, contexts.context_id,
+			contexts.owners, contexts.owners_complete, contexts.updated_at
+		FROM bridge_contexts AS contexts
+		WHERE contexts.ghost = $1 AND contexts.updated_at < $2 AND contexts.owners_complete
+			AND NOT EXISTS (
+				SELECT 1 FROM bridge_delegations AS jobs
+				WHERE jobs.room_id = contexts.room_id AND jobs.ghost_localpart = contexts.ghost
+					AND jobs.terminal_at IS NULL
+			)
+		ORDER BY contexts.updated_at, contexts.room_id
 		LIMIT $3`, ghost, cutoff, limit)
 	if err != nil {
 		return nil, fmt.Errorf("list expired conversations for %s: %w", ghost, err)

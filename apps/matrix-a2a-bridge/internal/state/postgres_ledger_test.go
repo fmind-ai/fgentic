@@ -74,10 +74,37 @@ func TestConversationGovernanceMigrationContract(t *testing.T) {
 	migration := strings.Join(recorder.executedQueries(), "\n")
 	for _, required := range []string{
 		"ADD COLUMN owners JSONB", "ADD COLUMN owners_complete BOOLEAN", "jsonb_array_length(owners) <= 256",
-		"bridge_contexts_retention",
+		"bridge_contexts_retention", "WHERE owners_complete",
 	} {
 		if !strings.Contains(migration, required) {
 			t.Errorf("conversation-governance migration does not contain %q", required)
+		}
+	}
+}
+
+func TestConversationRetentionQuerySkipsIncompleteAndBusyRows(t *testing.T) {
+	recorder := &databaseRecorder{}
+	db := recorder.database(t)
+	t.Cleanup(func() { _ = db.Close() })
+	store := &Postgres{db: db}
+
+	conversations, err := store.ConversationsBefore(t.Context(), "agent-a", time.Now().UTC(), 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conversations) != 0 {
+		t.Fatalf("retention candidates = %#v, want none", conversations)
+	}
+	events := recorder.recordedEvents()
+	if len(events) != 1 || events[0].kind != "query" {
+		t.Fatalf("database events = %#v, want one query", events)
+	}
+	for _, required := range []string{
+		"contexts.owners_complete", "NOT EXISTS", "jobs.room_id = contexts.room_id",
+		"jobs.ghost_localpart = contexts.ghost", "jobs.terminal_at IS NULL",
+	} {
+		if !strings.Contains(events[0].query, required) {
+			t.Errorf("conversation-retention query does not contain %q", required)
 		}
 	}
 }

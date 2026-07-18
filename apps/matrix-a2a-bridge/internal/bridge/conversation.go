@@ -27,6 +27,12 @@ func (b *Bridge) SetSessionPurger(purger sessionPurger) {
 	b.sessionPurger = purger
 }
 
+func (b *Bridge) purgeSessions(ctx context.Context, conversation state.Conversation) error {
+	purgeCtx, cancel := context.WithTimeout(ctx, b.cfg.RequestTimeout)
+	defer cancel()
+	return b.sessionPurger.Purge(purgeCtx, conversation.ContextID, conversation.Owners)
+}
+
 func (b *Bridge) conversationLock(roomID, ghost string) *sync.Mutex {
 	hash := fnv.New32a()
 	_, _ = hash.Write([]byte(roomID))
@@ -114,7 +120,7 @@ func (b *Bridge) forgetConversation(ctx context.Context, roomID, ghost string) s
 	if b.sessionPurger == nil {
 		return "The kagent session-deletion boundary is unavailable. Nothing was reset."
 	}
-	if err := b.sessionPurger.Purge(ctx, conversation.ContextID, conversation.Owners); err != nil {
+	if err := b.purgeSessions(ctx, conversation); err != nil {
 		b.log.Warn(
 			"verified kagent conversation deletion failed",
 			"room", roomID, "ghost", ghost, "reason", "session_delete_failed", "error_type", fmt.Sprintf("%T", err),
@@ -192,7 +198,7 @@ func (b *Bridge) expireConversation(ctx context.Context, conversation state.Conv
 		)
 		return
 	}
-	if err := b.sessionPurger.Purge(ctx, conversation.ContextID, conversation.Owners); err != nil {
+	if err := b.purgeSessions(ctx, conversation); err != nil {
 		b.log.Warn(
 			"conversation retention deletion failed",
 			"room", conversation.RoomID, "ghost", conversation.Ghost,

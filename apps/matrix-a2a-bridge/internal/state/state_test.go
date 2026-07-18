@@ -3,6 +3,7 @@ package state
 import (
 	"slices"
 	"testing"
+	"time"
 )
 
 func TestMemoryContextsKeyedByRoomAndGhost(t *testing.T) {
@@ -55,6 +56,31 @@ func TestMemoryConversationTracksOwnersAndRejectsStaleDelete(t *testing.T) {
 	current, _, _ := s.Conversation(ctx, "!room", "agent-a")
 	if current.ContextID != "ctx-new" || !slices.Equal(current.Owners, []string{"@carol:example.org"}) {
 		t.Fatalf("current conversation = %#v", current)
+	}
+}
+
+func TestMemoryConversationRetentionSkipsIncompleteAndBusyRows(t *testing.T) {
+	s := NewMemory()
+	old := time.Now().UTC().Add(-time.Hour)
+	s.contexts[[2]string{"!ready", "agent-a"}] = Conversation{
+		RoomID: "!ready", Ghost: "agent-a", ContextID: "ctx-ready", Owners: []string{"@alice:example.org"},
+		OwnersComplete: true, UpdatedAt: old,
+	}
+	s.contexts[[2]string{"!legacy", "agent-a"}] = Conversation{
+		RoomID: "!legacy", Ghost: "agent-a", ContextID: "ctx-legacy", UpdatedAt: old.Add(-time.Minute),
+	}
+	s.contexts[[2]string{"!busy", "agent-a"}] = Conversation{
+		RoomID: "!busy", Ghost: "agent-a", ContextID: "ctx-busy", Owners: []string{"@alice:example.org"},
+		OwnersComplete: true, UpdatedAt: old.Add(-2 * time.Minute),
+	}
+	s.jobs["busy"] = Job{RoomID: "!busy", GhostLocalpart: "agent-a", State: StatePending}
+
+	conversations, err := s.ConversationsBefore(t.Context(), "agent-a", time.Now().UTC(), 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conversations) != 1 || conversations[0].ContextID != "ctx-ready" {
+		t.Fatalf("retention candidates = %#v, want only ctx-ready", conversations)
 	}
 }
 
