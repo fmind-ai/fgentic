@@ -4,6 +4,7 @@ set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly root_dir
+readonly agent_instruction_budget=28672
 
 fail() {
 	echo "error: $*" >&2
@@ -13,6 +14,37 @@ fail() {
 [[ -L "${root_dir}/AGENTS.md" ]] || fail "AGENTS.md must remain a symlink"
 [[ "$(readlink "${root_dir}/AGENTS.md")" == ".agents/AGENTS.md" ]] \
 	|| fail "AGENTS.md must target .agents/AGENTS.md"
+
+root_guidance="${root_dir}/.agents/AGENTS.md"
+root_guidance_bytes="$(wc -c <"${root_guidance}")"
+((root_guidance_bytes <= agent_instruction_budget)) \
+	|| fail ".agents/AGENTS.md is ${root_guidance_bytes} bytes; budget is ${agent_instruction_budget}"
+
+largest_combined_bytes="${root_guidance_bytes}"
+largest_combined_path=".agents/AGENTS.md"
+while IFS= read -r guidance; do
+	case "${guidance}" in
+		AGENTS.md | .agents/AGENTS.md) continue ;;
+	esac
+
+	combined_guidance_bytes="${root_guidance_bytes}"
+	guidance_dir="$(dirname "${guidance}")"
+	while [[ "${guidance_dir}" != "." ]]; do
+		candidate="${guidance_dir}/AGENTS.md"
+		if [[ -f "${root_dir}/${candidate}" ]]; then
+			nested_guidance_bytes="$(wc -c <"${root_dir}/${candidate}")"
+			combined_guidance_bytes="$((combined_guidance_bytes + nested_guidance_bytes))"
+		fi
+		guidance_dir="$(dirname "${guidance_dir}")"
+	done
+	((combined_guidance_bytes <= agent_instruction_budget)) \
+		|| fail "instruction chain ending at ${guidance} is ${combined_guidance_bytes} bytes; budget is ${agent_instruction_budget}"
+	if ((combined_guidance_bytes > largest_combined_bytes)); then
+		largest_combined_bytes="${combined_guidance_bytes}"
+		largest_combined_path=".agents/AGENTS.md + ${guidance}"
+	fi
+done < <(git -C "${root_dir}" ls-files '*AGENTS.md' | sort)
+
 [[ "$(<"${root_dir}/CLAUDE.md")" == "@AGENTS.md" ]] \
 	|| fail "CLAUDE.md must include the shared root instructions"
 [[ -L "${root_dir}/.claude/skills" ]] || fail ".claude/skills must remain a symlink"
@@ -93,4 +125,5 @@ fi
 if rg --quiet '\bflock\b' "${root_dir}/scripts/agent-gate.sh"; then
 	fail "agent gate must remain portable to macOS without flock"
 fi
+echo "Agent instruction budget passed: ${largest_combined_bytes}/${agent_instruction_budget} bytes (${largest_combined_path})"
 echo "Agent discovery and worktree setup contracts passed"

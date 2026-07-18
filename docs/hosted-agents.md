@@ -8,6 +8,20 @@ description: Configure Claude Code on the web and Codex Cloud so a hosted sessio
 
 Hosted (web) sessions differ from local CLI worktrees in three ways: no local cluster, no installed git hooks, and — depending on the provider — no GitHub access beyond pushing branches and opening pull requests. This runbook is the one-time operator setup per provider plus the contract every hosted session prompt must carry. The binding conventions stay in [.agents/AGENTS.md](../.agents/AGENTS.md) and [CONTRIBUTING.md](../CONTRIBUTING.md); verified provider behavior below is as of 2026-07.
 
+## Codex instruction budget
+
+Codex discovers one instruction file per directory from the repository root to the working directory, concatenates them root-first, and stops adding project instructions at `project_doc_max_bytes` (32 KiB by default). Nested files override earlier root guidance because they appear later. See the official [AGENTS.md discovery contract](https://learn.chatgpt.com/docs/agent-configuration/agents-md.md).
+
+This repository targets at most 28 KiB (28,672 bytes) for the root file alone and for the root combined with every tracked nested `AGENTS.md`. The 4 KiB reserve keeps all applicable instructions below Codex's default cap as the files evolve. `mise run check:agent-readiness` enforces both limits and reports the largest combination. Keep common commands and binding rules in the concise root, app commands near the top of nested files, and deep topology or rationale in the indexed [Agent Development Reference](agent-reference.md).
+
+Measured on 2026-07-18 after the root split:
+
+| Working directory                 | Effective instruction chain |  Bytes | 28 KiB headroom |
+| --------------------------------- | --------------------------- | -----: | --------------: |
+| Repository root                   | root                        | 11,186 |          17,486 |
+| `apps/activitypub-agent-gateway/` | root + app                  | 17,459 |          11,213 |
+| `apps/matrix-a2a-bridge/`         | root + app                  | 25,956 |           2,716 |
+
 ## What a hosted session may do
 
 1. Work exactly **one already-claimed issue** handed to it in the session prompt (the github-flow rule) — hosted sessions never sweep the queue and never merge pull requests.
