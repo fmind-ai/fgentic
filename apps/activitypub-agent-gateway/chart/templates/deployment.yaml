@@ -113,6 +113,8 @@ spec:
               value: {{ .Values.policy.reloadInterval | quote }}
             - name: SIGNATURE_MAX_SKEW
               value: {{ .Values.policy.signatureMaxSkew | quote }}
+            - name: SIGNATURE_FUTURE_SKEW
+              value: {{ .Values.policy.signatureFutureSkew | quote }}
             {{- end }}
             {{- if .Values.integrity.enabled }}
             - name: INTEGRITY_KEY_PATH

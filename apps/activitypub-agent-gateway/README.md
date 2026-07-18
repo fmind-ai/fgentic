@@ -14,11 +14,13 @@ It is the first surface of **ActivityPub as a second, additive federation transp
 
 Inbound AP content is **untrusted** (prompt injection is threat #1). The border enforces, before any A2A call:
 
-- **HTTP Message Signature** verification (RFC 9421 + Cavage fallback), stdlib crypto only, with body-digest binding and a replay window.
+- **HTTP Message Signature** verification (RFC 9421 + Cavage fallback), stdlib crypto only, with body-digest binding, mandatory request-target coverage, and a covered timestamp inside the bounded replay window.
 - **Actor-key binding**: a valid signature from key K only authorizes activities whose actor is K's owner.
 - A strict, **fail-closed allowlist** (`policy.json`: signing domains + exact actor URIs) that **hot-reloads from git** without a pod restart — a parse error, unreadable file, or empty allowlist denies everything.
 
 An unsigned, off-allowlist, or mis-bound inbound is dropped with content-free evidence and **zero** A2A calls. Object integrity, per-actor budget admission, and bot/attribution audit ([fediverse spec §3](../../docs/fediverse.md)) land in later M18 issues; the public HTTPRoute stays **disabled by default** until the border is proven in force.
+
+RFC 9421 signatures must cover `@method` plus either `@target-uri` or both `@path` and `@authority`; Cavage signatures must cover `(request-target)` and `host`. Both profiles must also cover a `created` parameter or `Date` header. `SIGNATURE_MAX_SKEW` bounds how old a request may be (12 hours by default), while `SIGNATURE_FUTURE_SKEW` tolerates at most five minutes of signer clock lead. Missing, stale, future-dated, or unbound signatures fail before key resolution or A2A delegation.
 
 ## Durable asynchronous inbox
 

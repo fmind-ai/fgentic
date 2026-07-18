@@ -178,6 +178,10 @@ func signatureReason(err error) string {
 		return "unsigned"
 	case errors.Is(err, httpsig.ErrStale):
 		return "stale_signature"
+	case errors.Is(err, httpsig.ErrTimestampRequired):
+		return "missing_signature_timestamp"
+	case errors.Is(err, httpsig.ErrMissingCoverage):
+		return "unbound_signature"
 	case errors.Is(err, httpsig.ErrDigestMismatch):
 		return "digest_mismatch"
 	case errors.Is(err, httpsig.ErrKeyResolution):

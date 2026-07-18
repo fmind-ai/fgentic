@@ -61,8 +61,10 @@ type Config struct {
 	// projected file is polled for a hot-swap without a pod restart (docs/fediverse.md §3).
 	PolicyPath           string        `env:"POLICY_PATH"`
 	PolicyReloadInterval time.Duration `env:"POLICY_RELOAD_INTERVAL" envDefault:"5s"`
-	// SignatureMaxSkew bounds how far an inbound signature timestamp may drift from now (replay).
-	SignatureMaxSkew time.Duration `env:"SIGNATURE_MAX_SKEW" envDefault:"12h"`
+	// SignatureMaxSkew bounds the age of an inbound signature (replay). SignatureFutureSkew is the
+	// much smaller tolerance for an ahead-of-gateway signer clock and cannot exceed five minutes.
+	SignatureMaxSkew    time.Duration `env:"SIGNATURE_MAX_SKEW" envDefault:"12h"`
+	SignatureFutureSkew time.Duration `env:"SIGNATURE_FUTURE_SKEW" envDefault:"5m"`
 
 	// IntegrityKeyPath is the mounted, SOPS-backed PKCS#8 PEM Ed25519 key used to attach FEP-8b32
 	// object integrity proofs to outbound replies (and publish the actor's assertionMethod Multikey).
@@ -190,6 +192,12 @@ func (c Config) validate() error {
 	}
 	if c.SignatureMaxSkew <= 0 {
 		return fmt.Errorf("SIGNATURE_MAX_SKEW must be positive")
+	}
+	if c.SignatureFutureSkew <= 0 || c.SignatureFutureSkew > 5*time.Minute {
+		return fmt.Errorf("SIGNATURE_FUTURE_SKEW must be positive and at most 5m")
+	}
+	if c.SignatureFutureSkew > c.SignatureMaxSkew {
+		return fmt.Errorf("SIGNATURE_FUTURE_SKEW (%s) must be <= SIGNATURE_MAX_SKEW (%s)", c.SignatureFutureSkew, c.SignatureMaxSkew)
 	}
 	if c.ActivityRetention <= 0 {
 		return fmt.Errorf("ACTIVITY_RETENTION must be positive")

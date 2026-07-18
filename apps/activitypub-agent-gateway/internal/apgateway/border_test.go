@@ -44,19 +44,28 @@ const borderTestActor = "https://mastodon.example/users/bob"
 
 // signedInbox builds an Ed25519 Cavage-signed inbox request for borderTestActor.
 func signedInbox(t *testing.T, priv ed25519.PrivateKey, body []byte) *http.Request {
-	actor := borderTestActor
 	t.Helper()
+	return signedInboxWith(t, priv, body, time.Now(), []string{"(request-target)", "host", "date", "digest"})
+}
+
+func signedInboxWith(t *testing.T, priv ed25519.PrivateKey, body []byte, date time.Time, headers []string) *http.Request {
+	t.Helper()
+	actor := borderTestActor
 	req := httptest.NewRequest(http.MethodPost, "https://fgentic.localhost/ap/agents/agent-docs-qa/inbox", strings.NewReader(string(body)))
 	req.Host = "fgentic.localhost"
-	req.Header.Set("Date", time.Now().UTC().Format(http.TimeFormat))
+	req.Header.Set("Date", date.UTC().Format(http.TimeFormat))
 	sum := sha256.Sum256(body)
 	req.Header.Set("Digest", "SHA-256="+base64.StdEncoding.EncodeToString(sum[:]))
-	headers := []string{"(request-target)", "host", "date", "digest"}
-	lines := []string{
-		"(request-target): post /ap/agents/agent-docs-qa/inbox",
-		"host: " + req.Host,
-		"date: " + req.Header.Get("Date"),
-		"digest: " + req.Header.Get("Digest"),
+	lines := make([]string, 0, len(headers))
+	for _, header := range headers {
+		switch header {
+		case "(request-target)":
+			lines = append(lines, "(request-target): post /ap/agents/agent-docs-qa/inbox")
+		case "host":
+			lines = append(lines, "host: "+req.Host)
+		default:
+			lines = append(lines, header+": "+req.Header.Get(header))
+		}
 	}
 	sig := ed25519.Sign(priv, []byte(strings.Join(lines, "\n")))
 	req.Header.Set("Signature", strings.Join([]string{
@@ -136,4 +145,41 @@ func TestBorderAuthorize(t *testing.T) {
 			t.Fatalf("post-reload should deny: %+v", d)
 		}
 	})
+}
+
+func TestBorderRejectsReplayableSignaturesWithContentFreeReasons(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	body := []byte(`{"type":"Create"}`)
+	now := time.Now()
+	tests := map[string]struct {
+		date    time.Time
+		headers []string
+		reason  string
+	}{
+		"no covered timestamp": {
+			date: now, headers: []string{"(request-target)", "host", "digest"}, reason: "missing_signature_timestamp",
+		},
+		"stale timestamp": {
+			date: now.Add(-2 * time.Hour), headers: []string{"(request-target)", "host", "date", "digest"}, reason: "stale_signature",
+		},
+		"future timestamp": {
+			date: now.Add(httpsig.MaximumFutureSkew + time.Minute), headers: []string{"(request-target)", "host", "date", "digest"}, reason: "stale_signature",
+		},
+		"missing request target": {
+			date: now, headers: []string{"host", "date", "digest"}, reason: "unbound_signature",
+		},
+	}
+	for name, test := range tests {
+		t.Run(name, func(t *testing.T) {
+			border := newBorder(t, pub, `{"version":1,"allowed_domains":["mastodon.example"]}`)
+			req := signedInboxWith(t, priv, body, test.date, test.headers)
+			decision := border.Authorize(context.Background(), req, body, borderTestActor)
+			if decision.Allowed || decision.Reason != test.reason || decision.Digest != "none" {
+				t.Fatalf("decision = %+v, want denied reason %q with content-free digest", decision, test.reason)
+			}
+		})
+	}
 }
