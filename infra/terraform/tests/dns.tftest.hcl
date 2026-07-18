@@ -35,6 +35,11 @@ run "defaults_to_six_public_hosts_without_admin" {
   }
 
   assert {
+    condition     = length(google_dns_managed_zone.platform[0].dnssec_config) == 1 && google_dns_managed_zone.platform[0].dnssec_config[0].state == "on"
+    error_message = "The public platform zone must enable DNSSEC explicitly."
+  }
+
+  assert {
     condition     = length(google_dns_record_set.platform) == 6
     error_message = "Managed DNS must keep the six default platform A records."
   }
