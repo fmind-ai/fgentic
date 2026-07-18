@@ -47,7 +47,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: model-loader
-          image: vllm/vllm-openai-cpu:v0.24.0@sha256:b0e6f8604413a8bfcca8836bb4b57b47f1aa653957e07f8903ece531309981a1
+          image: vllm/vllm-openai-cpu:v0.25.1@sha256:6b301f040db8152dfb8ff55e06fd348aa5d0d9a311f58118160c7058262c8628
           imagePullPolicy: IfNotPresent
           command:
             - python3
