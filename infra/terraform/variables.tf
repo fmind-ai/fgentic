@@ -17,6 +17,11 @@ variable "zone" {
   type        = string
   description = "Zone for the zonal GKE cluster + node pool"
   default     = "europe-west1-b"
+
+  validation {
+    condition     = var.regional || startswith(var.zone, "${var.region}-")
+    error_message = "For a zonal cluster, zone must belong to region so GKE can use the regional subnet (for example, region=europe-west1 and zone=europe-west1-b)."
+  }
 }
 
 variable "network_name" {
