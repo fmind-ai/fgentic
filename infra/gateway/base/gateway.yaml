@@ -13,13 +13,18 @@ metadata:
     cert-manager.io/cluster-issuer: ${cluster_issuer}
 spec:
   gatewayClassName: traefik
+  # Delegate each hostname only to its Git-owned route namespace. The immutable namespace-name
+  # label keeps route attachment fail-closed without granting namespace relabelling authority.
   listeners:
     - name: http
       protocol: HTTP
       port: 80
       allowedRoutes:
         namespaces:
-          from: All
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: gateway
     # Apex — serves /.well-known/matrix/{client,server} delegation so user IDs are @name:${server_name}.
     - name: https-wellknown
       protocol: HTTPS
@@ -31,7 +36,10 @@ spec:
           - name: matrix-tls
       allowedRoutes:
         namespaces:
-          from: All
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix
     # Element Web.
     - name: https-chat
       protocol: HTTPS
@@ -43,7 +51,10 @@ spec:
           - name: matrix-tls
       allowedRoutes:
         namespaces:
-          from: All
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix
     # Synapse (Matrix Client-Server + federation API).
     - name: https-matrix
       protocol: HTTPS
@@ -55,7 +66,10 @@ spec:
           - name: matrix-tls
       allowedRoutes:
         namespaces:
-          from: All
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix
     # Matrix Authentication Service (OIDC).
     - name: https-auth
       protocol: HTTPS
@@ -67,7 +81,10 @@ spec:
           - name: matrix-tls
       allowedRoutes:
         namespaces:
-          from: All
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix
     # Optional reference IdP (Keycloak).
     - name: https-id
       protocol: HTTPS
@@ -79,7 +96,10 @@ spec:
           - name: matrix-tls
       allowedRoutes:
         namespaces:
-          from: All
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: keycloak
     # Grafana (observability layer).
     - name: https-grafana
       protocol: HTTPS
@@ -91,4 +111,7 @@ spec:
           - name: matrix-tls
       allowedRoutes:
         namespaces:
-          from: All
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
