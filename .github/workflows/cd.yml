@@ -27,6 +27,7 @@ jobs:
   bridge-image:
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       artifact-metadata: write # link provenance to the GHCR artifact
       attestations: write # persist SLSA/SBOM attestations
@@ -273,6 +274,7 @@ jobs:
   release-sbom:
     if: github.event_name == 'release'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
     permissions:
       actions: read # attach Syft output to a GitHub Release
       contents: write # upload the SPDX asset to the published release
