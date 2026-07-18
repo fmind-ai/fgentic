@@ -762,6 +762,7 @@ prune_stale_node_images() {
 	while IFS= read -r node; do
 		case "${node}" in
 			*-server-[0-9]* | *-agent-[0-9]*) nodes[${#nodes[@]}]="${node}" ;;
+			*) continue ;;
 		esac
 	done <<<"${node_output}"
 	((${#nodes[@]} > 0)) || die "${CLUSTER_NAME} has no running runtime node"

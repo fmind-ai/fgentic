@@ -430,6 +430,7 @@ for kind in AgentgatewayBackend AgentgatewayPolicy; do
 	case "${kind}" in
 		AgentgatewayBackend) crd_name=agentgatewaybackends.agentgateway.dev ;;
 		AgentgatewayPolicy) crd_name=agentgatewaypolicies.agentgateway.dev ;;
+		*) fail "unsupported agentgateway CRD kind: ${kind}" ;;
 	esac
 	yq -o=json \
 		"select(.kind == \"CustomResourceDefinition\" and .metadata.name == \"${crd_name}\") | .spec.versions[] | select(.name == \"v1alpha1\") | .schema.openAPIV3Schema" \

@@ -43,6 +43,7 @@ for kind in AgentgatewayBackend AgentgatewayPolicy; do
 	case "${kind}" in
 		AgentgatewayBackend) crd_name=agentgatewaybackends.agentgateway.dev ;;
 		AgentgatewayPolicy) crd_name=agentgatewaypolicies.agentgateway.dev ;;
+		*) fail "unsupported agentgateway CRD kind: ${kind}" ;;
 	esac
 	yq -o=json \
 		"select(.kind == \"CustomResourceDefinition\" and .metadata.name == \"${crd_name}\") |
@@ -639,6 +640,7 @@ for example in source-bundle.example.yaml source-bundle-partner.example.yaml; do
 		source-bundle-partner.example.yaml)
 			fixture_name="knowledge-source-bundle-partner-public-test-fixture"
 			;;
+		*) fail "unsupported knowledge source bundle fixture: ${example}" ;;
 	esac
 	yq -o=json '.' "${KNOWLEDGE_DIR}/${example}" \
 		| jq -e --arg fixture_name "${fixture_name}" '

@@ -155,6 +155,7 @@ assert_profile_values() {
 				requests.memory) suffix=requests_memory ;;
 				limits.cpu) suffix=limits_cpu ;;
 				limits.memory) suffix=limits_memory ;;
+				*) fail "unsupported quota resource: ${resource}" ;;
 			esac
 			setting_key="quota_${quota_profile}_${suffix}"
 			actual="$(
@@ -187,6 +188,7 @@ assert_profile_values() {
 					setting_key=quota_default_request_memory
 					field_path='.spec.limits[0].defaultRequest.memory'
 					;;
+				*) fail "unsupported LimitRange field: ${field}" ;;
 			esac
 			actual="$(
 				NAMESPACE="${namespace}" yq -rN '

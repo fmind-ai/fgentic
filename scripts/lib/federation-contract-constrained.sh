@@ -256,6 +256,7 @@ check_federation_constrained_state_transitions() {
 				*'scale deployment metrics-server'*) printf '%s\n' "$*" >>"${metrics_events}" ;;
 				*'get pods --selector k8s-app=metrics-server'*) printf 'pod/metrics-server\n' ;;
 				*'wait --for=delete pod'*) printf '%s\n' "$*" >>"${metrics_events}" ;;
+				*) fail "unexpected constrained metrics kubectl call: $*" ;;
 			esac
 		}
 		PROFILE=federation
@@ -279,6 +280,7 @@ check_federation_constrained_state_transitions() {
 				*'get deployment metrics-server --output jsonpath'*) printf '0' ;;
 				*'scale deployment metrics-server'*) printf '%s\n' "$*" >>"${metrics_events}" ;;
 				*'rollout status deployment/metrics-server'*) printf '%s\n' "$*" >>"${metrics_events}" ;;
+				*) fail "unexpected default metrics kubectl call: $*" ;;
 			esac
 		}
 		PROFILE=federation

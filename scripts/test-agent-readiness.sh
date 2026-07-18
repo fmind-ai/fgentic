@@ -25,6 +25,7 @@ largest_combined_path=".agents/AGENTS.md"
 while IFS= read -r guidance; do
 	case "${guidance}" in
 		AGENTS.md | .agents/AGENTS.md) continue ;;
+		*) : ;;
 	esac
 
 	combined_guidance_bytes="${root_guidance_bytes}"

@@ -96,6 +96,7 @@ apply_secret() {
 				data="${data}${separator}\"${key}\":\"${encoded}\""
 				separator=,
 				;;
+			*) die "unsupported apply_secret argument" ;;
 		esac
 	done
 	printf '{"apiVersion":"v1","kind":"Secret","metadata":{"name":"%s","namespace":"%s"},"type":"%s","data":{%s}}\n' \
