@@ -7,6 +7,12 @@ resource "google_storage_bucket" "pg_backups" {
   uniform_bucket_level_access = true
   public_access_prevention    = "enforced"
 
+  # Cloud Storage otherwise adds seven days of soft-delete retention to new buckets. Keep the
+  # documented 60-day lifecycle rule as the actual hard deletion boundary.
+  soft_delete_policy {
+    retention_duration_seconds = 0
+  }
+
   lifecycle_rule {
     # CNPG's retentionPolicy (30d) governs catalog retention; this is the belt-and-braces cap.
     condition {
