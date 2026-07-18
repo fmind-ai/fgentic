@@ -156,6 +156,7 @@ alias = "c"
 description = "Run every static check (config, Terraform, manifests, scans, workflows, and apps)"
 depends = [
   "check:format",
+  "check:release-versioning",
   "check:docs",
   "check:shell",
   "check:terraform",
@@ -205,6 +206,66 @@ depends = [
 alias = "cf"
 description = "Verify config/markup formatting (dprint)"
 run = "dprint check"
+
+[tasks."check:release-versioning"]
+description = "Prove pre-1.0 and stable git-cliff SemVer bump rules"
+run = '''
+set -eu
+
+fixture_dir="$(mktemp -d)"
+cliff_config="$(pwd)/cliff.toml"
+trap 'rm -rf "${fixture_dir}"' EXIT HUP INT TERM
+
+# Git hooks export repository-local variables that otherwise override git -C.
+git_env_vars="$(git rev-parse --local-env-vars)"
+for git_env_var in ${git_env_vars}; do
+  unset "${git_env_var}"
+done
+
+check_bump() {
+  case_name=$1
+  base_tag=$2
+  message=$3
+  expected=$4
+  case_dir="${fixture_dir}/${case_name}"
+
+  git init --quiet "${case_dir}"
+  git -C "${case_dir}" config user.name "Release Fixture"
+  git -C "${case_dir}" config user.email "fixture@example.invalid"
+  git -C "${case_dir}" -c core.hooksPath=/dev/null \
+    commit --quiet --allow-empty --message "chore: initial"
+  git -C "${case_dir}" tag "${base_tag}"
+  git -C "${case_dir}" -c core.hooksPath=/dev/null \
+    commit --quiet --allow-empty --message "${message}"
+
+  actual="$(git-cliff --config "${cliff_config}" --repository "${case_dir}" --bumped-version)"
+  if [ "${actual}" != "${expected}" ]; then
+    printf 'release bump mismatch: %s after %s produced %s; expected %s\n' \
+      "${message}" "${base_tag}" "${actual}" "${expected}" >&2
+    exit 1
+  fi
+}
+
+check_bump pre1-breaking v0.1.0 "feat!: breaking change" v0.2.0
+check_bump pre1-feature v0.1.0 "feat: compatible feature" v0.1.1
+check_bump pre1-fix v0.1.0 "fix: compatible repair" v0.1.1
+check_bump post1-breaking v1.0.0 "feat!: breaking change" v2.0.0
+check_bump post1-feature v1.0.0 "feat: compatible feature" v1.1.0
+check_bump post1-fix v1.0.0 "fix: compatible repair" v1.0.1
+
+v1_actual="$(
+  git-cliff --config "${cliff_config}" \
+    --repository "${fixture_dir}/pre1-fix" \
+    --unreleased --bump major --context \
+    | jq -r '.[0].version'
+)"
+if [ "${v1_actual}" != "v1.0.0" ]; then
+  printf 'explicit v1 bump produced %s; expected v1.0.0\n' "${v1_actual}" >&2
+  exit 1
+fi
+
+printf 'git-cliff release bump contract passed (explicit v1 and automatic SemVer)\n'
+'''
 
 [tasks."docs:build"]
 description = "Build the version-locked documentation site"

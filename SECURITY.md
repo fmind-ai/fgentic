@@ -8,6 +8,14 @@ Report privately via [GitHub private vulnerability reporting](https://github.com
 
 You can expect an acknowledgment within 7 days and a remediation plan or triage outcome within 30 days. Coordinated disclosure is appreciated; we will credit reporters unless they prefer otherwise.
 
+## Supported versions and security fixes
+
+Before `v1.0.0`, only the latest tagged release is supported. From `v1.0.0`, the latest minor release line receives security fixes; the immediately preceding minor line in the same major series receives fixes for maintainer-assessed critical vulnerabilities for 90 days after its successor is published. Older lines, untagged commits, and modified deployments are unsupported.
+
+Fixes are released as new immutable patch tags on each affected supported line. An advisory identifies affected versions, the fixed version, known workarounds, and any required configuration or secret rotation. If a backport cannot be made safely, the advisory requires upgrading to the latest supported line instead of moving an existing tag or shipping an untested patch. The acknowledgment and triage targets above are response targets, not a promised fix or disclosure date.
+
+Fgentic pins but does not maintain its upstream components. An upstream report follows that project's process; when it affects a supported Fgentic release, the Fgentic advisory and patch identify the updated pin or deployment mitigation. Operators remain responsible for applying supported releases and for validating their own overlays, providers, and runtime controls.
+
 ## Scope
 
 1. The `matrix-a2a-bridge` Go application and its Helm chart.
