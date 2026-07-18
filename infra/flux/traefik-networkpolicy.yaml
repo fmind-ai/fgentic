@@ -1,0 +1,34 @@
+# Traefik serves public Gateway traffic and two internal listeners on the same Pod. Preserve the
+# public data plane on :80/:443 while restricting its unauthenticated metrics listener to the exact
+# platform Prometheus identity. The :8080 ping/dashboard entrypoint has no Pod peer allowance;
+# Kubernetes always permits local-node traffic, so kubelet health probes remain viable.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: traefik-ingress
+  namespace: gateway
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: traefik-gateway
+      app.kubernetes.io/name: traefik
+  policyTypes:
+    - Ingress
+  ingress:
+    # The LoadBalancer's public HTTP/HTTPS listeners must accept every client source. Omitting
+    # `from` makes this rule source-unrestricted without exposing any other Pod port.
+    - ports:
+        - protocol: TCP
+          port: 80
+        - protocol: TCP
+          port: 443
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              fgentic.dev/metrics-reader: prometheus
+      ports:
+        - protocol: TCP
+          port: 9100
