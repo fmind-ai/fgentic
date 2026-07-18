@@ -106,6 +106,9 @@ type durableA2AClient interface {
 // released for a bounded retry. The dispatcher owns heartbeats and cancels ctx on lease loss.
 func (b *Bridge) executeDurableJob(ctx context.Context, claimed state.Job) {
 	job := claimed
+	conversationLock := b.conversationLock(job.RoomID, job.GhostLocalpart)
+	conversationLock.Lock()
+	defer conversationLock.Unlock()
 	stop, err := b.executeDurableControls(ctx, &job)
 	if stop || errors.Is(err, state.ErrLeaseLost) || ctx.Err() != nil {
 		return

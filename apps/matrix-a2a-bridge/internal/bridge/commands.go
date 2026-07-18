@@ -16,6 +16,8 @@ const (
 	agentsCommand   = "/agents"
 	budgetCommand   = "/budget"
 	budgetAlias     = "!budget"
+	forgetCommand   = "/forget"
+	forgetAlias     = "!forget"
 	commandScope    = "/commands"
 	maxBudgetAgents = maxDirectoryAgents
 )
@@ -27,6 +29,7 @@ const (
 	plaintextCommandAsk
 	plaintextCommandAgents
 	plaintextCommandBudget
+	plaintextCommandForget
 	plaintextCommandInvalid
 )
 
@@ -46,7 +49,7 @@ type textMessageClassification struct {
 
 func parsePlaintextCommand(body string) plaintextCommand {
 	name, rest := splitLeadingToken(body)
-	if !strings.HasPrefix(name, "/") && name != askAlias && name != budgetAlias {
+	if !strings.HasPrefix(name, "/") && name != askAlias && name != budgetAlias && name != forgetAlias {
 		return plaintextCommand{}
 	}
 	switch name {
@@ -67,6 +70,12 @@ func parsePlaintextCommand(body string) plaintextCommand {
 			return plaintextCommand{kind: plaintextCommandInvalid}
 		}
 		return plaintextCommand{kind: plaintextCommandBudget}
+	case forgetCommand, forgetAlias:
+		agent, extra := splitLeadingToken(rest)
+		if agent == "" || extra != "" {
+			return plaintextCommand{kind: plaintextCommandInvalid}
+		}
+		return plaintextCommand{kind: plaintextCommandForget, agent: agent}
 	default:
 		return plaintextCommand{kind: plaintextCommandInvalid}
 	}
@@ -153,7 +162,7 @@ func (b *Bridge) handleCommandNotice(
 }
 
 func commandHelpText() string {
-	return "Command not recognized. Use !ask <agent> <prompt>, !agents [name], or !budget. The /ask, /agents, and /budget forms also work when your Matrix client sends leading slashes unchanged."
+	return "Command not recognized. Use !ask <agent> <prompt>, !agents [name], !budget, or !forget <agent>. Leading-slash forms also work when your Matrix client preserves them."
 }
 
 func unknownCommandAgentText() string {

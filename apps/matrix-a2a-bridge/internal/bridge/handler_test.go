@@ -1937,6 +1937,9 @@ func TestThreadContinuationGatesToOriginalSender(t *testing.T) {
 		origin: origin, placeholder: placeholder, localpart: "agent-k8s", ref: ref,
 		taskID: "task-3", contextID: "ctx-3", sender: b.agents.IdentifySender(origin.Sender),
 	}
+	if err := b.store.SetContext(t.Context(), origin.RoomID.String(), open.localpart, open.contextID, origin.Sender.String()); err != nil {
+		t.Fatal(err)
+	}
 	b.openTasks.register(open, b.cfg.InputWaitTimeout, func() { b.expireOpenTask(open) })
 
 	// A wrong sender is refused and never consumes the pending answer slot.
@@ -1974,6 +1977,9 @@ func TestContinueOpenTaskResumesAndCompletes(t *testing.T) {
 	open := &openTask{
 		origin: origin, placeholder: placeholder, localpart: "agent-k8s", ref: ref,
 		taskID: "task-4", contextID: "ctx-4", sender: b.agents.IdentifySender(origin.Sender),
+	}
+	if err := b.store.SetContext(t.Context(), origin.RoomID.String(), open.localpart, open.contextID, origin.Sender.String()); err != nil {
+		t.Fatal(err)
 	}
 	b.openTasks.register(open, b.cfg.InputWaitTimeout, func() { b.expireOpenTask(open) })
 

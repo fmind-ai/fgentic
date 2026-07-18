@@ -34,6 +34,7 @@ import (
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/bridge"
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/config"
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/matrixapp"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/sessioncontrol"
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/state"
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/telemetry"
 )
@@ -112,7 +113,12 @@ func run(cfg config.Config, log *slog.Logger) error {
 	log.Info("loaded agent routing map", "agents", agents.Names())
 
 	client := a2aclient.New(cfg.A2ABaseURL, cfg.A2AAPIKey, log)
+	purger, err := sessioncontrol.New(cfg.KagentAPIURL, &http.Client{Timeout: cfg.RequestTimeout})
+	if err != nil {
+		return fmt.Errorf("configure kagent session deletion: %w", err)
+	}
 	br := bridge.New(cfg, as, agents, client, store, log)
+	br.SetSessionPurger(purger)
 	br.EnableDurableIntake()
 	if err := br.Start(runtimeCtx); err != nil {
 		return fmt.Errorf("start bridge: %w", err)

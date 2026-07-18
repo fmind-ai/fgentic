@@ -46,6 +46,18 @@ func TestParsePlaintextCommand(t *testing.T) {
 			body: "!budget",
 			want: plaintextCommand{kind: plaintextCommandBudget},
 		},
+		"forget": {
+			body: "/forget @agent-k8s:fgentic.fmind.ai",
+			want: plaintextCommand{kind: plaintextCommandForget, agent: "@agent-k8s:fgentic.fmind.ai"},
+		},
+		"forget alias": {
+			body: "!forget k8s",
+			want: plaintextCommand{kind: plaintextCommandForget, agent: "k8s"},
+		},
+		"missing forget agent": {
+			body: "!forget",
+			want: plaintextCommand{kind: plaintextCommandInvalid},
+		},
 		"missing ask prompt": {
 			body: "/ask k8s",
 			want: plaintextCommand{kind: plaintextCommandInvalid},

@@ -1163,12 +1163,22 @@ func (p *Postgres) Transition(ctx context.Context, request TransitionRequest) er
 		}
 		result, err = p.db.Exec(
 			txCtx, `
-			INSERT INTO bridge_contexts (room_id, ghost, context_id, updated_at)
-			SELECT room_id, ghost_localpart, $2, $3
+			INSERT INTO bridge_contexts (room_id, ghost, context_id, owners, owners_complete, updated_at)
+			SELECT room_id, ghost_localpart, $2, jsonb_build_array(sender_mxid), true, $3
 			FROM bridge_delegations
 			WHERE job_id = $1
 			ON CONFLICT (room_id, ghost) DO UPDATE
-			SET context_id = EXCLUDED.context_id, updated_at = EXCLUDED.updated_at`,
+			SET context_id = EXCLUDED.context_id,
+				owners = CASE
+					WHEN bridge_contexts.context_id <> EXCLUDED.context_id THEN EXCLUDED.owners
+					WHEN bridge_contexts.owners ? (EXCLUDED.owners ->> 0) THEN bridge_contexts.owners
+					ELSE bridge_contexts.owners || EXCLUDED.owners
+				END,
+				owners_complete = CASE
+					WHEN bridge_contexts.context_id <> EXCLUDED.context_id THEN true
+					ELSE bridge_contexts.owners_complete
+				END,
+				updated_at = EXCLUDED.updated_at`,
 			request.Lease.JobID,
 			*request.Patch.A2AContextID,
 			request.At,

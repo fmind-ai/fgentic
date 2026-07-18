@@ -85,6 +85,12 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].env[?(@.name == "DELEGATION_MAX_ATTEMPTS")].value
           value: "5"
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "KAGENT_API_URL")].value
+          value: http://kagent-controller.kagent.svc.cluster.local:8083
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "CONVERSATION_SWEEP_INTERVAL")].value
+          value: 1h
   - it: keeps the delayed-event dead-man switch opt-in
     asserts:
       - equal:
@@ -169,13 +175,13 @@ tests:
       a2aAuthentication.key: credential
     asserts:
       - equal:
-          path: spec.template.spec.containers[0].env[4].name
+          path: spec.template.spec.containers[0].env[?(@.name == "A2A_API_KEY")].name
           value: A2A_API_KEY
       - equal:
-          path: spec.template.spec.containers[0].env[4].valueFrom.secretKeyRef.name
+          path: spec.template.spec.containers[0].env[?(@.name == "A2A_API_KEY")].valueFrom.secretKeyRef.name
           value: a2a-call-test
       - equal:
-          path: spec.template.spec.containers[0].env[4].valueFrom.secretKeyRef.key
+          path: spec.template.spec.containers[0].env[?(@.name == "A2A_API_KEY")].valueFrom.secretKeyRef.key
           value: credential
   - it: omits the workload credential only when explicitly disabled
     set:
