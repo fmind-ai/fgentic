@@ -252,7 +252,7 @@ spec:
         dataClassification: public
         allowedRooms: ["${managed_room_id}", "${absent_room_id}"]
         allowedServers: ["${SERVER_B}"]
-        allowedSenders: ["@bob:${SERVER_B}"]
+        allowedSenders: ["@alice:${SERVER_A}", "@bob:${SERVER_B}"]
       agent-scribe:
         namespace: kagent
         name: scribe
