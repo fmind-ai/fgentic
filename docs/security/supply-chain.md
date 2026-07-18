@@ -39,6 +39,21 @@ subject: https://github.com/fmind-ai/fgentic/.github/workflows/cd.yml@refs/heads
 
 The matcher is exact and anchored. Tag signatures are valid for release verification, but the deployed chart source accepts only a chart published by the `main` workflow identity. Removing the `verify` block or broadening its subject is a security-boundary change.
 
+## Cosign 3 compatibility
+
+CD installs Cosign 3.0.6 through the SHA-pinned `cosign-installer` v4.1.2 action. Cosign 3 enables the standardized Sigstore bundle and OCI 1.1 referring-artifact formats by default. The workflow uses `cosign sign` for image and chart digests, so the `sign-blob` migration requirement to provide `--bundle` does not apply.
+
+The deployed Flux source-controller is v1.9.3. Its [pinned module graph](https://github.com/fluxcd/source-controller/blob/v1.9.3/go.mod) uses Cosign 3.0.6, and its upstream acceptance inventory includes a [Cosign v3 keyless OCI fixture](https://github.com/fluxcd/source-controller/blob/v1.9.3/config/testdata/ocirepository/signed-with-cosign-v3-keyless.yaml). Flux v1.8.0 introduced v2/v3 verification; v1.9.0 additionally fixed v3 bundle verification for HTTP and private-CA registries. These are compatibility evidence, not evidence that Fgentic's current chart reconciled.
+
+| Producer and verifier                                       | Expected result | Required evidence                                                                                        |
+| ----------------------------------------------------------- | --------------- | -------------------------------------------------------------------------------------------------------- |
+| Cosign 3 image signature → workflow `cosign verify`         | Pass            | The first `main` CD run after the installer bump verifies the immutable image digest.                    |
+| Cosign 3 chart signature → workflow `cosign verify`         | Pass            | The same CD run verifies the immutable chart digest before changing the GitOps source.                   |
+| Cosign 3 chart signature → source-controller v1.9.3         | Pass            | Upstream v3 fixture plus `SourceVerified=True` for Fgentic's pinned digest on the candidate topology.    |
+| Unsigned or wrong-workflow chart → source-controller v1.9.3 | Fail            | `SourceVerified` is not true, `Ready=False` reports verification failure, and Helm receives no artifact. |
+
+Do not complete a Cosign major-version migration from source inspection alone. Record the exact successful CD run and the positive and negative Flux conditions in the owning issue. A RED lane may prepare and merge the workflow change, but only the designated runtime owner may collect cluster proof.
+
 ## Operator verification
 
 Set the immutable references from the deployed manifests:
