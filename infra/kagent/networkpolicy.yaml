@@ -1,9 +1,10 @@
 # kagent's A2A endpoint is UNAUTHENTICATED by default (auth.mode: unsecure, NoopAuthorizer —
 # SPEC §4 F11), so this NetworkPolicy is a load-bearing security control: only agentgateway
 # (the governed A2A route), the bridge (direct-dial fallback), kagent's own agent pods (they
-# call the controller's session/persistence APIs), and monitoring (metrics scrapes) may reach
-# the kagent namespace. The exact policy passes the isolated kind+Calico deny/allow and deletion
-# guard; repeat `mise run test:network-policies` on each installed target CNI before acceptance.
+# call the controller's session/persistence APIs) may reach the kagent namespace. The pinned chart
+# renders no Prometheus monitor; future scraping must add an exact Prometheus pod identity and only
+# its metrics ports. The exact policy passes the isolated kind+Calico deny/allow and deletion guard;
+# repeat `mise run test:network-policies` on each installed target CNI before acceptance.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -24,9 +25,6 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kagent
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: monitoring
 ---
 # Sample agents need only DNS, kagent's controller, and agentgateway's model/MCP routes.
 # The policy is an impact boundary, not a prompt-injection fix. In particular, docs-qa and scribe
