@@ -1280,6 +1280,7 @@ demo_up() {
 
 	WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-demo.XXXXXX")"
 	KUBECONFIG_FILE="$(mktemp "${TMPDIR:-/tmp}/fgentic-demo-kubeconfig.XXXXXX")"
+	# shellcheck disable=SC2329 # cleanup is invoked indirectly by the trap below
 	cleanup() {
 		resource_trace_finish || true
 		rm -rf "${WORK_DIR}" "${KUBECONFIG_FILE}"
