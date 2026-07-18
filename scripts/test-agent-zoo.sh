@@ -183,6 +183,7 @@ expected_mappings="agent-${actual_agents//$'\n'/$'\n'agent-}"
 actual_local_mappings="$(yq -N -r '.agents | to_entries[] | select(.value.namespace == "kagent") | .key' "${tmp_dir}/agents.yaml" | sort)"
 [[ "${actual_local_mappings}" == "${expected_mappings}" ]] \
 	|| fail "every local bridge mapping must match exactly one rendered in-repo Agent"
+all_mappings="$(yq -N -r '.agents | keys | .[]' "${tmp_dir}/agents.yaml" | sort)"
 while IFS= read -r mapping; do
 	assert_yq \
 		"select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"agents.yaml\" | from_yaml | .agents.\"${mapping}\".allowedSenders as \$senders | ((\$senders | length) == 1 and \$senders[0] == \"@alice:ci.fgentic.example\")" \
@@ -192,7 +193,7 @@ while IFS= read -r mapping; do
 		"select(.kind == \"ConfigMap\" and .metadata.name == \"matrix-a2a-bridge-agents\") | .data.\"agents.yaml\" | from_yaml | .agents.\"${mapping}\".stage as \$stage | (\$stage == \"dev\" or \$stage == \"prod\")" \
 		"${tmp_dir}/bridge.yaml" \
 		"${mapping} must carry an explicit dev or prod stage"
-done < <(yq -N -r '.agents | keys | .[]' "${tmp_dir}/agents.yaml" | sort)
+done <<<"${all_mappings}"
 while IFS= read -r agent; do
 	mapping="agent-${agent}"
 	assert_yq \

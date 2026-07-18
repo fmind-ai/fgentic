@@ -51,10 +51,11 @@ require_commands() {
 load_profile_settings() {
 	local profile="$1"
 	local settings="${ROOT_DIR}/clusters/${profile}/platform-settings.yaml"
-	local key value
+	local key settings_data value
+	settings_data="$(yq -r '.data | to_entries[] | .key + "=" + .value' "${settings}")"
 	while IFS='=' read -r key value; do
 		export "${key}=${value}"
-	done < <(yq -r '.data | to_entries[] | .key + "=" + .value' "${settings}")
+	done <<<"${settings_data}"
 }
 
 substitute_profile() {
@@ -147,7 +148,11 @@ assert_profile_values() {
 	local rendered="$1"
 	local settings="$2"
 	local context="$3"
-	local namespace quota_profile resource suffix setting_key actual expected field field_path
+	local namespace namespace_profiles quota_profile resource suffix setting_key actual expected field field_path
+	namespace_profiles="$(
+		yq eval-all -o=json '[select(.kind == "Namespace")]' <<<"${rendered}" \
+			| yq -r '.[] | [.metadata.name, .metadata.labels."fgentic.dev/quota-profile"] | @tsv'
+	)"
 	while IFS=$'\t' read -r namespace quota_profile; do
 		for resource in pods requests.cpu requests.memory limits.cpu limits.memory; do
 			case "${resource}" in
@@ -201,21 +206,19 @@ assert_profile_values() {
 			[[ "${actual}" == "${expected}" ]] \
 				|| fail "${context} ${namespace} ${field} does not match ${setting_key}"
 		done
-	done < <(
-		yq eval-all -o=json '[select(.kind == "Namespace")]' <<<"${rendered}" \
-			| yq -r '.[] | [.metadata.name, .metadata.labels."fgentic.dev/quota-profile"] | @tsv'
-	)
+	done <<<"${namespace_profiles}"
 }
 
 assert_static_contract() {
 	require_commands flux kubectl sort yq
 
-	local expected_namespaces
+	local expected_namespace_count expected_namespaces
 	expected_namespaces="$(
 		yq eval-all -o=json '[select(.kind == "Namespace")]' "${NAMESPACE_FILE}" \
 			| yq -r '.[].metadata.name' | sort
 	)"
-	[[ "$(wc -l <<<"${expected_namespaces}" | tr -d ' ')" -eq 14 ]] \
+	expected_namespace_count="$(wc -l <<<"${expected_namespaces}" | tr -d ' ')"
+	[[ "${expected_namespace_count}" -eq 14 ]] \
 		|| fail "expected all fourteen shared namespaces to be quota-managed"
 
 	yq -e '
@@ -229,14 +232,16 @@ assert_static_contract() {
   ' "${NAMESPACE_FILE}" >/dev/null \
 		|| fail "knowledge must be a managed, image-enforced, small, restricted-PSS namespace"
 
-	local federation_namespaces repository_namespaces repository_quota_namespaces
+	local federation_namespace_count federation_namespaces repository_namespace_count
+	local repository_namespaces repository_quota_namespaces
 	local repository_limit_namespaces
 	federation_namespaces="$(
 		yq eval-all -o=json '[select(.kind == "Namespace")]' \
 			"${NAMESPACE_FILE}" "${FEDERATION_NAMESPACE_FILE}" \
 			| yq -r '.[].metadata.name' | sort
 	)"
-	[[ "$(wc -l <<<"${federation_namespaces}" | tr -d ' ')" -eq 16 ]] \
+	federation_namespace_count="$(wc -l <<<"${federation_namespaces}" | tr -d ' ')"
+	[[ "${federation_namespace_count}" -eq 16 ]] \
 		|| fail "expected the shared and federation namespace sources to own sixteen namespaces"
 	repository_namespaces="$(
 		yq eval-all -o=json '[select(.kind == "Namespace")]' \
@@ -244,7 +249,8 @@ assert_static_contract() {
 			"${ADMIN_NAMESPACE_FILE}" \
 			| yq -r '.[].metadata.name' | sort
 	)"
-	[[ "$(wc -l <<<"${repository_namespaces}" | tr -d ' ')" -eq 18 ]] \
+	repository_namespace_count="$(wc -l <<<"${repository_namespaces}" | tr -d ' ')"
+	[[ "${repository_namespace_count}" -eq 18 ]] \
 		|| fail "expected all eighteen repository-owned namespaces to be quota-managed"
 	repository_quota_namespaces="$(
 		yq eval-all -o=json \
@@ -296,6 +302,7 @@ assert_static_contract() {
     select(.[1].optional == true)
   ' <<<"${layers}" >/dev/null || fail "the namespaces layer must substitute platform settings"
 
+	local activitypub_limit_namespaces activitypub_namespaces activitypub_quota_namespaces
 	local profile rendered quota_namespaces limit_namespaces activitypub_rendered
 	local expected_profile_namespaces
 	for profile in local gcp demo federation; do
@@ -319,17 +326,21 @@ assert_static_contract() {
 		activitypub_rendered="$(render_kustomization_profile "${profile}" "${ACTIVITYPUB_NAMESPACE_DIR}")"
 		[[ "${activitypub_rendered}" != *'${'* ]] \
 			|| fail "activitypub deploy left clusters/${profile} variables unresolved"
-		[[ "$(sorted_names Namespace <<<"${activitypub_rendered}")" == activitypub ]] \
+		activitypub_namespaces="$(sorted_names Namespace <<<"${activitypub_rendered}")"
+		activitypub_quota_namespaces="$(sorted_names ResourceQuota <<<"${activitypub_rendered}")"
+		activitypub_limit_namespaces="$(sorted_names LimitRange <<<"${activitypub_rendered}")"
+		[[ "${activitypub_namespaces}" == activitypub ]] \
 			|| fail "activitypub deploy Namespace set drifted"
-		[[ "$(sorted_names ResourceQuota <<<"${activitypub_rendered}")" == activitypub ]] \
+		[[ "${activitypub_quota_namespaces}" == activitypub ]] \
 			|| fail "activitypub deploy ResourceQuota set drifted"
-		[[ "$(sorted_names LimitRange <<<"${activitypub_rendered}")" == activitypub ]] \
+		[[ "${activitypub_limit_namespaces}" == activitypub ]] \
 			|| fail "activitypub deploy LimitRange set drifted"
 		assert_admission_shape "${activitypub_rendered}" "activitypub deploy (${profile})"
 		assert_profile_values "${activitypub_rendered}" "${settings}" "activitypub deploy (${profile})"
 	done
 
-	local federation_rendered effective_namespaces effective_quota_namespaces effective_limit_namespaces
+	local effective_namespace_count federation_rendered effective_namespaces
+	local effective_quota_namespaces effective_limit_namespaces
 	federation_rendered="$(
 		cd "${ROOT_DIR}"
 		flux build kustomization cluster-overlay-validation \
@@ -344,7 +355,8 @@ assert_static_contract() {
 	effective_namespaces="$(
 		sorted_managed_namespaces <<<"${federation_rendered}"
 	)"
-	[[ "$(wc -l <<<"${effective_namespaces}" | tr -d ' ')" -eq 12 ]] \
+	effective_namespace_count="$(wc -l <<<"${effective_namespaces}" | tr -d ' ')"
+	[[ "${effective_namespace_count}" -eq 12 ]] \
 		|| fail "the effective federation overlay must own exactly twelve namespaces"
 	effective_quota_namespaces="$(
 		sorted_names ResourceQuota <<<"${federation_rendered}"
@@ -372,13 +384,14 @@ assert_static_contract() {
 		"${ROOT_DIR}/clusters/federation/platform-settings.yaml" \
 		"effective federation overlay"
 
-	local cert_releases
+	local cert_release_count cert_releases
 	cert_releases="$(
 		yq eval-all -o=json '
       [select(.kind == "HelmRelease" and .metadata.name == "cert-manager")]
     ' "${ROOT_DIR}/infra/flux/releases.yaml"
 	)"
-	[[ "$(yq -r 'length' <<<"${cert_releases}")" -eq 1 ]] \
+	cert_release_count="$(yq -r 'length' <<<"${cert_releases}")"
+	[[ "${cert_release_count}" -eq 1 ]] \
 		|| fail "expected exactly one cert-manager HelmRelease"
 	local resource_path
 	for resource_path in \
