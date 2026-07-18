@@ -1,0 +1,31 @@
+# The CNPG operator serves its TLS admission webhook and unauthenticated metrics from one Pod.
+# Preserve portable API-server access to :9443 while reserving :8080 for the exact platform
+# Prometheus identity. CNPG instance Pods have their separate data-plane policy in infra/postgres.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: cloudnative-pg-operator-ingress
+  namespace: cnpg-system
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/instance: cloudnative-pg
+      app.kubernetes.io/name: cloudnative-pg
+  policyTypes:
+    - Ingress
+  ingress:
+    # Kubernetes API-server source addresses vary between k3d and GKE. Keep only the authenticated
+    # TLS webhook port source-unrestricted; this does not expose the metrics listener.
+    - ports:
+        - protocol: TCP
+          port: 9443
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              fgentic.dev/metrics-reader: prometheus
+      ports:
+        - protocol: TCP
+          port: 8080

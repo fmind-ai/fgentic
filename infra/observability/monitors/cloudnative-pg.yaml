@@ -1,0 +1,16 @@
+# The operator metrics port has no Service in the pinned chart. Scrape the exact Deployment Pod;
+# CNPG instance metrics remain covered by the PodMonitor generated from the platform-pg Cluster.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: cloudnative-pg-operator
+  namespace: cnpg-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: cloudnative-pg
+      app.kubernetes.io/name: cloudnative-pg
+  podMetricsEndpoints:
+    - port: metrics
+      path: /metrics
+      scheme: http
