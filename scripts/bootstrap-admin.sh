@@ -33,39 +33,39 @@ ROOM_NAME="Fgentic Demo"
 
 while (($#)); do
 	case "$1" in
-	--server-name)
-		SERVER_NAME="${2:?--server-name requires a value}"
-		shift 2
-		;;
-	--matrix-url)
-		MATRIX_URL="${2:?--matrix-url requires a value}"
-		shift 2
-		;;
-	--client-id)
-		CLIENT_ID="${2:?--client-id requires a value}"
-		shift 2
-		;;
-	--admin-localpart)
-		ADMIN_LOCALPART="${2:?--admin-localpart requires a value}"
-		shift 2
-		;;
-	--room-localpart)
-		ROOM_LOCALPART="${2:?--room-localpart requires a value}"
-		shift 2
-		;;
-	--room-name)
-		ROOM_NAME="${2:?--room-name requires a value}"
-		shift 2
-		;;
-	-h | --help)
-		usage
-		exit 0
-		;;
-	*)
-		echo "error: unknown option: $1" >&2
-		usage
-		exit 2
-		;;
+		--server-name)
+			SERVER_NAME="${2:?--server-name requires a value}"
+			shift 2
+			;;
+		--matrix-url)
+			MATRIX_URL="${2:?--matrix-url requires a value}"
+			shift 2
+			;;
+		--client-id)
+			CLIENT_ID="${2:?--client-id requires a value}"
+			shift 2
+			;;
+		--admin-localpart)
+			ADMIN_LOCALPART="${2:?--admin-localpart requires a value}"
+			shift 2
+			;;
+		--room-localpart)
+			ROOM_LOCALPART="${2:?--room-localpart requires a value}"
+			shift 2
+			;;
+		--room-name)
+			ROOM_NAME="${2:?--room-name requires a value}"
+			shift 2
+			;;
+		-h | --help)
+			usage
+			exit 0
+			;;
+		*)
+			echo "error: unknown option: $1" >&2
+			usage
+			exit 2
+			;;
 	esac
 done
 
@@ -73,12 +73,12 @@ MATRIX_URL="${MATRIX_URL:-https://matrix.${SERVER_NAME}}"
 MATRIX_URL="${MATRIX_URL%/}"
 
 case "${MATRIX_URL}" in
-https://*) ;;
-http://127.0.0.1:* | http://localhost:*) ;;
-*)
-	echo "error: --matrix-url must use HTTPS (HTTP is allowed only on loopback)" >&2
-	exit 2
-	;;
+	https://*) ;;
+	http://127.0.0.1:* | http://localhost:*) ;;
+	*)
+		echo "error: --matrix-url must use HTTPS (HTTP is allowed only on loopback)" >&2
+		exit 2
+		;;
 esac
 
 if [[ ! "${ADMIN_LOCALPART}" =~ ^[a-z][a-z0-9._=-]{2,63}$ ]]; then
@@ -187,25 +187,25 @@ while ((SECONDS < DEADLINE)); do
 
 	TOKEN_ERROR="$(jq -r '.error // empty' <<<"${TOKEN_RESPONSE}")"
 	case "${TOKEN_ERROR}" in
-	"")
-		ACCESS_TOKEN="$(json_required "${TOKEN_RESPONSE}" '.access_token' access_token)"
-		break
-		;;
-	authorization_pending)
-		sleep "${INTERVAL}"
-		;;
-	slow_down)
-		INTERVAL=$((INTERVAL + 5))
-		sleep "${INTERVAL}"
-		;;
-	access_denied | expired_token)
-		echo "error: device authorization failed: ${TOKEN_ERROR}" >&2
-		exit 1
-		;;
-	*)
-		echo "error: token endpoint failed: ${TOKEN_ERROR:-malformed response}" >&2
-		exit 1
-		;;
+		"")
+			ACCESS_TOKEN="$(json_required "${TOKEN_RESPONSE}" '.access_token' access_token)"
+			break
+			;;
+		authorization_pending)
+			sleep "${INTERVAL}"
+			;;
+		slow_down)
+			INTERVAL=$((INTERVAL + 5))
+			sleep "${INTERVAL}"
+			;;
+		access_denied | expired_token)
+			echo "error: device authorization failed: ${TOKEN_ERROR}" >&2
+			exit 1
+			;;
+		*)
+			echo "error: token endpoint failed: ${TOKEN_ERROR:-malformed response}" >&2
+			exit 1
+			;;
 	esac
 done
 

@@ -81,8 +81,8 @@ fetch_json() {
 	local size
 	size="$(wc -c <"${output}")"
 	((size <= MAX_CARD_BYTES)) || fail "${label} response exceeds ${MAX_CARD_BYTES} bytes"
-	jq --exit-status 'type == "object"' "${output}" >/dev/null ||
-		fail "${label} response is not a JSON object"
+	jq --exit-status 'type == "object"' "${output}" >/dev/null \
+		|| fail "${label} response is not a JSON object"
 }
 
 expected_server=''
@@ -92,36 +92,36 @@ public_jwk=''
 key_id=''
 while (($# > 0)); do
 	case "$1" in
-	--expect-server)
-		(($# >= 2)) || fail '--expect-server requires a value'
-		expected_server="$2"
-		shift 2
-		;;
-	--a2a-url)
-		(($# >= 2)) || fail '--a2a-url requires a value'
-		a2a_url="$2"
-		shift 2
-		;;
-	--public-jwk)
-		(($# >= 2)) || fail '--public-jwk requires a value'
-		public_jwk="$2"
-		shift 2
-		;;
-	--key-id)
-		(($# >= 2)) || fail '--key-id requires a value'
-		key_id="$2"
-		shift 2
-		;;
-	-h | --help)
-		usage
-		exit 0
-		;;
-	-*) fail "unknown option: $1" ;;
-	*)
-		[ -z "${partner_domain}" ] || fail 'exactly one partner domain is required'
-		partner_domain="${1,,}"
-		shift
-		;;
+		--expect-server)
+			(($# >= 2)) || fail '--expect-server requires a value'
+			expected_server="$2"
+			shift 2
+			;;
+		--a2a-url)
+			(($# >= 2)) || fail '--a2a-url requires a value'
+			a2a_url="$2"
+			shift 2
+			;;
+		--public-jwk)
+			(($# >= 2)) || fail '--public-jwk requires a value'
+			public_jwk="$2"
+			shift 2
+			;;
+		--key-id)
+			(($# >= 2)) || fail '--key-id requires a value'
+			key_id="$2"
+			shift 2
+			;;
+		-h | --help)
+			usage
+			exit 0
+			;;
+		-*) fail "unknown option: $1" ;;
+		*)
+			[ -z "${partner_domain}" ] || fail 'exactly one partner domain is required'
+			partner_domain="${1,,}"
+			shift
+			;;
 	esac
 done
 
@@ -132,8 +132,8 @@ done
 
 readonly timeout_seconds="${FGENTIC_FED_CHECK_TIMEOUT:-${DEFAULT_TIMEOUT_SECONDS}}"
 [[ "${timeout_seconds}" =~ ^[1-9][0-9]*$ ]] || fail 'FGENTIC_FED_CHECK_TIMEOUT must be a positive integer'
-((timeout_seconds <= MAX_TIMEOUT_SECONDS)) ||
-	fail "FGENTIC_FED_CHECK_TIMEOUT must not exceed ${MAX_TIMEOUT_SECONDS} seconds"
+((timeout_seconds <= MAX_TIMEOUT_SECONDS)) \
+	|| fail "FGENTIC_FED_CHECK_TIMEOUT must not exceed ${MAX_TIMEOUT_SECONDS} seconds"
 
 for command in jq timeout xh; do
 	command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
@@ -150,7 +150,8 @@ elif [ -n "${public_jwk}" ] || [ -n "${key_id}" ]; then
 	fail '--public-jwk/--key-id require --a2a-url to enable the conformance stage'
 fi
 
-readonly work_dir="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-fed-onboard.XXXXXX")"
+work_dir="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-fed-onboard.XXXXXX")"
+readonly work_dir
 trap 'rm -rf "${work_dir}"' EXIT INT TERM
 
 # Stage 1: public Matrix connectivity, delegated to the existing preflight so its validation and
@@ -189,8 +190,8 @@ if [ -z "${key_id}" ]; then
 	key_id="$(jq --raw-output '.kid' "${public_jwk}")"
 else
 	pinned_kid="$(jq --raw-output '.kid' "${public_jwk}")"
-	[ "${key_id}" = "${pinned_kid}" ] ||
-		fail "expected --key-id ${key_id} does not match the pinned JWK kid ${pinned_kid}"
+	[ "${key_id}" = "${pinned_kid}" ] \
+		|| fail "expected --key-id ${key_id} does not match the pinned JWK kid ${pinned_kid}"
 fi
 
 readonly card_url="${a2a_url%/}${AGENT_CARD_PATH}"
@@ -212,13 +213,13 @@ fi
 jq --exit-status --arg url "${a2a_url}" '
   any(.supportedInterfaces[]?;
     .url == $url and .protocolBinding == "JSONRPC" and .protocolVersion == "1.0")
-' "${work_dir}/agent-card.json" >/dev/null ||
-	fail "AgentCard advertises no JSONRPC A2A v1.0 interface at ${a2a_url}"
+' "${work_dir}/agent-card.json" >/dev/null \
+	|| fail "AgentCard advertises no JSONRPC A2A v1.0 interface at ${a2a_url}"
 
 jq --exit-status --arg extension "${TOKEN_BUDGET_EXTENSION}" '
   any(.capabilities.extensions[]?; .uri == $extension and .required == true)
-' "${work_dir}/agent-card.json" >/dev/null ||
-	fail "AgentCard omits the required token-budget extension ${TOKEN_BUDGET_EXTENSION}"
+' "${work_dir}/agent-card.json" >/dev/null \
+	|| fail "AgentCard omits the required token-budget extension ${TOKEN_BUDGET_EXTENSION}"
 
 jq --null-input \
 	--arg checked_at "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \

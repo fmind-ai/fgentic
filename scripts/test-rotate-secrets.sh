@@ -65,8 +65,8 @@ secret_value() { # secret_value <file> <namespace> <name> <yq suffix>
 	local namespace="$2"
 	local name="$3"
 	local suffix="$4"
-	sops --decrypt "${FIXTURE_ROOT}/clusters/local/secrets/${file}" |
-		yq eval-all -er "select(.metadata.namespace == \"${namespace}\" and .metadata.name == \"${name}\") | ${suffix}" -
+	sops --decrypt "${FIXTURE_ROOT}/clusters/local/secrets/${file}" \
+		| yq eval-all -er "select(.metadata.namespace == \"${namespace}\" and .metadata.name == \"${name}\") | ${suffix}" -
 }
 
 registration() {
@@ -104,9 +104,9 @@ knowledge_ingestion_authorization() {
 make_legacy_knowledge_ingestion() {
 	local target="${FIXTURE_ROOT}/clusters/local/secrets/knowledge-ingestion.sops.yaml"
 	local staged="${WORK_DIR}/knowledge-ingestion-legacy.sops.yaml"
-	sops --decrypt "${target}" |
-		yq eval-all 'select(.metadata.name != "pg-knowledge-connector")' - |
-		sops --config "${FIXTURE_ROOT}/.sops.yaml" \
+	sops --decrypt "${target}" \
+		| yq eval-all 'select(.metadata.name != "pg-knowledge-connector")' - \
+		| sops --config "${FIXTURE_ROOT}/.sops.yaml" \
 			--filename-override "${target}" --encrypt /dev/stdin >"${staged}"
 	mv "${staged}" "${target}"
 }
@@ -122,25 +122,25 @@ exercise_db_role() { # exercise_db_role <role> <expected changed files...>
 	"${ROTATOR}" fixture.localhost local "db-${role}" >/dev/null
 	new_value="$(pg_password "${role}")"
 	case "${role}" in
-	synapse)
-		assert_changed "${old_synapse}" "${new_value}" "Synapse database password"
-		assert_equal "${old_mas}" "$(pg_password mas)" "MAS changed during Synapse rotation"
-		assert_equal "${old_bridge}" "$(pg_password bridge)" "bridge changed during Synapse rotation"
-		assert_equal "${old_kagent}" "$(pg_password kagent)" "kagent changed during Synapse rotation"
-		;;
-	mas)
-		assert_changed "${old_mas}" "${new_value}" "MAS database password"
-		assert_equal "${old_synapse}" "$(pg_password synapse)" "Synapse changed during MAS rotation"
-		assert_equal "${old_bridge}" "$(pg_password bridge)" "bridge changed during MAS rotation"
-		assert_equal "${old_kagent}" "$(pg_password kagent)" "kagent changed during MAS rotation"
-		;;
-	kagent)
-		assert_changed "${old_kagent}" "${new_value}" "kagent database password"
-		assert_equal "${old_synapse}" "$(pg_password synapse)" "Synapse changed during kagent rotation"
-		assert_equal "${old_mas}" "$(pg_password mas)" "MAS changed during kagent rotation"
-		assert_equal "${old_bridge}" "$(pg_password bridge)" "bridge changed during kagent rotation"
-		;;
-	*) fail "unsupported database fixture role: ${role}" ;;
+		synapse)
+			assert_changed "${old_synapse}" "${new_value}" "Synapse database password"
+			assert_equal "${old_mas}" "$(pg_password mas)" "MAS changed during Synapse rotation"
+			assert_equal "${old_bridge}" "$(pg_password bridge)" "bridge changed during Synapse rotation"
+			assert_equal "${old_kagent}" "$(pg_password kagent)" "kagent changed during Synapse rotation"
+			;;
+		mas)
+			assert_changed "${old_mas}" "${new_value}" "MAS database password"
+			assert_equal "${old_synapse}" "$(pg_password synapse)" "Synapse changed during MAS rotation"
+			assert_equal "${old_bridge}" "$(pg_password bridge)" "bridge changed during MAS rotation"
+			assert_equal "${old_kagent}" "$(pg_password kagent)" "kagent changed during MAS rotation"
+			;;
+		kagent)
+			assert_changed "${old_kagent}" "${new_value}" "kagent database password"
+			assert_equal "${old_synapse}" "$(pg_password synapse)" "Synapse changed during kagent rotation"
+			assert_equal "${old_mas}" "$(pg_password mas)" "MAS changed during kagent rotation"
+			assert_equal "${old_bridge}" "$(pg_password bridge)" "bridge changed during kagent rotation"
+			;;
+		*) fail "unsupported database fixture role: ${role}" ;;
 	esac
 	assert_changed_files "$@"
 	commit_fixture "rotate ${role} database fixture"
@@ -204,8 +204,8 @@ export SOPS_AGE_KEY_FILE="${WORK_DIR}/age.key"
 export FGENTIC_DATA_ROOT="${FIXTURE_ROOT}"
 
 "${GENERATOR}" fixture.localhost local >/dev/null
-[ ! -e "${FIXTURE_ROOT}/clusters/local/secrets/knowledge-ingestion.sops.yaml" ] ||
-	fail "core generation emitted knowledge ingestion secrets"
+[ ! -e "${FIXTURE_ROOT}/clusters/local/secrets/knowledge-ingestion.sops.yaml" ] \
+	|| fail "core generation emitted knowledge ingestion secrets"
 FGENTIC_SECRET_SET=knowledge-ingestion "${GENERATOR}" fixture.localhost local >/dev/null
 FGENTIC_SECRET_SET=slack "${GENERATOR}" fixture.localhost local >/dev/null
 # Optional Telegram generation fails before emitting a file unless the operator supplies the exact

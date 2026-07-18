@@ -7,34 +7,34 @@ tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-agent-new-test.XXXXXX")"
 trap 'rm -rf "${tmp_dir}"' EXIT
 
 fail() {
-  echo "agent:new fixture failed: $*" >&2
-  exit 1
+	echo "agent:new fixture failed: $*" >&2
+	exit 1
 }
 
 mkdir -p \
-  "${tmp_dir}/infra" \
-  "${tmp_dir}/apps/matrix-a2a-bridge" \
-  "${tmp_dir}/scripts" \
-  "${tmp_dir}/evals"
+	"${tmp_dir}/infra" \
+	"${tmp_dir}/apps/matrix-a2a-bridge" \
+	"${tmp_dir}/scripts" \
+	"${tmp_dir}/evals"
 cp -R "${repo_root}/infra/kagent" "${tmp_dir}/infra/kagent"
 cp -R "${repo_root}/infra/flux" "${tmp_dir}/infra/flux"
 cp -R "${repo_root}/apps/matrix-a2a-bridge/deploy" "${tmp_dir}/apps/matrix-a2a-bridge/deploy"
 cp -R "${repo_root}/apps/matrix-a2a-bridge/chart" "${tmp_dir}/apps/matrix-a2a-bridge/chart"
 mkdir -p \
-  "${tmp_dir}/apps/matrix-a2a-bridge/cmd" \
-  "${tmp_dir}/apps/matrix-a2a-bridge/internal"
+	"${tmp_dir}/apps/matrix-a2a-bridge/cmd" \
+	"${tmp_dir}/apps/matrix-a2a-bridge/internal"
 cp "${repo_root}/apps/matrix-a2a-bridge/go.mod" "${tmp_dir}/apps/matrix-a2a-bridge/go.mod"
 cp "${repo_root}/apps/matrix-a2a-bridge/go.sum" "${tmp_dir}/apps/matrix-a2a-bridge/go.sum"
 cp "${repo_root}/apps/matrix-a2a-bridge/agents.schema.json" "${tmp_dir}/apps/matrix-a2a-bridge/agents.schema.json"
 cp -R \
-  "${repo_root}/apps/matrix-a2a-bridge/cmd/validate-agents" \
-  "${tmp_dir}/apps/matrix-a2a-bridge/cmd/validate-agents"
+	"${repo_root}/apps/matrix-a2a-bridge/cmd/validate-agents" \
+	"${tmp_dir}/apps/matrix-a2a-bridge/cmd/validate-agents"
 cp -R \
-  "${repo_root}/apps/matrix-a2a-bridge/cmd/agent-version" \
-  "${tmp_dir}/apps/matrix-a2a-bridge/cmd/agent-version"
+	"${repo_root}/apps/matrix-a2a-bridge/cmd/agent-version" \
+	"${tmp_dir}/apps/matrix-a2a-bridge/cmd/agent-version"
 cp -R \
-  "${repo_root}/apps/matrix-a2a-bridge/internal/." \
-  "${tmp_dir}/apps/matrix-a2a-bridge/internal/"
+	"${repo_root}/apps/matrix-a2a-bridge/internal/." \
+	"${tmp_dir}/apps/matrix-a2a-bridge/internal/"
 cp -R "${repo_root}/scripts/testdata" "${tmp_dir}/scripts/testdata"
 cp -R "${repo_root}/evals/." "${tmp_dir}/evals/"
 
@@ -67,11 +67,11 @@ yq -e '
 ' "${mapping_component}" >/dev/null || fail "generated bridge mapping is invalid"
 mapping_sender="$(yq -er '.patches[0].patch | from_yaml | .[0].value.allowedSenders[0]' "${mapping_component}")"
 [[ "${mapping_sender}" == '@alice:${server_name}' ]] \
-  || fail "generated bridge mapping does not use the server-name substitution"
+	|| fail "generated bridge mapping does not use the server-name substitution"
 mapping_contract="$(yq -er '.patches[0].patch | from_yaml | .[0].value.agentContractSHA256' "${mapping_component}")"
 fixture_contract="$(jq -er '.agent_contract_sha256' "${golden_fixture}")"
 [[ "${mapping_contract}" == "${fixture_contract}" ]] \
-  || fail "generated bridge mapping and Agent fixture pin different contracts"
+	|| fail "generated bridge mapping and Agent fixture pin different contracts"
 
 jq -e '
   .schema_version == "fgentic.agent.eval.v1" and
@@ -93,11 +93,11 @@ yq eval-all -e '
 export server_name=ci.fgentic.example
 export bridge_dead_man_switch_delay=0s
 yq eval-all -o=yaml \
-  'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") | .spec.values' \
-  "${tmp_dir}/bridge-release.yaml" \
-  | flux envsubst --strict \
-  | helm template matrix-a2a-bridge "${tmp_dir}/apps/matrix-a2a-bridge/chart" --values - \
-    >"${tmp_dir}/bridge.yaml"
+	'select(.kind == "HelmRelease" and .metadata.name == "matrix-a2a-bridge") | .spec.values' \
+	"${tmp_dir}/bridge-release.yaml" \
+	| flux envsubst --strict \
+	| helm template matrix-a2a-bridge "${tmp_dir}/apps/matrix-a2a-bridge/chart" --values - \
+		>"${tmp_dir}/bridge.yaml"
 yq eval-all -e '
   select(.kind == "ConfigMap" and .metadata.name == "matrix-a2a-bridge-agents") |
   .data."agents.yaml" | from_yaml | .agents."agent-demo-helper" as $mapping |
@@ -113,11 +113,11 @@ yq eval-all -e '
 ' "${tmp_dir}/bridge.yaml" >/dev/null || fail "generated mapping is absent from effective agents.yaml"
 
 if ! (
-  cd "${tmp_dir}"
-  bash "${repo_root}/scripts/test-agent-zoo.sh"
+	cd "${tmp_dir}"
+	bash "${repo_root}/scripts/test-agent-zoo.sh"
 ) >"${tmp_dir}/agent-zoo.log" 2>&1; then
-  cat "${tmp_dir}/agent-zoo.log" >&2
-  fail "generated scaffold does not pass the exact check:agents contract"
+	cat "${tmp_dir}/agent-zoo.log" >&2
+	fail "generated scaffold does not pass the exact check:agents contract"
 fi
 
 # Remote targets are governed mappings but deliberately have no local kagent Agent. Prove the
@@ -144,48 +144,48 @@ yq -i '.spec.values.agents."agent-remote-test" = {
   "allowedSenders": ["@alice:${server_name}"]
 }' "${bridge_release}"
 if ! (
-  cd "${tmp_dir}"
-  bash "${repo_root}/scripts/test-agent-zoo.sh"
+	cd "${tmp_dir}"
+	bash "${repo_root}/scripts/test-agent-zoo.sh"
 ) >"${tmp_dir}/remote-mapping.log" 2>&1; then
-  cat "${tmp_dir}/remote-mapping.log" >&2
-  fail "valid pinned remote mapping did not pass the generalized check:agents contract"
+	cat "${tmp_dir}/remote-mapping.log" >&2
+	fail "valid pinned remote mapping did not pass the generalized check:agents contract"
 fi
 cp "${tmp_dir}/bridge-helmrelease.yaml" "${bridge_release}"
 
 expect_authoring_failure() {
-  local case_name="$1"
-  local expected="$2"
-  if (
-    cd "${tmp_dir}"
-    bash "${repo_root}/scripts/test-agent-zoo.sh"
-  ) >"${tmp_dir}/${case_name}.log" 2>&1; then
-    fail "${case_name} authoring drift unexpectedly passed"
-  fi
-  rg -q "${expected}" "${tmp_dir}/${case_name}.log" \
-    || {
-      cat "${tmp_dir}/${case_name}.log" >&2
-      fail "${case_name} drift did not produce the actionable validation error"
-    }
+	local case_name="$1"
+	local expected="$2"
+	if (
+		cd "${tmp_dir}"
+		bash "${repo_root}/scripts/test-agent-zoo.sh"
+	) >"${tmp_dir}/${case_name}.log" 2>&1; then
+		fail "${case_name} authoring drift unexpectedly passed"
+	fi
+	rg -q "${expected}" "${tmp_dir}/${case_name}.log" \
+		|| {
+			cat "${tmp_dir}/${case_name}.log" >&2
+			fail "${case_name} drift did not produce the actionable validation error"
+		}
 }
 
 cp "${mapping_component}" "${tmp_dir}/mapping-component.yaml"
 yq -i '.patches[0].patch = ((.patches[0].patch | from_yaml) | .[0].value.name = "missing-agent" | to_yaml)' \
-  "${mapping_component}"
+	"${mapping_component}"
 expect_authoring_failure orphan-mapping 'must resolve to the matching kagent Agent'
 cp "${tmp_dir}/mapping-component.yaml" "${mapping_component}"
 
 yq -i '.patches[0].patch = ((.patches[0].patch | from_yaml) | .[0].value.allowedSenders = ["@*:${server_name}"] | to_yaml)' \
-  "${mapping_component}"
+	"${mapping_component}"
 expect_authoring_failure wildcard-sender 'wildcards and widened allowlists are forbidden'
 cp "${tmp_dir}/mapping-component.yaml" "${mapping_component}"
 
 yq -i '.patches[0].patch = ((.patches[0].patch | from_yaml) | .[0].value.allowedSenders += ["@bob:${server_name}"] | to_yaml)' \
-  "${mapping_component}"
+	"${mapping_component}"
 expect_authoring_failure widened-allowlist 'wildcards and widened allowlists are forbidden'
 cp "${tmp_dir}/mapping-component.yaml" "${mapping_component}"
 
 yq -i '.patches[0].patch = ((.patches[0].patch | from_yaml) | .[0].value.stage = "canary" | to_yaml)' \
-  "${mapping_component}"
+	"${mapping_component}"
 expect_authoring_failure invalid-stage 'agent mapping validation failed'
 cp "${tmp_dir}/mapping-component.yaml" "${mapping_component}"
 
@@ -199,24 +199,24 @@ expect_authoring_failure missing-service-account 'must use the unprivileged shar
 cp "${tmp_dir}/agent.yaml" "${agent_manifest}"
 
 if FGENTIC_REPO_ROOT="${tmp_dir}" bash "${repo_root}/scripts/new-agent.sh" demo-helper \
-  >"${tmp_dir}/duplicate.out" 2>"${tmp_dir}/duplicate.err"; then
-  fail "duplicate generation unexpectedly succeeded"
+	>"${tmp_dir}/duplicate.out" 2>"${tmp_dir}/duplicate.err"; then
+	fail "duplicate generation unexpectedly succeeded"
 fi
 rg -q 'refusing to overwrite existing path' "${tmp_dir}/duplicate.err" \
-  || fail "duplicate generation did not fail with an actionable message"
+	|| fail "duplicate generation did not fail with an actionable message"
 
 for invalid_name in Demo_Helper ../escape agent/name; do
-  if FGENTIC_REPO_ROOT="${tmp_dir}" bash "${repo_root}/scripts/new-agent.sh" "${invalid_name}" \
-    >"${tmp_dir}/invalid.out" 2>"${tmp_dir}/invalid.err"; then
-    fail "invalid Agent name ${invalid_name} unexpectedly succeeded"
-  fi
-  rg -q 'lowercase Kubernetes DNS label' "${tmp_dir}/invalid.err" \
-    || fail "invalid Agent name ${invalid_name} did not produce the validation error"
+	if FGENTIC_REPO_ROOT="${tmp_dir}" bash "${repo_root}/scripts/new-agent.sh" "${invalid_name}" \
+		>"${tmp_dir}/invalid.out" 2>"${tmp_dir}/invalid.err"; then
+		fail "invalid Agent name ${invalid_name} unexpectedly succeeded"
+	fi
+	rg -q 'lowercase Kubernetes DNS label' "${tmp_dir}/invalid.err" \
+		|| fail "invalid Agent name ${invalid_name} did not produce the validation error"
 done
 
 if rg -n -i '(api[_-]?key|client[_-]?secret|password):[[:space:]]+[^$]' \
-  "${agent_manifest}" "${mapping_component}" "${golden_fixture}"; then
-  fail "generated files contain credential-shaped data"
+	"${agent_manifest}" "${mapping_component}" "${golden_fixture}"; then
+	fail "generated files contain credential-shaped data"
 fi
 
 echo "Agent scaffold generation and effective render contracts passed."

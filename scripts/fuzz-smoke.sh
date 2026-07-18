@@ -35,15 +35,15 @@ for module in "${MODULES[@]}"; do
 		[ -n "${package}" ] || continue
 		# Listing compiles the test binary; a compile failure must surface, not be swallowed, so a
 		# broken fuzz file can never silently drop its targets while the smoke still "passes".
-		listing="$(cd "${module_dir}" && go test "${package}" -list '^Fuzz' 2>&1)" ||
-			fail "listing fuzz targets failed for ${package}: ${listing}"
+		listing="$(cd "${module_dir}" && go test "${package}" -list '^Fuzz' 2>&1)" \
+			|| fail "listing fuzz targets failed for ${package}: ${listing}"
 		# Each package's Fuzz targets, one per invocation (go test fuzzes a single target at a time).
 		while IFS= read -r target; do
 			[ -n "${target}" ] || continue
 			echo "==> fuzz ${package} ${target} (${FUZZTIME})"
 			(cd "${module_dir}" && go test "${package}" \
-				-run '^$' -fuzz "^${target}$" -fuzztime "${FUZZTIME}") ||
-				fail "fuzz target failed: ${package} ${target}"
+				-run '^$' -fuzz "^${target}$" -fuzztime "${FUZZTIME}") \
+				|| fail "fuzz target failed: ${package} ${target}"
 			total=$((total + 1))
 		done < <(printf '%s\n' "${listing}" | grep '^Fuzz' || true)
 	done < <(cd "${module_dir}" && go list ./... 2>/dev/null || true)

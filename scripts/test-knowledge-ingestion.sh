@@ -35,30 +35,30 @@ gateway_version="$(
     .spec.ref.tag
   ' "${ROOT_DIR}/infra/flux/sources.yaml"
 )"
-[[ -n "${gateway_version}" && "${gateway_version}" != "null" ]] ||
-	fail "agentgateway version pin is missing"
+[[ -n "${gateway_version}" && "${gateway_version}" != "null" ]] \
+	|| fail "agentgateway version pin is missing"
 helm template agentgateway-crds oci://cr.agentgateway.dev/charts/agentgateway-crds \
 	--version "${gateway_version}" >"${tmp_dir}/agentgateway-crds.yaml"
 for kind in AgentgatewayBackend AgentgatewayPolicy; do
 	case "${kind}" in
-	AgentgatewayBackend) crd_name=agentgatewaybackends.agentgateway.dev ;;
-	AgentgatewayPolicy) crd_name=agentgatewaypolicies.agentgateway.dev ;;
+		AgentgatewayBackend) crd_name=agentgatewaybackends.agentgateway.dev ;;
+		AgentgatewayPolicy) crd_name=agentgatewaypolicies.agentgateway.dev ;;
 	esac
 	yq -o=json \
 		"select(.kind == \"CustomResourceDefinition\" and .metadata.name == \"${crd_name}\") |
       .spec.versions[] | select(.name == \"v1alpha1\") | .schema.openAPIV3Schema" \
 		"${tmp_dir}/agentgateway-crds.yaml" >"${tmp_dir}/${kind}-schema.json"
 	jq -e '.type == "object" and (.properties.spec | type == "object")' \
-		"${tmp_dir}/${kind}-schema.json" >/dev/null ||
-		fail "pinned ${kind} schema was not rendered"
-	yq eval-all "select(.kind == \"${kind}\")" "${tmp_dir}/enabled.yaml" |
-		kubeconform -strict -summary -schema-location "${tmp_dir}/${kind}-schema.json"
+		"${tmp_dir}/${kind}-schema.json" >/dev/null \
+		|| fail "pinned ${kind} schema was not rendered"
+	yq eval-all "select(.kind == \"${kind}\")" "${tmp_dir}/enabled.yaml" \
+		| kubeconform -strict -summary -schema-location "${tmp_dir}/${kind}-schema.json"
 done
 
-cmp -s "${tmp_dir}/root.yaml" "${tmp_dir}/disabled.yaml" ||
-	fail "root and disabled knowledge-ingestion renders differ"
-[ ! -s "${tmp_dir}/disabled.yaml" ] ||
-	fail "disabled knowledge-ingestion profile must render zero objects"
+cmp -s "${tmp_dir}/root.yaml" "${tmp_dir}/disabled.yaml" \
+	|| fail "root and disabled knowledge-ingestion renders differ"
+[ ! -s "${tmp_dir}/disabled.yaml" ] \
+	|| fail "disabled knowledge-ingestion profile must render zero objects"
 
 objects="$(
 	yq eval-all -o=json '
@@ -143,8 +143,8 @@ jq -e '
   ([.[] | select(
     .kind == "ConfigMap" and .metadata.name == "knowledge-source-bundle"
   )] | length) == 0
-' <<<"${objects}" >/dev/null ||
-	fail "ingestion must consume operator-owned source storage without rendering corpus storage"
+' <<<"${objects}" >/dev/null \
+	|| fail "ingestion must consume operator-owned source storage without rendering corpus storage"
 
 jq -e '
   (.data | keys | sort) == [
@@ -157,13 +157,13 @@ jq -e '
     "plan.sql",
     "write.sql"
   ]
-' <<<"${runtime_config}" >/dev/null ||
-	fail "ingestion runtime ConfigMap inventory drifted"
+' <<<"${runtime_config}" >/dev/null \
+	|| fail "ingestion runtime ConfigMap inventory drifted"
 jq -e --rawfile gc_sql "${KNOWLEDGE_DIR}/base/gc.sql" '
   (.data | keys) == ["gc.sql"] and
   .data["gc.sql"] == $gc_sql
-' <<<"${cache_gc_runtime_config}" >/dev/null ||
-	fail "cache-GC runtime ConfigMap must contain only the exact gc.sql program"
+' <<<"${cache_gc_runtime_config}" >/dev/null \
+	|| fail "cache-GC runtime ConfigMap must contain only the exact gc.sql program"
 
 jq -e \
 	--arg python "${PYTHON_IMAGE}" \
@@ -377,8 +377,8 @@ jq -e \
     select(.name == "selected") | .emptyDir.sizeLimit] == ["32Mi"]) and
   ([.spec.jobTemplate.spec.template.spec.volumes[] |
     select(.name == "dispatch") | .emptyDir.sizeLimit] == ["1Mi"])
-' <<<"${cronjob}" >/dev/null ||
-	fail "CronJob trust phases, images, credentials, or bounds drifted"
+' <<<"${cronjob}" >/dev/null \
+	|| fail "CronJob trust phases, images, credentials, or bounds drifted"
 
 jq -e \
 	--arg postgres "${POSTGRES_IMAGE}" \
@@ -494,8 +494,8 @@ jq -e \
   ] and
   ([.spec.jobTemplate.spec.template.spec.volumes[] |
     select(.projected != null or .secret != null)] | length) == 0
-' <<<"${cache_gc_cronjob}" >/dev/null ||
-	fail "cache-GC CronJob schedule, isolation, credentials, or bounds drifted"
+' <<<"${cache_gc_cronjob}" >/dev/null \
+	|| fail "cache-GC CronJob schedule, isolation, credentials, or bounds drifted"
 
 jq -e '
   .metadata.namespace == "knowledge" and
@@ -537,8 +537,8 @@ jq -e '
       "ports": [{"protocol": "TCP", "port": 5432}]
     }
   ]
-' <<<"${cache_gc_network_policy}" >/dev/null ||
-	fail "cache-GC egress must be only DNS and exact platform-pg, with no ingress"
+' <<<"${cache_gc_network_policy}" >/dev/null \
+	|| fail "cache-GC egress must be only DNS and exact platform-pg, with no ingress"
 
 jq -e '
   .spec.parentRefs == [{"name": "agentgateway-proxy", "sectionName": "embeddings"}] and
@@ -615,8 +615,8 @@ jq -e '
   .spec.listeners[1].protocol == "HTTP" and
   .spec.listeners[1].port == 8082 and
   .spec.listeners[1].allowedRoutes.namespaces.from == "Same"
-' <<<"${gateway}" >/dev/null ||
-	fail "agentgateway dedicated listener drifted"
+' <<<"${gateway}" >/dev/null \
+	|| fail "agentgateway dedicated listener drifted"
 
 network_policy="$(
 	yq eval-all -o=json \
@@ -628,20 +628,20 @@ jq -e '
   .spec.ingress == [] and
   .spec.policyTypes == ["Ingress", "Egress"] and
   ([.spec.egress[].ports[].port] | sort) == [53, 53, 5432, 8082]
-' <<<"${network_policy}" >/dev/null ||
-	fail "ingestion egress is broader than DNS, scoped PostgreSQL, and :8082"
+' <<<"${network_policy}" >/dev/null \
+	|| fail "ingestion egress is broader than DNS, scoped PostgreSQL, and :8082"
 
 for example in source-bundle.example.yaml source-bundle-partner.example.yaml; do
 	case "${example}" in
-	source-bundle.example.yaml)
-		fixture_name="knowledge-source-bundle-public-test-fixture"
-		;;
-	source-bundle-partner.example.yaml)
-		fixture_name="knowledge-source-bundle-partner-public-test-fixture"
-		;;
+		source-bundle.example.yaml)
+			fixture_name="knowledge-source-bundle-public-test-fixture"
+			;;
+		source-bundle-partner.example.yaml)
+			fixture_name="knowledge-source-bundle-partner-public-test-fixture"
+			;;
 	esac
-	yq -o=json '.' "${KNOWLEDGE_DIR}/${example}" |
-		jq -e --arg fixture_name "${fixture_name}" '
+	yq -o=json '.' "${KNOWLEDGE_DIR}/${example}" \
+		| jq -e --arg fixture_name "${fixture_name}" '
     .kind == "ConfigMap" and
     .immutable == true and
     .metadata.name == $fixture_name and
@@ -655,28 +655,28 @@ for example in source-bundle.example.yaml source-bundle-partner.example.yaml; do
       .corpus == "reference-docs" and
       (.sources | length) == 1 and
       (.sources[0].digest | test("^sha256:[0-9a-f]{64}$")))
-  ' >/dev/null ||
-		fail "synthetic public one-source test fixture drifted: ${example}"
+  ' >/dev/null \
+		|| fail "synthetic public one-source test fixture drifted: ${example}"
 	if rg --fixed-strings --glob kustomization.yaml --quiet "${example}" "${KNOWLEDGE_DIR}"; then
 		fail "offline source fixture must not be referenced by a production kustomization: ${example}"
 	fi
 done
 
 mkdir -p "${tmp_dir}/sources"
-yq -o=json '.' "${KNOWLEDGE_DIR}/source-bundle.example.yaml" |
-	jq -j '.data["manifest.json"]' >"${tmp_dir}/manifest.json"
-yq -o=json '.' "${KNOWLEDGE_DIR}/source-bundle.example.yaml" |
-	jq -j '.data["matrix-principal.md"]' >"${tmp_dir}/sources/matrix-principal.md"
+yq -o=json '.' "${KNOWLEDGE_DIR}/source-bundle.example.yaml" \
+	| jq -j '.data["manifest.json"]' >"${tmp_dir}/manifest.json"
+yq -o=json '.' "${KNOWLEDGE_DIR}/source-bundle.example.yaml" \
+	| jq -j '.data["matrix-principal.md"]' >"${tmp_dir}/sources/matrix-principal.md"
 PYTHONDONTWRITEBYTECODE=1 python \
 	"${KNOWLEDGE_DIR}/base/ingestion.py" validate \
 	--manifest "${tmp_dir}/manifest.json" \
 	--source-root "${tmp_dir}/sources" >/dev/null
 
 mkdir -p "${tmp_dir}/partner-sources"
-yq -o=json '.' "${KNOWLEDGE_DIR}/source-bundle-partner.example.yaml" |
-	jq -j '.data["manifest.json"]' >"${tmp_dir}/partner-manifest.json"
-yq -o=json '.' "${KNOWLEDGE_DIR}/source-bundle-partner.example.yaml" |
-	jq -j '.data["partner-group.md"]' >"${tmp_dir}/partner-sources/partner-group.md"
+yq -o=json '.' "${KNOWLEDGE_DIR}/source-bundle-partner.example.yaml" \
+	| jq -j '.data["manifest.json"]' >"${tmp_dir}/partner-manifest.json"
+yq -o=json '.' "${KNOWLEDGE_DIR}/source-bundle-partner.example.yaml" \
+	| jq -j '.data["partner-group.md"]' >"${tmp_dir}/partner-sources/partner-group.md"
 PYTHONDONTWRITEBYTECODE=1 python \
 	"${KNOWLEDGE_DIR}/base/ingestion.py" validate \
 	--manifest "${tmp_dir}/partner-manifest.json" \
@@ -690,24 +690,24 @@ for required in \
 	"transaction_timestamp() + interval '35 minutes'" \
 	"AND leases.expires_at > transaction_timestamp()" \
 	"DELETE FROM knowledge.ingestion_final"; do
-	rg --fixed-strings --quiet "${required}" "${KNOWLEDGE_DIR}/base/plan.sql" ||
-		fail "plan SQL is missing: ${required}"
+	rg --fixed-strings --quiet "${required}" "${KNOWLEDGE_DIR}/base/plan.sql" \
+		|| fail "plan SQL is missing: ${required}"
 done
 for required in \
 	"embedding checkpoint must contain between 1 and 8 rows" \
 	"embedding checkpoint content is absent from authoritative pending input" \
 	"INSERT INTO knowledge.ingestion_embedding_cache" \
 	"DELETE FROM knowledge.ingestion_final"; do
-	rg --fixed-strings --quiet "${required}" "${KNOWLEDGE_DIR}/base/checkpoint.sql" ||
-		fail "checkpoint SQL is missing: ${required}"
+	rg --fixed-strings --quiet "${required}" "${KNOWLEDGE_DIR}/base/checkpoint.sql" \
+		|| fail "checkpoint SQL is missing: ${required}"
 done
 for required in \
 	"embedding phase changed the authoritative bound chunk set" \
 	"vector_norm((payload->'embedding')::text::vector(1024)) <= 0" \
 	"ON CONFLICT (chunk_id) DO UPDATE" \
 	"DELETE FROM knowledge.ingestion_leases"; do
-	rg --fixed-strings --quiet "${required}" "${KNOWLEDGE_DIR}/base/write.sql" ||
-		fail "write SQL is missing: ${required}"
+	rg --fixed-strings --quiet "${required}" "${KNOWLEDGE_DIR}/base/write.sql" \
+		|| fail "write SQL is missing: ${required}"
 done
 if rg --quiet 'pg-knowledge-owner|knowledge_owner' "${KNOWLEDGE_DIR}/base"; then
 	fail "ingestion workload references the schema-owner identity"
@@ -722,8 +722,8 @@ jq -e '
   .spec.path == "./infra/knowledge/profiles/disabled" and
   .spec.prune == true and .spec.wait == true and
   ([.spec.dependsOn[].name] | sort) == ["agentgateway", "platform-secrets", "postgres"]
-' <<<"${flux_kustomization}" >/dev/null ||
-	fail "disabled-by-default Flux knowledge-ingestion DAG contract drifted"
+' <<<"${flux_kustomization}" >/dev/null \
+	|| fail "disabled-by-default Flux knowledge-ingestion DAG contract drifted"
 
 cluster_postgres="$(
 	yq eval-all -o=json \
@@ -743,17 +743,17 @@ cluster_ingestion="$(
 jq -e '
   .spec.path == "./infra/agentgateway" and
   .spec.components == ["components/knowledge-ingestion"]
-' <<<"${cluster_agentgateway}" >/dev/null ||
-	fail "cluster opt-in omitted the dedicated agentgateway listener Component"
+' <<<"${cluster_agentgateway}" >/dev/null \
+	|| fail "cluster opt-in omitted the dedicated agentgateway listener Component"
 jq -e '
   .spec.path == "./infra/postgres" and
   .spec.components == ["components/knowledge-ingestion"]
-' <<<"${cluster_postgres}" >/dev/null ||
-	fail "cluster opt-in omitted the ingestion Postgres Component"
+' <<<"${cluster_postgres}" >/dev/null \
+	|| fail "cluster opt-in omitted the ingestion Postgres Component"
 jq -e '
   .spec.path == "./infra/knowledge/profiles/enabled" and
   ([.spec.dependsOn[].name] | sort) == ["agentgateway", "platform-secrets", "postgres"]
-' <<<"${cluster_ingestion}" >/dev/null ||
-	fail "cluster opt-in did not enable the ingestion workload after its dependencies"
+' <<<"${cluster_ingestion}" >/dev/null \
+	|| fail "cluster opt-in did not enable the ingestion workload after its dependencies"
 
 echo "Knowledge ingestion static contract passed."

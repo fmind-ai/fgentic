@@ -12,12 +12,12 @@ readonly GCP_SETTINGS="${ROOT_DIR}/clusters/gcp/platform-settings.yaml"
 readonly PYTHON_IMAGE="python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1"
 
 fail() {
-  echo "error: $*" >&2
-  exit 1
+	echo "error: $*" >&2
+	exit 1
 }
 
 for command in flux git jq kubeconform kubectl python yq; do
-  command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
+	command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
 done
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-knowledge-connectors.XXXXXX")"
@@ -29,18 +29,18 @@ gcp_api_cidr="$(yq -er '.data.kubernetes_api_egress_cidr' "${GCP_SETTINGS}")"
 local_api_port="$(yq -er '.data.kubernetes_api_egress_port' "${LOCAL_SETTINGS}")"
 gcp_api_port="$(yq -er '.data.kubernetes_api_egress_port' "${GCP_SETTINGS}")"
 kubernetes_api_egress_cidr="${local_api_cidr}" kubernetes_api_egress_port="${local_api_port}" \
-  flux envsubst --strict <"${tmp_dir}/enabled.raw.yaml" >"${tmp_dir}/enabled.yaml"
+	flux envsubst --strict <"${tmp_dir}/enabled.raw.yaml" >"${tmp_dir}/enabled.yaml"
 kubernetes_api_egress_cidr="${gcp_api_cidr}" kubernetes_api_egress_port="${gcp_api_port}" \
-  flux envsubst --strict <"${tmp_dir}/enabled.raw.yaml" >"${tmp_dir}/enabled-gcp.yaml"
+	flux envsubst --strict <"${tmp_dir}/enabled.raw.yaml" >"${tmp_dir}/enabled-gcp.yaml"
 
 connector_objects="$({
-  yq eval-all -o=json '
+	yq eval-all -o=json '
     select(.metadata.labels."app.kubernetes.io/component" == "source-connector")
   ' "${tmp_dir}/enabled.yaml"
 } | jq --slurp '.')"
 
 normalized_objects="$(
-  jq -c '
+	jq -c '
     map(
       if .kind == "ConfigMap" and
         (.metadata.name | test("^knowledge-git-markdown-connector-runtime-"))
@@ -70,28 +70,28 @@ jq -e '
 ' <<<"${connector_objects}" >/dev/null || fail "connector count or secret-free boundary drifted"
 
 runtime_config="$(
-  yq eval-all -o=json '
+	yq eval-all -o=json '
     select(.kind == "ConfigMap" and
       (.metadata.name | test("^knowledge-git-markdown-connector-runtime-")))
   ' "${tmp_dir}/enabled.yaml"
 )"
 runtime_name="$(jq -r '.metadata.name' <<<"${runtime_config}")"
 jq -e \
-  --rawfile core "${CONNECTOR_DIR}/git_markdown.py" \
-  --rawfile fetch "${RUNTIME_DIR}/fetch.py" '
+	--rawfile core "${CONNECTOR_DIR}/git_markdown.py" \
+	--rawfile fetch "${RUNTIME_DIR}/fetch.py" '
   (.data | keys | sort) == ["fetch.py", "git_markdown.py"] and
   .data["git_markdown.py"] == $core and
   .data["fetch.py"] == $fetch
 ' <<<"${runtime_config}" >/dev/null || fail "connector runtime ConfigMap drifted"
 
 cronjob="$(
-  yq eval-all -o=json '
+	yq eval-all -o=json '
     select(.kind == "CronJob" and .metadata.name == "knowledge-git-markdown-connector")
   ' "${tmp_dir}/enabled.yaml"
 )"
 jq -e \
-  --arg image "${PYTHON_IMAGE}" \
-  --arg runtime_name "${runtime_name}" '
+	--arg image "${PYTHON_IMAGE}" \
+	--arg runtime_name "${runtime_name}" '
   .metadata.namespace == "knowledge" and
   .spec.schedule == "*/5 * * * *" and
   .spec.suspend == false and
@@ -170,7 +170,7 @@ jq -e \
 ' <<<"${cronjob}" >/dev/null || fail "connector CronJob security, token, or resource contract drifted"
 
 service_account="$(
-  yq eval-all -o=json '
+	yq eval-all -o=json '
     select(.kind == "ServiceAccount" and .metadata.name == "knowledge-git-markdown-connector")
   ' "${tmp_dir}/enabled.yaml"
 )"
@@ -180,12 +180,12 @@ jq -e '
 ' <<<"${service_account}" >/dev/null || fail "connector ServiceAccount gained ambient credentials"
 
 role="$(
-  yq eval-all -o=json '
+	yq eval-all -o=json '
     select(.kind == "Role" and .metadata.name == "knowledge-git-markdown-connector")
   ' "${tmp_dir}/enabled.yaml"
 )"
 role_binding="$(
-  yq eval-all -o=json '
+	yq eval-all -o=json '
     select(.kind == "RoleBinding" and .metadata.name == "knowledge-git-markdown-connector")
   ' "${tmp_dir}/enabled.yaml"
 )"
@@ -213,7 +213,7 @@ jq -e '
 ' <<<"${role_binding}" >/dev/null || fail "connector RoleBinding subject drifted"
 
 network_policy="$(
-  yq eval-all -o=json '
+	yq eval-all -o=json '
     select(.kind == "NetworkPolicy" and .metadata.name == "knowledge-git-markdown-connector")
   ' "${tmp_dir}/enabled.yaml"
 )"
@@ -240,7 +240,7 @@ jq -e --arg api_cidr "${local_api_cidr}" --argjson api_port "${local_api_port}" 
 ' <<<"${network_policy}" >/dev/null || fail "connector egress widened beyond DNS, source-controller, and API VIPs"
 
 gcp_network_policy="$(
-  yq eval-all -o=json '
+	yq eval-all -o=json '
     select(.kind == "NetworkPolicy" and .metadata.name == "knowledge-git-markdown-connector")
   ' "${tmp_dir}/enabled-gcp.yaml"
 )"
@@ -248,17 +248,17 @@ jq -e --arg api_cidr "${gcp_api_cidr}" --argjson api_port "${gcp_api_port}" '
   [.spec.egress[2].to[].ipBlock.cidr] == [$api_cidr] and
   .spec.egress[2].ports == [{"protocol": "TCP", "port": $api_port}] and
   ([.spec.egress[].to[]?.ipBlock.cidr // empty] | length) == 1
-' <<<"${gcp_network_policy}" >/dev/null ||
-  fail "GCP connector egress did not select its exact API endpoint CIDR"
+' <<<"${gcp_network_policy}" >/dev/null \
+	|| fail "GCP connector egress did not select its exact API endpoint CIDR"
 
-rg --fixed-strings --quiet 'GitMarkdownConnector.from_artifact' "${RUNTIME_DIR}/fetch.py" ||
-  fail "fetch wrapper bypasses the typed connector validator"
-rg --fixed-strings --quiet 'git_markdown.inventory_json(connector)' "${RUNTIME_DIR}/fetch.py" ||
-  fail "fetch wrapper does not publish the canonical connector inventory"
+rg --fixed-strings --quiet 'GitMarkdownConnector.from_artifact' "${RUNTIME_DIR}/fetch.py" \
+	|| fail "fetch wrapper bypasses the typed connector validator"
+rg --fixed-strings --quiet 'git_markdown.inventory_json(connector)' "${RUNTIME_DIR}/fetch.py" \
+	|| fail "fetch wrapper does not publish the canonical connector inventory"
 rg --fixed-strings --quiet 'temporary_current.replace(output_root / "current.json")' \
-  "${RUNTIME_DIR}/fetch.py" || fail "current inventory is not atomically replaced last"
+	"${RUNTIME_DIR}/fetch.py" || fail "current inventory is not atomically replaced last"
 if rg --quiet 'PGHOST|PGPASSWORD|secretKeyRef|port: (5432|8080|8082)' "${RUNTIME_DIR}"; then
-  fail "connector runtime references a database, model gateway, or static credential"
+	fail "connector runtime references a database, model gateway, or static credential"
 fi
 
 PYTHONDONTWRITEBYTECODE=1 python -c '
@@ -268,10 +268,10 @@ for path in (Path("'"${CONNECTOR_DIR}/git_markdown.py"'"), Path("'"${RUNTIME_DIR
 '
 
 TEST_CONNECTOR_DIR="${CONNECTOR_DIR}" \
-  TEST_RUNTIME_DIR="${RUNTIME_DIR}" \
-  TEST_REPO_ROOT="${ROOT_DIR}" \
-  PYTHONDONTWRITEBYTECODE=1 \
-  python <<'PY'
+	TEST_RUNTIME_DIR="${RUNTIME_DIR}" \
+	TEST_REPO_ROOT="${ROOT_DIR}" \
+	PYTHONDONTWRITEBYTECODE=1 \
+	python <<'PY'
 from __future__ import annotations
 
 import copy

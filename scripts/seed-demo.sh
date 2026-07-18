@@ -90,8 +90,8 @@ lobby_has_canonical_alias() {
 	status="$(request_status "${OUTPUT}" \
 		--header "Authorization: Bearer ${MATRIX_TOKEN}" \
 		"${MATRIX_URL}/_matrix/client/v3/rooms/${encoded_room}/state/m.room.canonical_alias")"
-	[ "${status}" = "200" ] &&
-		jq -e --arg alias "${room_alias}" '.alias == $alias' "${OUTPUT}" >/dev/null
+	[ "${status}" = "200" ] \
+		&& jq -e --arg alias "${room_alias}" '.alias == $alias' "${OUTPUT}" >/dev/null
 }
 
 probe_has_reply() {
@@ -151,8 +151,8 @@ LLM_MODEL="$(kubectl --namespace flux-system get configmap platform-settings \
 	--output 'go-template={{index .data "llm_model"}}')"
 SOURCE_REVISION="$(kubectl --namespace flux-system get gitrepository flux-system \
 	--output jsonpath='{.status.artifact.revision}')"
-[[ "${SOURCE_REVISION}" =~ ^main@sha1:[0-9a-f]{40}$ ]] ||
-	die "Flux source has no valid reconciled artifact revision: ${SOURCE_REVISION:-none}"
+[[ "${SOURCE_REVISION}" =~ ^main@sha1:[0-9a-f]{40}$ ]] \
+	|| die "Flux source has no valid reconciled artifact revision: ${SOURCE_REVISION:-none}"
 OUTPUT="${WORK_DIR}/response.json"
 
 token_response="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
@@ -167,22 +167,22 @@ status="$(request_status "${OUTPUT}" \
 	--header "Authorization: Bearer ${MAS_ADMIN_TOKEN}" \
 	"${AUTH_URL}/api/admin/v1/users/by-username/alice")"
 case "${status}" in
-200)
-	user_id="$(jq -er '.data.id' "${OUTPUT}")"
-	;;
-404)
-	create_document="$(jq --null-input --compact-output \
-		'{username: "alice", displayname: "Alice Demo"}')"
-	status="$(request_status "${OUTPUT}" --request POST \
-		--header "Authorization: Bearer ${MAS_ADMIN_TOKEN}" \
-		--header 'Content-Type: application/json' --data "${create_document}" \
-		"${AUTH_URL}/api/admin/v1/users")"
-	[ "${status}" = "201" ] || die "MAS could not create the demo user (HTTP ${status})"
-	user_id="$(jq -er '.data.id' "${OUTPUT}")"
-	;;
-*)
-	die "MAS demo-user lookup failed (HTTP ${status})"
-	;;
+	200)
+		user_id="$(jq -er '.data.id' "${OUTPUT}")"
+		;;
+	404)
+		create_document="$(jq --null-input --compact-output \
+			'{username: "alice", displayname: "Alice Demo"}')"
+		status="$(request_status "${OUTPUT}" --request POST \
+			--header "Authorization: Bearer ${MAS_ADMIN_TOKEN}" \
+			--header 'Content-Type: application/json' --data "${create_document}" \
+			"${AUTH_URL}/api/admin/v1/users")"
+		[ "${status}" = "201" ] || die "MAS could not create the demo user (HTTP ${status})"
+		user_id="$(jq -er '.data.id' "${OUTPUT}")"
+		;;
+	*)
+		die "MAS demo-user lookup failed (HTTP ${status})"
+		;;
 esac
 
 password_document="$(jq --null-input --compact-output --arg password "${DEMO_PASSWORD}" \
@@ -210,23 +210,23 @@ status="$(request_status "${OUTPUT}" \
 	--header "Authorization: Bearer ${MATRIX_TOKEN}" \
 	"${MATRIX_URL}/_matrix/client/v3/directory/room/${encoded_alias}")"
 case "${status}" in
-200)
-	room_id="$(jq -er '.room_id' "${OUTPUT}")"
-	if ! lobby_is_local_only "${room_id}"; then
-		echo 'Migrating legacy #lobby to immutable local-only federation policy.' >&2
-		legacy_room_id="${room_id}"
+	200)
+		room_id="$(jq -er '.room_id' "${OUTPUT}")"
+		if ! lobby_is_local_only "${room_id}"; then
+			echo 'Migrating legacy #lobby to immutable local-only federation policy.' >&2
+			legacy_room_id="${room_id}"
+			create_lobby room_id
+			retire_legacy_lobby_alias "${legacy_room_id}"
+			publish_lobby_alias "${room_id}"
+		fi
+		;;
+	404)
 		create_lobby room_id
-		retire_legacy_lobby_alias "${legacy_room_id}"
 		publish_lobby_alias "${room_id}"
-	fi
-	;;
-404)
-	create_lobby room_id
-	publish_lobby_alias "${room_id}"
-	;;
-*)
-	die "Matrix room lookup failed (HTTP ${status})"
-	;;
+		;;
+	*)
+		die "Matrix room lookup failed (HTTP ${status})"
+		;;
 esac
 
 encoded_room="$(jq --null-input --raw-output --arg value "${room_id}" '$value | @uri')"

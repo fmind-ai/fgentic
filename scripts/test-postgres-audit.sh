@@ -3,7 +3,8 @@
 # kind cluster, installs the repository-pinned CNPG chart, and never uses the active kube context.
 set -euo pipefail
 
-readonly ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly ROOT_DIR
 readonly CLUSTER_MANIFEST="${ROOT_DIR}/infra/postgres/cluster.yaml"
 readonly FILTER="${ROOT_DIR}/scripts/lib/postgres-audit.jq"
 readonly FIXTURE="${ROOT_DIR}/scripts/testdata/postgres-audit.jsonl"
@@ -45,13 +46,13 @@ static_contract() {
     .spec.postgresql.parameters."pgaudit.log_statement" == "off" and
     ([.spec.postgresql.parameters | keys[] | select(test("^pgaudit\\."))] | sort | join(",")) ==
       "pgaudit.log,pgaudit.log_catalog,pgaudit.log_parameter,pgaudit.log_statement"
-  ' "${CLUSTER_MANIFEST}" >/dev/null ||
-		fail "Postgres must audit only DDL/ROLE and suppress catalog noise, SQL text, and parameters"
+  ' "${CLUSTER_MANIFEST}" >/dev/null \
+		|| fail "Postgres must audit only DDL/ROLE and suppress catalog noise, SQL text, and parameters"
 	yq -e '
     [.spec.postgresql.parameters | keys[] | select(test("^pg_stat_statements\\."))]
     | length == 0
-  ' "${CLUSTER_MANIFEST}" >/dev/null ||
-		fail "pg_stat_statements is deliberately outside the pgAudit change"
+  ' "${CLUSTER_MANIFEST}" >/dev/null \
+		|| fail "pg_stat_statements is deliberately outside the pgAudit change"
 	yq -e '
     .kind == "Cluster" and
     .nodes[0].role == "control-plane" and
@@ -70,8 +71,8 @@ static_contract() {
     all(.[]; (has("statement") | not) and (has("parameter") | not)) and
     all(.[].audit; (has("statement") | not) and (has("parameter") | not))
   ' <<<"${projected}" >/dev/null || fail "minimal pgAudit projection contract drifted"
-	[[ "${projected}" != *PGAUDIT_WRITE_SENTINEL* ]] ||
-		fail "WRITE-class fixture leaked through the DDL/ROLE projection"
+	[[ "${projected}" != *PGAUDIT_WRITE_SENTINEL* ]] \
+		|| fail "WRITE-class fixture leaked through the DDL/ROLE projection"
 
 	echo "Postgres audit static contract passed"
 }
@@ -178,8 +179,8 @@ SQL
 	tenant_pgaudit_extension="$(kubectl --namespace "${namespace}" exec "pod/${primary}" \
 		--container postgres -- psql --tuples-only --no-align --username postgres --dbname audit_tenant \
 		--command="SELECT EXISTS (SELECT FROM pg_extension WHERE extname = 'pgaudit')")"
-	[[ "${tenant_pgaudit_extension}" == "t" ]] ||
-		fail "CNPG did not make pgAudit available in a newly created tenant database"
+	[[ "${tenant_pgaudit_extension}" == "t" ]] \
+		|| fail "CNPG did not make pgAudit available in a newly created tenant database"
 
 	echo "==> Exercising DDL, WRITE, and READ as the tenant role"
 	kubectl --namespace "${namespace}" exec --stdin "pod/${primary}" --container postgres -- \
@@ -238,8 +239,8 @@ SQL
 	done
 	[[ "${logs_ready}" == true ]] || fail "complete correlated pgAudit fixture did not reach CNPG stdout"
 
-	runtime_records_ready "${RUNTIME_WORKDIR}/postgres.jsonl" ||
-		fail "runtime pgAudit records did not preserve fixture session correlation"
+	runtime_records_ready "${RUNTIME_WORKDIR}/postgres.jsonl" \
+		|| fail "runtime pgAudit records did not preserve fixture session correlation"
 	jq -e '
     [.[] | select(.logger == "pgaudit" and .msg == "record") | .record.audit] as $audit |
     ($audit | length > 0) and
@@ -254,8 +255,8 @@ SQL
     any($audit[]; .class == "DDL" and .command == "COMMENT") and
     any($audit[]; .class == "DDL" and .command == "DROP TABLE" and
       .object_name == "public.audit_fixture_table")
-  ' --slurp "${RUNTIME_WORKDIR}/postgres.jsonl" >/dev/null ||
-		fail "runtime pgAudit records did not preserve the DDL/ROLE-only redacted contract"
+  ' --slurp "${RUNTIME_WORKDIR}/postgres.jsonl" >/dev/null \
+		|| fail "runtime pgAudit records did not preserve the DDL/ROLE-only redacted contract"
 	if grep -Eq 'PGAUDIT_(ROLE_PASSWORD|STATEMENT|WRITE)_SENTINEL' \
 		"${RUNTIME_WORKDIR}/postgres.jsonl"; then
 		fail "CNPG stdout leaked SQL statement or row content"

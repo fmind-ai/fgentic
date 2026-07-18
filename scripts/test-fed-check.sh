@@ -2,8 +2,10 @@
 # Deterministic offline fixtures for scripts/fed-check.sh.
 set -euo pipefail
 
-readonly ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-readonly WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-fed-check-test.XXXXXX")"
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly ROOT_DIR
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-fed-check-test.XXXXXX")"
+readonly WORK_DIR
 trap 'rm -rf "${WORK_DIR}"' EXIT INT TERM
 
 fail() {
@@ -60,8 +62,8 @@ expect_failure() {
 	if run_check "${fixture}" "$@" >"${WORK_DIR}/failure.out" 2>"${WORK_DIR}/failure.err"; then
 		fail "fixture ${fixture} unexpectedly passed"
 	fi
-	rg --fixed-strings "${expected}" "${WORK_DIR}/failure.err" >/dev/null ||
-		fail "fixture ${fixture} omitted expected failure: ${expected}"
+	rg --fixed-strings "${expected}" "${WORK_DIR}/failure.err" >/dev/null \
+		|| fail "fixture ${fixture} omitted expected failure: ${expected}"
 }
 
 run_check success --expect-server matrix.partner.example:443 partner.example >"${WORK_DIR}/success.json"

@@ -304,8 +304,8 @@ assert_clean() {
 		[ ! -e "${state}/${resource}" ] || fail "teardown retained ${resource}"
 	done
 	[ ! -e "$(receipt_path "${state}")" ] || fail 'teardown retained its completed receipt'
-	[ "$(cat "${state}/caller-kubeconfig")" = caller-context ] ||
-		fail 'teardown changed the caller kubeconfig'
+	[ "$(cat "${state}/caller-kubeconfig")" = caller-context ] \
+		|| fail 'teardown changed the caller kubeconfig'
 }
 
 clean_state="${WORK_DIR}/clean"
@@ -334,13 +334,13 @@ for boundary in receipt metadata server partial; do
 		fail "${boundary} receipt contains forbidden content classes"
 	fi
 	case "${boundary}" in
-	receipt) ;;
-	metadata) rm -f "${state}/cluster" ;;
-	server) rm -f "${state}/cluster" "${state}/server" ;;
-	partial)
-		rm -f "${state}/cluster" "${state}/server" "${state}/loadbalancer" \
-			"${state}/network" "${state}/volume-images" "${state}/image"
-		;;
+		receipt) ;;
+		metadata) rm -f "${state}/cluster" ;;
+		server) rm -f "${state}/cluster" "${state}/server" ;;
+		partial)
+			rm -f "${state}/cluster" "${state}/server" "${state}/loadbalancer" \
+				"${state}/network" "${state}/volume-images" "${state}/image"
+			;;
 	esac
 
 	if [ "${boundary}" = receipt ]; then
@@ -366,13 +366,13 @@ for conflict in server network volume image; do
 	initialize_state "${state}"
 	create_receipt "${state}"
 	case "${conflict}" in
-	server) printf '%s\n' replacement-server-id >"${state}/server" ;;
-	network) printf '%s\n' replacement-network-id >"${state}/network" ;;
-	volume) printf '%s\n' 2026-07-16T00:00:00Z >"${state}/volume-images" ;;
-	image)
-		printf '%s\n' sha256:replacement-image-id >"${state}/image"
-		printf '%s\n' foreign >"${state}/image-owner"
-		;;
+		server) printf '%s\n' replacement-server-id >"${state}/server" ;;
+		network) printf '%s\n' replacement-network-id >"${state}/network" ;;
+		volume) printf '%s\n' 2026-07-16T00:00:00Z >"${state}/volume-images" ;;
+		image)
+			printf '%s\n' sha256:replacement-image-id >"${state}/image"
+			printf '%s\n' foreign >"${state}/image-owner"
+			;;
 	esac
 	if run_demo down "${state}" transient >"${state}/conflict" 2>&1; then
 		fail "${conflict} name reuse was accepted"
@@ -382,8 +382,8 @@ for conflict in server network volume image; do
 	if rg --fixed-strings 'cluster-delete' "${state}/commands" >/dev/null; then
 		fail "${conflict} conflict reached destructive cleanup"
 	fi
-	rg --regexp 'reused|changed' "${state}/conflict" >/dev/null ||
-		fail "${conflict} conflict lacked actionable diagnostics"
+	rg --regexp 'reused|changed' "${state}/conflict" >/dev/null \
+		|| fail "${conflict} conflict lacked actionable diagnostics"
 done
 
 foreign_state="${WORK_DIR}/foreign"
@@ -391,8 +391,8 @@ initialize_state "${foreign_state}" foreign
 if run_demo down "${foreign_state}" transient >"${foreign_state}/output" 2>&1; then
 	fail 'initial teardown accepted a foreign server owner'
 fi
-[ -f "${foreign_state}/cluster" ] && [ ! -e "$(receipt_path "${foreign_state}")" ] ||
-	fail 'foreign-owner control was mutated'
+[ -f "${foreign_state}/cluster" ] && [ ! -e "$(receipt_path "${foreign_state}")" ] \
+	|| fail 'foreign-owner control was mutated'
 
 orphan_state="${WORK_DIR}/orphan"
 initialize_state "${orphan_state}"

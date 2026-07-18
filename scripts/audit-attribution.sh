@@ -80,34 +80,34 @@ jq -e '
     true
   end
 ' "${workdir}/bridge.json" >/dev/null \
-  || {
-    printf 'error: attempted delegation audit has a missing or invalid agent version contract\n' >&2
-    exit 1
-  }
+	|| {
+		printf 'error: attempted delegation audit has a missing or invalid agent version contract\n' >&2
+		exit 1
+	}
 
 a2a_attempted="$(jq -r '.a2a_attempted' "${workdir}/bridge.json")"
 if [ "${a2a_attempted}" = "true" ]; then
-  ghost="$(jq -er '.ghost' "${workdir}/bridge.json")"
-  audited_agent_version="$(jq -er '.agent_version' "${workdir}/bridge.json")"
-  agent_contract_sha256="$(jq -r '.agent_contract_sha256 // ""' "${workdir}/bridge.json")"
-  kubectl -n "${bridge_namespace}" get configmap matrix-a2a-bridge-agents -o json \
-    | jq -er '.data["agents.yaml"]' >"${workdir}/agents.yaml"
-  known_agent_version="$(
-    mise --cd "${repo_root}/apps/matrix-a2a-bridge" exec -- \
-      go run ./cmd/agent-version \
-      --config "${workdir}/agents.yaml" \
-      --ghost "${ghost}"
-  )" || {
-    printf 'error: attempted delegation agent version does not resolve in the live mapping\n' >&2
-    exit 1
-  }
-  if [ "${audited_agent_version}" != "${known_agent_version}" ]; then
-    printf 'error: attempted delegation agent version does not match the live mapping\n' >&2
-    exit 1
-  fi
+	ghost="$(jq -er '.ghost' "${workdir}/bridge.json")"
+	audited_agent_version="$(jq -er '.agent_version' "${workdir}/bridge.json")"
+	agent_contract_sha256="$(jq -r '.agent_contract_sha256 // ""' "${workdir}/bridge.json")"
+	kubectl -n "${bridge_namespace}" get configmap matrix-a2a-bridge-agents -o json \
+		| jq -er '.data["agents.yaml"]' >"${workdir}/agents.yaml"
+	known_agent_version="$(
+		mise --cd "${repo_root}/apps/matrix-a2a-bridge" exec -- \
+			go run ./cmd/agent-version \
+			--config "${workdir}/agents.yaml" \
+			--ghost "${ghost}"
+	)" || {
+		printf 'error: attempted delegation agent version does not resolve in the live mapping\n' >&2
+		exit 1
+	}
+	if [ "${audited_agent_version}" != "${known_agent_version}" ]; then
+		printf 'error: attempted delegation agent version does not match the live mapping\n' >&2
+		exit 1
+	fi
 
-  kubectl -n flux-system get kustomizations bridge kagent -o json \
-    | jq -e '
+	kubectl -n flux-system get kustomizations bridge kagent -o json \
+		| jq -e '
         [.items[] | select(.metadata.name == "bridge" or .metadata.name == "kagent")]
         | if length != 2 then
             error("bridge and kagent Flux revisions are required")
@@ -124,11 +124,11 @@ if [ "${a2a_attempted}" = "true" ]; then
             error("bridge and kagent lastAppliedRevision must match")
           else . end
       ' >"${workdir}/source-revisions.json"
-  jq -n \
-    --arg agent_version "${audited_agent_version}" \
-    --arg agent_contract_sha256 "${agent_contract_sha256}" \
-    --arg ghost "${ghost}" \
-    --slurpfile revisions "${workdir}/source-revisions.json" '
+	jq -n \
+		--arg agent_version "${audited_agent_version}" \
+		--arg agent_contract_sha256 "${agent_contract_sha256}" \
+		--arg ghost "${ghost}" \
+		--slurpfile revisions "${workdir}/source-revisions.json" '
       {
         agent_version: $agent_version,
         agent_contract_sha256: $agent_contract_sha256,
@@ -138,7 +138,7 @@ if [ "${a2a_attempted}" = "true" ]; then
       }
     ' >"${workdir}/source.json"
 else
-  printf 'null\n' >"${workdir}/source.json"
+	printf 'null\n' >"${workdir}/source.json"
 fi
 
 sender_mxid="$(jq -er '.sender_mxid' "${workdir}/bridge.json")"
@@ -207,8 +207,8 @@ else
 	printf 'null\n' >"${workdir}/task.json"
 fi
 
-kubectl -n "${gateway_namespace}" logs deploy/agentgateway-proxy --since="${log_window}" |
-	jq -Rsc '
+kubectl -n "${gateway_namespace}" logs deploy/agentgateway-proxy --since="${log_window}" \
+	| jq -Rsc '
       [
         split("\n")[]
         | fromjson?
@@ -244,8 +244,8 @@ prometheus_query() {
 	local encoded_query
 	encoded_query="$(jq -rn --arg value "${query}" '$value | @uri')"
 	kubectl get --raw \
-		"/api/v1/namespaces/${monitoring_namespace}/services/http:kube-prometheus-stack-prometheus:9090/proxy/api/v1/query?query=${encoded_query}" |
-		jq -e 'if .status == "success" then .data.result else error(.error // "Prometheus query failed") end'
+		"/api/v1/namespaces/${monitoring_namespace}/services/http:kube-prometheus-stack-prometheus:9090/proxy/api/v1/query?query=${encoded_query}" \
+		| jq -e 'if .status == "success" then .data.result else error(.error // "Prometheus query failed") end'
 }
 
 prometheus_query 'sum by (ghost, outcome) (fgentic_delegations_total)' \
