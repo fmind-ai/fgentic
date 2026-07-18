@@ -2,7 +2,7 @@
 
 Status: prepared but ineligible for filing; do not open an upstream pull request before every gate below passes.
 
-Verified on 2026-07-18 against the official [CNCF Landscape entry guidelines](https://github.com/cncf/landscape/blob/main/README.md#new-entries), [landscape data](https://github.com/cncf/landscape/blob/main/landscape.yml), and [validation workflow](https://github.com/cncf/landscape/blob/main/.github/workflows/validate.yml).
+Verified on 2026-07-18 against the official [CNCF Landscape entry guidelines](https://github.com/cncf/landscape/blob/master/README.md#new-entries), [landscape data](https://github.com/cncf/landscape/blob/master/landscape.yml), and [validation workflow](https://github.com/cncf/landscape/blob/master/.github/workflows/validate.yml).
 
 ## Eligibility
 
