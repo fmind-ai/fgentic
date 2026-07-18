@@ -755,7 +755,7 @@ redis_image="$({
       | .spec.template.spec.containers[] | select(.name == "redis") | .image
     ' "${tmp_dir}/agentgateway.yaml"
 })"
-network="fgentic-mcp-governance-$RANDOM-$$"
+network="fgentic-mcp-governance-${RANDOM}-$$"
 gateway_container="${network}-gateway"
 tools_container="${network}-tools"
 pin_container="${network}-pin-tools"
