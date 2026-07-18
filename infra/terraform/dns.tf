@@ -8,6 +8,8 @@ resource "google_dns_managed_zone" "platform" {
   name        = var.dns_zone_name
   dns_name    = "${var.domain}."
   description = "Fgentic platform hosts (managed by Terraform)"
+  # Require an explicit reviewed policy transition before a teardown or provider handoff.
+  deletion_policy = "PREVENT"
   # The data-flow edge makes API activation complete before a fresh project creates the zone.
   project = google_project_service.enabled_services["dns.googleapis.com"].project
 

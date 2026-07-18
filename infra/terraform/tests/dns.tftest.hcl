@@ -35,6 +35,11 @@ run "defaults_to_six_public_hosts_without_admin" {
   }
 
   assert {
+    condition     = google_dns_managed_zone.platform[0].deletion_policy == "PREVENT"
+    error_message = "The authoritative public zone must reject implicit deletion."
+  }
+
+  assert {
     condition     = length(google_dns_managed_zone.platform[0].dnssec_config) == 1 && google_dns_managed_zone.platform[0].dnssec_config[0].state == "on"
     error_message = "The public platform zone must enable DNSSEC explicitly."
   }
