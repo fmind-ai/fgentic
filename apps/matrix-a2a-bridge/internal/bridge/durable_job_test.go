@@ -1085,28 +1085,34 @@ func TestDurableTaskTimeoutStartsAtFirstA2AAttemptNotQueueAdmission(t *testing.T
 	}
 }
 
-func TestDurableJobTerminatesUnsupportedPausedTaskHonestly(t *testing.T) {
+func TestDurableJobPersistsInputPauseAndTerminatesAuthRequiredHonestly(t *testing.T) {
 	tests := []struct {
-		name      string
-		result    a2aclient.Result
-		errorCode string
-		message   string
+		name       string
+		result     a2aclient.Result
+		errorCode  string
+		message    string
+		wantState  state.DelegationState
+		wantEvents int
 	}{
 		{
 			name: "input required",
 			result: a2aclient.Result{
-				TaskID: "task-input", ContextID: "context-input", InputRequired: true,
+				TaskID: "task-input", ContextID: "context-input", InputRequired: true, Text: "which namespace?",
 			},
-			errorCode: errorInputRequired,
-			message:   "needs more input",
+			errorCode:  errorInputRequired,
+			message:    "which namespace?",
+			wantState:  state.StateAwaitingInput,
+			wantEvents: 2,
 		},
 		{
 			name: "authorization required",
 			result: a2aclient.Result{
 				TaskID: "task-auth", ContextID: "context-auth", AuthRequired: true,
 			},
-			errorCode: errorAuthRequired,
-			message:   "needs authorization",
+			errorCode:  errorAuthRequired,
+			message:    "needs authorization",
+			wantState:  state.StateDelivered,
+			wantEvents: 1,
 		},
 	}
 	for _, tt := range tests {
@@ -1118,14 +1124,14 @@ func TestDurableJobTerminatesUnsupportedPausedTaskHonestly(t *testing.T) {
 
 			b.executeDurableJob(t.Context(), job)
 			stored := loadDurableJob(t, b, job.JobID)
-			if stored.State != state.StateDelivered || stored.ErrorCode != tt.errorCode ||
+			if stored.State != tt.wantState || stored.ErrorCode != tt.errorCode ||
 				stored.A2ATaskID != tt.result.TaskID || stored.A2AContextID != tt.result.ContextID {
-				t.Fatalf("terminal outcome = (%q, %q, %q, %q), want (delivered, %q, %q, %q)",
+				t.Fatalf("durable outcome = (%q, %q, %q, %q), want (%q, %q, %q, %q)",
 					stored.State, stored.ErrorCode, stored.A2ATaskID, stored.A2AContextID,
-					tt.errorCode, tt.result.TaskID, tt.result.ContextID)
+					tt.wantState, tt.errorCode, tt.result.TaskID, tt.result.ContextID)
 			}
 			events := recorder.snapshot()
-			if len(events) != 1 || !strings.Contains(events[0].Body, tt.message) {
+			if len(events) != tt.wantEvents || !strings.Contains(events[len(events)-1].Body, tt.message) {
 				t.Fatalf("terminal notice = %+v, want %q", events, tt.message)
 			}
 		})
@@ -1137,6 +1143,8 @@ func configureDurableTestBridge(b *Bridge) {
 	b.cfg.DelegationRetryInitial = time.Millisecond
 	b.cfg.DelegationRetryMax = time.Second
 	b.cfg.TaskTimeout = time.Minute
+	b.cfg.InputWaitTimeout = time.Minute
+	b.cfg.ControlCapacityPerJob = 16
 	b.pollInitial = time.Millisecond
 }
 

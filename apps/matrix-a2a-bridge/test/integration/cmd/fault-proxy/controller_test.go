@@ -11,14 +11,14 @@ func TestFaultControllerTripsOnceAndRetainsObservations(t *testing.T) {
 	if err := controller.arm(faultMatrixResponse); err != nil {
 		t.Fatalf("arm: %v", err)
 	}
-	controller.observeMatrix("/send/txn-1")
+	controller.observeMatrix("/send/txn-1", faultMatrixResponse)
 	if !controller.tryTrip(faultMatrixResponse, "/send/txn-1") {
 		t.Fatal("first matching fault did not trip")
 	}
 	if controller.tryTrip(faultMatrixResponse, "/send/txn-1") {
 		t.Fatal("one-shot fault tripped twice")
 	}
-	controller.observeMatrix("/send/txn-1")
+	controller.observeMatrix("/send/txn-1", faultMatrixResponse)
 
 	snapshot := controller.snapshot()
 	if snapshot.Armed || !snapshot.Tripped || snapshot.MatchedPath != "/send/txn-1" {

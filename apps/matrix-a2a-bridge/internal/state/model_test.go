@@ -9,22 +9,30 @@ import (
 
 func TestDelegationStateTransitionMatrix(t *testing.T) {
 	legal := map[[2]DelegationState]bool{
-		{StatePending, StateA2APrepared}:       true,
-		{StatePending, StateReplyPending}:      true,
-		{StatePending, StateDenied}:            true,
-		{StatePending, StateDead}:              true,
-		{StateA2APrepared, StateAwaitingTask}:  true,
-		{StateA2APrepared, StateReplyPending}:  true,
-		{StateA2APrepared, StateDenied}:        true,
-		{StateA2APrepared, StateAmbiguous}:     true,
-		{StateA2APrepared, StateDead}:          true,
-		{StateAwaitingTask, StateReplyPending}: true,
-		{StateAwaitingTask, StateDenied}:       true,
-		{StateAwaitingTask, StateDead}:         true,
-		{StateReplyPending, StateDelivered}:    true,
-		{StateReplyPending, StateDenied}:       true,
-		{StateReplyPending, StateAmbiguous}:    true,
-		{StateReplyPending, StateDead}:         true,
+		{StatePending, StateA2APrepared}:         true,
+		{StatePending, StateReplyPending}:        true,
+		{StatePending, StateDenied}:              true,
+		{StatePending, StateDead}:                true,
+		{StateA2APrepared, StateAwaitingTask}:    true,
+		{StateA2APrepared, StateAwaitingInput}:   true,
+		{StateA2APrepared, StateReplyPending}:    true,
+		{StateA2APrepared, StateDenied}:          true,
+		{StateA2APrepared, StateAmbiguous}:       true,
+		{StateA2APrepared, StateDead}:            true,
+		{StateAwaitingTask, StateReplyPending}:   true,
+		{StateAwaitingTask, StateAwaitingInput}:  true,
+		{StateAwaitingTask, StateDenied}:         true,
+		{StateAwaitingTask, StateDead}:           true,
+		{StateAwaitingInput, StateAwaitingInput}: true,
+		{StateAwaitingInput, StateAwaitingTask}:  true,
+		{StateAwaitingInput, StateReplyPending}:  true,
+		{StateAwaitingInput, StateDenied}:        true,
+		{StateAwaitingInput, StateAmbiguous}:     true,
+		{StateAwaitingInput, StateDead}:          true,
+		{StateReplyPending, StateDelivered}:      true,
+		{StateReplyPending, StateDenied}:         true,
+		{StateReplyPending, StateAmbiguous}:      true,
+		{StateReplyPending, StateDead}:           true,
 	}
 	for _, from := range delegationStates {
 		if !from.Valid() {
@@ -87,6 +95,18 @@ func TestDeterministicProtocolIDs(t *testing.T) {
 		if transactionID != MatrixTransactionIDFor(jobID, stage) {
 			t.Fatalf("Matrix transaction ID for %q is not stable", stage)
 		}
+	}
+	controlID := ControlIDFor(jobID, ControlContinuation, "$answer", 0)
+	if controlID == "" || controlID != ControlIDFor(jobID, ControlContinuation, "$answer", 0) {
+		t.Fatalf("control ID is not stable: %q", controlID)
+	}
+	if controlID == ControlIDFor(jobID, ControlCancel, "$answer", 0) ||
+		controlID == ControlIDFor(jobID, ControlContinuation, "$other", 0) {
+		t.Fatal("control ID does not bind kind and source event")
+	}
+	if ControlA2AMessageIDFor(controlID) == "" || ControlMatrixTransactionIDFor(controlID) == "" ||
+		ControlA2AMessageIDFor(controlID) == ControlMatrixTransactionIDFor(controlID) {
+		t.Fatal("control downstream identities are empty or aliased")
 	}
 }
 

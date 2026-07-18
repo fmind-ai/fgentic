@@ -69,8 +69,9 @@ type durableTerminalAuditState struct {
 	RateLimit      auditRateLimitVerdict `json:"rate_limit_verdict,omitempty"`
 	// A2AAttempted is persisted before calling the A2A client so terminal audit does not infer a
 	// network-side effect from an unrelated terminal state.
-	A2AAttempted bool  `json:"a2a_attempted,omitempty"`
-	A2AStartedAt int64 `json:"a2a_started_at_ms,omitempty"`
+	A2AAttempted bool   `json:"a2a_attempted,omitempty"`
+	A2AStartedAt int64  `json:"a2a_started_at_ms,omitempty"`
+	CanceledBy   string `json:"canceled_by,omitempty"`
 	// SecretScanAction/SecretMatchCount/SecretRuleClasses record the reply->room secret-scan verdict
 	// (#343). They are content-free: the action is the applied enforcement mode, the count is the
 	// number of masked spans, and the classes are fixed rule-class identifiers — never a matched
@@ -90,13 +91,39 @@ type durableA2AClient interface {
 		[]a2aclient.InboundFile,
 	) (a2aclient.Result, error)
 	ResumeTask(context.Context, a2aclient.Target, string) (a2aclient.Result, error)
+	ContinueWithMessageID(
+		context.Context,
+		a2aclient.Target,
+		string,
+		string,
+		string,
+		string,
+	) (a2aclient.Result, error)
+	CancelTask(context.Context, a2aclient.Target, string) error
 }
 
 // executeDurableJob advances exactly one fenced job until it either reaches a terminal state or is
 // released for a bounded retry. The dispatcher owns heartbeats and cancels ctx on lease loss.
 func (b *Bridge) executeDurableJob(ctx context.Context, claimed state.Job) {
 	job := claimed
-	var err error
+	stop, err := b.executeDurableControls(ctx, &job)
+	if stop || errors.Is(err, state.ErrLeaseLost) || ctx.Err() != nil {
+		return
+	}
+	if err != nil {
+		b.log.Error(
+			"durable delegation control failed",
+			"job_id", job.JobID,
+			"state", job.State,
+			"reason", "control_failed",
+			"error_type", fmt.Sprintf("%T", err),
+		)
+		if retryErr := b.retryOrDead(ctx, &job, "control_failed", err); retryErr != nil &&
+			!errors.Is(retryErr, state.ErrLeaseLost) {
+			b.log.Error("durable control recovery failed", "job_id", job.JobID, "error_type", fmt.Sprintf("%T", retryErr))
+		}
+		return
+	}
 	switch job.State {
 	case state.StatePending:
 		err = b.executePendingJob(ctx, &job)
@@ -104,6 +131,8 @@ func (b *Bridge) executeDurableJob(ctx context.Context, claimed state.Job) {
 		err = b.recoverPreparedJob(ctx, &job)
 	case state.StateAwaitingTask:
 		err = b.resumeKnownTask(ctx, &job)
+	case state.StateAwaitingInput:
+		err = b.resumeAwaitingInput(ctx, &job)
 	case state.StateReplyPending:
 		err = b.deliverPendingReply(ctx, &job)
 	default:
@@ -333,15 +362,11 @@ func (b *Bridge) acceptDurableA2AResult(
 			)
 		}
 		if result.InputRequired {
-			captureDurableA2AEvidence(job, result)
-			return b.prepareDurableFailureNotice(
-				ctx, job, payload, evt, ref, sender, state.StateDelivered,
-				outcomeFailed, "task_input", errorInputRequired, 0,
-			)
+			return b.pauseDurableForInput(ctx, job, payload, evt, ref, sender, result)
 		}
 		if err := b.transitionDurable(ctx, job, state.StateAwaitingTask, state.TransitionPatch{
 			A2ATaskID: stringPointer(result.TaskID), A2AContextID: stringPointer(contextID),
-			ErrorCode: stringPointer(""),
+			ErrorCode: stringPointer(""), TaskDeadlineAt: timePointer(b.initialDurableTaskDeadline(*job, ref, payload)),
 		}); err != nil {
 			return err
 		}
@@ -349,6 +374,12 @@ func (b *Bridge) acceptDurableA2AResult(
 			return b.retryOrDead(ctx, job, errorMatrixDelivery, err)
 		}
 		if err := b.ensureDurableDeadMan(ctx, job, evt); err != nil {
+			return err
+		}
+		if err := b.ensureDurablePin(ctx, job, true); err != nil {
+			return err
+		}
+		if err := b.surfaceDurableProgress(ctx, job, result.Text); err != nil {
 			return err
 		}
 		return b.scheduleTaskPoll(ctx, *job)
@@ -432,14 +463,13 @@ func (b *Bridge) resumeKnownTask(ctx context.Context, job *state.Job) error {
 			)
 		}
 		if result.InputRequired {
-			captureDurableA2AEvidence(job, result)
-			return b.prepareDurableFailureNotice(
-				ctx, job, payload, evt, ref, sender, state.StateDelivered,
-				outcomeFailed, "task_input", errorInputRequired, 0,
-			)
+			return b.pauseDurableForInput(ctx, job, payload, evt, ref, sender, result)
 		}
 		if deadManRefreshErr != nil {
 			return b.retryOrDead(ctx, job, errorDeadManRefresh, deadManRefreshErr)
+		}
+		if err := b.surfaceDurableProgress(ctx, job, result.Text); err != nil {
+			return err
 		}
 		return b.scheduleTaskPoll(ctx, *job)
 	}
@@ -497,6 +527,7 @@ func (b *Bridge) prepareDurableResult(
 	payload.Audit = durableTerminalAuditState{
 		Outcome: outcome, TerminalStage: terminalStage, TerminalReason: terminalReason,
 		A2AAttempted: payload.Audit.A2AAttempted, A2AStartedAt: payload.Audit.A2AStartedAt,
+		CanceledBy:        payload.Audit.CanceledBy,
 		RateLimit:         payload.Audit.RateLimit,
 		SecretScanAction:  payload.Audit.SecretScanAction,
 		SecretMatchCount:  payload.Audit.SecretMatchCount,
@@ -535,6 +566,7 @@ func (b *Bridge) prepareDurableNotice(
 	payload.Audit = durableTerminalAuditState{
 		Outcome: outcome, TerminalStage: terminalStage, TerminalReason: terminalReason,
 		A2AAttempted: payload.Audit.A2AAttempted, A2AStartedAt: payload.Audit.A2AStartedAt,
+		CanceledBy:        payload.Audit.CanceledBy,
 		RateLimit:         payload.Audit.RateLimit,
 		SecretScanAction:  payload.Audit.SecretScanAction,
 		SecretMatchCount:  payload.Audit.SecretMatchCount,
@@ -620,6 +652,9 @@ func (b *Bridge) prepareDurableDeniedNotice(
 }
 
 func (b *Bridge) deliverPendingReply(ctx context.Context, job *state.Job) error {
+	if err := b.ensureDurablePin(ctx, job, false); err != nil {
+		return err
+	}
 	payload, evt, err := decodeDurableJob(*job)
 	if err != nil {
 		return b.finishDurableWithoutReply(ctx, job, state.StateDead, errorInvalidPayload, err)
@@ -897,6 +932,9 @@ func (b *Bridge) finishDurableWithoutReplyWithEvidence(
 	ref *AgentRef,
 	sender senderIdentity,
 ) error {
+	if err := b.ensureDurablePin(ctx, job, false); err != nil {
+		return err
+	}
 	patch := state.TransitionPatch{ErrorCode: &errorCode}
 	if err := b.transitionDurable(ctx, job, terminal, patch); err != nil {
 		return err
@@ -945,6 +983,15 @@ func (b *Bridge) transitionDurable(
 	patch state.TransitionPatch,
 ) error {
 	from := job.State
+	if from == state.StateAwaitingInput && to != state.StateAwaitingInput {
+		zero := time.Time{}
+		if patch.InputWaitStartedAt == nil {
+			patch.InputWaitStartedAt = &zero
+		}
+		if patch.InputWaitExpiresAt == nil {
+			patch.InputWaitExpiresAt = &zero
+		}
+	}
 	if err := b.store.Transition(ctx, state.TransitionRequest{
 		Lease: job.LeaseToken(), From: from, To: to, At: time.Now().UTC(), Patch: patch,
 	}); err != nil {
@@ -1080,11 +1127,22 @@ func (b *Bridge) durableTaskDeadline(
 	payload durablePayload,
 ) (time.Time, time.Duration) {
 	limit := agentRequestTimeout(ref, b.cfg.TaskTimeout)
+	if !job.TaskDeadlineAt.IsZero() {
+		return job.TaskDeadlineAt, max(time.Until(job.TaskDeadlineAt), 0)
+	}
 	startedAt := job.CreatedAt
 	if payload.Audit.A2AStartedAt > 0 {
 		startedAt = time.UnixMilli(payload.Audit.A2AStartedAt)
 	}
 	return startedAt.Add(limit), limit
+}
+
+func (b *Bridge) initialDurableTaskDeadline(job state.Job, ref *AgentRef, payload durablePayload) time.Time {
+	if !job.TaskDeadlineAt.IsZero() {
+		return job.TaskDeadlineAt
+	}
+	deadline, _ := b.durableTaskDeadline(job, ref, payload)
+	return deadline
 }
 
 func decodeDurableJob(job state.Job) (durablePayload, *event.Event, error) {
@@ -1150,6 +1208,15 @@ func applyDurablePatch(job *state.Job, patch state.TransitionPatch) {
 	if patch.MatrixEditEventID != nil {
 		job.MatrixEditEventID = *patch.MatrixEditEventID
 	}
+	if patch.TaskDeadlineAt != nil {
+		job.TaskDeadlineAt = *patch.TaskDeadlineAt
+	}
+	if patch.InputWaitStartedAt != nil {
+		job.InputWaitStartedAt = *patch.InputWaitStartedAt
+	}
+	if patch.InputWaitExpiresAt != nil {
+		job.InputWaitExpiresAt = *patch.InputWaitExpiresAt
+	}
 }
 
 func (b *Bridge) recordDurableTerminal(
@@ -1186,6 +1253,7 @@ func (b *Bridge) recordDurableTerminal(
 		a2aUserID:         job.SenderMXID,
 		contextID:         job.A2AContextID,
 		taskID:            job.A2ATaskID,
+		canceledBy:        payload.Audit.CanceledBy,
 		replyEventID:      eventID,
 		activated:         durableActivatedExtensions(payload),
 		mediaIn:           payload.MediaIn,
@@ -1222,6 +1290,8 @@ func durableActivatedExtensions(payload durablePayload) []string {
 }
 
 func stringPointer(value string) *string { return &value }
+
+func timePointer(value time.Time) *time.Time { return &value }
 
 func captureDurableA2AEvidence(job *state.Job, result a2aclient.Result) {
 	if result.TaskID != "" {

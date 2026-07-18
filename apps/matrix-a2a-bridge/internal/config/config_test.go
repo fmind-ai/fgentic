@@ -238,6 +238,35 @@ func TestValidateRejectsNonPositiveInputWait(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsUndersizedDurableControlBudget(t *testing.T) {
+	t.Setenv("CONTROL_CAPACITY_PER_JOB", "6")
+	t.Setenv("MAX_TASK_PROGRESS_POSTS", "3")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected durable control budget error, got nil")
+	}
+}
+
+func TestValidateRejectsDurableControlBudgetWithoutInteractiveReserve(t *testing.T) {
+	t.Setenv("CONTROL_CAPACITY_PER_JOB", "4")
+	t.Setenv("MAX_TASK_PROGRESS_POSTS", "0")
+	if _, err := Load(); err == nil {
+		t.Fatal("expected durable control reserve error, got nil")
+	}
+}
+
+func TestLoadDurableControlDefaults(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.ControlCapacityPerJob != 16 || cfg.CancelModeratorPowerLevel != 50 ||
+		cfg.MaxTaskProgressPosts != 3 || cfg.PinInFlightTasks {
+		t.Fatalf("durable control defaults = capacity %d moderator %d progress %d pin %t",
+			cfg.ControlCapacityPerJob, cfg.CancelModeratorPowerLevel,
+			cfg.MaxTaskProgressPosts, cfg.PinInFlightTasks)
+	}
+}
+
 // validate is exercised directly: caarlos0/env applies envDefault to empty-set variables, so an
 // empty SERVER_NAME can only reach validate through a struct, never through the environment.
 func TestValidateRejectsEmptyServerName(t *testing.T) {

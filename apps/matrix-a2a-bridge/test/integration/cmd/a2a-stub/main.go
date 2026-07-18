@@ -46,8 +46,9 @@ const (
 )
 
 var (
-	loadMarkerPattern = regexp.MustCompile(`\bload room=(\d{2}) seq=(\d{2})\b`)
-	longMarkerPattern = regexp.MustCompile(`\blong room=(\d{2}) seq=(\d{2})\b`)
+	loadMarkerPattern  = regexp.MustCompile(`\bload room=(\d{2}) seq=(\d{2})\b`)
+	longMarkerPattern  = regexp.MustCompile(`\blong room=(\d{2}) seq=(\d{2})\b`)
+	inputMarkerPattern = regexp.MustCompile(`\binput room=(\d{2}) seq=(\d{2})\b`)
 )
 
 type requestRecord struct {
@@ -70,6 +71,9 @@ type statsSnapshot struct {
 	TotalCompleted     int             `json:"total_completed"`
 	LongStarted        int             `json:"long_started"`
 	LongCompleted      int             `json:"long_completed"`
+	InputStarted       int             `json:"input_started"`
+	InputContinued     int             `json:"input_continued"`
+	CancelRequests     int             `json:"cancel_requests"`
 	Starts             []requestRecord `json:"starts"`
 	Completions        []requestRecord `json:"completions"`
 }
@@ -90,6 +94,9 @@ type statsRecorder struct {
 	totalCompleted     int
 	longStarted        int
 	longCompleted      int
+	inputStarted       int
+	inputContinued     int
+	cancelRequests     int
 	starts             []requestRecord
 	completions        []requestRecord
 }
@@ -167,9 +174,30 @@ func (r *statsRecorder) snapshot() statsSnapshot {
 		TotalCompleted:     r.totalCompleted,
 		LongStarted:        r.longStarted,
 		LongCompleted:      r.longCompleted,
+		InputStarted:       r.inputStarted,
+		InputContinued:     r.inputContinued,
+		CancelRequests:     r.cancelRequests,
 		Starts:             append([]requestRecord(nil), r.starts...),
 		Completions:        append([]requestRecord(nil), r.completions...),
 	}
+}
+
+func (r *statsRecorder) startInput() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.inputStarted++
+}
+
+func (r *statsRecorder) continueInput() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.inputContinued++
+}
+
+func (r *statsRecorder) cancel() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.cancelRequests++
 }
 
 func (r *statsRecorder) startLong(record requestRecord) {
@@ -236,9 +264,17 @@ func (e executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) 
 		}
 		record, loadRequest := parseLoadMarker(messageText(execCtx.Message))
 		longRecord, longRequest := parseLongMarker(messageText(execCtx.Message))
+		_, inputRequest := parseInputMarker(messageText(execCtx.Message))
 		if longRequest {
 			e.executeLong(ctx, execCtx, longRecord, yield)
 			return
+		}
+		if inputRequest {
+			e.executeInput(execCtx, yield)
+			return
+		}
+		if execCtx.StoredTask != nil && execCtx.StoredTask.Status.State == a2a.TaskStateInputRequired {
+			e.stats.continueInput()
 		}
 		if !loadRequest {
 			yield(a2a.NewMessageForTask(a2a.MessageRoleAgent, execCtx, a2a.NewTextPart(e.reply)), nil)
@@ -260,6 +296,22 @@ func (e executor) Execute(ctx context.Context, execCtx *a2asrv.ExecutorContext) 
 		reply := fmt.Sprintf("load reply room=%02d seq=%02d", record.Room, record.Sequence)
 		yield(a2a.NewMessageForTask(a2a.MessageRoleAgent, execCtx, a2a.NewTextPart(reply)), nil)
 	}
+}
+
+func (e executor) executeInput(
+	execCtx *a2asrv.ExecutorContext,
+	yield func(a2a.Event, error) bool,
+) {
+	e.stats.startInput()
+	if !yield(a2a.NewSubmittedTask(execCtx, execCtx.Message), nil) {
+		return
+	}
+	question := a2a.NewMessageForTask(
+		a2a.MessageRoleAgent,
+		execCtx,
+		a2a.NewTextPart("which namespace?"),
+	)
+	yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateInputRequired, question), nil)
 }
 
 func (e executor) executeLong(
@@ -313,8 +365,11 @@ func validTokenBudgetContract(execCtx *a2asrv.ExecutorContext) bool {
 	return ok && slices.Contains(extensions, tokenBudgetExtensionURI)
 }
 
-func (executor) Cancel(context.Context, *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
-	return func(func(a2a.Event, error) bool) {}
+func (e executor) Cancel(_ context.Context, execCtx *a2asrv.ExecutorContext) iter.Seq2[a2a.Event, error] {
+	return func(yield func(a2a.Event, error) bool) {
+		e.stats.cancel()
+		yield(a2a.NewStatusUpdateEvent(execCtx, a2a.TaskStateCanceled, nil), nil)
+	}
 }
 
 func recordRemoteUser(next http.Handler, stats *statsRecorder) http.Handler {
@@ -565,6 +620,10 @@ func parseLoadMarker(text string) (requestRecord, bool) {
 
 func parseLongMarker(text string) (requestRecord, bool) {
 	return parseMarker(longMarkerPattern, text)
+}
+
+func parseInputMarker(text string) (requestRecord, bool) {
+	return parseMarker(inputMarkerPattern, text)
 }
 
 func parseMarker(pattern *regexp.Regexp, text string) (requestRecord, bool) {

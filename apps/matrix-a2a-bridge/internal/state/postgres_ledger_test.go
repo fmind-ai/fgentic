@@ -20,8 +20,8 @@ var (
 )
 
 func TestDurableLedgerMigrationContract(t *testing.T) {
-	if len(UpgradeTable) != 3 {
-		t.Fatalf("upgrade table length = %d, want 3", len(UpgradeTable))
+	if len(UpgradeTable) != 4 {
+		t.Fatalf("upgrade table length = %d, want 4", len(UpgradeTable))
 	}
 	recorder := &databaseRecorder{}
 	db := recorder.database(t)
@@ -57,6 +57,34 @@ func TestDurableLedgerMigrationContract(t *testing.T) {
 	}
 	if strings.Contains(migration, "-- only: postgres") || strings.Contains(migration, "-- end only postgres") {
 		t.Fatal("dbutil dialect markers leaked into executed migration")
+	}
+}
+
+func TestDurableInteractiveControlMigrationContract(t *testing.T) {
+	recorder := &databaseRecorder{}
+	db := recorder.database(t)
+	t.Cleanup(func() { _ = db.Close() })
+	to, compat, err := UpgradeTable[3].DangerouslyRun(t.Context(), db)
+	if err != nil {
+		t.Fatalf("execute interactive-control migration through dbutil: %v", err)
+	}
+	if to != 4 || compat != 4 {
+		t.Fatalf("migration version = (%d, %d), want (4, 4)", to, compat)
+	}
+	queries := recorder.executedQueries()
+	if len(queries) != 1 {
+		t.Fatalf("interactive-control migration exec count = %d, want 1", len(queries))
+	}
+	migration := queries[0]
+	for _, required := range []string{
+		"'awaiting_input'", "task_deadline_at", "input_wait_expires_at",
+		"CREATE TABLE bridge_delegation_controls", "lease_generation", "recovery_count",
+		"source_matrix_event_id", "intake_fingerprint", "a2a_message_id", "matrix_txn_id",
+		"bridge_delegation_controls_pending",
+	} {
+		if !strings.Contains(migration, required) {
+			t.Errorf("interactive-control migration does not contain %q", required)
+		}
 	}
 }
 

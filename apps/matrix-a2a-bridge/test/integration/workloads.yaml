@@ -192,7 +192,10 @@ spec:
             - name: REQUEST_TIMEOUT
               value: 30s
             - name: TASK_TIMEOUT
-              value: 35s
+              valueFrom:
+                configMapKeyRef:
+                  name: fixture-settings
+                  key: taskTimeout
             - name: DEAD_MAN_SWITCH_DELAY
               valueFrom:
                 configMapKeyRef:
@@ -235,6 +238,21 @@ spec:
                 configMapKeyRef:
                   name: fixture-settings
                   key: roomRateBurst
+            - name: MAX_TASK_PROGRESS_POSTS
+              valueFrom:
+                configMapKeyRef:
+                  name: fixture-settings
+                  key: maxTaskProgressPosts
+            - name: PIN_IN_FLIGHT_TASKS
+              valueFrom:
+                configMapKeyRef:
+                  name: fixture-settings
+                  key: pinInFlightTasks
+            - name: CONTROL_CAPACITY_PER_JOB
+              valueFrom:
+                configMapKeyRef:
+                  name: fixture-settings
+                  key: controlCapacityPerJob
             - name: LOG_FORMAT
               value: json
           ports:

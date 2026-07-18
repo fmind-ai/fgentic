@@ -73,6 +73,10 @@ data:
   senderRateBurst: "1"
   roomRatePerMinute: "60"
   roomRateBurst: "10"
+  maxTaskProgressPosts: "0"
+  pinInFlightTasks: "false"
+  controlCapacityPerJob: "16"
+  taskTimeout: 35s
 ---
 apiVersion: v1
 kind: ConfigMap

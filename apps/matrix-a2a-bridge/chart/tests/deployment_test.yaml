@@ -65,6 +65,18 @@ tests:
           path: spec.template.spec.containers[0].env[?(@.name == "APPSERVICE_TRANSACTION_MAX_BYTES")].value
           value: "16777216"
       - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "CONTROL_CAPACITY_PER_JOB")].value
+          value: "16"
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "CANCEL_MODERATOR_POWER_LEVEL")].value
+          value: "50"
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "MAX_TASK_PROGRESS_POSTS")].value
+          value: "3"
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "PIN_IN_FLIGHT_TASKS")].value
+          value: "false"
+      - equal:
           path: spec.template.spec.containers[0].env[?(@.name == "DELEGATION_CLAIM_INTERVAL")].value
           value: 1s
       - equal:

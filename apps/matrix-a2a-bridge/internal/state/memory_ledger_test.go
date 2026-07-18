@@ -155,6 +155,199 @@ func TestMemoryExecutesEveryLegalTransition(t *testing.T) {
 	}
 }
 
+func TestMemoryDurableControlsClaimTakeoverAndFence(t *testing.T) {
+	store := NewMemory()
+	delegation := testDelegation("$control-job", "agent", "!room")
+	mustAdmit(t, store, testAdmission("txn-control-job", ledgerEpoch, delegation))
+	job := mustClaim(t, store, "worker-one", ledgerEpoch)
+	mustTransition(
+		t, store, job.LeaseToken(), StatePending, StateA2APrepared,
+		ledgerEpoch.Add(time.Second), TransitionPatch{},
+	)
+	job, _, _ = store.Job(t.Context(), job.JobID)
+	mustTransition(
+		t, store, job.LeaseToken(), StateA2APrepared, StateAwaitingTask,
+		ledgerEpoch.Add(2*time.Second), TransitionPatch{},
+	)
+	job, _, _ = store.Job(t.Context(), job.JobID)
+	if err := store.RecordMatrixEvent(t.Context(), MatrixEventRequest{
+		Lease: job.LeaseToken(), At: ledgerEpoch.Add(3 * time.Second),
+		Stage: MatrixEventPlaceholder, EventID: "$placeholder",
+	}); err != nil {
+		t.Fatalf("record placeholder: %v", err)
+	}
+
+	controlAdmission := testAdmission("txn-cancel", ledgerEpoch.Add(4*time.Second))
+	controlAdmission.ControlCapacity = 8
+	controlAdmission.Controls = []NewControl{{
+		TargetMatrixEventID: "$placeholder", SourceMatrixEventID: "$cancel-one",
+		RoomID: "!room", SenderMXID: "@alice:example.test", Kind: ControlCancel,
+		Authorized: true,
+	}}
+	result := mustAdmit(t, store, controlAdmission)
+	if len(result.InsertedControlIDs) != 1 || len(result.ExistingControlIDs) != 0 {
+		t.Fatalf("control admission = %+v", result)
+	}
+	control, ok, err := store.ClaimControl(t.Context(), job.LeaseToken(), ledgerEpoch.Add(5*time.Second))
+	if err != nil || !ok || control.State != ControlPrepared ||
+		control.LeaseGeneration != job.LeaseGeneration {
+		t.Fatalf("ClaimControl = (%+v, %t, %v)", control, ok, err)
+	}
+
+	secondAdmission := testAdmission("txn-cancel-two", ledgerEpoch.Add(6*time.Second))
+	secondAdmission.ControlCapacity = 8
+	secondAdmission.Controls = []NewControl{{
+		TargetMatrixEventID: "$placeholder", SourceMatrixEventID: "$cancel-two",
+		RoomID: "!room", SenderMXID: "@alice:example.test", Kind: ControlContinuation,
+		Authorized: true,
+	}}
+	mustAdmit(t, store, secondAdmission)
+
+	takeoverAt := job.LeaseExpiresAt.Add(time.Second)
+	takeover := mustClaim(t, store, "worker-two", takeoverAt)
+	claimed, ok, err := store.ClaimControl(t.Context(), takeover.LeaseToken(), takeoverAt.Add(time.Second))
+	if err != nil || !ok || claimed.SourceMatrixEventID != "$cancel-one" ||
+		claimed.LeaseGeneration != takeover.LeaseGeneration || claimed.RecoveryCount != 1 {
+		t.Fatalf("takeover ClaimControl = (%+v, %t, %v)", claimed, ok, err)
+	}
+	if err := store.TransitionControl(t.Context(), ControlTransitionRequest{
+		Lease: job.LeaseToken(), ControlID: control.ControlID,
+		From: ControlPrepared, To: ControlApplied, At: takeoverAt.Add(2 * time.Second),
+	}); !errors.Is(err, ErrLeaseLost) {
+		t.Fatalf("stale control transition error = %v, want ErrLeaseLost", err)
+	}
+	if err := store.TransitionControl(t.Context(), ControlTransitionRequest{
+		Lease: takeover.LeaseToken(), ControlID: claimed.ControlID,
+		From: ControlPrepared, To: ControlApplied, At: takeoverAt.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("takeover control transition: %v", err)
+	}
+	controls, err := store.Controls(t.Context(), job.JobID)
+	if err != nil || len(controls) != 2 || controls[0].State != ControlApplied ||
+		controls[0].RecoveryCount != 1 || len(controls[0].Payload) != 0 ||
+		controls[0].TerminalAt.IsZero() || controls[1].State != ControlPending {
+		t.Fatalf("controls after takeover = (%+v, %v)", controls, err)
+	}
+}
+
+func TestMemoryTerminalControlReplayUsesContentFreeFingerprint(t *testing.T) {
+	store := NewMemory()
+	delegation := testDelegation("$control-replay-job", "agent", "!room")
+	mustAdmit(t, store, testAdmission("txn-control-replay-job", ledgerEpoch, delegation))
+	job := mustClaim(t, store, "worker", ledgerEpoch.Add(time.Second))
+	if err := store.RecordMatrixEvent(t.Context(), MatrixEventRequest{
+		Lease: job.LeaseToken(), At: ledgerEpoch.Add(2 * time.Second),
+		Stage: MatrixEventPlaceholder, EventID: "$control-replay-placeholder",
+	}); err != nil {
+		t.Fatalf("record placeholder: %v", err)
+	}
+	control := NewControl{
+		TargetMatrixEventID: "$control-replay-placeholder", SourceMatrixEventID: "$control-replay-answer",
+		RoomID: delegation.RoomID, SenderMXID: delegation.SenderMXID,
+		Kind: ControlContinuation, Slot: 3, Payload: []byte("sensitive answer"), Authorized: true,
+	}
+	admission := testAdmission("txn-control-replay-answer", ledgerEpoch.Add(3*time.Second))
+	admission.ControlCapacity = 8
+	admission.Controls = []NewControl{control}
+	result := mustAdmit(t, store, admission)
+	if len(result.InsertedControlIDs) != 1 {
+		t.Fatalf("initial control admission = %+v", result)
+	}
+	claimed, found, err := store.ClaimControl(t.Context(), job.LeaseToken(), ledgerEpoch.Add(4*time.Second))
+	if err != nil || !found {
+		t.Fatalf("claim control = (%+v, %t, %v)", claimed, found, err)
+	}
+	if err := store.TransitionControl(t.Context(), ControlTransitionRequest{
+		Lease: job.LeaseToken(), ControlID: claimed.ControlID, From: ControlPrepared,
+		To: ControlApplied, At: ledgerEpoch.Add(5 * time.Second),
+	}); err != nil {
+		t.Fatalf("apply control: %v", err)
+	}
+	replay := testAdmission("txn-control-replay-redelivery", ledgerEpoch.Add(6*time.Second))
+	replay.ControlCapacity = 8
+	replay.Controls = []NewControl{control}
+	result = mustAdmit(t, store, replay)
+	if len(result.ExistingControlIDs) != 1 || result.ExistingControlIDs[0] != claimed.ControlID {
+		t.Fatalf("terminal control replay = %+v", result)
+	}
+	changed := control
+	changed.Payload = []byte("changed answer")
+	conflict := testAdmission("txn-control-replay-conflict", ledgerEpoch.Add(7*time.Second))
+	conflict.ControlCapacity = 8
+	conflict.Controls = []NewControl{changed}
+	if _, err := store.AdmitTransaction(t.Context(), conflict); !errors.Is(err, ErrControlConflict) {
+		t.Fatalf("changed terminal control replay error = %v, want ErrControlConflict", err)
+	}
+}
+
+func TestMemoryDurableControlAuthorizationBoundsAndPlannedSlots(t *testing.T) {
+	store := NewMemory()
+	mustAdmit(t, store, testAdmission(
+		"txn-control-bounds", ledgerEpoch, testDelegation("$bounded", "agent", "!room"),
+	))
+	job := mustClaim(t, store, "worker", ledgerEpoch)
+	if err := store.RecordMatrixEvent(t.Context(), MatrixEventRequest{
+		Lease: job.LeaseToken(), At: ledgerEpoch.Add(time.Second),
+		Stage: MatrixEventPlaceholder, EventID: "$bounded-placeholder",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	deniedAdmission := testAdmission("txn-wrong-sender", ledgerEpoch.Add(2*time.Second))
+	deniedAdmission.ControlCapacity = 4
+	deniedAdmission.Controls = []NewControl{{
+		TargetMatrixEventID: "$bounded-placeholder", SourceMatrixEventID: "$wrong-answer",
+		RoomID: "!room", SenderMXID: "@mallory:example.test", Kind: ControlContinuation,
+		Authorized: false, ErrorCode: "control_sender_rejected",
+	}}
+	result := mustAdmit(t, store, deniedAdmission)
+	if len(result.InsertedControlIDs) != 1 {
+		t.Fatalf("denied control admission = %+v", result)
+	}
+	controls, _ := store.Controls(t.Context(), job.JobID)
+	if len(controls) != 1 || controls[0].State != ControlDenied ||
+		controls[0].ErrorCode != "control_sender_rejected" || len(controls[0].Payload) != 0 {
+		t.Fatalf("denied control = %+v", controls)
+	}
+
+	fullAdmission := testAdmission("txn-control-full", ledgerEpoch.Add(3*time.Second))
+	fullAdmission.ControlCapacity = 4
+	fullAdmission.Controls = []NewControl{{
+		TargetMatrixEventID: "$bounded-placeholder", SourceMatrixEventID: "$over-capacity",
+		RoomID: "!room", SenderMXID: "@alice:example.test", Kind: ControlCancel, Authorized: true,
+	}}
+	result = mustAdmit(t, store, fullAdmission)
+	if len(result.InsertedControlIDs) != 1 || len(result.UnmatchedControlIDs) != 0 {
+		t.Fatalf("authorized control admission after denied evidence = %+v", result)
+	}
+
+	duplicateDenied := testAdmission("txn-wrong-sender-duplicate", ledgerEpoch.Add(3500*time.Millisecond))
+	duplicateDenied.ControlCapacity = 4
+	duplicateDenied.Controls = []NewControl{{
+		TargetMatrixEventID: "$bounded-placeholder", SourceMatrixEventID: "$wrong-answer-duplicate",
+		RoomID: "!room", SenderMXID: "@eve:example.test", Kind: ControlContinuation,
+		Authorized: false, ErrorCode: "control_sender_rejected",
+	}}
+	result = mustAdmit(t, store, duplicateDenied)
+	if len(result.UnmatchedControlIDs) != 1 || len(result.InsertedControlIDs) != 0 {
+		t.Fatalf("duplicate denied control admission = %+v", result)
+	}
+
+	planned, err := store.PlanControl(t.Context(), PlanControlRequest{
+		Lease: job.LeaseToken(), At: ledgerEpoch.Add(4 * time.Second), Kind: ControlProgress,
+		Slot: 0, Capacity: 4, Payload: []byte("first"),
+	})
+	if err != nil || string(planned.Payload) != "first" {
+		t.Fatalf("PlanControl first = (%+v, %v)", planned, err)
+	}
+	planned, err = store.PlanControl(t.Context(), PlanControlRequest{
+		Lease: job.LeaseToken(), At: ledgerEpoch.Add(5 * time.Second), Kind: ControlProgress,
+		Slot: 0, Capacity: 4, Payload: []byte("collapsed latest"),
+	})
+	if err != nil || string(planned.Payload) != "collapsed latest" {
+		t.Fatalf("PlanControl collapse = (%+v, %v)", planned, err)
+	}
+}
+
 func TestMemoryTransactionReplayHashAndAtomicTargetAdmission(t *testing.T) {
 	store := NewMemory()
 	first := testDelegation("$one", "agent-a", "!room")
