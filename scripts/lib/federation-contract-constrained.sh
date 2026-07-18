@@ -195,6 +195,7 @@ check_federation_constrained_state_transitions() {
 	awk '/^collect_platform_milestones\(\)/,/^}/' "${DEMO_CLUSTER}" \
 		>"${WORK_DIR}/collect-platform-milestones.sh"
 	(
+		# shellcheck disable=SC1091 # helper fixture is extracted into WORK_DIR at runtime
 		source "${WORK_DIR}/federation-flux.sh"
 		kubectl() {
 			local argument
@@ -238,6 +239,7 @@ check_federation_constrained_state_transitions() {
 		|| fail 'Flux runtime patches do not converge constrained and default profiles in both directions'
 
 	(
+		# shellcheck disable=SC1091 # helper fixture is extracted into WORK_DIR at runtime
 		source "${WORK_DIR}/federation-metrics-server.sh"
 		METRICS_ATTEMPTS="${WORK_DIR}/metrics-attempts"
 		printf '0\n' >"${METRICS_ATTEMPTS}"
@@ -267,6 +269,7 @@ check_federation_constrained_state_transitions() {
 
 	: >"${metrics_events}"
 	(
+		# shellcheck disable=SC1091 # helper fixture is extracted into WORK_DIR at runtime
 		source "${WORK_DIR}/federation-metrics-server.sh"
 		kubectl() {
 			case "$*" in
@@ -289,6 +292,7 @@ check_federation_constrained_state_transitions() {
 
 	local metrics_failure="${WORK_DIR}/metrics-query-failure.txt"
 	if (
+		# shellcheck disable=SC1091 # helper fixture is extracted into WORK_DIR at runtime
 		source "${WORK_DIR}/federation-metrics-server.sh"
 		die() {
 			echo "error: $*" >&2
@@ -334,6 +338,7 @@ check_federation_constrained_state_transitions() {
       "status":{"observedGeneration":2,"conditions":[{"type":"Ready","status":"True"}]}}
   ]}'
 	milestones="$({
+		# shellcheck disable=SC1091 # helper fixture is extracted into WORK_DIR at runtime
 		source "${WORK_DIR}/collect-platform-milestones.sh"
 		collect_platform_milestones "${expected_revision}" "${kustomizations}" "${helmreleases}"
 	})"
