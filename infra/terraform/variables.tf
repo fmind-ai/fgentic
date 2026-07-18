@@ -28,6 +28,11 @@ variable "network_name" {
   type        = string
   default     = "fgentic-vpc"
   description = "Name of the VPC network"
+
+  validation {
+    condition     = length(var.network_name) <= 56 && can(regex("^[a-z]([a-z0-9-]*[a-z0-9])?$", var.network_name))
+    error_message = "network_name must be 1-56 characters, use only lowercase letters, numbers, and hyphens, start with a letter, and end with a letter or number so derived resource names remain valid."
+  }
 }
 
 variable "cluster_name" {
