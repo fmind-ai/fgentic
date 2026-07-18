@@ -38,6 +38,34 @@ run "accepts_narrow_ipv4_network" {
   }
 }
 
+run "accepts_gke_private_cluster_network_limit" {
+  command = plan
+
+  variables {
+    master_authorized_networks = [
+      for index in range(100) : {
+        cidr_block   = "203.0.113.${index}/32"
+        display_name = "operator-${index}"
+      }
+    ]
+  }
+}
+
+run "rejects_more_than_gke_private_cluster_network_limit" {
+  command = plan
+
+  variables {
+    master_authorized_networks = [
+      for index in range(101) : {
+        cidr_block   = "203.0.113.${index}/32"
+        display_name = "operator-${index}"
+      }
+    ]
+  }
+
+  expect_failures = [var.master_authorized_networks]
+}
+
 run "rejects_ipv4_network_broader_than_limit" {
   command = plan
 
