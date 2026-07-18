@@ -22,11 +22,13 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	vocab "github.com/go-ap/activitypub"
 	"github.com/prometheus/client_golang/prometheus"
 
+	"github.com/fmind-ai/activitypub-agent-gateway/internal/activitystate"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/budget"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/delivery"
 	"github.com/fmind-ai/activitypub-agent-gateway/internal/httpsig"
@@ -36,7 +38,7 @@ import (
 )
 
 // maxInboxBytes bounds an untrusted inbound activity body.
-const maxInboxBytes = 1 << 20 // 1 MiB
+const maxInboxBytes = activitystate.MaxBodyBytes
 
 // Delegator sends a text prompt to a local kagent agent over A2A and returns its reply text. The
 // gateway depends on this narrow interface so the wire client and tests stay decoupled.
@@ -58,6 +60,9 @@ type Gateway struct {
 	signer     *integrity.Signer // FEP-8b32 object-integrity signer; nil serves replies without a proof
 	identity   *identity.Signer  // FEP-c390 P-256 identity anchor; nil serves no cross-transport binding
 	a2aBaseURL string            // public base of the advertised A2A endpoint (defaults to baseURL)
+	inboxState activitystate.Store
+	inboxWake  chan struct{}
+	inboxAsync atomic.Bool
 
 	// Outbound federation (issues #217, #219); nil unless UseDelivery is called.
 	groups             *GroupRegistry
@@ -158,7 +163,22 @@ func New(baseURL, serverName string, registry *Registry, delegator Delegator, re
 		log:        log,
 		now:        func() time.Time { return time.Now().UTC() },
 		a2aBaseURL: strings.TrimRight(baseURL, "/"),
+		inboxState: activitystate.NewMemory(7*24*time.Hour, 32),
+		inboxWake:  make(chan struct{}, 1),
 	}, nil
+}
+
+// UseActivityStore replaces the dev-only in-memory inbox ledger. Production installs Postgres
+// before Run starts so accepted work and duplicate outcomes survive a process restart.
+func (g *Gateway) UseActivityStore(store activitystate.Store) error {
+	if store == nil {
+		return errors.New("gateway: activity store is required")
+	}
+	if g.inboxAsync.Load() {
+		return errors.New("gateway: activity store cannot change after inbox processing starts")
+	}
+	g.inboxState = store
+	return nil
 }
 
 // Handler wires the public AP routes plus health probes.
@@ -170,6 +190,7 @@ func (g *Gateway) Handler() http.Handler {
 	mux.HandleFunc("GET /ap/instance", g.handleInstanceActor)
 	mux.HandleFunc("GET /ap/agents/{ghost}", g.handleActor)
 	mux.HandleFunc("POST /ap/agents/{ghost}/inbox", g.handleInbox)
+	mux.HandleFunc("GET /ap/inbox-status/{token}", g.handleActivityStatus)
 	mux.HandleFunc("GET /ap/agents/{ghost}/outbox", g.handleOutbox)
 	mux.HandleFunc("GET /ap/agents/{ghost}/activities/{seq}", g.handleActivity)
 	mux.HandleFunc("GET /ap/agents/{ghost}/agent-card.json", g.handleAgentCard)
@@ -306,8 +327,17 @@ func (g *Gateway) handleActivity(w http.ResponseWriter, r *http.Request) {
 	id := g.actorID(ghost) + vocab.IRI("/activities/"+r.PathValue("seq"))
 	raw, ok := g.store.lookup(id)
 	if !ok {
-		http.Error(w, "no such activity", http.StatusNotFound)
-		return
+		record, err := g.inboxState.LookupResult(r.Context(), string(id))
+		if errors.Is(err, activitystate.ErrNotFound) {
+			http.Error(w, "no such activity", http.StatusNotFound)
+			return
+		}
+		if err != nil {
+			g.log.Error("lookup durable activity", "ghost", ghost, "error", err)
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		raw = record.Result
 	}
 	w.Header().Set("Content-Type", contentType)
 	_, _ = w.Write(raw)
@@ -316,7 +346,7 @@ func (g *Gateway) handleActivity(w http.ResponseWriter, r *http.Request) {
 // handleInbox turns a Create(Note) mention into one A2A delegation and publishes the reply.
 func (g *Gateway) handleInbox(w http.ResponseWriter, r *http.Request) {
 	ghost := r.PathValue("ghost")
-	ref, served := g.registry.Lookup(ghost)
+	_, served := g.registry.Lookup(ghost)
 	if !served {
 		http.Error(w, "no such agent", http.StatusNotFound)
 		return
@@ -345,6 +375,11 @@ func (g *Gateway) handleInbox(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	g.metrics.inbound.WithLabelValues(ghost, "create").Inc()
+	if err := validateActivityID(activity.ID); err != nil {
+		g.metrics.rejected.WithLabelValues("inbox_activity_id").Inc()
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
 
 	actorIRI := activity.Actor.GetLink()
 	if actorIRI == "" {
@@ -363,12 +398,7 @@ func (g *Gateway) handleInbox(w http.ResponseWriter, r *http.Request) {
 	// actor's key, and that actor must be on the git-reloadable allowlist — enforced BEFORE any
 	// A2A call so an unsigned or off-allowlist remote never reaches an agent (docs/fediverse.md §3).
 	if g.border != nil {
-		decision := g.border.Authorize(r.Context(), r, body, string(actorIRI))
-		// Reservation is admission accounting, not consumption: record the outcome (never a token
-		// count, never a per-actor label) whenever the budget gate ran.
-		if decision.BudgetOutcome != "" {
-			g.metrics.reservations.WithLabelValues(ghost, decision.BudgetOutcome).Inc()
-		}
+		decision := g.border.VerifyDelegation(r.Context(), r, body, string(actorIRI))
 		if !decision.Allowed {
 			g.metrics.rejected.WithLabelValues("border_" + decision.Reason).Inc()
 			// Content-free evidence: reason + policy digest, never the actor URI or note content.
@@ -382,44 +412,46 @@ func (g *Gateway) handleInbox(w http.ResponseWriter, r *http.Request) {
 	// or relayed delivery from spending an LLM invocation.
 	if !g.mentions(ghost, note) {
 		g.metrics.delegations.WithLabelValues(ghost, "not_mentioned").Inc()
-		w.WriteHeader(http.StatusAccepted)
+		record, err := g.rememberIgnored(r.Context(), string(activity.ID), ghost, string(actorIRI), body)
+		if err != nil {
+			if errors.Is(err, activitystate.ErrConflict) {
+				g.metrics.rejected.WithLabelValues("activity_id_conflict").Inc()
+				http.Error(w, "activity id conflicts with prior delivery", http.StatusConflict)
+				return
+			}
+			g.log.Error("record ignored activity", "ghost", ghost, "error", err)
+			http.Error(w, "temporarily unavailable", http.StatusServiceUnavailable)
+			return
+		}
+		if g.inboxAsync.Load() {
+			g.writeAsyncAccepted(w, record)
+		} else {
+			writeAcceptedRecord(w, record)
+		}
 		return
 	}
 
-	contextID := deriveContextID(ghost, string(actorIRI), threadRoot(note))
-	network := actorDomain(string(actorIRI))
-	ctx := a2aAttribution(r.Context(), string(actorIRI), network)
-	reply, err := g.delegator.Call(ctx, ref.Namespace, ref.Name, content, contextID)
-	if err != nil {
-		g.metrics.delegations.WithLabelValues(ghost, "error").Inc()
-		g.auditDelegation(ghost, string(actorIRI), network, contextID, "error")
-		g.log.Error("a2a delegation failed", "ghost", ghost, "actor", actorIRI, "error", err)
-		http.Error(w, "delegation failed", http.StatusBadGateway)
-		return
+	job := activitystate.Job{
+		ActivityID: string(activity.ID),
+		Route:      activitystate.RouteAgent,
+		Target:     ghost,
+		ActorURI:   string(actorIRI),
+		Body:       body,
 	}
-	g.auditDelegation(ghost, string(actorIRI), network, contextID, "ok")
-	g.metrics.delegations.WithLabelValues(ghost, "ok").Inc()
-
-	activityID, err := g.publishReply(ghost, actorIRI, note.ID, reply)
-	if err != nil {
-		g.log.Error("publish reply", "ghost", ghost, "error", err)
-		http.Error(w, "internal error", http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Location", string(activityID))
-	w.WriteHeader(http.StatusAccepted)
+	g.acceptActivity(w, r, job)
 }
 
 // publishReply mints, signs, and stores a Create(Note) reply attributed to the ghost's actor,
 // inReplyTo the triggering object, returning the activity IRI. Per-reply bot/automated labeling
 // beyond Service-actor typing lands with the attribution twin (docs/fediverse.md §3).
-func (g *Gateway) publishReply(ghost string, actorIRI, inReplyTo vocab.IRI, text string) (vocab.IRI, error) {
-	seq := g.store.next()
+func (g *Gateway) publishReply(activityID, ghost string, actorIRI, inReplyTo vocab.IRI, text string) (vocab.IRI, json.RawMessage, error) {
+	digest := sha256.Sum256([]byte(activityID))
+	seq := hex.EncodeToString(digest[:16])
 	actor := g.actorID(ghost)
 	now := g.now()
 
 	note := vocab.ObjectNew(vocab.NoteType)
-	note.ID = vocab.IRI(fmt.Sprintf("%s/objects/%d", actor, seq))
+	note.ID = vocab.IRI(fmt.Sprintf("%s/objects/%s", actor, seq))
 	note.AttributedTo = actor
 	note.Content = vocab.NaturalLanguageValuesNew(vocab.DefaultLangRef(text))
 	note.To = vocab.ItemCollection{actorIRI}
@@ -428,18 +460,21 @@ func (g *Gateway) publishReply(ghost string, actorIRI, inReplyTo vocab.IRI, text
 		note.InReplyTo = inReplyTo
 	}
 
-	activityID := vocab.IRI(fmt.Sprintf("%s/activities/%d", actor, seq))
-	create := vocab.CreateNew(activityID, note)
+	replyID := vocab.IRI(fmt.Sprintf("%s/activities/%s", actor, seq))
+	create := vocab.CreateNew(replyID, note)
 	create.Actor = actor
 	create.To = vocab.ItemCollection{actorIRI}
 	create.Published = now
 
 	raw, err := g.marshalReply(create, string(actor))
 	if err != nil {
-		return "", err
+		return "", nil, err
 	}
-	g.store.append(ghost, activityID, raw)
-	return activityID, nil
+	if len(raw) > activitystate.MaxResultBytes {
+		return "", nil, fmt.Errorf("reply exceeds durable result limit of %d bytes", activitystate.MaxResultBytes)
+	}
+	g.store.append(ghost, replyID, raw)
+	return replyID, raw, nil
 }
 
 // marshalReply serializes a reply activity, attaching a FEP-8b32 object integrity proof when signing

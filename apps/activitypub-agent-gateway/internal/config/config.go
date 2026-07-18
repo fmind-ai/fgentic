@@ -103,6 +103,13 @@ type Config struct {
 	StatusWindow       time.Duration `env:"STATUS_WINDOW" envDefault:"1m"`
 	StatusMaxPerWindow int           `env:"STATUS_MAX_PER_WINDOW" envDefault:"6"`
 
+	// DatabaseURL backs the durable inbox activity ledger. Empty is permitted only for local-only
+	// development with the federation policy border disabled. ActivityRetention bounds terminal
+	// outcomes; ActivityQueueCapacity atomically caps pending + running bodies before budget admission.
+	DatabaseURL           string        `env:"DATABASE_URL"`
+	ActivityRetention     time.Duration `env:"ACTIVITY_RETENTION" envDefault:"168h"`
+	ActivityQueueCapacity int           `env:"ACTIVITY_QUEUE_CAPACITY" envDefault:"32"`
+
 	// RequestTimeout bounds one synchronous A2A SendMessage transport round trip. TaskTimeout
 	// bounds the whole delegation when the agent returns a long-running Task polled via GetTask.
 	RequestTimeout time.Duration `env:"REQUEST_TIMEOUT" envDefault:"60s"`
@@ -183,6 +190,15 @@ func (c Config) validate() error {
 	}
 	if c.SignatureMaxSkew <= 0 {
 		return fmt.Errorf("SIGNATURE_MAX_SKEW must be positive")
+	}
+	if c.ActivityRetention <= 0 {
+		return fmt.Errorf("ACTIVITY_RETENTION must be positive")
+	}
+	if c.ActivityQueueCapacity < 1 {
+		return fmt.Errorf("ACTIVITY_QUEUE_CAPACITY must be at least 1")
+	}
+	if c.PolicyPath != "" && c.DatabaseURL == "" {
+		return fmt.Errorf("POLICY_PATH needs DATABASE_URL (public federation requires durable activity dedup)")
 	}
 	if c.IntegrityKeyFragment == "" || strings.ContainsAny(c.IntegrityKeyFragment, "#/ ") {
 		return fmt.Errorf("INTEGRITY_KEY_FRAGMENT %q must be a non-empty fragment without '#', '/', or spaces", c.IntegrityKeyFragment)
