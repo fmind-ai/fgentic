@@ -13,10 +13,6 @@ from mkdocs.structure.pages import Page
 
 _DOCS_ROOT = Path(__file__).resolve().parent
 _REPO_ROOT = _DOCS_ROOT.parent
-_FENCE_DELIMITER = re.compile(
-    r"^(?:[ \t]*>[ \t]?)*[ \t]*(?P<fence>`{3,}|~{3,})(?P<tail>[^\n]*)",
-)
-_INDENTED_CODE = re.compile(r"^(?:[ \t]*>[ \t]?)*(?: {4}|\t)")
 _HTML_CODE_BLOCK = re.compile(
     r"<(?P<tag>pre|code)\b[^>]*>.*?</(?P=tag)>\s*",
     flags=re.IGNORECASE | re.DOTALL,
@@ -32,6 +28,40 @@ _MARKDOWN_LINK = re.compile(
 def _relative_docs_target(target: Path, source_directory: Path) -> str:
     """Return a POSIX path from the current page to another documentation file."""
     return Path(os.path.relpath(target, source_directory)).as_posix()
+
+
+def _content_after_blockquotes(line: str) -> str:
+    """Return line content after consuming Markdown blockquote prefixes once."""
+    cursor = 0
+    while cursor < len(line):
+        marker = cursor
+        while marker < len(line) and line[marker] in " \t":
+            marker += 1
+        if marker >= len(line) or line[marker] != ">":
+            break
+        cursor = marker + 1
+        if cursor < len(line) and line[cursor] in " \t":
+            cursor += 1
+    return line[cursor:]
+
+
+def _fence_delimiter(line: str) -> tuple[str, str] | None:
+    """Parse a fenced-code delimiter after optional blockquote prefixes."""
+    content = _content_after_blockquotes(line).lstrip(" \t")
+    if not content or content[0] not in "`~":
+        return None
+    fence_character = content[0]
+    fence_length = 1
+    while fence_length < len(content) and content[fence_length] == fence_character:
+        fence_length += 1
+    if fence_length < 3:
+        return None
+    return content[:fence_length], content[fence_length:].rstrip("\r\n")
+
+
+def _is_indented_code(line: str) -> bool:
+    """Recognize indented code at the root or inside nested blockquotes."""
+    return _content_after_blockquotes(line).startswith(("    ", "\t"))
 
 
 def _rewrite_target(target: str, source_path: Path) -> str:
@@ -67,7 +97,7 @@ def _rewrite_links_in_prose(markdown: str, source_path: Path) -> str:
 
     rendered: list[str] = []
     for line in markdown.splitlines(keepends=True):
-        if _INDENTED_CODE.match(line):
+        if _is_indented_code(line):
             rendered.append(line)
             continue
 
@@ -107,19 +137,19 @@ def _rewrite_links(markdown: str, source_path: Path) -> str:
         prose.clear()
 
     for line in markdown.splitlines(keepends=True):
-        delimiter = _FENCE_DELIMITER.match(line)
+        delimiter = _fence_delimiter(line)
         if fence_character:
             rendered.append(line)
             if delimiter:
-                fence = delimiter.group("fence")
-                if fence[0] == fence_character and len(fence) >= fence_length and not delimiter.group("tail").strip():
+                fence, tail = delimiter
+                if fence[0] == fence_character and len(fence) >= fence_length and not tail.strip():
                     fence_character = ""
                     fence_length = 0
             continue
         if delimiter:
             flush_prose()
             rendered.append(line)
-            fence = delimiter.group("fence")
+            fence, _ = delimiter
             fence_character = fence[0]
             fence_length = len(fence)
             continue

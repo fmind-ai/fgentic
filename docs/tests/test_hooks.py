@@ -61,6 +61,17 @@ class RewriteLinksTest(TestCase):
 
         self.assertEqual(_rewrite_links(markdown, Path("site.md")), markdown)
 
+    def test_handles_long_blockquote_prefix_in_linear_pass(self) -> None:
+        prefix = " \t>" * 5_000
+        markdown = f"{prefix} [workflow](../.github/workflows/docs.yml)\n"
+
+        rewritten = _rewrite_links(markdown, Path("site.md"))
+
+        self.assertTrue(rewritten.startswith(prefix))
+        self.assertTrue(
+            rewritten.endswith("[workflow](https://github.com/fmind-ai/fgentic/blob/main/.github/workflows/docs.yml)\n")
+        )
+
     def test_preserves_raw_html_code(self) -> None:
         markdown = "<pre><code>[workflow](../.github/workflows/docs.yml)</code></pre>"
 
