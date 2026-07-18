@@ -92,7 +92,9 @@ apply_secret() {
 		case "${argument}" in
 			--from-literal=* | --from-file=*)
 				[[ "${key}" =~ ^[-._a-zA-Z0-9]+$ ]] || die "invalid Secret data key"
-				encoded="$(printf '%s' "${value}" | base64 | tr -d '\r\n')"
+				encoded="$(printf '%s' "${value}" | base64)"
+				encoded="${encoded//$'\r'/}"
+				encoded="${encoded//$'\n'/}"
 				data="${data}${separator}\"${key}\":\"${encoded}\""
 				separator=,
 				;;
@@ -124,45 +126,45 @@ create_ephemeral_secrets() {
 		return
 	fi
 
-	if ! kubectl --namespace flux-system get secret fgentic-demo-bootstrap >/dev/null 2>&1; then
-		apply_secret flux-system fgentic-demo-bootstrap \
-			--from-literal=pg-synapse="$(random_hex 24)" \
-			--from-literal=pg-mas="$(random_hex 24)" \
-			--from-literal=pg-bridge="$(random_hex 24)" \
-			--from-literal=pg-kagent="$(random_hex 24)" \
-			--from-literal=pg-knowledge-owner="$(random_hex 24)" \
-			--from-literal=pg-knowledge-retrieval="$(random_hex 24)" \
-			--from-literal=as-token="$(random_hex 32)" \
-			--from-literal=hs-token="$(random_hex 32)" \
-			--from-literal=a2a-key="$(random_hex 32)" \
-			--from-literal=mcp-platform-helper-key="$(random_hex 32)" \
-			--from-literal=mas-admin-client="$(random_hex 32)" \
-			--from-literal=demo-password="$(random_hex 24)"
-	fi
-
 	# A retained demo cluster may predate a newly introduced credential. Merge only missing keys so
 	# upgrades self-heal without rotating any established identity or dropping unknown bootstrap data.
-	local bootstrap_json key key_spec value_length
+	local bootstrap_json generated_value key key_spec patch_data patch_document value_length
+	local -a bootstrap_arguments=()
+	local -a bootstrap_key_specs=(
+		pg-synapse:24 pg-mas:24 pg-bridge:24 pg-kagent:24
+		pg-knowledge-owner:24 pg-knowledge-retrieval:24
+		as-token:32 hs-token:32 a2a-key:32 mcp-platform-helper-key:32
+		mas-admin-client:32 demo-password:24
+	)
 	local -a missing_bootstrap_arguments=()
+	if ! kubectl --namespace flux-system get secret fgentic-demo-bootstrap >/dev/null 2>&1; then
+		for key_spec in "${bootstrap_key_specs[@]}"; do
+			key="${key_spec%%:*}"
+			value_length="${key_spec##*:}"
+			generated_value="$(random_hex "${value_length}")"
+			bootstrap_arguments+=("--from-literal=${key}=${generated_value}")
+		done
+		apply_secret flux-system fgentic-demo-bootstrap "${bootstrap_arguments[@]}"
+	fi
+
 	bootstrap_json="$(kubectl --namespace flux-system get secret fgentic-demo-bootstrap --output json)"
-	for key_spec in \
-		pg-synapse:24 pg-mas:24 pg-bridge:24 pg-kagent:24 \
-		pg-knowledge-owner:24 pg-knowledge-retrieval:24 \
-		as-token:32 hs-token:32 a2a-key:32 mcp-platform-helper-key:32 \
-		mas-admin-client:32 demo-password:24; do
+	for key_spec in "${bootstrap_key_specs[@]}"; do
 		key="${key_spec%%:*}"
 		value_length="${key_spec##*:}"
-		if [ -z "$(jq -r --arg key "${key}" '.data[$key] // ""' <<<"${bootstrap_json}")" ]; then
-			missing_bootstrap_arguments+=("--from-literal=${key}=$(random_hex "${value_length}")")
+		generated_value="$(jq -r --arg key "${key}" '.data[$key] // ""' <<<"${bootstrap_json}")"
+		if [ -z "${generated_value}" ]; then
+			generated_value="$(random_hex "${value_length}")"
+			missing_bootstrap_arguments+=("--from-literal=${key}=${generated_value}")
 		fi
 	done
 	if [ "${#missing_bootstrap_arguments[@]}" -gt 0 ]; then
-		kubectl --namespace flux-system create secret generic fgentic-demo-bootstrap \
-			"${missing_bootstrap_arguments[@]}" --dry-run=client --output=json \
-			| jq --compact-output '{data: .data}' \
+		patch_document="$(kubectl --namespace flux-system create secret generic \
+			fgentic-demo-bootstrap "${missing_bootstrap_arguments[@]}" \
+			--dry-run=client --output=json)"
+		patch_data="$(jq --compact-output '{data: .data}' <<<"${patch_document}")"
+		printf '%s\n' "${patch_data}" \
 			| kubectl --namespace flux-system patch secret fgentic-demo-bootstrap \
-				--type=merge --patch-file /dev/stdin \
-				>/dev/null
+				--type=merge --patch-file /dev/stdin >/dev/null
 	fi
 	bootstrap_json=""
 
@@ -226,11 +228,11 @@ EOF
 
 	apply_a2a_secrets "${A2A_KEY}"
 
-	local mcp_callers
-	mcp_callers="$(jq --null-input --compact-output --arg key "${MCP_PLATFORM_HELPER_KEY}" \
-		'{"platform-helper": {key: $key, metadata: {agent: "platform-helper"}}}')"
+	local mcp_caller
+	mcp_caller="$(jq --null-input --compact-output --arg key "${MCP_PLATFORM_HELPER_KEY}" \
+		'{key: $key, metadata: {agent: "platform-helper"}}')"
 	apply_secret agentgateway-system mcp-agent-callers \
-		--from-literal=platform-helper="$(jq -cer '."platform-helper"' <<<"${mcp_callers}")"
+		--from-literal=platform-helper="${mcp_caller}"
 	apply_secret kagent platform-helper-mcp-credential \
 		--from-literal=authorization="Bearer ${MCP_PLATFORM_HELPER_KEY}"
 
