@@ -31,6 +31,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 
 # Runbooks & evidence
 
+- [Adopter Case Studies](adopters/) - published adopter evidence and the one-page contribution template
 - [Agent Development Reference](agent-reference.md) - detailed status, layout, runtime protocols, and conventions linked from the concise root agent instructions
 - [Production Installation](production.md) - Flux-reconciled production path with SOPS secrets and acceptance gates
 - [Day-2 Operations Handbook](operations-handbook.md) - evidence-bound monitoring, scaling, recovery, incident, and upgrade procedures
