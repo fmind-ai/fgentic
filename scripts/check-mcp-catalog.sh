@@ -119,33 +119,36 @@ resources_json="${tmp_dir}/resources.json"
     ' "${kagent_render}"
 } | jq -s . >"${resources_json}"
 
-[ "$(jq 'length' "${resources_json}")" -gt 0 ] || fail "rendered profiles contain no MCP resources"
+resource_count="$(jq 'length' "${resources_json}")"
+[ "${resource_count}" -gt 0 ] || fail "rendered profiles contain no MCP resources"
+resource_rows="$(jq -r '.[] | [.kind, .name, .catalog] | @tsv' "${resources_json}")"
 while IFS=$'\t' read -r kind name catalog_id; do
 	[ -n "${catalog_id}" ] || fail "${kind}/${name} has no ${CATALOG_ANNOTATION} annotation"
 	jq -e --arg id "${catalog_id}" '
       any(.[]; .["_meta"]["io.modelcontextprotocol.registry/publisher-provided"].fgentic.id == $id)
     ' "${catalog_json}" >/dev/null || fail "${kind}/${name} references unknown catalog entry ${catalog_id}"
-done < <(jq -r '.[] | [.kind, .name, .catalog] | @tsv' "${resources_json}")
+done <<<"${resource_rows}"
 
+catalog_ids="$(jq -r '.[]._meta["io.modelcontextprotocol.registry/publisher-provided"].fgentic.id' \
+	"${catalog_json}" | sort)"
 while IFS= read -r catalog_id; do
 	for mapping in 'AgentgatewayBackend:agentgatewayBackends' 'RemoteMCPServer:remoteMCPServers'; do
 		kind="${mapping%%:*}"
 		field="${mapping#*:}"
-		expected="$({
+		expected="$(
 			jq -r --arg id "${catalog_id}" --arg field "${field}" '
             .[] | select(.["_meta"]["io.modelcontextprotocol.registry/publisher-provided"].fgentic.id == $id) |
             .["_meta"]["io.modelcontextprotocol.registry/publisher-provided"].fgentic.resources[$field][]
           ' "${catalog_json}" | sort
-		})"
-		actual="$({
+		)"
+		actual="$(
 			jq -r --arg id "${catalog_id}" --arg kind "${kind}" '
             .[] | select(.catalog == $id and .kind == $kind) | .name
           ' "${resources_json}" | sort
-		})"
+		)"
 		[ "${actual}" = "${expected}" ] \
 			|| fail "${catalog_id} ${kind} coverage differs: got '${actual}', want '${expected}'"
 	done
-done < <(jq -r '.[]._meta["io.modelcontextprotocol.registry/publisher-provided"].fgentic.id' \
-	"${catalog_json}" | sort)
+done <<<"${catalog_ids}"
 
 echo "MCP catalog contract passed (${#catalog_files[@]} vetted server(s))"

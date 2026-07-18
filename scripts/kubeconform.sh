@@ -141,10 +141,15 @@ if [ -d apps/activitypub-agent-gateway/chart ]; then
 		--set metrics.podMonitor.enabled=true \
 		| "${KUBECONFORM[@]}"
 	# Schema-validate its self-contained deploy unit (Namespace + HelmRelease) through Flux envsubst.
+	activitypub_manifests="$(find apps/activitypub-agent-gateway/deploy -type f -name '*.yaml' ! -name 'kustomization.yaml' | sort)"
+	[[ -n "${activitypub_manifests}" ]] || {
+		echo "error: ActivityPub deploy unit contains no schema-validation manifests" >&2
+		exit 1
+	}
 	while IFS= read -r manifest; do
 		flux envsubst --strict <"${manifest}"
 		echo "---"
-	done < <(find apps/activitypub-agent-gateway/deploy -type f -name '*.yaml' ! -name 'kustomization.yaml') \
+	done <<<"${activitypub_manifests}" \
 		| "${KUBECONFORM[@]}"
 	# Validate the namespace-neutral federation-border policy Component (issue #211) renders.
 	kubectl kustomize apps/activitypub-agent-gateway/component | "${KUBECONFORM[@]}"
