@@ -35,6 +35,15 @@ spec:
       ports:
         - protocol: TCP
           port: 8080
+    # Metrics and health remain on Keycloak's separate management listener; Prometheus receives
+    # only that port and cannot reach the public OIDC/admin listener through this peer rule.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9000
     # Keep single-namespace JGroups traffic scoped to Keycloak itself if replicas are raised.
     - from:
         - podSelector:
