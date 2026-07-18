@@ -63,6 +63,9 @@ nav:
   - Home: index.md
   - Adoption:
       - Adopter decision brief: adopter-decision-brief.md
+      - Adopter case studies:
+          - Overview: adopters/index.md
+          - One-page template: adopters/template.md
       - Inbound migration: migration-guide.md
       - Open agentic stack: open-stack.md
       - Incumbent chat coexistence: chat-coexistence.md
