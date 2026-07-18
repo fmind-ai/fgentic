@@ -6,4 +6,5 @@ resources:
   - cluster.yaml
   - databases.yaml
   - knowledge-schema-v1.yaml
+  - networkpolicy.yaml
   - scheduledbackup.yaml

@@ -1,0 +1,154 @@
+# CloudNativePG exposes PostgreSQL, instance-manager status, and metrics on every instance Pod.
+# Keep those listeners reachable only by their exact platform consumers. PostgreSQL TLS, HBA,
+# and role separation remain independent application-layer controls; this policy is the network
+# boundary that prevents unrelated Pods from reaching the listeners at all.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: platform-pg-ingress
+  namespace: postgres
+spec:
+  podSelector:
+    matchLabels:
+      cnpg.io/cluster: platform-pg
+  policyTypes:
+    - Ingress
+  ingress:
+    # The operator reconciles roles/databases over PostgreSQL and manages each instance through
+    # the authenticated status/control listener. Its chart identity is pinned in infra/flux.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: cnpg-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: cloudnative-pg
+              app.kubernetes.io/name: cloudnative-pg
+      ports:
+        - protocol: TCP
+          port: 5432
+        - protocol: TCP
+          port: 8000
+    # Replicas connect to the primary on PostgreSQL's listener. The same-cluster selector keeps
+    # this valid when the production-ha Component raises instances from one to three.
+    - from:
+        - podSelector:
+            matchLabels:
+              cnpg.io/cluster: platform-pg
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Normal ESS profile: Synapse and Matrix Authentication Service have separate scoped roles.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix
+          podSelector:
+            matchLabels:
+              k8s.element.io/synapse-instance: ess-synapse
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: ess-matrix-authentication-service
+              app.kubernetes.io/name: matrix-authentication-service
+      ports:
+        - protocol: TCP
+          port: 5432
+    # The provider-free federation profile adds two namespace-isolated Synapse releases. Release
+    # names stay fixed to `ess`, so their immutable workload selector matches the normal profile.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix-b
+          podSelector:
+            matchLabels:
+              k8s.element.io/synapse-instance: ess-synapse
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix-c
+          podSelector:
+            matchLabels:
+              k8s.element.io/synapse-instance: ess-synapse
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Core application clients each use a distinct database and login role.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: bridge
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: matrix-a2a-bridge
+              app.kubernetes.io/name: matrix-a2a-bridge
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kagent
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/component: controller
+              app.kubernetes.io/instance: kagent
+              app.kubernetes.io/name: kagent
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: keycloak
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: keycloak
+              app.kubernetes.io/name: keycloak
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Knowledge migrations and ingestion jobs use separate owner, DML-only, and cache roles.
+    - from:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: knowledge-schema
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: knowledge
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: knowledge-ingestion
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: knowledge
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: knowledge-ingestion-cache-gc
+      ports:
+        - protocol: TCP
+          port: 5432
+    # Disabled-by-default mautrix profiles share one restricted namespace but retain exact release
+    # identities and separate database roles. Absent profiles do not broaden another workload.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: bridges
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: mautrix-slack
+              app.kubernetes.io/name: mautrix-slack
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: bridges
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: mautrix-telegram
+              app.kubernetes.io/name: mautrix-telegram
+      ports:
+        - protocol: TCP
+          port: 5432
+    # The PodMonitor generated by the Cluster targets the unauthenticated metrics listener.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              fgentic.dev/metrics-reader: prometheus
+      ports:
+        - protocol: TCP
+          port: 9187
