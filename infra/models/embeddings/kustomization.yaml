@@ -9,3 +9,38 @@ resources:
   - reranker-helmrelease.yaml
   - service.yaml
   - networkpolicy.yaml
+replacements:
+  # Each loader owns one immutable source pin. Projecting it into the matching Pod template makes
+  # snapshot changes generation-safe without duplicating a revision literal across manifests.
+  - source:
+      group: batch
+      version: v1
+      kind: Job
+      name: bge-m3-model-loader
+      namespace: models
+      fieldPath: spec.template.spec.containers.[name=model-loader].env.[name=MODEL_REVISION].value
+    targets:
+      - select:
+          group: helm.toolkit.fluxcd.io
+          version: v2
+          kind: HelmRelease
+          name: knowledge-embeddings
+          namespace: models
+        fieldPaths:
+          - spec.values.servingEngineSpec.modelSpec.[name=bge-m3].initContainer.env.[name=MODEL_REVISION].value
+  - source:
+      group: batch
+      version: v1
+      kind: Job
+      name: bge-reranker-v2-m3-model-loader
+      namespace: models
+      fieldPath: spec.template.spec.containers.[name=model-loader].env.[name=MODEL_REVISION].value
+    targets:
+      - select:
+          group: helm.toolkit.fluxcd.io
+          version: v2
+          kind: HelmRelease
+          name: knowledge-reranker
+          namespace: models
+        fieldPaths:
+          - spec.values.servingEngineSpec.modelSpec.[name=bge-reranker-v2-m3].initContainer.env.[name=MODEL_REVISION].value
