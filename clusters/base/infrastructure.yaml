@@ -226,6 +226,7 @@ spec:
   timeout: 10m
   dependsOn:
     - name: gateway
+    - name: observability # KeycloakX now renders a ServiceMonitor CR; its CRD must exist first.
     - name: postgres
     - name: platform-secrets
   sourceRef:
