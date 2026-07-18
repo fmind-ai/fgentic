@@ -6,13 +6,14 @@ register_user() {
 	local username="$3"
 	local display_name="$4"
 	local password="$5"
-	local secret nonce mac digest document status registration_token
+	local secret nonce nonce_response mac digest document status registration_token
 	local response="${WORK_DIR}/register-${username}.json"
 
 	secret="$(kubectl --namespace "${namespace}" get secret ess-generated \
 		--output 'go-template={{index .data "SYNAPSE_REGISTRATION_SHARED_SECRET" | base64decode}}')"
-	nonce="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
-		"${matrix_url}/_synapse/admin/v1/register" | jq -er '.nonce')"
+	nonce_response="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
+		"${matrix_url}/_synapse/admin/v1/register")"
+	nonce="$(jq -er '.nonce' <<<"${nonce_response}")"
 	digest="$(printf '%s\0%s\0%s\0%s' "${nonce}" "${username}" "${password}" notadmin \
 		| openssl sha1 -hmac "${secret}")"
 	mac="${digest##* }"
@@ -68,35 +69,40 @@ verify_server() {
 	local server="$1"
 	local matrix_url="https://matrix.${server}"
 	local expected="matrix.${server}:443"
-	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
-		"https://${server}/.well-known/matrix/server" \
-		| jq -e --arg expected "${expected}" '."m.server" == $expected' >/dev/null
-	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
-		"${matrix_url}/_matrix/federation/v1/version" \
-		| jq -e '.server.name | type == "string" and length > 0' >/dev/null
-	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
-		"${matrix_url}/_matrix/key/v2/server" \
-		| jq -e --arg server "${server}" '.server_name == $server' >/dev/null
+	local response
+	response="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
+		"https://${server}/.well-known/matrix/server")"
+	jq -e --arg expected "${expected}" '."m.server" == $expected' <<<"${response}" >/dev/null
+	response="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
+		"${matrix_url}/_matrix/federation/v1/version")"
+	jq -e '.server.name | type == "string" and length > 0' <<<"${response}" >/dev/null
+	response="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
+		"${matrix_url}/_matrix/key/v2/server")"
+	jq -e --arg server "${server}" '.server_name == $server' <<<"${response}" >/dev/null
 }
 
 verify_whitelist() {
 	local matrix_url="$1"
 	local token="$2"
-	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
+	local response
+	response="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 		--header "Authorization: Bearer ${token}" \
-		"${matrix_url}/_synapse/client/v1/config/federation_whitelist" \
-		| jq -e --arg a "${SERVER_A}" --arg b "${SERVER_B}" \
-			'.whitelist_enabled == true and (.whitelist | sort) == ([$a, $b] | sort)' >/dev/null
+		"${matrix_url}/_synapse/client/v1/config/federation_whitelist")"
+	jq -e --arg a "${SERVER_A}" --arg b "${SERVER_B}" \
+		'.whitelist_enabled == true and (.whitelist | sort) == ([$a, $b] | sort)' \
+		<<<"${response}" >/dev/null
 }
 
 verify_control_whitelist() {
 	local matrix_url="$1"
 	local token="$2"
-	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
+	local response
+	response="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 		--header "Authorization: Bearer ${token}" \
-		"${matrix_url}/_synapse/client/v1/config/federation_whitelist" \
-		| jq -e --arg a "${SERVER_A}" --arg b "${SERVER_B}" --arg c "${SERVER_C}" \
-			'.whitelist_enabled == true and (.whitelist | sort) == ([$a, $b, $c] | sort)' >/dev/null
+		"${matrix_url}/_synapse/client/v1/config/federation_whitelist")"
+	jq -e --arg a "${SERVER_A}" --arg b "${SERVER_B}" --arg c "${SERVER_C}" \
+		'.whitelist_enabled == true and (.whitelist | sort) == ([$a, $b, $c] | sort)' \
+		<<<"${response}" >/dev/null
 }
 
 wait_for_mounted_policy_mode() {
@@ -124,10 +130,11 @@ wait_for_mounted_policy_mode() {
 initial_sync_token() {
 	local matrix_url="$1"
 	local token="$2"
-	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
+	local response
+	response="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 		--header "Authorization: Bearer ${token}" \
-		"${matrix_url}/_matrix/client/v3/sync?timeout=0" \
-		| jq -er '.next_batch | select(type == "string" and length > 0)'
+		"${matrix_url}/_matrix/client/v3/sync?timeout=0")"
+	jq -er '.next_batch | select(type == "string" and length > 0)' <<<"${response}"
 }
 
 wait_for_event() {
@@ -373,7 +380,7 @@ wait_for_remote_policy_event() {
 	local marker="$4"
 	local response="${WORK_DIR}/policy-event-on-a.json"
 	local deadline=$((SECONDS + 180))
-	local status logs
+	local status logs log_line
 	while ((SECONDS < deadline)); do
 		status="$(request_status "${response}" \
 			--header "Authorization: Bearer ${ALICE_TOKEN}" \
@@ -388,10 +395,12 @@ wait_for_remote_policy_event() {
 					|| die "homeserver A returned an invalid allowed policy probe"
 				logs="$(kubectl --namespace matrix logs statefulset/ess-synapse-main \
 					--since=10m 2>/dev/null || true)"
-				if printf '%s\n' "${logs}" | rg --fixed-strings "${POLICY_LOG_PREFIX}" \
-					| rg --fixed-strings "\"event\":\"${event_id}\"" >/dev/null; then
-					die "homeserver A logged an allowed policy probe as a violation"
-				fi
+				while IFS= read -r log_line; do
+					if [[ "${log_line}" == *"${POLICY_LOG_PREFIX}"* &&
+						"${log_line}" == *"\"event\":\"${event_id}\""* ]]; then
+						die "homeserver A logged an allowed policy probe as a violation"
+					fi
+				done <<<"${logs}"
 				return
 				;;
 			404)
