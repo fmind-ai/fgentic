@@ -135,3 +135,4 @@ nav:
       - 0017 Permission-aware identity: adr/0017-permission-aware-identity-binding.md
       - 0018 Content-bounded identity audit: adr/0018-content-bounded-identity-audit.md
       - 0019 Synapse media store: adr/0019-synapse-media-store.md
+      - 0020 Retain Bash acceptance rigs: adr/0020-retain-bash-acceptance-rigs.md
