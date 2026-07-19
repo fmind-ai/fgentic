@@ -61,9 +61,11 @@ jobs:
           else
             echo "run=false" >> "${GITHUB_OUTPUT}"
           fi
-      - name: Install mise system
+      - name: Set up mise
         if: steps.bridge-changes.outputs.run == 'true'
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+        with:
+          install: false # the next step installs the bridge-owned toolchain
       - name: Install app toolchain
         if: steps.bridge-changes.outputs.run == 'true'
         run: mise --cd apps/matrix-a2a-bridge install
