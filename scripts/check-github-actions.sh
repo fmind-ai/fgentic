@@ -155,10 +155,14 @@ for workflow in "${workflows[@]}"; do
 	mise_setup_rows="$(
 		yq -o=json '.jobs' "${workflow}" | jq -r \
 			--arg workflow "${workflow#"${root_dir}/"}" '
-		  def literal_nonblank_string:
+		  def bare_tool_keys:
 		    if type != "string" then false
-		    else (contains("${{") | not) and
-		      ((sub("^[\\s\uFEFF]+"; "") | sub("[\\s\uFEFF]+$"; "")) | length > 0)
+		    else
+		      (sub("^[\\s\uFEFF]+"; "") | sub("[\\s\uFEFF]+$"; "")) as $args |
+		      ($args | [scan("\\S+")]) as $tools |
+		      ($tools | length > 0) and
+		      all($tools[]; test("^[[:alnum:]_][[:alnum:]_+.:/-]*$")) and
+		      (($tools | length) == ($tools | unique | length))
 		    end;
 		  to_entries[] as $job |
 		  ($job.value.steps // [] | to_entries[]) as $step |
@@ -169,7 +173,7 @@ for workflow in "${workflows[@]}"; do
 		  (($workflow == ".github/workflows/ci.yml" and $job.key == "check" and
 		    $value.name == "Install mise system")) as $aggregate_setup |
 		  if (($value.with | type) == "object" and ($value.with | has("install_args")) and
-		    ($value.with.install_args | literal_nonblank_string)) then empty
+		    ($value.with.install_args | bare_tool_keys)) then empty
 		  elif ($aggregate_setup and (($value.with | type) != "object" or
 		    ($value.with | has("install_args") | not))) then empty
 		  else [($location + ".with.install_args"),
@@ -181,7 +185,7 @@ for workflow in "${workflows[@]}"; do
 	)"
 	while IFS=$'\t' read -r field value; do
 		[[ -n "${field}" ]] || continue
-		echo "error: ${workflow#"${root_dir}/"}: invalid ${field}; expected a native non-blank literal string, got ${value}" >&2
+		echo "error: ${workflow#"${root_dir}/"}: invalid ${field}; expected a native unique bare-tool literal string, got ${value}" >&2
 		failed=true
 	done <<<"${mise_setup_rows}"
 
