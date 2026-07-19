@@ -21,6 +21,7 @@ SAME_REPOSITORY_MAIN_PREFIXES = (
     "/fmind-ai/fgentic/tree/main/",
 )
 SAME_REPOSITORY_MAIN_URL = re.compile(r"https://github\.com/fmind-ai/fgentic/(?:blob|tree)/main/[^\s<>()\[\]`\"']+")
+RAW_URL_TRAILING_DELIMITERS = ".,;:!?*~}"
 PUBLIC_ENTRYPOINTS = (
     ".agents/AGENTS.md",
     ".github/PULL_REQUEST_TEMPLATE.md",
@@ -63,8 +64,13 @@ def _rendered_targets(markdown: str) -> list[str]:
 def _tracked_targets(markdown: str) -> list[str]:
     """Return rendered targets plus copy-ready same-repository main URLs."""
     targets = _rendered_targets(markdown)
-    for match in SAME_REPOSITORY_MAIN_URL.findall(markdown):
-        target = match.rstrip(".,;:!?")
+    for match in SAME_REPOSITORY_MAIN_URL.finditer(markdown):
+        target = match.group().rstrip(RAW_URL_TRAILING_DELIMITERS)
+        for delimiter in ("__", "_"):
+            prefix_start = match.start() - len(delimiter)
+            if prefix_start >= 0 and markdown[prefix_start : match.start()] == delimiter and target.endswith(delimiter):
+                target = target[: -len(delimiter)]
+                break
         if target not in targets:
             targets.append(target)
     return targets
@@ -201,6 +207,10 @@ class RepositoryLinkIntegrityTest(TestCase):
                 "[Directory](https://github.com/fmind-ai/fgentic/tree/main/docs)",
                 "```text",
                 "License: https://github.com/fmind-ai/fgentic/blob/main/LICENSE.",
+                "**Documentation: https://github.com/fmind-ai/fgentic/blob/main/README.md**",
+                "__https://github.com/fmind-ai/fgentic/blob/main/README.md__",
+                "_https://github.com/fmind-ai/fgentic/blob/main/README.md_",
+                "{Source: https://github.com/fmind-ai/fgentic/tree/main/docs}",
                 "```",
             )
         )
