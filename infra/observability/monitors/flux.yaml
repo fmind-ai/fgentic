@@ -29,7 +29,7 @@ spec:
         - alert: FluxReconciliationErrors
           expr: >-
             sum by (namespace, pod, controller) (
-              rate(controller_runtime_reconcile_total{result="error"}[5m])
+              rate(controller_runtime_reconcile_total{namespace="flux-system", result="error"}[5m])
             ) > 0
           for: 15m
           labels:
