@@ -97,6 +97,44 @@ for workflow in "${workflows[@]}"; do
 		fi
 	done <<<"${uses_list}"
 
+	# Actions and runner pins do not cover job or service containers. Keep every declared
+	# image immutable, including the job-container string shorthand.
+	container_rows="$(
+		yq -o=json '.jobs' "${workflow}" | jq -r '
+		  def pinned_image:
+		    type == "string" and test("^[^@\\s]+@sha256:[0-9a-f]{64}$");
+		  to_entries[] as $job |
+		  (if ($job.value | has("container")) then
+		    $job.value.container as $container |
+		    if ($container | type) == "string" then
+		      if ($container | pinned_image) then empty
+		      else [($job.key + ".container"), ($container | tojson)] end
+		    elif ($container | type) == "object" then
+		      if ($container | has("image") | not) then
+		        [($job.key + ".container.image"), "<missing>"]
+		      elif ($container.image | pinned_image) then empty
+		      else [($job.key + ".container.image"), ($container.image | tojson)] end
+		    else [($job.key + ".container"), ($container | tojson)] end
+		  else empty end),
+		  (($job.value.services // {}) | to_entries[] as $service |
+		    $service.value as $definition |
+		    if ($definition | type) != "object" then
+		      [($job.key + ".services." + $service.key), ($definition | tojson)]
+		    elif ($definition | has("image") | not) then
+		      [($job.key + ".services." + $service.key + ".image"), "<missing>"]
+		    elif ($definition.image | pinned_image) then empty
+		    else
+		      [($job.key + ".services." + $service.key + ".image"), ($definition.image | tojson)]
+		    end) |
+		  @tsv
+		'
+	)"
+	while IFS=$'\t' read -r field image; do
+		[[ -n "${field}" ]] || continue
+		echo "error: ${workflow#"${root_dir}/"}: ${field} needs an image pinned by sha256 digest; got ${image}" >&2
+		failed=true
+	done <<<"${container_rows}"
+
 	# checkout persists its token in local Git configuration by default. Require the native
 	# boolean false on every checkout step, independent of the action's Renovate-managed digest.
 	checkout_rows="$(
@@ -244,4 +282,4 @@ if ! yq --exit-status \
 fi
 
 [[ "${failed}" == false ]] || exit 1
-echo "GitHub Actions pinning, permission-map, checkout-hardening, named-step, bounded-runtime, pinned-runner, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
+echo "GitHub Actions pinning, container-digest, permission-map, checkout-hardening, named-step, bounded-runtime, pinned-runner, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
