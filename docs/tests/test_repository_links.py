@@ -155,6 +155,7 @@ def _require_valid_issue_form_routes(sources: dict[str, list[str]], templates: s
 def _public_markdown(repository_root: Path = REPOSITORY_ROOT) -> tuple[Path, ...]:
     """Return RED-owned public Markdown, including the MkDocs corpus."""
     entrypoints = [repository_root / relative for relative in PUBLIC_ENTRYPOINTS]
+    agent_skills = (repository_root / ".agents/skills").rglob("SKILL.md")
     community = (repository_root / ".github/community").rglob("*.md")
     docs_root = repository_root / "docs"
     documentation = (
@@ -162,7 +163,7 @@ def _public_markdown(repository_root: Path = REPOSITORY_ROOT) -> tuple[Path, ...
         for path in docs_root.rglob("*.md")
         if not any(part.startswith(".") for part in path.relative_to(docs_root).parts)
     )
-    return tuple(sorted((*entrypoints, *community, *documentation)))
+    return tuple(sorted((*entrypoints, *agent_skills, *community, *documentation)))
 
 
 def _display_path(path: Path, repository_root: Path) -> str:
@@ -223,6 +224,30 @@ class RepositoryLinkIntegrityTest(TestCase):
 
     def test_current_public_markdown_targets_resolve(self) -> None:
         _require_valid_links(_public_markdown(), REPOSITORY_ROOT)
+
+    def test_discovers_agent_skills_and_reports_broken_skill_links(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            skill = repository_root / ".agents/skills/example/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("[Missing](../../../missing.md)\n", encoding="utf-8")
+            notes = skill.with_name("notes.md")
+            notes.touch()
+
+            sources = _public_markdown(repository_root)
+
+            self.assertIn(skill, sources)
+            self.assertNotIn(notes, sources)
+            self.assertEqual(
+                _link_violations(skill, repository_root),
+                [(".agents/skills/example/SKILL.md", "../../../missing.md", "target does not exist")],
+            )
+            with self.assertRaisesRegex(
+                AssertionError,
+                r"repository Markdown link drift:\n"
+                r"  \.agents/skills/example/SKILL\.md: \../\../\../missing\.md \(target does not exist\)",
+            ):
+                _require_valid_links((skill,), repository_root)
 
     def test_ignores_external_fragments_and_link_shaped_code(self) -> None:
         markdown = """
