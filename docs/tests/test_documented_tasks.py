@@ -56,6 +56,13 @@ def _documented_tasks(markdown: str) -> set[str]:
     return {match.group("task") for match in _MISE_RUN.finditer(markdown)}
 
 
+def _public_task_sources(repository_root: Path = REPOSITORY_ROOT) -> tuple[Path, ...]:
+    """Return human and agent docs that publish root mise commands."""
+    entrypoints = (repository_root / relative for relative in PUBLIC_ENTRYPOINTS)
+    agent_skills = sorted((repository_root / ".agents/skills").rglob("SKILL.md"))
+    return (*entrypoints, *agent_skills)
+
+
 def _display_path(path: Path, repository_root: Path) -> str:
     """Return a stable repository-relative diagnostic path when possible."""
     try:
@@ -100,8 +107,7 @@ class DocumentedTaskIntegrityTest(TestCase):
     """Reject stale root mise commands in human and agent entrypoints."""
 
     def test_current_public_entrypoint_tasks_exist(self) -> None:
-        sources = tuple(REPOSITORY_ROOT / relative for relative in PUBLIC_ENTRYPOINTS)
-        _require_valid_task_references(sources, MISE_CONFIG, REPOSITORY_ROOT)
+        _require_valid_task_references(_public_task_sources(), MISE_CONFIG, REPOSITORY_ROOT)
 
     def test_accepts_task_names_and_aliases_in_prose_and_code(self) -> None:
         markdown = """
@@ -113,6 +119,7 @@ mise run t
 ```
 
 Unrelated text such as `mise tasks` is not a task invocation.
+App-local commands such as `mise --cd apps/example run app-only` are not root task invocations.
 """
         with TemporaryDirectory() as temporary:
             repository_root = Path(temporary)
@@ -127,6 +134,20 @@ Unrelated text such as `mise tasks` is not a task invocation.
             source.write_text(markdown, encoding="utf-8")
 
             self.assertEqual(_task_violations((source,), mise_config, repository_root), [])
+
+    def test_discovers_agent_skills_and_reports_stale_skill_tasks(self) -> None:
+        message = r"documented mise task drift:\n  \.agents/skills/example/SKILL\.md: mise run missing"
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            mise_config = repository_root / "mise.toml"
+            mise_config.write_text('[tasks.check]\nrun = "true"\n', encoding="utf-8")
+            skill = repository_root / ".agents/skills/example/SKILL.md"
+            skill.parent.mkdir(parents=True)
+            skill.write_text("Run `mise run missing`.\n", encoding="utf-8")
+
+            self.assertIn(skill, _public_task_sources(repository_root))
+            with self.assertRaisesRegex(AssertionError, message):
+                _require_valid_task_references((skill,), mise_config, repository_root)
 
     def test_rejects_missing_task_with_source_and_command(self) -> None:
         message = r"documented mise task drift:\n  README\.md: mise run missing"
