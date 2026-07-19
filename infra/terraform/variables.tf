@@ -84,6 +84,11 @@ variable "pg_backups_bucket_name" {
   type        = string
   default     = "fgentic-pg-backups"
   description = "Globally-unique GCS bucket for CloudNativePG WAL archiving + base backups (must match infra/postgres/cluster.yaml)"
+
+  validation {
+    condition     = length(var.pg_backups_bucket_name) >= 3 && length(var.pg_backups_bucket_name) <= 63 && can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])$", var.pg_backups_bucket_name))
+    error_message = "pg_backups_bucket_name must be 3-63 characters, use only lowercase letters, numbers, and hyphens, and start and end with a letter or number."
+  }
 }
 
 variable "manage_dns" {
