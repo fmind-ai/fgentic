@@ -17,9 +17,9 @@ defaults:
 # Compatibility defaults for the supply-chain contract; every job below replaces them with its
 # own least-privilege permission set, so these values are never effective job permissions.
 permissions:
-  artifact-metadata: write
-  attestations: write
-  id-token: write
+  artifact-metadata: write # link attestations to published GHCR artifacts
+  attestations: write # persist SLSA and SBOM attestations
+  id-token: write # authenticate keyless signing through GitHub OIDC
 concurrency:
   # An auto-merged pin PR would add merge/check latency to every image publication and can be
   # superseded by the next build. Keep the direct GitOps commit, serialize publishers, and retry
@@ -28,6 +28,7 @@ concurrency:
   cancel-in-progress: false # never cancel a half-published release
 jobs:
   bridge-image:
+    name: Build and publish bridge artifacts
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
@@ -279,6 +280,7 @@ jobs:
           done
 
   release-sbom:
+    name: Publish release SBOM
     if: github.event_name == 'release'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
