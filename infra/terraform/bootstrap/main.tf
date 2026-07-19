@@ -34,6 +34,11 @@ variable "state_bucket_name" {
   type        = string
   default     = "fgentic-tfstate"
   description = "Globally-unique name of the Terraform state bucket (must match the parent module's backend config)"
+
+  validation {
+    condition     = length(var.state_bucket_name) >= 3 && length(var.state_bucket_name) <= 63 && can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])$", var.state_bucket_name))
+    error_message = "state_bucket_name must be 3-63 characters, use only lowercase letters, numbers, and hyphens, and start and end with a letter or number."
+  }
 }
 
 provider "google" {
