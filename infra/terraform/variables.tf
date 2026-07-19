@@ -60,6 +60,11 @@ variable "machine_type" {
   type        = string
   default     = "e2-standard-4" # 4 vCPU / 16 GiB — headroom for Synapse + MAS + agents + Postgres
   description = "Machine type for the node pool"
+
+  validation {
+    condition     = length(trimspace(var.machine_type)) > 0 && var.machine_type == trimspace(var.machine_type)
+    error_message = "machine_type must be a non-empty Google Compute Engine machine type with no surrounding whitespace."
+  }
 }
 
 variable "node_count" {
