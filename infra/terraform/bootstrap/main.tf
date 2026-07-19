@@ -28,6 +28,11 @@ variable "region" {
   type        = string
   default     = "europe-west1"
   description = "Region for the state bucket"
+
+  validation {
+    condition     = can(regex("^[a-z]+(-[a-z]+)+[0-9]+$", var.region))
+    error_message = "region must use a lowercase Google Cloud region code such as europe-west1 or northamerica-northeast2."
+  }
 }
 
 variable "state_bucket_name" {
