@@ -9,6 +9,7 @@ data:
   server.py: |
     import json
     import os
+    import time
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from pathlib import Path
     from typing import Any, cast
@@ -18,9 +19,13 @@ data:
     ATTRIBUTION_LOG = os.environ.get("ATTRIBUTION_LOG")
     # Bound both the raw body and JSON expansion well below the pod's 64 MiB memory limit.
     MAX_REQUEST_BYTES = 1_048_576
+    REQUEST_TIMEOUT_SECONDS = 5.0
 
 
     class Handler(BaseHTTPRequestHandler):
+        # Bound idle request-line/header reads; body reads also enforce this as a wall-clock limit.
+        timeout = REQUEST_TIMEOUT_SECONDS
+
         def log_message(self, _message_format: str, *_args: object) -> None:
             return
 
@@ -58,6 +63,34 @@ data:
                 return None
             return size
 
+        def read_body(self, size: int) -> bytes | None:
+            deadline = time.monotonic() + REQUEST_TIMEOUT_SECONDS
+            body = bytearray(size)
+            view = memoryview(body)
+            received = 0
+
+            try:
+                while received < size:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError
+                    self.connection.settimeout(remaining)
+                    read = self.rfile.readinto1(view[received:])
+                    if read == 0:
+                        self.close_connection = True
+                        self.write_json(400, {"error": {"message": "incomplete request body"}})
+                        return None
+                    received += read
+            except TimeoutError:
+                self.connection.settimeout(self.timeout)
+                self.close_connection = True
+                self.write_json(408, {"error": {"message": "request body timed out"}})
+                return None
+            finally:
+                self.connection.settimeout(self.timeout)
+
+            return bytes(body)
+
         def do_GET(self) -> None:
             if self.path in ("/health", "/healthz"):
                 self.write_json(200, {"status": "ok"})
@@ -87,9 +120,12 @@ data:
             size = self.request_size()
             if size is None:
                 return
+            body = self.read_body(size)
+            if body is None:
+                return
 
             try:
-                untrusted_request: Any = json.loads(self.rfile.read(size) or b"{}")
+                untrusted_request: Any = json.loads(body or b"{}")
             except json.JSONDecodeError:
                 self.write_json(400, {"error": {"message": "invalid JSON"}})
                 return
