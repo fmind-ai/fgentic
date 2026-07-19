@@ -74,9 +74,10 @@ gh run view "${smoke_run}" --repo fmind-ai/fgentic \
     failed_steps: [.steps[] | select(.conclusion == "failure") | .name]
   }]}'
 gh run view "${smoke_run}" --repo fmind-ai/fgentic --log-failed
+gh run view "${smoke_run}" --repo fmind-ai/fgentic --log
 ```
 
-The lookup selects the latest `main` run. If the tracker references an earlier failure, assign the numeric ID from that run URL instead. Confirm `headSha` before attributing a failure to current `main`; an older scheduled run or branch dispatch may exercise different source. Then download the retained failure bundles locally:
+The lookup selects the latest `main` run. If the tracker references an earlier failure, assign the numeric ID from that run URL instead. Confirm `headSha` before attributing a failure to current `main`; an older scheduled run or branch dispatch may exercise different source. `--log-failed` exposes the aggregate enforcer that failed, while `--log` also includes the underlying `continue-on-error` output that explains which contract failed. Then download the retained failure bundles locally:
 
 ```bash
 smoke_run="$(gh run list --repo fmind-ai/fgentic --workflow smoke.yml \
@@ -86,7 +87,7 @@ gh run download "${smoke_run}" --repo fmind-ai/fgentic --dir "${artifact_dir}"
 rg --files "${artifact_dir}"
 ```
 
-Failed jobs retain `demo-diagnostics-<run>-<attempt>`, `policy-diagnostics-<run>-<attempt>`, or `trivy-diagnostics-<run>-<attempt>` for 14 days. Read the smallest relevant result or overview first, then the matching event, description, or log. Keep the bundle local; before quoting evidence in a public issue, remove room content, prompts, credentials, tokens, personal data, and unrelated workload logs.
+When the final upload step runs and finds diagnostic files, it retains `demo-diagnostics-<run>-<attempt>`, `policy-diagnostics-<run>-<attempt>`, or `trivy-diagnostics-<run>-<attempt>` for 14 days. Cancellation, timeout, runner loss, or an early failure with an empty diagnostics directory can leave no bundle; use the hosted full log in that case. Read the smallest relevant result or overview first, then the matching event, description, or log. Keep the bundle local; before quoting evidence in a public issue, remove room content, prompts, credentials, tokens, personal data, and unrelated workload logs.
 
 Route the root cause, not merely the red job. Action setup, permissions, outcome projection, artifact retention, and tracker behavior belong to `area/ci`. Demo lifecycle sources and composed manifests belong to their runtime area; policy failures belong to the enforcing security or infrastructure surface; scanner composition belongs to its infrastructure/security owner. Record the exact head SHA, failed contract, and artifact filename in the handoff. Do not weaken an enforcer, suppress a negative control, or rerun until the first failure evidence disappears.
 
