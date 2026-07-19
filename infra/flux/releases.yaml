@@ -61,6 +61,10 @@ spec:
         name: traefik
         namespace: flux-system
   values:
+    metrics:
+      prometheus:
+        # The shared-border 5xx alert relies on the stable entrypoint/code request labels.
+        addEntryPointsLabels: true
     providers:
       kubernetesGateway:
         enabled: true # watch Gateway API (Gateway/HTTPRoute)

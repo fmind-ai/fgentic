@@ -14,3 +14,47 @@ spec:
     - port: metrics
       path: /metrics
       scheme: http
+---
+# A healthy Traefik Pod and scrape target do not prove the shared public border is serving usable
+# responses. Bound the ratio with a minimum request count so one low-traffic failure cannot page.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: traefik-border
+  namespace: monitoring
+spec:
+  groups:
+    - name: traefik-border
+      rules:
+        - alert: TraefikPublicEntrypointHigh5xxRatio
+          expr: >-
+            (
+              sum by (entrypoint) (
+                rate(traefik_entrypoint_requests_total{
+                  entrypoint=~"web|websecure", code=~"5.."
+                }[5m])
+              )
+              /
+              sum by (entrypoint) (
+                rate(traefik_entrypoint_requests_total{
+                  entrypoint=~"web|websecure"
+                }[5m])
+              )
+              > 0.5
+            )
+            and
+            sum by (entrypoint) (
+              increase(traefik_entrypoint_requests_total{
+                entrypoint=~"web|websecure"
+              }[5m])
+            ) >= 5
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: The shared Traefik border is returning mostly server errors
+            description: >-
+              More than half of requests to the {{ $labels.entrypoint }} public entrypoint have
+              returned HTTP 5xx responses for ten minutes, with at least five requests in each
+              five-minute window. The proxy remains scrapeable, but one or more platform routes
+              or backends are not serving reliably; inspect HTTPRoutes, Services and endpoints.
