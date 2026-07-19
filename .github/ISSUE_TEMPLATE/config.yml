@@ -3,6 +3,9 @@ contact_links:
   - name: Security vulnerability
     url: https://github.com/fmind-ai/fgentic/security/advisories/new
     about: Never report security issues publicly — use private vulnerability reporting.
-  - name: Questions & ideas
-    url: https://github.com/fmind-ai/fgentic/discussions
-    about: Ask questions or discuss ideas before they become issues.
+  - name: Ask a question
+    url: https://github.com/fmind-ai/fgentic/discussions/new?category=q-a
+    about: Get help with usage, configuration, or evaluation in Q&A.
+  - name: Explore an idea
+    url: https://github.com/fmind-ai/fgentic/discussions/new?category=ideas
+    about: Discuss an early problem or outcome before opening a feature request.
