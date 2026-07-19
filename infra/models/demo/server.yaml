@@ -9,6 +9,7 @@ data:
   server.py: |
     import json
     import os
+    import threading
     import time
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from pathlib import Path
@@ -17,8 +18,10 @@ data:
     SOURCE_DIR = Path(os.environ.get("SOURCE_DIR", "/app"))
     RESPONSE_TEXT = (SOURCE_DIR / "response.txt").read_text(encoding="utf-8").strip()
     ATTRIBUTION_LOG = os.environ.get("ATTRIBUTION_LOG")
-    # Bound both the raw body and JSON expansion well below the pod's 64 MiB memory limit.
+    # Bound the raw body; cap concurrent parsers separately to contain JSON expansion under the
+    # pod's 64 MiB memory limit.
     MAX_REQUEST_BYTES = 1_048_576
+    MAX_CONCURRENT_REQUESTS = 4
     REQUEST_TIMEOUT_SECONDS = 5.0
 
 
@@ -26,11 +29,37 @@ data:
         raise ValueError
 
 
+    class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+        def __init__(
+            self,
+            server_address: tuple[str, int],
+            handler_class: type[BaseHTTPRequestHandler],
+        ) -> None:
+            super().__init__(server_address, handler_class)
+            self._request_slots = threading.BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
+
+        def process_request(self, request: Any, client_address: Any) -> None:
+            # Acquire before ThreadingMixIn allocates a thread, leaving excess connections under
+            # the server/kernel listen backlog instead of growing process memory.
+            self._request_slots.acquire()
+            try:
+                super().process_request(request, client_address)
+            except BaseException:
+                self._request_slots.release()
+                raise
+
+        def process_request_thread(self, request: Any, client_address: Any) -> None:
+            try:
+                super().process_request_thread(request, client_address)
+            finally:
+                self._request_slots.release()
+
+
     class Handler(BaseHTTPRequestHandler):
         # Bound idle request-line/header reads; body reads also enforce this as a wall-clock limit.
         timeout = REQUEST_TIMEOUT_SECONDS
 
-        def log_message(self, _message_format: str, *_args: object) -> None:
+        def log_message(self, format: str, *args: Any) -> None:
             return
 
         def write_json(self, status: int, document: dict[str, Any]) -> None:
@@ -157,18 +186,14 @@ data:
                         "object": "chat.completion.chunk",
                         "created": 0,
                         "model": model,
-                        "choices": [
-                            {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
-                        ],
+                        "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
                     },
                     {
                         "id": "chatcmpl-fgentic-demo",
                         "object": "chat.completion.chunk",
                         "created": 0,
                         "model": model,
-                        "choices": [
-                            {"index": 0, "delta": {"content": RESPONSE_TEXT}, "finish_reason": None}
-                        ],
+                        "choices": [{"index": 0, "delta": {"content": RESPONSE_TEXT}, "finish_reason": None}],
                     },
                     {
                         "id": "chatcmpl-fgentic-demo",
@@ -214,9 +239,7 @@ data:
             )
 
 
-    server = ThreadingHTTPServer(
-        (os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8080"))), Handler
-    )
+    server = BoundedThreadingHTTPServer((os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8080"))), Handler)
     if port_file := os.environ.get("PORT_FILE"):
         Path(port_file).write_text(str(server.server_address[1]), encoding="utf-8")
     server.serve_forever()
