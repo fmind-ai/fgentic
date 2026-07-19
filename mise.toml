@@ -217,9 +217,11 @@ run = "renovate-config-validator --strict --no-global renovate.json5"
 
 [tasks."docs:build"]
 description = "Build the version-locked documentation site"
-# The acknowledged Material maintenance notice is recorded in docs/site.md. Use its supported
-# opt-out so warning-free hooks preserve signal for actual MkDocs build diagnostics.
+# `--frozen` deliberately skips manifest freshness, so fail before building when the docs lock
+# drifts. The acknowledged Material maintenance notice is recorded in docs/site.md; use its
+# supported opt-out so warning-free hooks preserve signal for actual MkDocs build diagnostics.
 run = [
+  "uv lock --project docs --check",
   "env NO_MKDOCS_2_WARNING=1 PYTHONDONTWRITEBYTECODE=1 uv run --project docs --frozen mkdocs build --strict --config-file docs/mkdocs.yml",
   "test -z \"$(rg --no-config --hidden --no-ignore --files .agents/tmp/docs-site -g '*.pyc')\"",
   "test ! -d .agents/tmp/docs-site/__pycache__ && test ! -d .agents/tmp/docs-site/tests",
