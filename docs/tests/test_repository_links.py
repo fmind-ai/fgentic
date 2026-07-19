@@ -1,14 +1,20 @@
-"""Keep public repository Markdown links inside the tracked tree."""
+"""Keep public repository links and community routes consistent."""
 
 from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from typing import cast
 from unittest import TestCase
-from urllib.parse import unquote, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
+import yaml
 from markdown import markdown as render_markdown
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
+DISCUSSION_TEMPLATE_DIRECTORY = REPOSITORY_ROOT / ".github/DISCUSSION_TEMPLATE"
+ISSUE_TEMPLATE_CONFIG = REPOSITORY_ROOT / ".github/ISSUE_TEMPLATE/config.yml"
+SUPPORT_POLICY = REPOSITORY_ROOT / ".github/SUPPORT.md"
+NEW_DISCUSSION_PATH = "/fmind-ai/fgentic/discussions/new"
 PUBLIC_ENTRYPOINTS = (
     ".agents/AGENTS.md",
     ".github/PULL_REQUEST_TEMPLATE.md",
@@ -46,6 +52,19 @@ def _rendered_targets(markdown: str) -> list[str]:
     parser = _RenderedTargetParser()
     parser.feed(render_markdown(markdown, extensions=["fenced_code", "md_in_html", "tables"]))
     return parser.targets
+
+
+def _structured_discussion_categories(targets: list[str]) -> set[str]:
+    """Return structured Fgentic discussion categories from rendered targets."""
+    categories: set[str] = set()
+    for target in targets:
+        parsed = urlsplit(target)
+        if parsed.scheme != "https" or parsed.netloc != "github.com" or parsed.path != NEW_DISCUSSION_PATH:
+            continue
+        values = parse_qs(parsed.query).get("category", [])
+        if len(values) == 1:
+            categories.add(values[0])
+    return categories
 
 
 def _public_markdown(repository_root: Path = REPOSITORY_ROOT) -> tuple[Path, ...]:
@@ -135,3 +154,25 @@ class RepositoryLinkIntegrityTest(TestCase):
 
             with self.assertRaisesRegex(AssertionError, message):
                 _require_valid_links((source,), repository_root)
+
+
+class CommunityRouteIntegrityTest(TestCase):
+    """Reject drift between structured forms and their public routes."""
+
+    def test_structured_discussion_routes_stay_in_sync(self) -> None:
+        expected = {path.stem for path in DISCUSSION_TEMPLATE_DIRECTORY.glob("*.yml")}
+        config = cast("dict[str, object]", yaml.safe_load(ISSUE_TEMPLATE_CONFIG.read_text(encoding="utf-8")))
+        contact_links = cast("list[dict[str, object]]", config["contact_links"])
+        config_targets = [url for link in contact_links if isinstance(url := link.get("url"), str)]
+        support_targets = _rendered_targets(SUPPORT_POLICY.read_text(encoding="utf-8"))
+
+        self.assertSetEqual(
+            _structured_discussion_categories(config_targets),
+            expected,
+            "issue chooser structured-discussion routes differ from discussion templates",
+        )
+        self.assertSetEqual(
+            _structured_discussion_categories(support_targets),
+            expected,
+            "support-policy structured-discussion routes differ from discussion templates",
+        )
