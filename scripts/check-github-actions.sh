@@ -122,6 +122,24 @@ for workflow in "${workflows[@]}"; do
 		failed=true
 	done <<<"${shell_rows}"
 
+	# Keep GitHub expressions out of executable shell text. Context values cross into Bash
+	# through typed step-level env maps so quoting and future expression changes stay auditable.
+	run_expression_rows="$(
+		yq -o=json '.jobs' "${workflow}" | jq -r '
+		  to_entries[] as $job |
+		  ($job.value.steps // [] | to_entries[]) as $step |
+		  $step.value as $value |
+		  select(($value | type) == "object" and ($value.run | type) == "string") |
+		  select($value.run | contains("${{")) |
+		  ($job.key + ".steps[" + ($step.key | tostring) + "].run")
+		'
+	)"
+	while IFS= read -r field; do
+		[[ -n "${field}" ]] || continue
+		echo "error: ${workflow#"${root_dir}/"}: ${field} must project GitHub expressions through env" >&2
+		failed=true
+	done <<<"${run_expression_rows}"
+
 	uses_list="$(yq -r '.. | select(tag == "!!map" and has("uses")) | .uses' "${workflow}")"
 	while IFS= read -r uses; do
 		[[ -n "${uses}" ]] || continue
@@ -371,4 +389,4 @@ if ! yq --exit-status \
 fi
 
 [[ "${failed}" == false ]] || exit 1
-echo "GitHub Actions pinning, actionable-artifact, bounded-artifact, container-digest, permission-map, checkout-hardening, named-step, Bash-pipefail, bounded-runtime, pinned-runner, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
+echo "GitHub Actions pinning, actionable-artifact, bounded-artifact, container-digest, permission-map, checkout-hardening, named-step, Bash-pipefail, template-boundary, bounded-runtime, pinned-runner, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
