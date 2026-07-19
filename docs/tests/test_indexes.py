@@ -3,6 +3,7 @@
 import re
 from collections import Counter
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import TestCase
 from urllib.parse import unquote, urlsplit
 
@@ -45,7 +46,11 @@ def _local_index_targets(markdown: str, index_path: Path) -> list[str]:
 
 def _concept_pages(directory: Path) -> set[str]:
     """Return direct concept pages owned by a documentation directory."""
-    return {path.name for path in directory.glob("*.md") if path.is_file() and path.name != "index.md"}
+    return {
+        path.name
+        for path in directory.glob("*.md")
+        if path.is_file() and path.name != "index.md" and not path.name.startswith(".")
+    }
 
 
 def _index_drift(pages: set[str], targets: list[str]) -> IndexDrift:
@@ -96,9 +101,14 @@ def _require_reserved_indexes(found: set[str]) -> None:
         raise AssertionError(message)
 
 
-def _documentation_indexes() -> set[str]:
+def _documentation_indexes(docs_root: Path = DOCS_ROOT) -> set[str]:
     """Return every tracked-shape directory index under docs."""
-    return {path.relative_to(DOCS_ROOT).as_posix() for path in DOCS_ROOT.rglob("index.md") if path.is_file()}
+    indexes: set[str] = set()
+    for path in docs_root.rglob("index.md"):
+        relative = path.relative_to(docs_root)
+        if path.is_file() and not any(part.startswith(".") for part in relative.parts):
+            indexes.add(relative.as_posix())
+    return indexes
 
 
 class IndexCompletenessTest(TestCase):
@@ -155,3 +165,16 @@ class IndexCompletenessTest(TestCase):
 
         with self.assertRaisesRegex(AssertionError, message):
             _require_reserved_indexes(found)
+
+    def test_ignores_hidden_tool_state(self) -> None:
+        with TemporaryDirectory() as temporary:
+            docs_root = Path(temporary)
+            (docs_root / "index.md").touch()
+            (docs_root / "guide.md").touch()
+            (docs_root / ".scratch.md").touch()
+            hidden = docs_root / ".venv/share/example"
+            hidden.mkdir(parents=True)
+            (hidden / "index.md").touch()
+
+            self.assertEqual(_documentation_indexes(docs_root), {"index.md"})
+            self.assertEqual(_concept_pages(docs_root), {"guide.md"})
