@@ -28,6 +28,8 @@ kind = "0.32.0"
 k3d = "5.9.0"
 k9s = "0.51.0"
 kubectl = "1.35.0"
+node = "24.18.0"
+"npm:renovate" = "43.271.0"
 python = "3.14.6"
 ripgrep = "15.2.0"
 shellcheck = "0.11.0"
@@ -157,6 +159,7 @@ alias = "c"
 description = "Run every static check (config, Terraform, manifests, scans, workflows, and apps)"
 depends = [
   "check:format",
+  "check:renovate",
   "check:docs",
   "check:shell",
   "check:terraform",
@@ -207,6 +210,10 @@ depends = [
 alias = "cf"
 description = "Verify config/markup formatting (dprint)"
 run = "dprint check"
+
+[tasks."check:renovate"]
+description = "Validate the Renovate dependency policy strictly"
+run = "renovate-config-validator --strict --no-global renovate.json5"
 
 [tasks."docs:build"]
 description = "Build the version-locked documentation site"
