@@ -24,6 +24,12 @@ resource "google_storage_bucket" "pg_backups" {
   }
 
   depends_on = [google_project_service.enabled_services]
+
+  # Require an explicit reviewed configuration change before Terraform can remove the recovery
+  # boundary, even after object retention has emptied the bucket.
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 resource "google_service_account" "pg_backup" {
