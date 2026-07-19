@@ -13,6 +13,14 @@ resource "google_storage_bucket" "pg_backups" {
     retention_duration_seconds = 0
   }
 
+  # The workload identity can delete expired Barman objects, but must not be able to erase the
+  # entire recovery window after credential compromise. Keep this unlocked so a reviewed bucket
+  # administrator can still change the policy without an irreversible Bucket Lock operation.
+  retention_policy {
+    retention_period = 604800 # 7 days
+    is_locked        = false
+  }
+
   lifecycle_rule {
     # CNPG's retentionPolicy (30d) governs catalog retention; this is the belt-and-braces cap.
     condition {
