@@ -61,14 +61,14 @@ jobs:
           else
             echo "run=false" >> "${GITHUB_OUTPUT}"
           fi
-      - name: Set up mise
+      - name: Install bridge integration toolchain
         if: steps.bridge-changes.outputs.run == 'true'
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
         with:
-          install: false # the next step installs the bridge-owned toolchain
-      - name: Install app toolchain
-        if: steps.bridge-changes.outputs.run == 'true'
-        run: mise --cd apps/matrix-a2a-bridge install
+          # The app config supplies Go, kind, and kubectl; the inherited root config supplies
+          # jq and yq, which the integration harness invokes directly.
+          install_args: go kind kubectl jq yq
+          working_directory: apps/matrix-a2a-bridge
       - name: Run bridge integration
         if: steps.bridge-changes.outputs.run == 'true'
         run: mise run test:integration
