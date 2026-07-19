@@ -13,9 +13,11 @@ from markdown import markdown as render_markdown
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DISCUSSION_TEMPLATE_DIRECTORY = REPOSITORY_ROOT / ".github/DISCUSSION_TEMPLATE"
+ISSUE_TEMPLATE_DIRECTORY = REPOSITORY_ROOT / ".github/ISSUE_TEMPLATE"
 ISSUE_TEMPLATE_CONFIG = REPOSITORY_ROOT / ".github/ISSUE_TEMPLATE/config.yml"
 SUPPORT_POLICY = REPOSITORY_ROOT / ".github/SUPPORT.md"
 NEW_DISCUSSION_PATH = "/fmind-ai/fgentic/discussions/new"
+NEW_ISSUE_PATH = "/fmind-ai/fgentic/issues/new"
 SAME_REPOSITORY_MAIN_PREFIXES = (
     "/fmind-ai/fgentic/blob/main/",
     "/fmind-ai/fgentic/tree/main/",
@@ -36,6 +38,7 @@ PUBLIC_ENTRYPOINTS = (
 )
 
 type LinkViolation = tuple[str, str, str]
+type RouteViolation = tuple[str, str, str]
 
 
 class _RenderedTargetParser(HTMLParser):
@@ -87,6 +90,66 @@ def _structured_discussion_categories(targets: list[str]) -> set[str]:
         if len(values) == 1:
             categories.add(values[0])
     return categories
+
+
+def _issue_form_route_error(target: str, templates: set[str]) -> str | None:
+    """Return an error for an invalid structured Fgentic issue-form route."""
+    parsed = urlsplit(target)
+    if parsed.scheme != "https" or parsed.netloc != "github.com" or parsed.path != NEW_ISSUE_PATH:
+        return None
+
+    query = parse_qs(parsed.query, keep_blank_values=True)
+    if "template" not in query:
+        return None
+
+    values = query["template"]
+    if len(values) != 1 or not values[0]:
+        return "template query must contain one nonblank value"
+
+    template = values[0]
+    if Path(template).name != template or not template.endswith(".yml"):
+        return f"invalid structured template name: {template}"
+    if template not in templates:
+        return f"structured template does not exist: {template}"
+    return None
+
+
+def _discussion_markdown(path: Path) -> str:
+    """Return Markdown blocks embedded in one structured discussion form."""
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    if not isinstance(document, dict) or not isinstance(body := document.get("body"), list):
+        return ""
+
+    blocks: list[str] = []
+    for item in body:
+        if not isinstance(item, dict) or item.get("type") != "markdown":
+            continue
+        attributes = item.get("attributes")
+        if isinstance(attributes, dict) and isinstance(value := attributes.get("value"), str):
+            blocks.append(value)
+    return "\n".join(blocks)
+
+
+def _issue_form_route_violations(sources: dict[str, list[str]], templates: set[str]) -> list[RouteViolation]:
+    """Return invalid same-repository issue-form routes by public source."""
+    violations: list[RouteViolation] = []
+    for source, targets in sources.items():
+        violations.extend(
+            (source, target, error)
+            for target in targets
+            if (error := _issue_form_route_error(target, templates)) is not None
+        )
+    return violations
+
+
+def _require_valid_issue_form_routes(sources: dict[str, list[str]], templates: set[str]) -> None:
+    """Reject public routes to malformed or missing structured issue forms."""
+    violations = _issue_form_route_violations(sources, templates)
+    if not violations:
+        return
+
+    details = "\n".join(f"  {source}: {target} ({reason})" for source, target, reason in violations)
+    raise AssertionError(f"structured issue-form route drift:\n{details}")
 
 
 def _public_markdown(repository_root: Path = REPOSITORY_ROOT) -> tuple[Path, ...]:
@@ -261,3 +324,53 @@ class CommunityRouteIntegrityTest(TestCase):
             expected,
             "support-policy structured-discussion routes differ from discussion templates",
         )
+
+    def test_structured_issue_form_routes_resolve(self) -> None:
+        templates = {path.name for path in ISSUE_TEMPLATE_DIRECTORY.glob("*.yml") if path != ISSUE_TEMPLATE_CONFIG}
+        sources = {
+            ".github/SUPPORT.md": _rendered_targets(SUPPORT_POLICY.read_text(encoding="utf-8")),
+            **{
+                path.relative_to(REPOSITORY_ROOT).as_posix(): _rendered_targets(_discussion_markdown(path))
+                for path in sorted(DISCUSSION_TEMPLATE_DIRECTORY.glob("*.yml"))
+            },
+        }
+
+        _require_valid_issue_form_routes(sources, templates)
+
+    def test_rejects_malformed_and_missing_issue_form_routes(self) -> None:
+        missing = "https://github.com/fmind-ai/fgentic/issues/new?template=missing.yml"
+        blank = "https://github.com/fmind-ai/fgentic/issues/new?template="
+        duplicated = (
+            "https://github.com/fmind-ai/fgentic/issues/new?template=bug_report.yml&template=feature_request.yml"
+        )
+        traversal = "https://github.com/fmind-ai/fgentic/issues/new?template=../bug_report.yml"
+        sources = {"SUPPORT.md": [missing, blank, duplicated, traversal]}
+
+        self.assertEqual(
+            _issue_form_route_violations(sources, {"bug_report.yml", "feature_request.yml"}),
+            [
+                ("SUPPORT.md", missing, "structured template does not exist: missing.yml"),
+                ("SUPPORT.md", blank, "template query must contain one nonblank value"),
+                ("SUPPORT.md", duplicated, "template query must contain one nonblank value"),
+                ("SUPPORT.md", traversal, "invalid structured template name: ../bug_report.yml"),
+            ],
+        )
+        with self.assertRaisesRegex(
+            AssertionError,
+            r"structured issue-form route drift:\n"
+            r"  SUPPORT\.md: https://github\.com/fmind-ai/fgentic/issues/new\?template=missing\.yml "
+            r"\(structured template does not exist: missing\.yml\)",
+        ):
+            _require_valid_issue_form_routes({"SUPPORT.md": [missing]}, {"bug_report.yml"})
+
+    def test_ignores_non_template_and_other_repository_issue_routes(self) -> None:
+        targets = [
+            "https://github.com/fmind-ai/fgentic/issues/1",
+            "https://github.com/fmind-ai/fgentic/pull/1",
+            "https://github.com/fmind-ai/fgentic/issues/new",
+            "https://github.com/fmind-ai/fgentic/security/advisories/new",
+            "https://github.com/example/fgentic/issues/new?template=missing.yml",
+            "http://github.com/fmind-ai/fgentic/issues/new?template=missing.yml",
+        ]
+
+        self.assertEqual(_issue_form_route_violations({"source": targets}, set()), [])
