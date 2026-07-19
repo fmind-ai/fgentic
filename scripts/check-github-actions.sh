@@ -132,6 +132,45 @@ for workflow in "${workflows[@]}"; do
 		fi
 	done <<<"${uses_list}"
 
+	# Diagnostic artifacts should expire promptly and must not opt into uploading hidden files.
+	# Inspect every upload step generically so new workflows inherit the same storage boundary.
+	artifact_rows="$(
+		yq -o=json '.jobs' "${workflow}" | jq -r '
+		  to_entries[] as $job |
+		  ($job.value.steps // [] | to_entries[]) as $step |
+		  $step.value as $value |
+		  select(($value | type) == "object" and ($value.uses | type) == "string") |
+		  select($value.uses | ascii_downcase | startswith("actions/upload-artifact@")) |
+		  ($job.key + ".steps[" + ($step.key | tostring) + "]") as $location |
+		  if ($value | has("with") | not) then
+		    [($location + ".with"), "<missing>", "an input map"]
+		  elif ($value.with | type) != "object" then
+		    [($location + ".with"), ($value.with | tojson), "an input map"]
+		  else
+		    (if ($value.with | has("retention-days")) then
+		      $value.with["retention-days"] as $retention |
+		      if (($retention | type) == "number" and ($retention | floor) == $retention and
+		        $retention > 0 and $retention <= 30) then empty
+		      else [($location + ".with.retention-days"), ($retention | tojson),
+		        "a native integer from 1 through 30"] end
+		    else [($location + ".with.retention-days"), "<missing>",
+		      "a native integer from 1 through 30"] end),
+		    (if (($value.with | has("include-hidden-files")) and
+		      ($value.with["include-hidden-files"] != false or
+		        ($value.with["include-hidden-files"] | type) != "boolean")) then
+		      [($location + ".with.include-hidden-files"),
+		        ($value.with["include-hidden-files"] | tojson), "the native boolean false"]
+		    else empty end)
+		  end |
+		  @tsv
+		'
+	)"
+	while IFS=$'\t' read -r field value expectation; do
+		[[ -n "${field}" ]] || continue
+		echo "error: ${workflow#"${root_dir}/"}: invalid ${field}; expected ${expectation}, got ${value}" >&2
+		failed=true
+	done <<<"${artifact_rows}"
+
 	# Actions and runner pins do not cover job or service containers. Keep every declared
 	# image immutable, including the job-container string shorthand.
 	container_rows="$(
@@ -317,4 +356,4 @@ if ! yq --exit-status \
 fi
 
 [[ "${failed}" == false ]] || exit 1
-echo "GitHub Actions pinning, container-digest, permission-map, checkout-hardening, named-step, Bash-pipefail, bounded-runtime, pinned-runner, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
+echo "GitHub Actions pinning, bounded-artifact, container-digest, permission-map, checkout-hardening, named-step, Bash-pipefail, bounded-runtime, pinned-runner, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
