@@ -12,6 +12,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 PUBLIC_ENTRYPOINTS = (
     ".agents/AGENTS.md",
     ".github/PULL_REQUEST_TEMPLATE.md",
+    ".github/SUPPORT.md",
     "ADOPTERS.md",
     "CODE_OF_CONDUCT.md",
     "CONTRIBUTING.md",
