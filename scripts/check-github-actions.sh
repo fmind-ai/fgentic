@@ -87,6 +87,41 @@ for workflow in "${workflows[@]}"; do
 		failed=true
 	done <<<"${concurrency_rows}"
 
+	# An explicit Bash default makes GitHub invoke run steps with pipefail. Keep job and step
+	# overrides on the same fail-fast shell so a narrower setting cannot weaken the workflow.
+	shell_rows="$(
+		yq -o=json '.' "${workflow}" | jq -r '
+		  . as $workflow |
+		  (if (($workflow.defaults | type) == "object" and
+		    ($workflow.defaults.run | type) == "object" and
+		    ($workflow.defaults.run | has("shell"))) then
+		      select(($workflow.defaults.run.shell | type) != "string" or
+		        $workflow.defaults.run.shell != "bash") |
+		      ["defaults.run.shell", ($workflow.defaults.run.shell | tojson)]
+		    else ["defaults.run.shell", "<missing>"] end),
+		  ($workflow.jobs | to_entries[] as $job |
+		    select(($job.value.defaults | type) == "object" and
+		      ($job.value.defaults.run | type) == "object" and
+		      ($job.value.defaults.run | has("shell"))) |
+		    select(($job.value.defaults.run.shell | type) != "string" or
+		      $job.value.defaults.run.shell != "bash") |
+		    [($job.key + ".defaults.run.shell"), ($job.value.defaults.run.shell | tojson)]),
+		  ($workflow.jobs | to_entries[] as $job |
+		    ($job.value.steps // [] | to_entries[]) as $step |
+		    $step.value as $value |
+		    select(($value | type) == "object" and ($value | has("shell"))) |
+		    select(($value.shell | type) != "string" or $value.shell != "bash") |
+		    [($job.key + ".steps[" + ($step.key | tostring) + "].shell"),
+		      ($value.shell | tojson)]) |
+		  @tsv
+		'
+	)"
+	while IFS=$'\t' read -r field shell; do
+		[[ -n "${field}" ]] || continue
+		echo "error: ${workflow#"${root_dir}/"}: ${field} needs the native Bash shell; got ${shell}" >&2
+		failed=true
+	done <<<"${shell_rows}"
+
 	uses_list="$(yq -r '.. | select(tag == "!!map" and has("uses")) | .uses' "${workflow}")"
 	while IFS= read -r uses; do
 		[[ -n "${uses}" ]] || continue
@@ -282,4 +317,4 @@ if ! yq --exit-status \
 fi
 
 [[ "${failed}" == false ]] || exit 1
-echo "GitHub Actions pinning, container-digest, permission-map, checkout-hardening, named-step, bounded-runtime, pinned-runner, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
+echo "GitHub Actions pinning, container-digest, permission-map, checkout-hardening, named-step, Bash-pipefail, bounded-runtime, pinned-runner, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
