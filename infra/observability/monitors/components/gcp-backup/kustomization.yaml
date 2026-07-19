@@ -1,0 +1,6 @@
+# GCP-only backup health rules. Other profiles either omit object-store backups or supply their
+# own backend-specific recovery evidence contract.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - prometheusrule.yaml
