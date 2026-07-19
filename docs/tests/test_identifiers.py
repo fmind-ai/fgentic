@@ -37,9 +37,11 @@ def _markdown_lines(markdown: str) -> Iterator[str]:
         if fence is not None:
             marker = fence.group("marker")
             if fence_character is None:
-                fence_character = marker[0]
-                fence_length = len(marker)
-                continue
+                tail = line[fence.end() :]
+                if marker[0] != "`" or "`" not in tail:
+                    fence_character = marker[0]
+                    fence_length = len(marker)
+                    continue
             if marker[0] == fence_character and len(marker) >= fence_length and not line[fence.end() :].strip():
                 fence_character = None
                 fence_length = 0
@@ -261,6 +263,17 @@ class IdentifierIntegrityTest(TestCase):
             _decision_errors(markdown, stable_maximum=1),
             ("design-decisions.md: missing decisions D1",),
         )
+
+    def test_keeps_heading_after_same_line_backtick_code(self) -> None:
+        markdown = "\n".join(
+            (
+                "# Design Decisions D1-D1",
+                "```literal```",
+                "### D1 — Real decision",
+            )
+        )
+
+        self.assertEqual(_decision_errors(markdown, stable_maximum=1), ())
 
     def test_reports_terminal_identifier_removal(self) -> None:
         decisions = "\n".join(
