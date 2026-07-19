@@ -1,11 +1,12 @@
 """Enforce the OKF metadata contract for every visible documentation page."""
 
+import re
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from unittest import TestCase
 
 import yaml
-from yaml.nodes import MappingNode, ScalarNode
+from yaml.nodes import MappingNode, Node, ScalarNode
 
 DOCS_ROOT = Path(__file__).resolve().parents[1]
 ROOT_INDEX = "index.md"
@@ -20,39 +21,77 @@ SUB_INDEXES = frozenset(
 REQUIRED_FIELDS = ("type", "title", "description")
 SENTENCE_ENDINGS = (".", "!", "?")
 DESCRIPTION_REQUIREMENT = "frontmatter field `description` must be a single-line sentence ending in punctuation"
+_FIELD_LINE = re.compile(r"^\s*(?P<field>[A-Za-z_][A-Za-z0-9_-]*)\s*:")
 
 
-def _frontmatter(markdown: str, path: str) -> tuple[dict[object, object] | None, bool, tuple[str, ...]]:
+def _yaml_error(path: str, raw: str, error: yaml.YAMLError) -> str:
+    """Render a parser failure with its nearest field."""
+    problem = getattr(error, "problem", None) or str(error).splitlines()[0]
+    marked = getattr(error, "problem_mark", None)
+    field = ""
+    if marked is not None:
+        lines = raw.splitlines()
+        for line in reversed(lines[: min(marked.line + 1, len(lines))]):
+            match = _FIELD_LINE.match(line)
+            if match:
+                field = f" field `{match.group('field')}`"
+                break
+    return f"{path}: invalid YAML frontmatter{field} ({problem})"
+
+
+def _direct_fields(node: MappingNode, path: str) -> tuple[dict[str, Node], tuple[str, ...]]:
+    """Reject ambiguous YAML composition and return direct field nodes."""
+    fields: dict[str, Node] = {}
+    errors: list[str] = []
+    for key, value in node.value:
+        if not isinstance(key, ScalarNode):
+            errors.append(f"{path}: frontmatter keys must be scalar strings")
+            continue
+        field = key.value
+        if field == "<<":
+            errors.append(f"{path}: YAML merge field `<<` is not allowed")
+        elif key.tag != "tag:yaml.org,2002:str":
+            errors.append(f"{path}: frontmatter keys must be scalar strings")
+        elif field in fields:
+            errors.append(f"{path}: duplicate frontmatter field `{field}`")
+        else:
+            fields[field] = value
+    return fields, tuple(errors)
+
+
+def _frontmatter(markdown: str, path: str) -> tuple[dict[object, object] | None, dict[str, Node], tuple[str, ...]]:
     """Safely parse a leading YAML frontmatter mapping."""
     lines = markdown.splitlines()
     if not lines or lines[0] != "---":
-        return None, True, (f"{path}: missing YAML frontmatter",)
+        return None, {}, (f"{path}: missing YAML frontmatter",)
     try:
         closing = lines.index("---", 1)
     except ValueError:
-        return None, True, (f"{path}: YAML frontmatter has no closing delimiter",)
+        return None, {}, (f"{path}: YAML frontmatter has no closing delimiter",)
 
     raw = "\n".join(lines[1:closing])
     try:
-        metadata = yaml.safe_load(raw)
         node = yaml.compose(raw, Loader=yaml.SafeLoader)
     except yaml.YAMLError as error:
-        problem = getattr(error, "problem", None) or str(error).splitlines()[0]
-        return None, True, (f"{path}: invalid YAML frontmatter ({problem})",)
-    if not isinstance(metadata, dict):
-        return None, True, (f"{path}: YAML frontmatter must be a mapping",)
+        return None, {}, (_yaml_error(path, raw, error),)
+    if not isinstance(node, MappingNode):
+        return None, {}, (f"{path}: YAML frontmatter must be a mapping",)
 
-    description_single_line = True
-    if isinstance(node, MappingNode):
-        for key, value in node.value:
-            if isinstance(key, ScalarNode) and key.value == "description":
-                description_single_line = value.start_mark.line == value.end_mark.line
-    return metadata, description_single_line, ()
+    fields, errors = _direct_fields(node, path)
+    if errors:
+        return None, fields, errors
+    try:
+        metadata = yaml.safe_load(raw)
+    except yaml.YAMLError as error:
+        return None, fields, (_yaml_error(path, raw, error),)
+    if not isinstance(metadata, dict):
+        return None, fields, (f"{path}: YAML frontmatter must be a mapping",)
+    return metadata, fields, ()
 
 
 def _concept_errors(markdown: str, path: str) -> tuple[str, ...]:
     """Return every required metadata error for one concept document."""
-    metadata, description_single_line, errors = _frontmatter(markdown, path)
+    metadata, fields, errors = _frontmatter(markdown, path)
     if errors or metadata is None:
         return errors
 
@@ -66,11 +105,13 @@ def _concept_errors(markdown: str, path: str) -> tuple[str, ...]:
             found.append(f"{path}: frontmatter field `{field}` must be a nonblank string")
 
     description = metadata.get("description")
+    description_node = fields.get("description")
     if (
         isinstance(description, str)
         and description.strip()
         and (
-            not description_single_line
+            description_node is None
+            or description_node.start_mark.line != description_node.end_mark.line
             or "\n" in description
             or "\r" in description
             or not description.rstrip().endswith(SENTENCE_ENDINGS)
@@ -140,7 +181,10 @@ class FrontmatterTest(TestCase):
             "guide.md",
         )
 
-        self.assertEqual(errors, ("guide.md: invalid YAML frontmatter (mapping values are not allowed here)",))
+        self.assertEqual(
+            errors,
+            ("guide.md: invalid YAML frontmatter field `description` (mapping values are not allowed here)",),
+        )
 
     def test_reports_missing_non_string_and_blank_fields(self) -> None:
         errors = _concept_errors(
@@ -178,11 +222,36 @@ class FrontmatterTest(TestCase):
 
         self.assertEqual(errors, ())
 
+    def test_rejects_merge_and_duplicate_fields(self) -> None:
+        merged = _concept_errors(
+            "---\n"
+            "defaults: &defaults\n"
+            "  description: >-\n"
+            "    First line.\n"
+            "    Second line.\n"
+            "<<: *defaults\n"
+            "type: Guide\n"
+            "title: Example\n"
+            "---\n",
+            "guide.md",
+        )
+        duplicate = _concept_errors(
+            "---\ntype: Guide\ntitle: Example\ndescription: First.\ndescription: Second.\n---\n",
+            "guide.md",
+        )
+
+        self.assertEqual(merged, ("guide.md: YAML merge field `<<` is not allowed",))
+        self.assertEqual(duplicate, ("guide.md: duplicate frontmatter field `description`",))
+
     def test_enforces_index_exceptions(self) -> None:
         self.assertEqual(_root_index_errors('---\nokf_version: "0.1"\n---\n'), ())
         self.assertEqual(
             _root_index_errors("---\ntype: Index\n---\n"),
             ('index.md: frontmatter must contain only `okf_version: "0.1"`',),
+        )
+        self.assertEqual(
+            _root_index_errors('---\nokf_version: bad\nokf_version: "0.1"\n---\n'),
+            ("index.md: duplicate frontmatter field `okf_version`",),
         )
         self.assertEqual(_sub_index_errors("# Security\n", "security/index.md"), ())
         self.assertEqual(
