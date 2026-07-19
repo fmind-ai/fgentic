@@ -214,6 +214,8 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the wor
 
 Security reports go through [SECURITY.md](SECURITY.md), not public issues. Deployments and pilots: add yourself to [ADOPTERS.md](ADOPTERS.md).
 
+Questions, usage support, and early ideas follow the [project support routes](.github/SUPPORT.md).
+
 ## Standards & building blocks
 
 Matrix (spec.matrix.org) · A2A (a2a-protocol.org, Linux Foundation) · MCP (Agentic AI Foundation) · Kubernetes · Gateway API · OpenID Connect (via MAS) · SOPS/age. Everything is open source and self-hostable.
