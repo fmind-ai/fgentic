@@ -1,7 +1,7 @@
 ---
 type: Contract
 title: Public Surface Stability Contract
-description: Stability tiers for the public surfaces partners pin: extension URIs, event namespaces, schemas.
+description: "Stability tiers for the public surfaces partners pin: extension URIs, event namespaces, schemas."
 ---
 
 # Public Surface Stability Contract

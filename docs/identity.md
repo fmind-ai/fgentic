@@ -1,7 +1,7 @@
 ---
 type: Specification
 title: Identity and SSO
-description: Identity architecture: MAS as the Matrix-facing OIDC authority with Keycloak (or any upstream OIDC provider) for humans.
+description: "Identity architecture: MAS as the Matrix-facing OIDC authority with Keycloak (or any upstream OIDC provider) for humans."
 ---
 
 # Identity and SSO

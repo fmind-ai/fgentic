@@ -1,7 +1,7 @@
 ---
 type: Runbook
 title: Production Installation
-description: Production path: Flux reconciliation of a reviewed revision, SOPS secrets, SSO, observability, and acceptance gates.
+description: "Production path: Flux reconciliation of a reviewed revision, SOPS secrets, SSO, observability, and acceptance gates."
 ---
 
 # Production Installation

@@ -1,7 +1,7 @@
 ---
 type: Specification
 title: Federation Spec
-description: Cross-organization design: Matrix federation for the collaboration plane, A2A for the delegation plane (§8).
+description: "Cross-organization design: Matrix federation for the collaboration plane, A2A for the delegation plane (§8)."
 ---
 
 # Federation Spec (formerly SPEC §8) — the flagship differentiator, milestone M8
