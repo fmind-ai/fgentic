@@ -14,6 +14,8 @@ jobs:
     name: kind and Calico policy enforcement
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      MISE_EXEC_AUTO_INSTALL: "false"
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
