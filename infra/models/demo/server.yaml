@@ -22,6 +22,10 @@ data:
     REQUEST_TIMEOUT_SECONDS = 5.0
 
 
+    def reject_json_constant(_constant: str) -> None:
+        raise ValueError
+
+
     class Handler(BaseHTTPRequestHandler):
         # Bound idle request-line/header reads; body reads also enforce this as a wall-clock limit.
         timeout = REQUEST_TIMEOUT_SECONDS
@@ -125,9 +129,9 @@ data:
                 return
 
             try:
-                untrusted_request: Any = json.loads(body or b"{}")
-            # The bytes decoder also raises ValueError for invalid UTF-8/integer limits and
-            # RecursionError for excessive nesting; all are untrusted invalid JSON here.
+                untrusted_request: Any = json.loads(body, parse_constant=reject_json_constant)
+            # The bytes decoder also raises ValueError for invalid UTF-8, integer limits, and
+            # rejected non-finite constants; RecursionError covers excessive nesting.
             except (RecursionError, ValueError):
                 self.write_json(400, {"error": {"message": "invalid JSON"}})
                 return
