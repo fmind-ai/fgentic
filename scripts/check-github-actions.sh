@@ -74,6 +74,43 @@ for workflow in "${workflows[@]}"; do
 		fi
 	done <<<"${uses_list}"
 
+	# checkout persists its token in local Git configuration by default. Require the native
+	# boolean false on every checkout step, independent of the action's Renovate-managed digest.
+	checkout_rows="$(
+		yq -o=json '.jobs' "${workflow}" | jq -r '
+		  def has_persist_credentials:
+		    if (.with | type) == "object"
+		      then (.with | has("persist-credentials"))
+		      else false
+		    end;
+		  to_entries[] as $job |
+		  ($job.value.steps // [] | to_entries[]) as $step |
+		  $step.value |
+		  select((.uses | type) == "string") |
+		  select(.uses | ascii_downcase | startswith("actions/checkout@")) |
+		  [
+		    ($job.key + ".steps[" + ($step.key | tostring) + "]"),
+		    (if has_persist_credentials
+		      then (.with["persist-credentials"] | tojson)
+		      else "<missing>"
+		    end),
+		    (if has_persist_credentials
+		      then ((.with["persist-credentials"] | type) == "boolean" and
+		        .with["persist-credentials"] == false)
+		      else false
+		    end)
+		  ] |
+		  @tsv
+		'
+	)"
+	while IFS=$'\t' read -r step credentials valid; do
+		[[ -n "${step}" ]] || continue
+		if [[ "${valid}" != true ]]; then
+			echo "error: ${workflow#"${root_dir}/"}: checkout step ${step} needs persist-credentials: false; got ${credentials}" >&2
+			failed=true
+		fi
+	done <<<"${checkout_rows}"
+
 	uses_status=0
 	uses_lines="$(rg '^[[:space:]]*uses:' "${workflow}")" || uses_status=$?
 	((uses_status <= 1)) || {
@@ -146,4 +183,4 @@ if ! yq --exit-status \
 fi
 
 [[ "${failed}" == false ]] || exit 1
-echo "GitHub Actions pinning, bounded-runtime, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
+echo "GitHub Actions pinning, checkout-hardening, bounded-runtime, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
