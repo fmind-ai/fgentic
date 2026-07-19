@@ -50,9 +50,10 @@ jobs:
         id: bridge-changes
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          EVENT_NAME: ${{ github.event_name }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          if [[ "${{ github.event_name }}" != "pull_request" ]] \
+          if [[ "${EVENT_NAME}" != "pull_request" ]] \
             || ! git diff --quiet "${BASE_SHA}" "${HEAD_SHA}" -- \
               apps/matrix-a2a-bridge .github/workflows/ci.yml mise.toml; then
             echo "run=true" >> "${GITHUB_OUTPUT}"

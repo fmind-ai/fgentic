@@ -48,9 +48,12 @@ jobs:
         with:
           cache: false # release inputs must not depend on a mutable Actions cache
       - name: Set lower-case registry path
+        env:
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
-          echo "IMAGE_REPOSITORY=$(echo "ghcr.io/${{ github.repository_owner }}/matrix-a2a-bridge" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
-          echo "CHART_REPOSITORY=$(echo "ghcr.io/${{ github.repository_owner }}/charts/matrix-a2a-bridge" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+          registry_owner="${REPOSITORY_OWNER,,}"
+          echo "IMAGE_REPOSITORY=ghcr.io/${registry_owner}/matrix-a2a-bridge" >> "${GITHUB_ENV}"
+          echo "CHART_REPOSITORY=ghcr.io/${registry_owner}/charts/matrix-a2a-bridge" >> "${GITHUB_ENV}"
       - name: Select immutable image and chart versions
         id: versions
         run: |
@@ -178,9 +181,10 @@ jobs:
         if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
           for package in matrix-a2a-bridge charts%2Fmatrix-a2a-bridge; do
-            visibility=$(gh api "/orgs/${{ github.repository_owner }}/packages/container/${package}" --jq .visibility)
+            visibility=$(gh api "/orgs/${REPOSITORY_OWNER}/packages/container/${package}" --jq .visibility)
             if [[ "$visibility" != "public" ]]; then
               echo "GHCR package ${package//%2F//} is ${visibility}; make it public before Flux is switched to keyless OCI verification." >&2
               exit 1
@@ -284,7 +288,11 @@ jobs:
       packages: read # pull the released image when GHCR is private
     steps:
       - name: Set lower-case release image path
-        run: echo "IMAGE_REPOSITORY=$(echo "ghcr.io/${{ github.repository_owner }}/matrix-a2a-bridge" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+        env:
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          registry_owner="${REPOSITORY_OWNER,,}"
+          echo "IMAGE_REPOSITORY=ghcr.io/${registry_owner}/matrix-a2a-bridge" >> "${GITHUB_ENV}"
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
         with:
