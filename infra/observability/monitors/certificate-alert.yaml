@@ -1,0 +1,77 @@
+# Every normal HTTPS listener terminates through this one cert-manager-managed certificate. Scope
+# the rules to its stable namespace/name and aggregate away issuer and scrape-target labels.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: platform-certificate
+  namespace: monitoring
+spec:
+  groups:
+    - name: platform-certificate
+      rules:
+        - record: namespace_name:platform_certificate_expiration_timestamp_seconds:max
+          expr: >-
+            max by (namespace, name) (
+              certmanager_certificate_expiration_timestamp_seconds{
+                namespace="gateway", name="matrix-tls"
+              }
+            )
+        - alert: PlatformCertificateNotReady
+          expr: >-
+            max by (namespace, name) (
+              absent(
+                certmanager_certificate_ready_status{
+                  namespace="gateway", name="matrix-tls", condition="True"
+                }
+              )
+            )
+            or
+            max by (namespace, name) (
+              certmanager_certificate_ready_status{
+                namespace="gateway", name="matrix-tls", condition="True"
+              }
+            ) == 0
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: The platform TLS certificate is not ready
+            description: >-
+              cert-manager has not reported Ready=True for {{ $labels.namespace }}/{{ $labels.name }}
+              for ten minutes. Check the Certificate, selected ClusterIssuer, ACME challenge or
+              local CA, and controller logs before the shared HTTPS listeners lose valid TLS.
+        - alert: PlatformCertificateExpiringSoon
+          # Keep the warning and critical bands mutually exclusive: 14 days > remaining > 1 day.
+          expr: >-
+            (
+              namespace_name:platform_certificate_expiration_timestamp_seconds:max
+              - time() < 1209600
+            )
+            and
+            (
+              namespace_name:platform_certificate_expiration_timestamp_seconds:max
+              - time() > 86400
+            )
+          for: 1h
+          labels:
+            severity: warning
+          annotations:
+            summary: The platform TLS certificate expires within 14 days
+            description: >-
+              {{ $labels.namespace }}/{{ $labels.name }} is inside the renewal warning window.
+              Check cert-manager renewal, issuer readiness, and the Gateway HTTP-01 route before
+              the certificate enters the final 24-hour critical window.
+        - alert: PlatformCertificateExpiryCritical
+          # Negative remaining time keeps an already-expired certificate in the critical band.
+          expr: >-
+            namespace_name:platform_certificate_expiration_timestamp_seconds:max
+            - time() <= 86400
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: The platform TLS certificate expires within 24 hours
+            description: >-
+              {{ $labels.namespace }}/{{ $labels.name }} is inside the final 24-hour renewal
+              window or has expired. Treat every public HTTPS listener as at risk until
+              cert-manager completes renewal and exposes a later expiration timestamp.
