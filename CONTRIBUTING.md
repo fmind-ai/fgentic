@@ -2,6 +2,8 @@
 
 Thanks for considering a contribution — human or AI agent, the rules are the same. Start with [docs/](docs/) (the specification, split by topic: architecture, design decisions, security, federation, licensing) and [.agents/AGENTS.md](.agents/AGENTS.md) (conventions that bind all contributors).
 
+Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md). For usage questions, configuration help, or early ideas, follow the [project support routes](.github/SUPPORT.md) before opening an issue.
+
 ## Where to start
 
 1. The backlog is the current set of [GitHub milestones](https://github.com/fmind-ai/fgentic/milestones) (the milestones page is the source of truth), each with a `kind/epic` tracker issue listing its issues in sweep order. **Pickup is scoped by the `track/*` labels, not raw milestone order:** work `track/v1` (the Definitive v1 scope — see the [focus board #316](https://github.com/fmind-ai/fgentic/issues/316)) first, ordered by `priority/p0 → p1 → p2`; leave `track/vision` until v1 ships.
