@@ -174,16 +174,26 @@ for workflow in "${workflows[@]}"; do
 			failed=true
 		fi
 	done <<<"${timeout_rows}"
-done
 
-# Runners must be pinned to an explicit Ubuntu image. `ubuntu-latest` silently re-points over a
-# 1-2 month rollout when a new LTS goes GA, which is exactly the unplanned OS flip the host-sensitive
-# smoke/policy jobs (Docker/k3d/kind/Calico, kernel-dependent NetworkPolicy tests) cannot absorb (#480).
-for workflow in "${workflows[@]}"; do
-	if rg -q 'runs-on:[[:space:]]*ubuntu-latest' "${workflow}"; then
-		echo "error: ${workflow#"${root_dir}/"}: pin the runner to an explicit ubuntu-<version>, not ubuntu-latest (#480)" >&2
+	# Keep every runner on the deliberately selected image. Typed traversal catches quoted
+	# latest labels, expressions, self-hosted arrays, and missing fields that text search misses.
+	runner_rows="$(
+		yq -o=json '.jobs' "${workflow}" | jq -r '
+		  to_entries[] as $job |
+		  ($job.value["runs-on"]) as $runner |
+		  select(($runner | type) != "string" or $runner != "ubuntu-24.04") |
+		  [
+		    $job.key,
+		    (if $job.value | has("runs-on") then ($runner | tojson) else "<missing>" end)
+		  ] |
+		  @tsv
+		'
+	)"
+	while IFS=$'\t' read -r job runner; do
+		[[ -n "${job}" ]] || continue
+		echo "error: ${workflow#"${root_dir}/"}: job ${job} needs runs-on: ubuntu-24.04; got ${runner}" >&2
 		failed=true
-	fi
+	done <<<"${runner_rows}"
 done
 
 if ! mise --cd "${root_dir}" tasks info install:apps --json | jq -e '
@@ -206,4 +216,4 @@ if ! yq --exit-status \
 fi
 
 [[ "${failed}" == false ]] || exit 1
-echo "GitHub Actions pinning, permission-map, checkout-hardening, bounded-runtime, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
+echo "GitHub Actions pinning, permission-map, checkout-hardening, bounded-runtime, pinned-runner, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
