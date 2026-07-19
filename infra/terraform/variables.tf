@@ -112,6 +112,14 @@ variable "domain" {
   type        = string
   default     = "fgentic.fmind.ai"
   description = "The platform apex domain (the Matrix server_name) — must match the cluster's platform-settings"
+
+  validation {
+    condition = length(var.domain) <= 245 && length(split(".", var.domain)) >= 2 && alltrue([
+      for label in split(".", var.domain) :
+      length(label) >= 1 && length(label) <= 63 && can(regex("^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$", label))
+    ])
+    error_message = "domain must be a lowercase multi-label DNS name no longer than 245 characters, with 1-63 character labels that start and end with a letter or number."
+  }
 }
 
 variable "dns_zone_name" {
