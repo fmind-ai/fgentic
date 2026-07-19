@@ -126,7 +126,9 @@ data:
 
             try:
                 untrusted_request: Any = json.loads(body or b"{}")
-            except json.JSONDecodeError:
+            # The bytes decoder also raises ValueError for invalid UTF-8/integer limits and
+            # RecursionError for excessive nesting; all are untrusted invalid JSON here.
+            except (RecursionError, ValueError):
                 self.write_json(400, {"error": {"message": "invalid JSON"}})
                 return
             if not isinstance(untrusted_request, dict):
