@@ -13,6 +13,7 @@ PUBLIC_ENTRYPOINTS = (
     ".agents/AGENTS.md",
     ".github/PULL_REQUEST_TEMPLATE.md",
     "ADOPTERS.md",
+    "CODE_OF_CONDUCT.md",
     "CONTRIBUTING.md",
     "GOVERNANCE.md",
     "MAINTAINERS.md",
