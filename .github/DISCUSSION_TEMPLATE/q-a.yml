@@ -1,0 +1,32 @@
+title: "[Question] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form for usage, configuration, and evaluation questions. Search the [documentation](https://github.com/fmind-ai/fgentic/tree/main/docs) and existing [Q&A discussions](https://github.com/fmind-ai/fgentic/discussions/categories/q-a) first. Report reproducible defects through the [bug report form](https://github.com/fmind-ai/fgentic/issues/new?template=bug_report.yml) and security vulnerabilities through [private vulnerability reporting](https://github.com/fmind-ai/fgentic/security/advisories/new).
+  - type: textarea
+    id: question
+    attributes:
+      label: Question
+      description: Ask one clear question and describe the outcome you need.
+    validations:
+      required: true
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and what you tried
+      description: Link the documentation or discussion you consulted and explain what remains unclear.
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Optional deployment profile, Fgentic version or commit, and relevant component versions. Do not include credentials or private content.
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: Public evidence
+      options:
+        - label: I removed credentials, tokens, personal data, private room content, and internal hostnames from the information above.
+          required: true
