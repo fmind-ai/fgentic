@@ -1,0 +1,55 @@
+# Native CloudNativePG data-plane signals complement the generic Pod/StatefulSet alerts: a running
+# standby can stop receiving WAL, and a running primary can fail to archive recovery points.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cnpg-data-plane
+  namespace: monitoring
+spec:
+  groups:
+    - name: cnpg-data-plane
+      rules:
+        - alert: CNPGReplicationLag
+          expr: cnpg_pg_replication_lag{namespace="postgres"} > 300
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: A platform PostgreSQL standby is more than five minutes behind
+            description: >-
+              {{ $labels.namespace }}/{{ $labels.pod }} has remained more than 300 seconds behind
+              the primary for five minutes. Check WAL receiver health, storage and network
+              pressure, and replica readiness before relying on this standby for failover.
+        - alert: CNPGReplicaNotStreaming
+          # The primary reports 0 > 0 and stays non-firing; only a standby in recovery (1) whose
+          # WAL receiver is down (0) crosses the threshold.
+          expr: >-
+            cnpg_pg_replication_in_recovery{namespace="postgres"}
+            >
+            cnpg_pg_replication_is_wal_receiver_up{namespace="postgres"}
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: A platform PostgreSQL standby stopped streaming WAL
+            description: >-
+              {{ $labels.namespace }}/{{ $labels.pod }} is in recovery but its WAL receiver has
+              remained down for five minutes. The primary may still be available, but database
+              redundancy and the safe failover set are degraded until streaming resumes.
+        - alert: CNPGWALArchivingFailed
+          # CloudNativePG emits these primary-only timestamps; a positive delta means the latest
+          # archive attempt failed after the most recent successful archive.
+          expr: >-
+            cnpg_pg_stat_archiver_last_failed_time{namespace="postgres"}
+            -
+            cnpg_pg_stat_archiver_last_archived_time{namespace="postgres"}
+            > 1
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: Platform PostgreSQL WAL archiving is failing
+            description: >-
+              {{ $labels.namespace }}/{{ $labels.pod }} reports a WAL archive failure newer than
+              its latest successful archive. Point-in-time recovery coverage is no longer
+              advancing; inspect archive status, object-store access, and Workload Identity.
