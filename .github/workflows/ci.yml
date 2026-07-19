@@ -65,9 +65,9 @@ jobs:
         if: steps.bridge-changes.outputs.run == 'true'
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
         with:
-          # The app config supplies Go, kind, and kubectl; the inherited root config supplies
-          # jq and yq, which the integration harness invokes directly.
-          install_args: go kind kubectl jq yq
+          # The app config supplies kind and kubectl; the inherited root config supplies jq and
+          # yq. Go builds run inside the integration harness's pinned container images.
+          install_args: kind kubectl jq yq
           working_directory: apps/matrix-a2a-bridge
       - name: Run bridge integration
         if: steps.bridge-changes.outputs.run == 'true'
