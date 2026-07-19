@@ -45,7 +45,7 @@ jobs:
           fetch-depth: 0 # digest-pin retries rebase onto concurrent main updates
           persist-credentials: false
       - name: Install mise system
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
         with:
           cache: false # release inputs must not depend on a mutable Actions cache
       - name: Set lower-case registry path
