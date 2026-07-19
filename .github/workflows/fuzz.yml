@@ -25,10 +25,11 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-      - name: Install mise system
+      - name: Install Go fuzz toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
-      - name: Install application toolchains
-        run: mise run install:apps
+        with:
+          install_args: go
+          working_directory: apps/matrix-a2a-bridge
       - name: Bounded fuzz smoke (extended budget)
         env:
           FGENTIC_FUZZTIME: 60s
