@@ -286,7 +286,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      issues: write
+      issues: write # maintain the default-branch smoke failure tracker
     env:
       DEMO_RESULT: ${{ needs.demo.result }}
       POLICY_RESULT: ${{ needs.policy.result }}

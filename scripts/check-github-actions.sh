@@ -279,8 +279,33 @@ for workflow in "${workflows[@]}"; do
 		fi
 	done <<<"${checkout_rows}"
 
-	# Named steps keep hosted check failures and release evidence understandable. Use the
-	# stable job/index location so malformed or absent names remain actionable.
+	# Named jobs and steps keep hosted check failures and release evidence understandable.
+	job_name_rows="$(
+		yq -o=json '.jobs' "${workflow}" | jq -r '
+		  to_entries[] as $job |
+		  $job.value as $value |
+		  select(
+		    ($value | type) != "object" or
+		    ($value | has("name") | not) or
+		    ($value.name | type) != "string" or
+		    ($value.name | length) == 0
+		  ) |
+		  [
+		    $job.key,
+		    (if ($value | type) != "object" then ($value | tojson)
+		    elif ($value | has("name")) then ($value.name | tojson)
+		    else "<missing>" end)
+		  ] |
+		  @tsv
+		'
+	)"
+	while IFS=$'\t' read -r job name; do
+		[[ -n "${job}" ]] || continue
+		echo "error: ${workflow#"${root_dir}/"}: job ${job} needs a non-empty string name; got ${name}" >&2
+		failed=true
+	done <<<"${job_name_rows}"
+
+	# Use the stable job/index location so malformed or absent step names remain actionable.
 	step_name_rows="$(
 		yq -o=json '.jobs' "${workflow}" | jq -r '
 		  to_entries[] as $job |
@@ -389,4 +414,4 @@ if ! yq --exit-status \
 fi
 
 [[ "${failed}" == false ]] || exit 1
-echo "GitHub Actions pinning, actionable-artifact, bounded-artifact, container-digest, permission-map, checkout-hardening, named-step, Bash-pipefail, template-boundary, bounded-runtime, pinned-runner, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
+echo "GitHub Actions pinning, actionable-artifact, bounded-artifact, container-digest, permission-map, checkout-hardening, named-job-and-step, Bash-pipefail, template-boundary, bounded-runtime, pinned-runner, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"

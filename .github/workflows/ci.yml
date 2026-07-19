@@ -13,6 +13,7 @@ concurrency:
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 jobs:
   check:
+    name: Check and test repository
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     steps:

@@ -44,8 +44,8 @@ jobs:
     timeout-minutes: 10
     permissions:
       contents: read
-      pages: write
-      id-token: write
+      pages: write # publish the built site to GitHub Pages
+      id-token: write # authenticate the Pages deployment through GitHub OIDC
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
