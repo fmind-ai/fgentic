@@ -197,9 +197,11 @@ spec:
           resources:
             requests:
               cpu: 10m
+              ephemeral-storage: 8Mi
               memory: 32Mi
             limits:
               cpu: 250m
+              ephemeral-storage: 64Mi
               memory: 128Mi
           securityContext:
             allowPrivilegeEscalation: false
@@ -218,7 +220,9 @@ spec:
           configMap:
             name: mcp-tool-rate-limit
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            # Leave headroom inside the container limit for logs and other ephemeral usage.
+            sizeLimit: 32Mi
 ---
 # Default-deny ingress already selects both quota pods; restrict their egress to the one required
 # service hop as well, with DNS allowed only for the rate-limit service's Redis lookup.
