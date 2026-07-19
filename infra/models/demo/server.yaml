@@ -16,6 +16,8 @@ data:
     SOURCE_DIR = Path(os.environ.get("SOURCE_DIR", "/app"))
     RESPONSE_TEXT = (SOURCE_DIR / "response.txt").read_text(encoding="utf-8").strip()
     ATTRIBUTION_LOG = os.environ.get("ATTRIBUTION_LOG")
+    # Bound both the raw body and JSON expansion well below the pod's 64 MiB memory limit.
+    MAX_REQUEST_BYTES = 1_048_576
 
 
     class Handler(BaseHTTPRequestHandler):
@@ -29,6 +31,32 @@ data:
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def request_size(self) -> int | None:
+            content_lengths = self.headers.get_all("Content-Length", [])
+            if not content_lengths:
+                self.write_json(411, {"error": {"message": "Content-Length is required"}})
+                return None
+            if (
+                len(content_lengths) != 1
+                or not content_lengths[0].isascii()
+                or not content_lengths[0].isdecimal()
+                or bool(self.headers.get_all("Transfer-Encoding", []))
+            ):
+                self.write_json(400, {"error": {"message": "invalid Content-Length"}})
+                return None
+
+            # Normalize before int() so an oversized decimal header cannot hit Python's digit cap.
+            normalized_length = content_lengths[0].lstrip("0") or "0"
+            if len(normalized_length) > len(str(MAX_REQUEST_BYTES)):
+                self.write_json(413, {"error": {"message": "request body too large"}})
+                return None
+
+            size = int(normalized_length)
+            if size > MAX_REQUEST_BYTES:
+                self.write_json(413, {"error": {"message": "request body too large"}})
+                return None
+            return size
 
         def do_GET(self) -> None:
             if self.path in ("/health", "/healthz"):
@@ -56,10 +84,13 @@ data:
                 self.write_json(404, {"error": {"message": "not found"}})
                 return
 
+            size = self.request_size()
+            if size is None:
+                return
+
             try:
-                size = int(self.headers.get("Content-Length", "0"))
                 untrusted_request: Any = json.loads(self.rfile.read(size) or b"{}")
-            except (ValueError, json.JSONDecodeError):
+            except json.JSONDecodeError:
                 self.write_json(400, {"error": {"message": "invalid JSON"}})
                 return
             if not isinstance(untrusted_request, dict):
