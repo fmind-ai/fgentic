@@ -18,10 +18,12 @@ spec:
             )
         - alert: PlatformCertificateNotReady
           expr: >-
-            absent(
-              certmanager_certificate_ready_status{
-                namespace="gateway", name="matrix-tls", condition="True"
-              }
+            max by (namespace, name) (
+              absent(
+                certmanager_certificate_ready_status{
+                  namespace="gateway", name="matrix-tls", condition="True"
+                }
+              )
             )
             or
             max by (namespace, name) (
