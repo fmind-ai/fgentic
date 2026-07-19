@@ -37,6 +37,11 @@ run "enforces_backup_hard_delete_horizon" {
   }
 
   assert {
+    condition     = length(google_storage_bucket.pg_backups.retention_policy) == 1 && tonumber(google_storage_bucket.pg_backups.retention_policy[0].retention_period) == 604800 && !google_storage_bucket.pg_backups.retention_policy[0].is_locked
+    error_message = "The backup bucket must retain objects for seven days with a reversible, unlocked policy."
+  }
+
+  assert {
     condition     = length(google_storage_bucket.pg_backups.lifecycle_rule) == 1
     error_message = "The backup bucket must keep exactly one retention lifecycle rule."
   }
