@@ -150,6 +150,35 @@ for workflow in "${workflows[@]}"; do
 		fi
 	done <<<"${uses_list}"
 
+	# Bounded jobs install only the tools they execute. The aggregate CI check intentionally
+	# resolves the root inventory because it runs the complete format/check/test vocabulary.
+	mise_setup_rows="$(
+		yq -o=json '.jobs' "${workflow}" | jq -r \
+			--arg workflow "${workflow#"${root_dir}/"}" '
+		  def nonempty_string: type == "string" and length > 0;
+		  to_entries[] as $job |
+		  ($job.value.steps // [] | to_entries[]) as $step |
+		  $step.value as $value |
+		  select(($value | type) == "object" and ($value.uses | type) == "string") |
+		  select($value.uses | ascii_downcase | startswith("jdx/mise-action@")) |
+		  ($job.key + ".steps[" + ($step.key | tostring) + "]") as $location |
+		  if ($workflow == ".github/workflows/ci.yml" and $job.key == "check" and
+		    $value.name == "Install mise system") then empty
+		  elif (($value.with | type) == "object" and ($value.with | has("install_args")) and
+		    ($value.with.install_args | nonempty_string)) then empty
+		  else [($location + ".with.install_args"),
+		    (if (($value.with | type) == "object" and ($value.with | has("install_args")))
+		      then ($value.with.install_args | tojson) else "<missing>" end)]
+		  end |
+		  @tsv
+		'
+	)"
+	while IFS=$'\t' read -r field value; do
+		[[ -n "${field}" ]] || continue
+		echo "error: ${workflow#"${root_dir}/"}: invalid ${field}; expected a native non-empty string, got ${value}" >&2
+		failed=true
+	done <<<"${mise_setup_rows}"
+
 	# Diagnostic artifacts need actionable inputs, prompt expiry, and hidden-file exclusion.
 	# Inspect every upload step generically so new workflows inherit the same boundary.
 	artifact_rows="$(
@@ -414,4 +443,4 @@ if ! yq --exit-status \
 fi
 
 [[ "${failed}" == false ]] || exit 1
-echo "GitHub Actions pinning, actionable-artifact, bounded-artifact, container-digest, permission-map, checkout-hardening, named-job-and-step, Bash-pipefail, template-boundary, bounded-runtime, pinned-runner, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
+echo "GitHub Actions pinning, actionable-artifact, bounded-artifact, container-digest, permission-map, checkout-hardening, named-job-and-step, Bash-pipefail, template-boundary, bounded-runtime, pinned-runner, concurrency, scoped-mise-setup, and serialized-install contracts passed (${#workflows[@]} workflows)"
