@@ -1,7 +1,7 @@
 ---
 type: Specification
 title: Bridge Specification
-description: Behavioral contract of the Matrix-to-A2A bridge appservice: storage, delegation, threading, limits, load sanity (§5, §6, §12).
+description: "Behavioral contract of the Matrix-to-A2A bridge appservice: storage, delegation, threading, limits, load sanity (§5, §6, §12)."
 ---
 
 # Bridge Specification (formerly SPEC §5, §6, §12)
