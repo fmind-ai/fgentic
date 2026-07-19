@@ -155,17 +155,19 @@ for workflow in "${workflows[@]}"; do
 	mise_setup_rows="$(
 		yq -o=json '.jobs' "${workflow}" | jq -r \
 			--arg workflow "${workflow#"${root_dir}/"}" '
-		  def nonempty_string: type == "string" and length > 0;
+		  def nonblank_string: type == "string" and test("\\S");
 		  to_entries[] as $job |
 		  ($job.value.steps // [] | to_entries[]) as $step |
 		  $step.value as $value |
 		  select(($value | type) == "object" and ($value.uses | type) == "string") |
 		  select($value.uses | ascii_downcase | startswith("jdx/mise-action@")) |
 		  ($job.key + ".steps[" + ($step.key | tostring) + "]") as $location |
-		  if ($workflow == ".github/workflows/ci.yml" and $job.key == "check" and
-		    $value.name == "Install mise system") then empty
-		  elif (($value.with | type) == "object" and ($value.with | has("install_args")) and
-		    ($value.with.install_args | nonempty_string)) then empty
+		  (($workflow == ".github/workflows/ci.yml" and $job.key == "check" and
+		    $value.name == "Install mise system")) as $aggregate_setup |
+		  if (($value.with | type) == "object" and ($value.with | has("install_args")) and
+		    ($value.with.install_args | nonblank_string)) then empty
+		  elif ($aggregate_setup and (($value.with | type) != "object" or
+		    ($value.with | has("install_args") | not))) then empty
 		  else [($location + ".with.install_args"),
 		    (if (($value.with | type) == "object" and ($value.with | has("install_args")))
 		      then ($value.with.install_args | tojson) else "<missing>" end)]
@@ -175,7 +177,7 @@ for workflow in "${workflows[@]}"; do
 	)"
 	while IFS=$'\t' read -r field value; do
 		[[ -n "${field}" ]] || continue
-		echo "error: ${workflow#"${root_dir}/"}: invalid ${field}; expected a native non-empty string, got ${value}" >&2
+		echo "error: ${workflow#"${root_dir}/"}: invalid ${field}; expected a native non-blank string, got ${value}" >&2
 		failed=true
 	done <<<"${mise_setup_rows}"
 
@@ -422,6 +424,20 @@ for workflow in "${workflows[@]}"; do
 		failed=true
 	done <<<"${runner_rows}"
 done
+
+aggregate_setup_count="$(
+	yq -o=json '.jobs.check.steps' "${root_dir}/.github/workflows/ci.yml" | jq '
+	  [.[] |
+	    select((.uses | type) == "string" and
+	      (.uses | ascii_downcase | startswith("jdx/mise-action@")) and
+	      .name == "Install mise system")] |
+	  length
+	'
+)"
+if [[ "${aggregate_setup_count}" -ne 1 ]]; then
+	echo "error: .github/workflows/ci.yml: expected exactly one aggregate mise setup; got ${aggregate_setup_count}" >&2
+	exit 1
+fi
 
 if ! mise --cd "${root_dir}" tasks info install:apps --json | jq -e '
   .depends == [] and
