@@ -36,10 +36,18 @@ def _task_vocabulary(mise_config: Path) -> set[str]:
         if not isinstance(definition, Mapping) or "alias" not in definition:
             continue
         alias = definition["alias"]
-        if not isinstance(alias, str) or not alias:
-            msg = f"{mise_config}: task {name!r} must use one nonblank string alias"
+        if isinstance(alias, str):
+            aliases = (alias,)
+        elif isinstance(alias, list):
+            aliases = tuple(value for value in alias if isinstance(value, str))
+            if len(aliases) != len(alias):
+                aliases = ()
+        else:
+            aliases = ()
+        if not aliases or any(not value.strip() for value in aliases):
+            msg = f"{mise_config}: task {name!r} aliases must be a nonblank string or list of nonblank strings"
             raise TypeError(msg)
-        vocabulary.add(alias)
+        vocabulary.update(aliases)
     return vocabulary
 
 
@@ -98,6 +106,7 @@ class DocumentedTaskIntegrityTest(TestCase):
     def test_accepts_task_names_and_aliases_in_prose_and_code(self) -> None:
         markdown = """
 Run `mise run check` before opening a PR.
+The deploy task also accepts `mise run ship`.
 
 ```console
 mise run t
@@ -109,7 +118,9 @@ Unrelated text such as `mise tasks` is not a task invocation.
             repository_root = Path(temporary)
             mise_config = repository_root / "mise.toml"
             mise_config.write_text(
-                '[tasks.check]\nrun = "true"\n\n[tasks.test]\nalias = "t"\nrun = "true"\n',
+                '[tasks.check]\nrun = "true"\n\n'
+                '[tasks.test]\nalias = "t"\nrun = "true"\n\n'
+                '[tasks.deploy]\nalias = ["d", "ship"]\nrun = "true"\n',
                 encoding="utf-8",
             )
             source = repository_root / "README.md"
