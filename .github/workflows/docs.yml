@@ -7,6 +7,9 @@ on:
       - docs/**
       - mise.toml
   workflow_dispatch:
+defaults:
+  run:
+    shell: bash
 permissions:
   contents: read
 concurrency:

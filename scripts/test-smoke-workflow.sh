@@ -66,19 +66,21 @@ yq -e '
       ."continue-on-error" == true and .env.KIND_CLUSTER_NAME == "fgentic-smoke-quota")] |
     length) == 1 and
   ([.jobs.policy.steps[] | select(.name == "Record policy results") |
-    select((.run // "") | contains("quota=${{ steps.quota.outcome }}"))] | length) == 1 and
+    select(.env.QUOTA_OUTCOME == "${{ steps.quota.outcome }}" and
+      .env.KUBERNETES_AUDIT_OUTCOME == "${{ steps.kubernetes_audit.outcome }}" and
+      ((.run // "") | contains("quota=${QUOTA_OUTCOME}")) and
+      ((.run // "") | contains("kubernetes_audit=${KUBERNETES_AUDIT_OUTCOME}")))] |
+    length) == 1 and
   ([.jobs.policy.steps[] | select(.name == "Enforce policy result") |
-    select((.run // "") | contains("steps.quota.outcome"))] | length) == 1 and
+    select(.env.QUOTA_OUTCOME == "${{ steps.quota.outcome }}" and
+      .env.KUBERNETES_AUDIT_OUTCOME == "${{ steps.kubernetes_audit.outcome }}" and
+      ((.run // "") | contains("\"${QUOTA_OUTCOME}\" != \"success\"")) and
+      ((.run // "") | contains("\"${KUBERNETES_AUDIT_OUTCOME}\" != \"success\"")))] |
+    length) == 1 and
   ([.jobs.policy.steps[] |
     select(.id == "kubernetes_audit" and
       ."continue-on-error" == true and
       .run == "mise run test:kubernetes-audit")] | length) == 1 and
-  ([.jobs.policy.steps[] |
-    select(((.run // "") | contains("kubernetes_audit=${{ steps.kubernetes_audit.outcome }}")))] |
-    length) == 1 and
-  ([.jobs.policy.steps[] |
-    select(((.run // "") | contains("steps.kubernetes_audit.outcome }}\" != \"success\"")))] |
-    length) == 1 and
   ([.jobs.policy.steps[] |
     select(((.uses // "") | test("^actions/upload-artifact@[0-9a-f]{40}$")) and
       (.if | contains("failure")))] |

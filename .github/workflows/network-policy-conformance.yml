@@ -1,6 +1,9 @@
 name: NetworkPolicy conformance
 on:
   workflow_dispatch:
+defaults:
+  run:
+    shell: bash
 permissions:
   contents: read
 concurrency:

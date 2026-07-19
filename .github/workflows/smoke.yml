@@ -12,6 +12,9 @@ on:
         options:
           - none
           - bad-model-image
+defaults:
+  run:
+    shell: bash
 permissions:
   contents: read
 concurrency:
@@ -192,7 +195,7 @@ jobs:
           QUOTA_OUTCOME: ${{ steps.quota.outcome }}
           TRACING_OUTCOME: ${{ steps.tracing.outcome }}
         run: |
-          # Contract sources: quota=${{ steps.quota.outcome }} and kubernetes_audit=${{ steps.kubernetes_audit.outcome }}.
+          # Contract sources: the quota and kubernetes_audit step outcomes projected above.
           mkdir -p "${NETWORK_POLICY_DIAGNOSTICS_DIR}"
           cat >"${NETWORK_POLICY_DIAGNOSTICS_DIR}/workflow-results.txt" <<EOF
           a2a=${A2A_OUTCOME}
@@ -212,7 +215,7 @@ jobs:
           QUOTA_OUTCOME: ${{ steps.quota.outcome }}
           TRACING_OUTCOME: ${{ steps.tracing.outcome }}
         run: |
-          # Contract sources: steps.quota.outcome and "${{ steps.kubernetes_audit.outcome }}" != "success".
+          # Enforce every projected policy-step outcome, including quota and Kubernetes audit.
           if [[ "${A2A_OUTCOME}" != "success" \
             || "${MCP_OUTCOME}" != "success" \
             || "${TRACING_OUTCOME}" != "success" \

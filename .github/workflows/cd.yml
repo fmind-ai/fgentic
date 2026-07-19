@@ -11,6 +11,9 @@ on:
       - .github/workflows/cd.yml
   release:
     types: [published]
+defaults:
+  run:
+    shell: bash
 # Compatibility defaults for the supply-chain contract; every job below replaces them with its
 # own least-privilege permission set, so these values are never effective job permissions.
 permissions:
