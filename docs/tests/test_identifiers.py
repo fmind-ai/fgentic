@@ -2,8 +2,9 @@
 
 import re
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from unittest import TestCase
 
 DOCS_ROOT = Path(__file__).resolve().parents[1]
@@ -21,14 +22,35 @@ SECTION_OWNERS = {
 }
 _SECTION_REFERENCE = re.compile(r"§(?P<start>[1-9][0-9]*)(?:[\u2013-]§?(?P<end>[1-9][0-9]*))?")
 _DECISION_RANGE = re.compile(r"\bD1[\u2013-]D(?P<maximum>[1-9][0-9]*)\b")
-_DECISION_ENTRY = re.compile(r"^### D(?P<identifier>[1-9][0-9]*) — ", flags=re.MULTILINE)
+_DECISION_ENTRY = re.compile(r"^### D(?P<identifier>[1-9][0-9]*) — ")
 _ADR_FILE = re.compile(r"^(?P<identifier>[0-9]{4})-[a-z0-9][a-z0-9-]*\.md$")
-_ADR_HEADING = re.compile(r"^# (?P<identifier>[0-9]{4}) — ", flags=re.MULTILINE)
+_ADR_HEADING = re.compile(r"^# (?P<identifier>[0-9]{4}) — ")
+_FENCE = re.compile(r"^ {0,3}(?P<marker>`{3,}|~{3,})")
+
+
+def _markdown_lines(markdown: str) -> Iterator[str]:
+    """Yield source lines outside fenced code blocks."""
+    fence_character: str | None = None
+    fence_length = 0
+    for line in markdown.splitlines():
+        fence = _FENCE.match(line)
+        if fence is not None:
+            marker = fence.group("marker")
+            if fence_character is None:
+                fence_character = marker[0]
+                fence_length = len(marker)
+                continue
+            if marker[0] == fence_character and len(marker) >= fence_length and not line[fence.end() :].strip():
+                fence_character = None
+                fence_length = 0
+                continue
+        if fence_character is None:
+            yield line
 
 
 def _first_h1(markdown: str) -> str | None:
     """Return the first level-one heading."""
-    return next((line for line in markdown.splitlines() if line.startswith("# ")), None)
+    return next((line for line in _markdown_lines(markdown) if line.startswith("# ")), None)
 
 
 def _section_identifiers(heading: str) -> list[int]:
@@ -93,7 +115,11 @@ def _decision_errors(
         return (f"{path}: H1 must advertise the contiguous D1-D<n> range",)
 
     maximum = int(advertised.group("maximum"))
-    identifiers = [int(match.group("identifier")) for match in _DECISION_ENTRY.finditer(markdown)]
+    identifiers = [
+        int(match.group("identifier"))
+        for line in _markdown_lines(markdown)
+        if (match := _DECISION_ENTRY.match(line)) is not None
+    ]
     counts = Counter(identifiers)
     expected = set(range(1, maximum + 1))
     missing = sorted(expected - counts.keys())
@@ -122,9 +148,9 @@ def _adr_errors(documents: dict[str, str], stable_maximum: int = ADR_MAXIMUM) ->
             continue
         file_identifier = int(file_match.group("identifier"))
         identifiers.append(file_identifier)
-        heading_match = _ADR_HEADING.search(markdown)
+        heading_match = _ADR_HEADING.match(_first_h1(markdown) or "")
         if heading_match is None:
-            errors.append(f"{filename}: missing numbered ADR H1")
+            errors.append(f"{filename}: first H1 must start with ADR number {file_identifier:04d}")
             continue
         heading_identifier = int(heading_match.group("identifier"))
         if heading_identifier != file_identifier:
@@ -146,6 +172,15 @@ def _adr_errors(documents: dict[str, str], stable_maximum: int = ADR_MAXIMUM) ->
     return tuple(errors)
 
 
+def _adr_documents(adr_root: Path) -> dict[str, str]:
+    """Read every direct ADR Markdown document except its directory index."""
+    return {
+        path.name: path.read_text(encoding="utf-8")
+        for path in adr_root.glob("*.md")
+        if path.name != "index.md" and not path.name.startswith(".") and path.is_file()
+    }
+
+
 def _identifier_errors(docs_root: Path = DOCS_ROOT) -> tuple[str, ...]:
     """Return every stable-identifier error in the documentation corpus."""
     headings: dict[str, str | None] = {}
@@ -159,11 +194,7 @@ def _identifier_errors(docs_root: Path = DOCS_ROOT) -> tuple[str, ...]:
         if decisions_path.is_file()
         else ("design-decisions.md: missing decision register",)
     )
-    documents = {
-        path.name: path.read_text(encoding="utf-8")
-        for path in (docs_root / "adr").glob("[0-9][0-9][0-9][0-9]-*.md")
-        if path.is_file()
-    }
+    documents = _adr_documents(docs_root / "adr")
     return _section_errors(headings) + decision_errors + _adr_errors(documents)
 
 
@@ -216,6 +247,21 @@ class IdentifierIntegrityTest(TestCase):
             ),
         )
 
+    def test_ignores_fenced_decision_pseudo_entries(self) -> None:
+        markdown = "\n".join(
+            (
+                "# Design Decisions D1-D1",
+                "```markdown",
+                "### D1 — Example only",
+                "```",
+            )
+        )
+
+        self.assertEqual(
+            _decision_errors(markdown, stable_maximum=1),
+            ("design-decisions.md: missing decisions D1",),
+        )
+
     def test_reports_terminal_identifier_removal(self) -> None:
         decisions = "\n".join(
             ("# Design Decisions D1\u2013D19", *(f"### D{value} — Decision" for value in range(1, 20)))
@@ -243,3 +289,23 @@ class IdentifierIntegrityTest(TestCase):
                 "ADR inventory: duplicate identifiers 0003",
             ),
         )
+
+    def test_requires_numbered_first_adr_h1(self) -> None:
+        documents = {"0001-example.md": "# Overview\n\n# 0001 — Secondary\n"}
+
+        self.assertEqual(
+            _adr_errors(documents, stable_maximum=1),
+            ("0001-example.md: first H1 must start with ADR number 0001",),
+        )
+
+    def test_discovers_malformed_adr_filenames(self) -> None:
+        with TemporaryDirectory() as directory:
+            adr_root = Path(directory)
+            (adr_root / "0021_invalid.md").write_text("# 0021 — Invalid\n", encoding="utf-8")
+            (adr_root / "index.md").write_text("# Index\n", encoding="utf-8")
+            (adr_root / ".scratch.md").write_text("# Local scratch\n", encoding="utf-8")
+
+            self.assertEqual(
+                _adr_errors(_adr_documents(adr_root), stable_maximum=0),
+                ("0021_invalid.md: invalid numbered ADR filename",),
+            )
