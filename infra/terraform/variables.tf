@@ -16,6 +16,11 @@ variable "region" {
   type        = string
   description = "Region for regional resources (subnet, static IP)"
   default     = "europe-west1"
+
+  validation {
+    condition     = can(regex("^[a-z]+(-[a-z]+)+[0-9]+$", var.region))
+    error_message = "region must use a lowercase Google Cloud region code such as europe-west1 or northamerica-northeast2."
+  }
 }
 
 variable "zone" {
@@ -24,8 +29,8 @@ variable "zone" {
   default     = "europe-west1-b"
 
   validation {
-    condition     = var.regional || startswith(var.zone, "${var.region}-")
-    error_message = "For a zonal cluster, zone must belong to region so GKE can use the regional subnet (for example, region=europe-west1 and zone=europe-west1-b)."
+    condition     = var.regional || can(regex("^${var.region}-[a-z0-9]+$", var.zone))
+    error_message = "For a zonal cluster, zone must use the configured region plus a lowercase alphanumeric suffix (for example, europe-west1-b or us-central1-ai1a)."
   }
 }
 

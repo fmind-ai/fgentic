@@ -35,6 +35,46 @@ run "accepts_zone_in_configured_region" {
   }
 }
 
+run "accepts_multi_segment_two_digit_region" {
+  command = plan
+
+  variables {
+    region = "europe-west12"
+    zone   = "europe-west12-c"
+  }
+}
+
+run "accepts_ai_zone_suffix" {
+  command = plan
+
+  variables {
+    region = "us-central1"
+    zone   = "us-central1-ai1a"
+  }
+}
+
+run "rejects_region_without_separator" {
+  command = plan
+
+  variables {
+    region = "europewest1"
+    zone   = "europewest1-b"
+  }
+
+  expect_failures = [var.region]
+}
+
+run "rejects_uppercase_region" {
+  command = plan
+
+  variables {
+    region = "EUROPE-WEST1"
+    zone   = "EUROPE-WEST1-b"
+  }
+
+  expect_failures = [var.region]
+}
+
 run "rejects_zone_outside_configured_region" {
   command = plan
 
@@ -46,13 +86,35 @@ run "rejects_zone_outside_configured_region" {
   expect_failures = [var.zone]
 }
 
+run "rejects_empty_zone_suffix" {
+  command = plan
+
+  variables {
+    region = "europe-west1"
+    zone   = "europe-west1-"
+  }
+
+  expect_failures = [var.zone]
+}
+
+run "rejects_non_alphanumeric_zone_suffix" {
+  command = plan
+
+  variables {
+    region = "europe-west1"
+    zone   = "europe-west1-b_test"
+  }
+
+  expect_failures = [var.zone]
+}
+
 run "regional_cluster_ignores_zone" {
   command = plan
 
   variables {
     regional = true
     region   = "europe-west4"
-    zone     = "us-central1-a"
+    zone     = "not a zone"
   }
 
   assert {
