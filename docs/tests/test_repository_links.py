@@ -1,5 +1,6 @@
 """Keep public repository links and community routes consistent."""
 
+import re
 from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -15,6 +16,12 @@ DISCUSSION_TEMPLATE_DIRECTORY = REPOSITORY_ROOT / ".github/DISCUSSION_TEMPLATE"
 ISSUE_TEMPLATE_CONFIG = REPOSITORY_ROOT / ".github/ISSUE_TEMPLATE/config.yml"
 SUPPORT_POLICY = REPOSITORY_ROOT / ".github/SUPPORT.md"
 NEW_DISCUSSION_PATH = "/fmind-ai/fgentic/discussions/new"
+SAME_REPOSITORY_MAIN_PREFIXES = (
+    "/fmind-ai/fgentic/blob/main/",
+    "/fmind-ai/fgentic/tree/main/",
+)
+SAME_REPOSITORY_MAIN_URL = re.compile(r"https://github\.com/fmind-ai/fgentic/(?:blob|tree)/main/[^\s<>()\[\]`\"']+")
+RAW_URL_TRAILING_DELIMITERS = ".,;:!?*~}"
 PUBLIC_ENTRYPOINTS = (
     ".agents/AGENTS.md",
     ".github/PULL_REQUEST_TEMPLATE.md",
@@ -54,6 +61,21 @@ def _rendered_targets(markdown: str) -> list[str]:
     return parser.targets
 
 
+def _tracked_targets(markdown: str) -> list[str]:
+    """Return rendered targets plus copy-ready same-repository main URLs."""
+    targets = _rendered_targets(markdown)
+    for match in SAME_REPOSITORY_MAIN_URL.finditer(markdown):
+        target = match.group().rstrip(RAW_URL_TRAILING_DELIMITERS)
+        for delimiter in ("__", "_"):
+            prefix_start = match.start() - len(delimiter)
+            if prefix_start >= 0 and markdown[prefix_start : match.start()] == delimiter and target.endswith(delimiter):
+                target = target[: -len(delimiter)]
+                break
+        if target not in targets:
+            targets.append(target)
+    return targets
+
+
 def _structured_discussion_categories(targets: list[str]) -> set[str]:
     """Return structured Fgentic discussion categories from rendered targets."""
     categories: set[str] = set()
@@ -68,10 +90,16 @@ def _structured_discussion_categories(targets: list[str]) -> set[str]:
 
 
 def _public_markdown(repository_root: Path = REPOSITORY_ROOT) -> tuple[Path, ...]:
-    """Return RED-owned public Markdown outside the MkDocs corpus."""
+    """Return RED-owned public Markdown, including the MkDocs corpus."""
     entrypoints = [repository_root / relative for relative in PUBLIC_ENTRYPOINTS]
     community = (repository_root / ".github/community").rglob("*.md")
-    return tuple(sorted((*entrypoints, *community)))
+    docs_root = repository_root / "docs"
+    documentation = (
+        path
+        for path in docs_root.rglob("*.md")
+        if not any(part.startswith(".") for part in path.relative_to(docs_root).parts)
+    )
+    return tuple(sorted((*entrypoints, *community, *documentation)))
 
 
 def _display_path(path: Path, repository_root: Path) -> str:
@@ -82,19 +110,34 @@ def _display_path(path: Path, repository_root: Path) -> str:
         return path.as_posix()
 
 
+def _tracked_target(target: str, source: Path, repository_root: Path) -> Path | None:
+    """Resolve local and canonical same-repository main targets offline."""
+    parsed = urlsplit(target)
+    if not parsed.path:
+        return None
+    if not parsed.scheme and not parsed.netloc:
+        return source.parent / unquote(parsed.path)
+    if parsed.scheme != "https" or parsed.netloc != "github.com":
+        return None
+    for prefix in SAME_REPOSITORY_MAIN_PREFIXES:
+        if parsed.path.startswith(prefix):
+            return repository_root / unquote(parsed.path.removeprefix(prefix))
+    return None
+
+
 def _link_violations(source: Path, repository_root: Path) -> list[LinkViolation]:
-    """Return missing and repository-escaping local targets in one source."""
+    """Return missing and repository-escaping tracked targets in one source."""
     source_name = _display_path(source, repository_root)
     if not source.is_file():
         return [(source_name, "(source)", "source file is missing")]
 
     violations: list[LinkViolation] = []
-    for target in _rendered_targets(source.read_text(encoding="utf-8")):
-        parsed = urlsplit(target)
-        if parsed.scheme or parsed.netloc or not parsed.path:
+    for target in _tracked_targets(source.read_text(encoding="utf-8")):
+        candidate = _tracked_target(target, source, repository_root)
+        if candidate is None:
             continue
 
-        resolved = (source.parent / unquote(parsed.path)).resolve()
+        resolved = candidate.resolve()
         if not resolved.is_relative_to(repository_root.resolve()):
             violations.append((source_name, target, "target escapes repository"))
         elif not resolved.exists():
@@ -113,7 +156,7 @@ def _require_valid_links(sources: tuple[Path, ...], repository_root: Path) -> No
 
 
 class RepositoryLinkIntegrityTest(TestCase):
-    """Reject broken local links outside the MkDocs site corpus."""
+    """Reject broken tracked links in public repository Markdown."""
 
     def test_current_public_markdown_targets_resolve(self) -> None:
         _require_valid_links(_public_markdown(), REPOSITORY_ROOT)
@@ -123,6 +166,8 @@ class RepositoryLinkIntegrityTest(TestCase):
 [Local](guide.md#section)
 ![Asset](asset.svg)
 [External](https://example.com/missing.md)
+[Issue](https://github.com/fmind-ai/fgentic/issues/1)
+[Other branch](https://github.com/fmind-ai/fgentic/blob/feature/missing.md)
 [Mail](mailto:security@example.com)
 [Fragment](#same-page)
 `[Inline code](missing-inline.md)`
@@ -154,6 +199,46 @@ class RepositoryLinkIntegrityTest(TestCase):
 
             with self.assertRaisesRegex(AssertionError, message):
                 _require_valid_links((source,), repository_root)
+
+    def test_resolves_same_repository_main_targets(self) -> None:
+        markdown = "\n".join(
+            (
+                "[File](https://github.com/fmind-ai/fgentic/blob/main/docs/guide.md)",
+                "[Directory](https://github.com/fmind-ai/fgentic/tree/main/docs)",
+                "```text",
+                "License: https://github.com/fmind-ai/fgentic/blob/main/LICENSE.",
+                "**Documentation: https://github.com/fmind-ai/fgentic/blob/main/README.md**",
+                "__https://github.com/fmind-ai/fgentic/blob/main/README.md__",
+                "_https://github.com/fmind-ai/fgentic/blob/main/README.md_",
+                "{Source: https://github.com/fmind-ai/fgentic/tree/main/docs}",
+                "```",
+            )
+        )
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / "README.md"
+            source.write_text(markdown, encoding="utf-8")
+            (repository_root / "docs").mkdir()
+            (repository_root / "docs/guide.md").touch()
+            (repository_root / "LICENSE").touch()
+
+            self.assertEqual(_link_violations(source, repository_root), [])
+
+    def test_rejects_missing_and_escaping_same_repository_targets(self) -> None:
+        missing = "https://github.com/fmind-ai/fgentic/blob/main/docs/missing.md"
+        escaping = "https://github.com/fmind-ai/fgentic/tree/main/%2E%2E/outside"
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / "README.md"
+            source.write_text(f"{missing}\n[Escape]({escaping})\n", encoding="utf-8")
+
+            self.assertCountEqual(
+                _link_violations(source, repository_root),
+                [
+                    ("README.md", missing, "target does not exist"),
+                    ("README.md", escaping, "target escapes repository"),
+                ],
+            )
 
 
 class CommunityRouteIntegrityTest(TestCase):
