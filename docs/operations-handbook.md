@@ -48,6 +48,49 @@ Grafana exposes the bridge and LLM dashboards at `grafana.<server_name>`. Promet
 
 The LLM dashboard's catalog panel reports whether a provider/model rate lookup exists; it does not establish a bill. D7 sender/room rate limits and queue bounds constrain invocation pressure. Cross-organization `maxTokens` reserves admission capacity per verified client; actual model telemetry remains aggregate. See [Observability §9](observability.md) for metric labels, dashboard panels, privacy limits, and the token-cost boundary, and the [agentgateway observability reference](https://agentgateway.dev/docs/standalone/latest/reference/observability/) for the upstream telemetry surface.
 
+### 2.1 Triage the nightly smoke
+
+The default-branch [nightly smoke workflow](../.github/workflows/smoke.yml) is a hosted, provider-free composition signal. Its three jobs deliberately keep running long enough to preserve independent outcomes and diagnostics:
+
+| Job                                                             | Boundaries exercised                                                                                                                                   | Evidence limit                                                                                                                                                  |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Small-profile mention to reply                                  | `demo:up`, one Matrix → bridge → agentgateway → kagent reply, live namespace quota accounting, and ownership-guarded `demo:down`                       | Proves the disposable demo on that hosted runner and Git revision; it is not production, GKE, provider, or availability evidence.                               |
+| Authorization, API audit, traces, and NetworkPolicy conformance | A2A authorization, governed MCP quota behavior, OTLP traces, kind/Calico NetworkPolicies, ResourceQuota enforcement, and Kubernetes API audit rotation | Each sub-check has its own outcome. One passing deny path does not prove its paired allow path, and an isolated cluster does not report target-cluster state.   |
+| Continuous image vulnerability scan                             | The reconciled Trivy Operator report and alert boundary in a disposable k3d cluster                                                                    | Proves that the pinned scanner composition detects the fixture under test; it does not prove that every deployed image or target cluster is vulnerability-free. |
+
+Diagnostic steps use `continue-on-error` so later checks, teardown, and artifact upload still run. The Actions UI can therefore show a check mark beside a step whose command failed: treat the final job conclusion and the aggregate **Enforce ... result** step as authoritative. Those enforcers read `steps.<id>.outcome`, so `failure`, `cancelled`, or `skipped` cannot silently become success.
+
+On the default branch, the final report job opens or refreshes the single [nightly-smoke tracker](https://github.com/fmind-ai/fgentic/issues/270) with the demo, policy, and scanner job conclusions. A fully green run comments with the recovery run and closes it. A feature-branch dispatch exercises the same jobs but cannot mutate that repository-wide tracker.
+
+Inspect one run without any kubeconfig, cluster, provider credential, or local runtime:
+
+```bash
+smoke_run="$(gh run list --repo fmind-ai/fgentic --workflow smoke.yml \
+  --branch main --limit 1 --json databaseId --jq '.[0].databaseId')"
+gh run view "${smoke_run}" --repo fmind-ai/fgentic \
+  --json conclusion,headSha,jobs,url \
+  --jq '{url, conclusion, headSha, jobs: [.jobs[] | {
+    name, conclusion,
+    failed_steps: [.steps[] | select(.conclusion == "failure") | .name]
+  }]}'
+gh run view "${smoke_run}" --repo fmind-ai/fgentic --log-failed
+gh run view "${smoke_run}" --repo fmind-ai/fgentic --log
+```
+
+The lookup selects the latest `main` run. If the tracker references an earlier failure, assign the numeric ID from that run URL instead. Confirm `headSha` before attributing a failure to current `main`; an older scheduled run or branch dispatch may exercise different source. `--log-failed` exposes the aggregate enforcer that failed, while `--log` also includes the underlying `continue-on-error` output that explains which contract failed. Then download the retained failure bundles locally:
+
+```bash
+smoke_run="$(gh run list --repo fmind-ai/fgentic --workflow smoke.yml \
+  --branch main --limit 1 --json databaseId --jq '.[0].databaseId')"
+artifact_dir="$(mktemp -d)"
+gh run download "${smoke_run}" --repo fmind-ai/fgentic --dir "${artifact_dir}"
+rg --files "${artifact_dir}"
+```
+
+When the final upload step runs and finds diagnostic files, it retains `demo-diagnostics-<run>-<attempt>`, `policy-diagnostics-<run>-<attempt>`, or `trivy-diagnostics-<run>-<attempt>` for 14 days. Cancellation, timeout, runner loss, or an early failure with an empty diagnostics directory can leave no bundle; use the hosted full log in that case. Read the smallest relevant result or overview first, then the matching event, description, or log. Keep the bundle local; before quoting evidence in a public issue, remove room content, prompts, credentials, tokens, personal data, and unrelated workload logs.
+
+Route the root cause, not merely the red job. Action setup, permissions, outcome projection, artifact retention, and tracker behavior belong to `area/ci`. Demo lifecycle sources and composed manifests belong to their runtime area; policy failures belong to the enforcing security or infrastructure surface; scanner composition belongs to its infrastructure/security owner. Record the exact head SHA, failed contract, and artifact filename in the handoff. Do not weaken an enforcer, suppress a negative control, or rerun until the first failure evidence disappears.
+
 ## 3. Scale without changing semantics
 
 Only `clusters/gcp` composes [`infra/production-ha/cluster`](../infra/production-ha/cluster). The `local`, `demo`, and `federation` profiles intentionally do not. Use the component table and evidence limits in [Production Installation: Availability posture](production.md#availability-posture) before changing capacity.
