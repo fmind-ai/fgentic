@@ -1,0 +1,41 @@
+title: "[Idea] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Use this form to explore a problem before its implementation scope is settled. Implementation-ready proposals belong in the [feature request form](https://github.com/fmind-ai/fgentic/issues/new?template=feature_request.yml); security vulnerabilities belong in [private vulnerability reporting](https://github.com/fmind-ai/fgentic/security/advisories/new).
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: Who encounters the problem, and what can they not do today?
+    validations:
+      required: true
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: Describe the observable result without assuming a particular implementation.
+    validations:
+      required: true
+  - type: textarea
+    id: principles
+    attributes:
+      label: Sovereignty and open-standards fit
+      description: Explain how the outcome preserves self-hosting, open protocols, bounded model cost, and federation readiness, or identify what remains uncertain.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives or current workarounds
+      description: What have you tried, including keeping the current behavior?
+    validations:
+      required: true
+  - type: checkboxes
+    id: routing
+    attributes:
+      label: Routing check
+      options:
+        - label: This is early problem exploration, not a reproducible bug or a security vulnerability.
+          required: true
