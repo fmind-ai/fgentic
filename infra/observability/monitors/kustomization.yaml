@@ -8,6 +8,7 @@ resources:
   - certificate-alert.yaml
   - cloudnative-pg.yaml
   - flux.yaml
+  - postgres-alert.yaml
   - traefik.yaml
   - podmonitors.yaml
   - cost-alert.yaml
