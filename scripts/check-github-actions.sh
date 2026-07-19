@@ -132,10 +132,11 @@ for workflow in "${workflows[@]}"; do
 		fi
 	done <<<"${uses_list}"
 
-	# Diagnostic artifacts should expire promptly and must not opt into uploading hidden files.
-	# Inspect every upload step generically so new workflows inherit the same storage boundary.
+	# Diagnostic artifacts need actionable inputs, prompt expiry, and hidden-file exclusion.
+	# Inspect every upload step generically so new workflows inherit the same boundary.
 	artifact_rows="$(
 		yq -o=json '.jobs' "${workflow}" | jq -r '
+		  def nonempty_string: type == "string" and length > 0;
 		  to_entries[] as $job |
 		  ($job.value.steps // [] | to_entries[]) as $step |
 		  $step.value as $value |
@@ -147,6 +148,20 @@ for workflow in "${workflows[@]}"; do
 		  elif ($value.with | type) != "object" then
 		    [($location + ".with"), ($value.with | tojson), "an input map"]
 		  else
+		    (["name", "path"][] as $input |
+		      if (($value.with | has($input)) and ($value.with[$input] | nonempty_string)) then
+		        empty
+		      else [($location + ".with." + $input),
+		        (if ($value.with | has($input)) then ($value.with[$input] | tojson)
+		        else "<missing>" end), "a native non-empty string"] end),
+		    (if ($value.with | has("if-no-files-found")) then
+		      $value.with["if-no-files-found"] as $missing_policy |
+		      if (($missing_policy | type) == "string" and
+		        ($missing_policy == "warn" or $missing_policy == "error")) then empty
+		      else [($location + ".with.if-no-files-found"), ($missing_policy | tojson),
+		        "the native string warn or error"] end
+		    else [($location + ".with.if-no-files-found"), "<missing>",
+		      "the native string warn or error"] end),
 		    (if ($value.with | has("retention-days")) then
 		      $value.with["retention-days"] as $retention |
 		      if (($retention | type) == "number" and ($retention | floor) == $retention and
@@ -356,4 +371,4 @@ if ! yq --exit-status \
 fi
 
 [[ "${failed}" == false ]] || exit 1
-echo "GitHub Actions pinning, bounded-artifact, container-digest, permission-map, checkout-hardening, named-step, Bash-pipefail, bounded-runtime, pinned-runner, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
+echo "GitHub Actions pinning, actionable-artifact, bounded-artifact, container-digest, permission-map, checkout-hardening, named-step, Bash-pipefail, bounded-runtime, pinned-runner, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
