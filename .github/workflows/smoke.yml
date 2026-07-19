@@ -149,6 +149,7 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 19
     env:
+      MISE_EXEC_AUTO_INSTALL: "false"
       NETWORK_POLICY_DIAGNOSTICS_DIR: ${{ github.workspace }}/.agents/tmp/policy-diagnostics
       KIND_CLUSTER_NAME: fgentic-smoke-policy
       K3D_AUDIT_CLUSTER_NAME: fgentic-smoke-api-audit
@@ -157,8 +158,10 @@ jobs:
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           persist-credentials: false
-      - name: Install mise toolchain
+      - name: Install policy toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+        with:
+          install_args: flux2 go helm jq k3d kind kubeconform kubectl ripgrep xh yq
       - name: Verify A2A authorization boundary
         id: a2a
         continue-on-error: true
