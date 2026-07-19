@@ -31,6 +31,29 @@ remote_pattern='^[[:alnum:]_.-]+/[[:alnum:]_.-]+(/[[:alnum:]_.-]+)*@[0-9a-f]{40}
 versioned_line_pattern='^[[:space:]]*uses:[[:space:]]+[[:alnum:]_.-]+/[[:alnum:]_.-]+(/[[:alnum:]_.-]+)*@[0-9a-f]{40}[[:space:]]+#[[:space:]]+v[0-9]+([.][0-9]+){0,2}[[:space:]]*$'
 
 for workflow in "${workflows[@]}"; do
+	# Every workflow must opt out of repository-default token scopes. Job overrides are
+	# optional, but any declared permissions must remain an explicit, reviewable map.
+	permission_rows="$(
+		yq -o=json '.' "${workflow}" | jq -r '
+		  . as $workflow |
+		  (if ($workflow | has("permissions") | not) then
+		    ["permissions", "<missing>"]
+		  elif ($workflow.permissions | type) != "object" then
+		    ["permissions", ($workflow.permissions | tojson)]
+		  else empty end),
+		  ($workflow.jobs | to_entries[] as $job |
+		    select(($job.value | type) == "object" and ($job.value | has("permissions"))) |
+		    select(($job.value.permissions | type) != "object") |
+		    [($job.key + ".permissions"), ($job.value.permissions | tojson)]) |
+		  @tsv
+		'
+	)"
+	while IFS=$'\t' read -r field value; do
+		[[ -n "${field}" ]] || continue
+		echo "error: ${workflow#"${root_dir}/"}: invalid ${field}; expected a permissions map, got ${value}" >&2
+		failed=true
+	done <<<"${permission_rows}"
+
 	# Every workflow must make duplicate-run behavior explicit. This prevents unbounded
 	# parallel CI work and keeps stateful release/proof workflows serialized by design.
 	concurrency_rows="$(
@@ -183,4 +206,4 @@ if ! yq --exit-status \
 fi
 
 [[ "${failed}" == false ]] || exit 1
-echo "GitHub Actions pinning, checkout-hardening, bounded-runtime, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
+echo "GitHub Actions pinning, permission-map, checkout-hardening, bounded-runtime, concurrency, and serialized-install contracts passed (${#workflows[@]} workflows)"
