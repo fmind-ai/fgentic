@@ -23,7 +23,7 @@ jobs:
           fetch-depth: 0 # check:leaks scans recent git history
           persist-credentials: false
       - name: Install mise system
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
       - name: Install application toolchains
         # Each app pins its own tools and run_auto_install is off; Python also syncs its lockfile.
         run: mise run install:apps
@@ -63,7 +63,7 @@ jobs:
           fi
       - name: Install mise system
         if: steps.bridge-changes.outputs.run == 'true'
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
       - name: Install app toolchain
         if: steps.bridge-changes.outputs.run == 'true'
         run: mise --cd apps/matrix-a2a-bridge install
