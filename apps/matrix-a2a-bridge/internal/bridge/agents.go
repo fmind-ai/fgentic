@@ -129,6 +129,16 @@ type cardIdentityConfig struct {
 	Organization string             `yaml:"organization"`
 	KeyID        string             `yaml:"keyID"`
 	PublicKey    *ecPublicKeyConfig `yaml:"publicKey"`
+	// AdditionalKeys are further currently-valid signing keys for a zero-downtime rotation overlap
+	// window (#352); RevokedKeyIDs are retired key IDs a card must not be trusted under.
+	AdditionalKeys []cardKeyConfig `yaml:"additionalKeys"`
+	RevokedKeyIDs  []string        `yaml:"revokedKeyIDs"`
+}
+
+// cardKeyConfig is one additional pinned key (kid + its ES256 public JWK) in a rotation overlap.
+type cardKeyConfig struct {
+	KeyID     string             `yaml:"keyID"`
+	PublicKey *ecPublicKeyConfig `yaml:"publicKey"`
 }
 
 // ecPublicKeyConfig intentionally accepts only the public RFC 7517 members needed for ES256.
@@ -503,11 +513,34 @@ func compileCardIdentity(cfg *cardIdentityConfig) (a2aclient.CardIdentity, error
 	if err != nil {
 		return a2aclient.CardIdentity{}, fmt.Errorf("encode url target cardIdentity.publicKey: %w", err)
 	}
+	// Additional overlap keys (#352): each needs a non-empty keyID and its own public JWK. The client
+	// layer validates the JWK material and rejects duplicate or pinned-and-revoked key IDs.
+	additionalKeys := make([]a2aclient.CardKey, 0, len(cfg.AdditionalKeys))
+	for index, additional := range cfg.AdditionalKeys {
+		if additional.KeyID == "" || strings.TrimSpace(additional.KeyID) != additional.KeyID {
+			return a2aclient.CardIdentity{}, fmt.Errorf("url target cardIdentity.additionalKeys[%d].keyID must be non-empty without surrounding whitespace", index)
+		}
+		if additional.PublicKey == nil {
+			return a2aclient.CardIdentity{}, fmt.Errorf("url target cardIdentity.additionalKeys[%d].publicKey is required", index)
+		}
+		additionalJWK, err := json.Marshal(additional.PublicKey)
+		if err != nil {
+			return a2aclient.CardIdentity{}, fmt.Errorf("encode url target cardIdentity.additionalKeys[%d].publicKey: %w", index, err)
+		}
+		additionalKeys = append(additionalKeys, a2aclient.CardKey{KeyID: additional.KeyID, PublicKeyJWK: string(additionalJWK)})
+	}
+	for index, revoked := range cfg.RevokedKeyIDs {
+		if revoked == "" || strings.TrimSpace(revoked) != revoked {
+			return a2aclient.CardIdentity{}, fmt.Errorf("url target cardIdentity.revokedKeyIDs[%d] must be non-empty without surrounding whitespace", index)
+		}
+	}
 	return a2aclient.CardIdentity{
-		Name:         cfg.Name,
-		Organization: cfg.Organization,
-		KeyID:        cfg.KeyID,
-		PublicKeyJWK: string(publicKey),
+		Name:           cfg.Name,
+		Organization:   cfg.Organization,
+		KeyID:          cfg.KeyID,
+		PublicKeyJWK:   string(publicKey),
+		AdditionalKeys: additionalKeys,
+		RevokedKeyIDs:  cfg.RevokedKeyIDs,
 	}, nil
 }
 

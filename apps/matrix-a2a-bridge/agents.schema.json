@@ -148,7 +148,25 @@
         "name": { "$ref": "#/$defs/nonEmptyString" },
         "organization": { "$ref": "#/$defs/nonEmptyString" },
         "keyID": { "$ref": "#/$defs/nonEmptyString" },
-        "publicKey": { "$ref": "#/$defs/publicKey" }
+        "publicKey": { "$ref": "#/$defs/publicKey" },
+        "additionalKeys": {
+          "description": "Further currently-valid signing keys for a zero-downtime rotation overlap window (#352). A card verifies if its kid matches the primary keyID or any of these; none may share a keyID with the primary or each other, and none may appear in revokedKeyIDs.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["keyID", "publicKey"],
+            "properties": {
+              "keyID": { "$ref": "#/$defs/nonEmptyString" },
+              "publicKey": { "$ref": "#/$defs/publicKey" }
+            }
+          }
+        },
+        "revokedKeyIDs": {
+          "description": "Retired key IDs (#352). A card offered under one is refused even if cryptographically valid; a revoked keyID must not also be pinned (that fails closed).",
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
       }
     },
     "publicKey": {

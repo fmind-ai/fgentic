@@ -14,6 +14,7 @@ import (
 	"path"
 	"regexp"
 	"slices"
+	"sort"
 	"strings"
 
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/agentcardjws"
@@ -42,6 +43,18 @@ type CardIdentity struct {
 	Organization string
 	KeyID        string
 	PublicKeyJWK string
+	// AdditionalKeys are further currently-valid signing keys for a rotation overlap window (#352): a
+	// card verifies if its kid matches the primary key above OR any of these. RevokedKeyIDs are key IDs
+	// explicitly retired — a card offered under one is refused even if cryptographically valid, and no
+	// pinned key ID may appear in this list (that fails closed).
+	AdditionalKeys []CardKey
+	RevokedKeyIDs  []string
+}
+
+// CardKey is one additional pinned signing key (kid + its ES256 public JWK) in a rotation overlap.
+type CardKey struct {
+	KeyID        string
+	PublicKeyJWK string
 }
 
 // Target is an immutable, validated A2A routing target. Local targets are paths relative to
@@ -52,8 +65,9 @@ type Target struct {
 	address              string
 	expectedName         string
 	expectedOrganization string
-	expectedKeyID        string
-	publicKey            [65]byte
+	expectedKeyID        string      // primary/active key ID, surfaced in the card_key_id audit field
+	pins                 []targetPin // all currently-valid pinned keys (primary first); overlap window (#352)
+	revokedKeyIDs        []string    // sorted, deduped retired key IDs; refused even if cryptographically valid
 	tokenBudget          uint64
 	extensions           []string // sorted, deduped operator-configured extras (excludes token-budget)
 	identityFingerprint  [sha256.Size]byte
@@ -137,30 +151,53 @@ func NewRemoteTarget(rawURL string, identity CardIdentity, tokenBudget uint64, e
 	if tokenBudget > maxExactJSONInteger {
 		return Target{}, fmt.Errorf("remote token budget must not exceed %d", maxExactJSONInteger)
 	}
-	publicKey, err := agentcardjws.ParsePublicJWK(
-		[]byte(identity.PublicKeyJWK),
-		identity.KeyID,
-		agentcardjws.AllowOptionalJWKMetadata,
-	)
-	if err != nil {
-		return Target{}, fmt.Errorf("remote card identity public key: %w", err)
+	// The primary key plus any overlap keys (#352). Parse and encode each; reject duplicate key IDs so a
+	// pin set can never be ambiguous about which public key a kid names.
+	rawKeys := append([]CardKey{{KeyID: identity.KeyID, PublicKeyJWK: identity.PublicKeyJWK}}, identity.AdditionalKeys...)
+	pins := make([]targetPin, 0, len(rawKeys))
+	seenKeyIDs := make(map[string]struct{}, len(rawKeys))
+	for index, rawKey := range rawKeys {
+		if rawKey.KeyID == "" || rawKey.KeyID != strings.TrimSpace(rawKey.KeyID) {
+			return Target{}, fmt.Errorf("remote card identity key %d keyID must not be empty", index)
+		}
+		if _, duplicate := seenKeyIDs[rawKey.KeyID]; duplicate {
+			return Target{}, fmt.Errorf("remote card identity has duplicate key ID %q", rawKey.KeyID)
+		}
+		seenKeyIDs[rawKey.KeyID] = struct{}{}
+		publicKey, err := agentcardjws.ParsePublicJWK(
+			[]byte(rawKey.PublicKeyJWK),
+			rawKey.KeyID,
+			agentcardjws.AllowOptionalJWKMetadata,
+		)
+		if err != nil {
+			return Target{}, fmt.Errorf("remote card identity public key %q: %w", rawKey.KeyID, err)
+		}
+		publicKeyBytes, err := publicKey.Bytes()
+		if err != nil {
+			return Target{}, fmt.Errorf("encode remote card identity public key %q: %w", rawKey.KeyID, err)
+		}
+		var encoded [65]byte
+		copy(encoded[:], publicKeyBytes)
+		pins = append(pins, targetPin{keyID: rawKey.KeyID, publicKey: encoded})
 	}
-	publicKeyBytes, err := publicKey.Bytes()
-	if err != nil {
-		return Target{}, fmt.Errorf("encode remote card identity public key: %w", err)
-	}
-	var encoded [65]byte
-	copy(encoded[:], publicKeyBytes)
 
-	fingerprintInput := strings.Join([]string{
-		"remote",
-		endpoint,
-		identity.Name,
-		identity.Organization,
-		identity.KeyID,
-		base64.RawURLEncoding.EncodeToString(encoded[:]),
-	}, "\x00")
-	fingerprint := sha256.Sum256([]byte(fingerprintInput))
+	// Revoked key IDs are sorted+deduped; no pinned key ID may be revoked (fail closed on the contradiction).
+	revokedKeyIDs, err := normalizeRevokedKeyIDs(identity.RevokedKeyIDs, seenKeyIDs)
+	if err != nil {
+		return Target{}, err
+	}
+
+	// The fingerprint binds every pinned key (sorted by ID) and the revoked list, so any rotation — adding
+	// an overlap key, retiring one, or revoking a kid — yields a new opaque ID and re-verifies the card.
+	fingerprintParts := []string{"remote", endpoint, identity.Name, identity.Organization}
+	sortedPins := append([]targetPin(nil), pins...)
+	sort.Slice(sortedPins, func(i, j int) bool { return sortedPins[i].keyID < sortedPins[j].keyID })
+	for _, pin := range sortedPins {
+		fingerprintParts = append(fingerprintParts, pin.keyID, base64.RawURLEncoding.EncodeToString(pin.publicKey[:]))
+	}
+	fingerprintParts = append(fingerprintParts, "revoked")
+	fingerprintParts = append(fingerprintParts, revokedKeyIDs...)
+	fingerprint := sha256.Sum256([]byte(strings.Join(fingerprintParts, "\x00")))
 	// Extensions are operational config, not identity: they stay out of identityFingerprint (like
 	// tokenBudget) but fold into the opaque ID so a config change re-verifies the card against the
 	// new required-extension allowlist.
@@ -177,7 +214,8 @@ func NewRemoteTarget(rawURL string, identity CardIdentity, tokenBudget uint64, e
 		expectedName:         identity.Name,
 		expectedOrganization: identity.Organization,
 		expectedKeyID:        identity.KeyID,
-		publicKey:            encoded,
+		pins:                 pins,
+		revokedKeyIDs:        revokedKeyIDs,
 		tokenBudget:          tokenBudget,
 		extensions:           normalizedExtensions,
 		identityFingerprint:  fingerprint,
@@ -297,15 +335,62 @@ func (t Target) valid() bool {
 	return t.id != "" && (t.kind == targetKindLocal || t.kind == targetKindRemote)
 }
 
-func (t Target) es256PublicKey() *ecdsa.PublicKey {
-	if !t.IsRemote() {
+// pinnedKeys reconstructs the currently-valid ES256 public keys (primary + overlap) for card
+// verification (#352). A pin whose stored point fails to parse is skipped defensively; NewRemoteTarget
+// already validated every pin, and VerifySet fails closed if the resulting set is empty.
+func (t Target) pinnedKeys() []agentcardjws.PinnedKey {
+	keys := make([]agentcardjws.PinnedKey, 0, len(t.pins))
+	for _, pin := range t.pins {
+		key, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), pin.publicKey[:])
+		if err != nil {
+			continue
+		}
+		keys = append(keys, agentcardjws.PinnedKey{KeyID: pin.keyID, Key: key})
+	}
+	return keys
+}
+
+// revoked returns the set of retired key IDs a card must not be trusted under (#352), or nil if none.
+func (t Target) revoked() map[string]bool {
+	if len(t.revokedKeyIDs) == 0 {
 		return nil
 	}
-	key, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), t.publicKey[:])
-	if err != nil {
-		return nil
+	set := make(map[string]bool, len(t.revokedKeyIDs))
+	for _, keyID := range t.revokedKeyIDs {
+		set[keyID] = true
 	}
-	return key
+	return set
+}
+
+// targetPin is one pinned signing key: its protected key ID and the SEC1-uncompressed P-256 point.
+type targetPin struct {
+	keyID     string
+	publicKey [65]byte
+}
+
+// normalizeRevokedKeyIDs validates, dedupes, and sorts the retired key IDs, failing closed if any is
+// also a currently-pinned key (a key id cannot be simultaneously trusted and revoked).
+func normalizeRevokedKeyIDs(revoked []string, pinnedKeyIDs map[string]struct{}) ([]string, error) {
+	if len(revoked) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(revoked))
+	normalized := make([]string, 0, len(revoked))
+	for _, keyID := range revoked {
+		if keyID == "" || keyID != strings.TrimSpace(keyID) {
+			return nil, fmt.Errorf("remote card identity revoked key ID must not be empty")
+		}
+		if _, pinned := pinnedKeyIDs[keyID]; pinned {
+			return nil, fmt.Errorf("remote card identity key ID %q is both pinned and revoked", keyID)
+		}
+		if _, dup := seen[keyID]; dup {
+			continue
+		}
+		seen[keyID] = struct{}{}
+		normalized = append(normalized, keyID)
+	}
+	sort.Strings(normalized)
+	return normalized, nil
 }
 
 func normalizeLocalPath(raw string) (string, error) {

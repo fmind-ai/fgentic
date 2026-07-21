@@ -105,6 +105,21 @@ agents:
   #       crv: P-256
   #       x: <base64url-x-coordinate>
   #       y: <base64url-y-coordinate>
+  #     # Zero-downtime signing-key rotation (#352): during the overlap window pin BOTH the current key
+  #     # (keyID/publicKey above) and the partner's next key here — a card under either verifies, so
+  #     # rotation causes no verification gap. Once the partner has fully cut over, promote the new key
+  #     # to keyID/publicKey, drop it from additionalKeys, and list the retired keyID in revokedKeyIDs so
+  #     # a card offered under it is refused even if still cryptographically valid. A keyID may never
+  #     # appear as both a pinned key and a revoked key.
+  #     additionalKeys:
+  #       - keyID: partner-reviewer-2026-10
+  #         publicKey:
+  #           kty: EC
+  #           crv: P-256
+  #           x: <base64url-next-x-coordinate>
+  #           y: <base64url-next-y-coordinate>
+  #     revokedKeyIDs:
+  #       - partner-reviewer-2026-04
   #   description: Reviews documents through the partner's governed A2A endpoint.
   #   allowedServers: [partner.example]
   #   allowedSenders: ["@alice:fgentic.fmind.ai"]
