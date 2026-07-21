@@ -24,14 +24,14 @@ assert_dependency_closure() {
 
 	# Names of every Kustomization defined in this profile's effective DAG.
 	defined="$(yq -e '
-		select(.kind == "Kustomization" and .metadata.namespace == "flux-system")
+		select(.apiVersion == "kustomize.toolkit.fluxcd.io/v1" and .kind == "Kustomization" and .metadata.namespace == "flux-system")
 		| .metadata.name
 	' "${render}" | grep -vxF -- '---' | sort -u)"
 
 	# "<kustomization> <dependsOn-target>" for every dependency edge in the profile.
 	# shellcheck disable=SC2016 # `$n` is a yq binding variable, not a shell expansion.
 	edges="$(yq -e '
-		select(.kind == "Kustomization" and .metadata.namespace == "flux-system")
+		select(.apiVersion == "kustomize.toolkit.fluxcd.io/v1" and .kind == "Kustomization" and .metadata.namespace == "flux-system")
 		| .metadata.name as $n | (.spec.dependsOn[]?.name | $n + " " + .)
 	' "${render}" 2>/dev/null | grep -vxF -- '---' || true)"
 
