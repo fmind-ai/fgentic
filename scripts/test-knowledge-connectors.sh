@@ -9,7 +9,7 @@ readonly RUNTIME_DIR="${CONNECTOR_DIR}/git-markdown-runtime"
 readonly ENABLED_DIR="${ROOT_DIR}/infra/knowledge/profiles/enabled"
 readonly LOCAL_SETTINGS="${ROOT_DIR}/clusters/local/platform-settings.yaml"
 readonly GCP_SETTINGS="${ROOT_DIR}/clusters/gcp/platform-settings.yaml"
-readonly PYTHON_IMAGE="python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1"
+readonly PYTHON_IMAGE="python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6"
 
 fail() {
 	echo "error: $*" >&2
