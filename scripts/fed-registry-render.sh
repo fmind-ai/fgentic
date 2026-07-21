@@ -49,9 +49,10 @@ denied_name="$(yq -r '[.partners[] | select(.role == "denied") | .server_name] |
 max_budget="$(yq -r '.lab.a2a_max_budget_units' "${REGISTRY}")"
 quota_per_minute="$(yq -r '.lab.a2a_quota_units_per_minute' "${REGISTRY}")"
 
-# 1. policy.json — allowed_servers is the sorted set of allowlisted partners; the event-type allowlist
-#    and invite rule are the callback policy's fixed contract, not partner trust, so they stay constant.
-allowed_servers_json="$(yq -o=json -I=0 '[.partners[] | select(.allowlisted == true) | .server_name] | sort' "${REGISTRY}")"
+# 1. policy.json — allowed_servers is the sorted set of allowlisted, NON-contained partners; a break-glass
+#    contained partner (issue #350) is dropped from the callback border here. The event-type allowlist and
+#    invite rule are the callback policy's fixed contract, not partner trust, so they stay constant.
+allowed_servers_json="$(yq -o=json -I=0 '[.partners[] | select(.allowlisted == true and (.contained // false | not)) | .server_name] | sort' "${REGISTRY}")"
 policy_out="${OUT_ROOT}/apps/synapse-federation-policy/policy/policy.json"
 mkdir -p "$(dirname "${policy_out}")"
 jq -n --argjson allowed "${allowed_servers_json}" '{

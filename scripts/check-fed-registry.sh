@@ -38,13 +38,14 @@ jq -e '
 jq -e '
   def fqdn: test("^(?=.{1,255}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$");
   [.partners[] |
-    (["allowlisted", "classification", "role", "server_name"] - (keys - ["a2a"]) | length == 0) and
-    ((keys - ["a2a", "allowlisted", "classification", "role", "server_name"]) | length == 0) and
+    (["allowlisted", "classification", "role", "server_name"] - (keys - ["a2a", "contained"]) | length == 0) and
+    ((keys - ["a2a", "allowlisted", "classification", "contained", "role", "server_name"]) | length == 0) and
     (.server_name | type == "string" and (contains("@") | not) and fqdn) and
     (.role | . == "host" or . == "admitted" or . == "denied") and
     (.allowlisted | type == "boolean") and
+    (if has("contained") then (.contained | type == "boolean") else true end) and
     (.classification | . == "none" or . == "public" or . == "internal" or . == "confidential") and
-    (if .role == "denied" then (.allowlisted == false and .classification == "none") else true end)
+    (if .role == "denied" then (.allowlisted == false and .classification == "none" and (.contained // false | not)) else true end)
   ] | all
 ' "${REGISTRY_JSON}" >/dev/null || fail "a partner entry violates the registry schema (fields, role/classification enum, or D6 FQDN)"
 
@@ -138,9 +139,10 @@ grep -Fxq "readonly SERVER_C=\"${denied_name}\"" "${seed_env}" || fail "seed SER
 
 # 5. Plane 3 — callback policy.json. allowed_servers == the sorted allowlisted set (also rendered, step 2).
 policy_json="${ROOT_DIR}/apps/synapse-federation-policy/policy/policy.json"
-expected_allowed="$(jq -c '[.partners[] | select(.allowlisted == true) | .server_name] | sort' "${REGISTRY_JSON}")"
+# A break-glass contained partner (issue #350) is dropped from the border even while allowlisted.
+expected_allowed="$(jq -c '[.partners[] | select(.allowlisted == true and (.contained // false | not)) | .server_name] | sort' "${REGISTRY_JSON}")"
 jq -e --argjson want "${expected_allowed}" '.allowed_servers == $want' "${policy_json}" >/dev/null \
-	|| fail "policy.json allowed_servers != the registry allowlist"
+	|| fail "policy.json allowed_servers != the registry allowlist (allowlisted and not contained)"
 
 # 6. Plane 4 — pinned AgentCard identity. Provider org, exported route host+path, and the admitted issuer
 #    (via the substitution var) all bind to the registry; the signer's default key IDs match.

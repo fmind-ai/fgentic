@@ -41,6 +41,10 @@
           "enum": ["host", "admitted", "denied"]
         },
         "allowlisted": { "type": "boolean" },
+        "contained": {
+          "description": "Break-glass emergency containment (issue #350). When true, the partner is dropped from the callback border (policy.json allowed_servers) regardless of allowlist membership, so every federated event from it is denied. Set by 'fed:break-glass', cleared by 'fed:restore'. GitOps-reversible.",
+          "type": "boolean"
+        },
         "classification": {
           "description": "Highest data classification this partner may exchange. A denied partner is 'none'.",
           "type": "string",
