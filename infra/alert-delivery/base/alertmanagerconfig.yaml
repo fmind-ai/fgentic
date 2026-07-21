@@ -1,0 +1,30 @@
+# Routes every alert to the Matrix webhook receiver with a catch-all so nothing is silently dropped,
+# grouped so an alert storm becomes a bounded stream of room messages. Selected by the observability
+# layer's alertmanagerConfigSelector (matcherStrategy: None keeps this a global route, not a
+# namespace-scoped sub-route). Absent when the profile is disabled, so Alertmanager keeps its null
+# posture (issue #456).
+apiVersion: monitoring.coreos.com/v1alpha1
+kind: AlertmanagerConfig
+metadata:
+  name: matrix-ops
+  namespace: monitoring
+  labels:
+    fgentic.dev/alertmanager-config: "true"
+spec:
+  route:
+    receiver: matrix-ops
+    groupBy: [alertname, severity, namespace]
+    groupWait: 30s
+    groupInterval: 5m
+    repeatInterval: 4h
+    routes:
+      - receiver: matrix-ops
+        matchers:
+          - name: severity
+            matchType: =~
+            value: warning|critical
+  receivers:
+    - name: matrix-ops
+      webhookConfigs:
+        - url: http://alert-receiver.alert-delivery.svc.cluster.local:9095/
+          sendResolved: true

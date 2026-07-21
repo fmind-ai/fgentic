@@ -1,0 +1,22 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - resource-quotas.yaml
+  - config.yaml
+  - networkpolicy.yaml
+  - deployment.yaml
+  - service.yaml
+  - alertmanagerconfig.yaml
+
+# The receiver is one self-contained stdlib script mounted into the pinned python image — no added
+# dependency, no external image. Keep it a standalone file so receiver_test.py exercises the exact
+# bytes the Deployment runs.
+configMapGenerator:
+  - name: alert-receiver-code
+    namespace: alert-delivery
+    files:
+      - receiver.py
+generatorOptions:
+  disableNameSuffixHash: true

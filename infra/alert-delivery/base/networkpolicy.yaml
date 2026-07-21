@@ -1,0 +1,56 @@
+# Namespace-wide fail-closed baseline: every Pod is denied all ingress and egress unless the
+# receiver policy below re-admits it (same discipline as the knowledge/canary namespaces).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: alert-delivery-default-deny
+  namespace: alert-delivery
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# The receiver accepts the Alertmanager webhook (ingress from monitoring on :9095) and posts notices
+# to Synapse (egress to the matrix namespace :8008) plus DNS. It reaches no other surface and holds
+# no model/A2A/MCP path.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: alert-receiver
+  namespace: alert-delivery
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: alert-receiver
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9095
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix
+      ports:
+        - protocol: TCP
+          port: 8008
