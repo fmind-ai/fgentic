@@ -286,6 +286,9 @@ static_contract() {
         "from": [{
           "namespaceSelector": {
             "matchLabels": {"kubernetes.io/metadata.name": "monitoring"}
+          },
+          "podSelector": {
+            "matchLabels": {"fgentic.dev/metrics-reader": "prometheus"}
           }
         }],
         "ports": [{"protocol": "TCP", "port": 8080}]
