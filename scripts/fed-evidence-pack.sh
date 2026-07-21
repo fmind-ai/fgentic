@@ -36,7 +36,9 @@ identity="$(jq '{
 	azp: (.a2a.azp // null),
 	issuer: (.a2a.issuer // null),
 	card_key_id: (.a2a.card_key_id // null),
-	usage_receipt_key_id: (.a2a.usage_receipt_key_id // null)
+	usage_receipt_key_id: (.a2a.usage_receipt_key_id // null),
+	review_by: (.review_by // null),
+	valid_until: (.valid_until // null)
 }' <<<"${partner_json}")"
 
 # The pack names the content-free record streams and the exact fields a reviewer extracts from each —

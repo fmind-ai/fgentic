@@ -41,13 +41,15 @@ agreements_raw="$(find "${AGREEMENTS_DIR}" -maxdepth 1 -type f -name '*.yaml' | 
 [ -n "${agreements_raw}" ] || fail "no signed agreements found in ${AGREEMENTS_DIR}"
 mapfile -t agreements <<<"${agreements_raw}"
 
-# Collect (partner -> classification) and the single lab reservation/quota from the agreement set.
-declare -A partner_class
+# Collect per-partner classification/review_by/valid_until and the single lab reservation/quota.
+declare -A partner_class partner_review partner_valid
 max_budget=""
 quota=""
 for agreement in "${agreements[@]}"; do
 	partner="$(yq -r '.partner_server_name' "${agreement}")"
 	partner_class["${partner}"]="$(yq -r '.allowed_classification' "${agreement}")"
+	partner_review["${partner}"]="$(yq -r '.review_by' "${agreement}")"
+	partner_valid["${partner}"]="$(yq -r '.valid_until // ""' "${agreement}")"
 	agreement_budget="$(yq -r '.a2a_max_budget_units' "${agreement}")"
 	agreement_quota="$(yq -r '.a2a_quota_units_per_minute' "${agreement}")"
 	if [ -z "${max_budget}" ]; then
@@ -61,19 +63,25 @@ done
 mkdir -p "$(dirname "${REGISTRY_OUT}")"
 # Byte-safe: rewrite only the lab budget/quota scalars and each agreed partner's classification line,
 # preserving every comment and the hand-authored formatting of the registry.
-python3 - "${REGISTRY_SRC}" "${REGISTRY_OUT}" "${max_budget}" "${quota}" "$(declare -p partner_class)" <<'PY'
+python3 - "${REGISTRY_SRC}" "${REGISTRY_OUT}" "${max_budget}" "${quota}" \
+	"$(declare -p partner_class)" "$(declare -p partner_review)" "$(declare -p partner_valid)" <<'PY'
 import re, sys
 
-src, dst, max_budget, quota, class_decl = sys.argv[1:6]
-# Reconstruct the partner->classification map from the serialized bash associative array.
-partner_class = {}
-for match in re.finditer(r"\[([^\]]+)\]=\"([^\"]*)\"", class_decl):
-    partner_class[match.group(1)] = match.group(2)
+src, dst, max_budget, quota, class_decl, review_decl, valid_decl = sys.argv[1:8]
+
+def parse_map(decl):
+    return {m.group(1): m.group(2) for m in re.finditer(r"\[([^\]]+)\]=\"([^\"]*)\"", decl)}
+
+partner_class = parse_map(class_decl)
+partner_review = parse_map(review_decl)
+partner_valid = parse_map(valid_decl)
 
 with open(src, encoding="utf-8") as handle:
     lines = handle.readlines()
 
 lab_keys = {"a2a_max_budget_units": max_budget, "a2a_quota_units_per_minute": quota}
+# Per-partner scalar keys synced from the signed agreement (empty valid_until leaves the line untouched).
+partner_keys = {"classification": partner_class, "review_by": partner_review, "valid_until": partner_valid}
 current_partner = None
 for index, line in enumerate(lines):
     partner_match = re.match(r"^  - server_name: (\S+)\s*$", line)
@@ -84,9 +92,13 @@ for index, line in enumerate(lines):
     if lab_match:
         lines[index] = f"{lab_match.group(1)}{lab_match.group(2)}: {lab_keys[lab_match.group(2)]}\n"
         continue
-    class_match = re.match(r"^(\s*)classification: ", line)
-    if class_match and current_partner in partner_class:
-        lines[index] = f"{class_match.group(1)}classification: {partner_class[current_partner]}\n"
+    key_match = re.match(r"^(\s*)(classification|review_by|valid_until): ", line)
+    if key_match:
+        key = key_match.group(2)
+        value = partner_keys[key].get(current_partner, "")
+        if value != "":
+            quote = '"' if key in ("review_by", "valid_until") else ""
+            lines[index] = f"{key_match.group(1)}{key}: {quote}{value}{quote}\n"
 
 with open(dst, "w", encoding="utf-8") as handle:
     handle.writelines(lines)

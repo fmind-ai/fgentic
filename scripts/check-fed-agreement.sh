@@ -46,6 +46,7 @@ for agreement in "${agreements[@]}"; do
 	yq -o=json '.' "${agreement}" >"${agreement_json}"
 	jq -e '
 		def fqdn: test("^(?=.{1,255}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$");
+		def isodate: test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$");
 		.schema == "fgentic.federation.agreement.v1" and
 		(.partner_server_name | type == "string" and (contains("@") | not) and fqdn) and
 		(.azp | type == "string" and length >= 1) and
@@ -54,9 +55,18 @@ for agreement in "${agreements[@]}"; do
 		(.allowed_classification | . == "public" or . == "internal") and
 		(.residency.basis == "contractual") and
 		(.residency.region | type == "string" and length >= 1) and
-		((keys - ["a2a_max_budget_units", "a2a_quota_units_per_minute", "allowed_classification", "azp", "partner_server_name", "residency", "schema"]) | length == 0)
+		(.review_by | isodate) and
+		(if has("valid_until") then (.valid_until | isodate) else true end) and
+		((keys - ["a2a_max_budget_units", "a2a_quota_units_per_minute", "allowed_classification", "azp", "partner_server_name", "residency", "review_by", "schema", "valid_until"]) | length == 0)
 	' "${agreement_json}" >/dev/null \
-		|| fail "${name}: agreement schema invalid, unknown field, or classification exceeds the ADR-0015 bound (public|internal)"
+		|| fail "${name}: agreement schema invalid, unknown field, classification beyond the ADR-0015 bound, or a missing/malformed review_by/valid_until"
+
+	# Time-bounded trust (issue #463): a signed agreement whose valid_until has passed fails closed.
+	agreement_valid_until="$(jq -r '.valid_until // ""' "${agreement_json}")"
+	today="$(date -u +%Y-%m-%d)"
+	if [ -n "${agreement_valid_until}" ] && [[ "${agreement_valid_until}" < "${today}" ]]; then
+		fail "${name}: the signed agreement has expired (valid_until ${agreement_valid_until}) — renew by re-signing with a new window"
+	fi
 
 	# 3. The signed terms must match the registry (which renders the enforcement planes). The agreement is
 	#    the sole source: editing the registry's reservation/quota/classification without re-signing fails.
@@ -65,14 +75,19 @@ for agreement in "${agreements[@]}"; do
 	budget="$(jq -r '.a2a_max_budget_units' "${agreement_json}")"
 	quota="$(jq -r '.a2a_quota_units_per_minute' "${agreement_json}")"
 	classification="$(jq -r '.allowed_classification' "${agreement_json}")"
+	review_by="$(jq -r '.review_by' "${agreement_json}")"
+	valid_until="$(jq -r '.valid_until // ""' "${agreement_json}")"
 	jq -e --arg p "${partner}" --arg azp "${azp}" --arg cls "${classification}" \
+		--arg review "${review_by}" --arg valid "${valid_until}" \
 		--argjson budget "${budget}" --argjson quota "${quota}" '
 		([.partners[] | select(.server_name == $p)] | length == 1) and
-		(.partners[] | select(.server_name == $p) | .role == "admitted" and .a2a.azp == $azp and .classification == $cls) and
+		(.partners[] | select(.server_name == $p) |
+			.role == "admitted" and .a2a.azp == $azp and .classification == $cls and
+			.review_by == $review and ((.valid_until // "") == $valid)) and
 		(.lab.a2a_max_budget_units == $budget) and
 		(.lab.a2a_quota_units_per_minute == $quota)
 	' "${registry_json}" >/dev/null \
-		|| fail "${name}: the registry's reservation/quota/classification/azp diverge from the signed agreement"
+		|| fail "${name}: the registry's reservation/quota/classification/azp/review dates diverge from the signed agreement"
 done
 
 # 4. Deterministic render: re-render the registry from the agreements and require a byte-identical result.

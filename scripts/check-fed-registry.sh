@@ -37,17 +37,35 @@ jq -e '
 # localpart (no '@', at least one dot). A denied partner must be allowlisted:false / classification:none.
 jq -e '
   def fqdn: test("^(?=.{1,255}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$");
+  def isodate: test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$");
   [.partners[] |
-    (["allowlisted", "classification", "role", "server_name"] - (keys - ["a2a", "contained"]) | length == 0) and
-    ((keys - ["a2a", "allowlisted", "classification", "contained", "role", "server_name"]) | length == 0) and
+    (["allowlisted", "classification", "role", "server_name"] - (keys - ["a2a", "contained", "review_by", "valid_until"]) | length == 0) and
+    ((keys - ["a2a", "allowlisted", "classification", "contained", "review_by", "role", "server_name", "valid_until"]) | length == 0) and
     (.server_name | type == "string" and (contains("@") | not) and fqdn) and
     (.role | . == "host" or . == "admitted" or . == "denied") and
     (.allowlisted | type == "boolean") and
     (if has("contained") then (.contained | type == "boolean") else true end) and
     (.classification | . == "none" or . == "public" or . == "internal" or . == "confidential") and
-    (if .role == "denied" then (.allowlisted == false and .classification == "none" and (.contained // false | not)) else true end)
+    (if .role == "denied" then (.allowlisted == false and .classification == "none" and (.contained // false | not)) else true end) and
+    (if .role == "admitted" then (has("review_by") and (.review_by | isodate)) else true end) and
+    (if has("review_by") then (.review_by | isodate) else true end) and
+    (if has("valid_until") then (.valid_until | isodate) else true end)
   ] | all
-' "${REGISTRY_JSON}" >/dev/null || fail "a partner entry violates the registry schema (fields, role/classification enum, or D6 FQDN)"
+' "${REGISTRY_JSON}" >/dev/null || fail "a partner entry violates the registry schema (fields, enum, D6 FQDN, or a missing/malformed review_by/valid_until date)"
+
+# Time-bounded trust (issue #463): every review_by/valid_until must be a real calendar date (the schema
+# regex only bounds the shape, so reject e.g. 2030-13-45 here with a clear error) and a partner whose
+# valid_until has PASSED fails closed — federation trust config must not reconcile past a hard expiry.
+# Renew (re-sign with a new window) or offboard. YYYY-MM-DD compares correctly as a string; review_by
+# passing only raises the alert (checked at runtime).
+registry_dates="$(jq -r '[.partners[] | (.review_by // empty), (.valid_until // empty)] | .[]' "${REGISTRY_JSON}")"
+while IFS= read -r date_value; do
+	[ -n "${date_value}" ] || continue
+	date -u -d "${date_value}" +%s >/dev/null 2>&1 || fail "registry has a malformed calendar date: ${date_value}"
+done <<<"${registry_dates}"
+today="$(date -u +%Y-%m-%d)"
+expired="$(jq -r --arg today "${today}" '[.partners[] | select(has("valid_until") and .valid_until < $today) | .server_name] | join(", ")' "${REGISTRY_JSON}")"
+[ -z "${expired}" ] || fail "partner trust has expired (valid_until passed): ${expired} — renew (re-sign) or offboard before reconciling"
 
 # Exactly one host, at least one admitted, exactly one denied; server_names unique; allowlist non-empty.
 jq -e '

@@ -49,6 +49,11 @@ partners:
     # and re-renders, dropping the partner from the callback border; `fed:restore` reverses it.
     contained: false
     classification: public
+    # Time-bounded trust (issue #463): review_by raises the review-due alert when it nears/passes;
+    # valid_until is the hard expiry that fails the gate closed until the agreement is re-signed with a
+    # new window. Renewal is a re-signed agreement + registry change (GitOps only).
+    review_by: "2027-07-21"
+    valid_until: "2030-12-31"
     a2a:
       role: consumer
       azp: org-b-a2a
