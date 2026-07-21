@@ -569,10 +569,15 @@ spec:
   policyTypes:
     - Egress
   egress:
+    # DNS only to the kube-dns pods, not every pod in kube-system — closes the same-namespace DNS
+    # impersonation surface, matching every other knowledge NetworkPolicy (issue #606).
     - to:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
       ports:
         - protocol: UDP
           port: 53
