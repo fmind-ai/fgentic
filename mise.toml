@@ -175,6 +175,7 @@ depends = [
   "check:prometheus",
   "check:dashboards",
   "check:canary",
+  "check:alert-delivery",
   "check:reference-grants",
   "check:a2a-operation-names",
   "check:a2a-authorization",
@@ -338,6 +339,10 @@ run = "bash scripts/test-grafana-dashboards.sh"
 [tasks."check:canary"]
 description = "Validate the opt-in synthetic delegation canary render, flag resolution, and probe logic"
 run = "bash scripts/test-canary.sh"
+
+[tasks."check:alert-delivery"]
+description = "Validate the opt-in sovereign alert delivery render, flag resolution, D7/D8 sender proof, and receiver logic"
+run = "bash scripts/test-alert-delivery.sh"
 
 [tasks."check:reference-grants"]
 description = "Audit cross-namespace Gateway API backends and their ReferenceGrants"

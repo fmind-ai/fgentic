@@ -477,3 +477,34 @@ spec:
       - kind: ConfigMap
         name: platform-settings-overrides
         optional: true
+---
+# Optional sovereign alert delivery (issue #456): an Alertmanager -> Matrix webhook receiver + its
+# global AlertmanagerConfig route. Defaults to the disabled profile (zero footprint); the
+# provider-selection Component swaps the profile segment from platform-settings.alert_delivery.
+# demo/federation keep it disabled and delete the observability layer, so it is doubly absent there.
+# Depends only on policies+matrix (not observability) to keep every profile's dependency DAG
+# resolvable; Flux retries the AlertmanagerConfig until the operator CRD from observability exists.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: alert-delivery
+  namespace: flux-system
+spec:
+  interval: 30m
+  retryInterval: 2m
+  path: ./infra/alert-delivery/profiles/disabled
+  prune: true
+  wait: true
+  dependsOn:
+    - name: policies
+    - name: matrix
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true

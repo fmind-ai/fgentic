@@ -1,0 +1,10 @@
+# Non-secret receiver configuration. The ops room id and the @alertbot access token are provisioning
+# outputs and live in the SOPS alertbot-credential Secret.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alert-receiver-config
+  namespace: alert-delivery
+data:
+  ALERTBOT_HOMESERVER_URL: http://ess-synapse.matrix.svc.cluster.local:8008
+  ALERTBOT_LISTEN_PORT: "9095"
