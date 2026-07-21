@@ -1,0 +1,52 @@
+# Synthetic delegation canary alerts (issue #454). The canary CronJob's success/failure is read via
+# kube-state-metrics kube_job_* series — no Pushgateway. A broken @mention→A2A→reply loop on an idle
+# cluster surfaces here as a failing OR stale canary Job instead of user-reported silence. Absent in
+# demo/federation because this whole observability-monitors layer is removed there.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: delegation-canary
+  namespace: monitoring
+spec:
+  groups:
+    - name: delegation-canary
+      rules:
+        - alert: SyntheticCanaryDelegationFailing
+          # A canary Job failed in the last 15 minutes: the delegation loop is broken (appservice
+          # registration drift, bridge/agentgateway/kagent outage, model-credential expiry, ...).
+          expr: >-
+            max by (namespace) (
+              max_over_time(
+                kube_job_status_failed{namespace="canary", job_name=~"delegation-canary.*"}[15m]
+              )
+            ) > 0
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Synthetic delegation canary is failing
+            description: >-
+              The scheduled @mention→A2A→reply canary in the `canary` namespace failed within the
+              last 15 minutes. The delegation plane is broken even if no user has hit it yet — check
+              the bridge, agentgateway/kagent route, appservice registration, and model credential.
+        - alert: SyntheticCanaryStale
+          # The CronJob has not scheduled a canary Job in 30 minutes (6x the 5-minute schedule):
+          # it is suspended, its controller is stuck, or the cluster cannot place the Pod. Keyed on
+          # kube_cronjob_status_last_schedule_time, which persists with the CronJob object (unlike
+          # the per-Job completion series, which is garbage-collected), so a stopped canary keeps
+          # alerting instead of self-silencing. A run that schedules but fails is caught by the
+          # failing alert above.
+          expr: >-
+            time() - max by (namespace) (
+              kube_cronjob_status_last_schedule_time{namespace="canary", cronjob="delegation-canary"}
+            ) > 1800
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: Synthetic delegation canary has stopped scheduling
+            description: >-
+              The synthetic delegation canary CronJob has not scheduled a run in 30 minutes — it is
+              suspended, its controller is stuck, or the cluster cannot place the probe Pod.
+              Investigate the CronJob and the cluster; a scheduling-but-failing canary is covered by
+              SyntheticCanaryDelegationFailing.

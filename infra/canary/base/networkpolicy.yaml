@@ -1,0 +1,61 @@
+# Namespace-wide fail-closed baseline: every Pod in the canary namespace is denied all ingress and
+# egress unless the probe policy below re-admits it (same discipline as the knowledge namespace,
+# issue #566).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: canary-default-deny
+  namespace: canary
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# The probe needs only DNS, the Synapse client-server API (send + sync), and — for the MSC3861
+# password-login compat flow — MAS. It never listens (no ingress) and cannot reach the generic
+# A2A/MCP/model surface: it drives the delegation loop purely as a Matrix client, exactly like a
+# human user in the canary room.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: canary-probe
+  namespace: canary
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: delegation-canary
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress: []
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: matrix-authentication-service
+      ports:
+        - protocol: TCP
+          port: 8080
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix
+      ports:
+        - protocol: TCP
+          port: 8008

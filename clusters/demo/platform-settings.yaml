@@ -47,3 +47,4 @@ data:
   mas_local_login_enabled: "true"
   # Evaluation stays minimal and never exposes the administrator client.
   admin_console: disabled
+  synthetic_canary: disabled

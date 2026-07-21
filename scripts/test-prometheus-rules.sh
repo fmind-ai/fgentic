@@ -34,3 +34,7 @@ run_rule_test \
 	"${repo_root}/infra/observability/monitors/trivy-alert.yaml" \
 	"${repo_root}/scripts/testdata/trivy-vulnerability-alert.test.yaml" \
 	"trivy-vulnerability-alert"
+run_rule_test \
+	"${repo_root}/infra/observability/monitors/canary-alert.yaml" \
+	"${repo_root}/scripts/testdata/canary-alert.test.yaml" \
+	"delegation-canary"

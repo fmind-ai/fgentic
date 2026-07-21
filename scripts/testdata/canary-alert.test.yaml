@@ -1,0 +1,68 @@
+evaluation_interval: 1m
+# The test runner replaces this with the extracted PrometheusRule payload.
+rule_files: []
+tests:
+  # A failed canary Job fires the failing alert; a fresh schedule keeps the stale alert quiet.
+  - name: a failed canary job fires the delegation-failing alert
+    interval: 1m
+    input_series:
+      - series: 'kube_job_status_failed{namespace="canary",job_name="delegation-canary-28000001"}'
+        values: "1x30"
+      - series: 'kube_cronjob_status_last_schedule_time{namespace="canary",cronjob="delegation-canary"}'
+        values: "60+60x30"
+    alert_rule_test:
+      - eval_time: 10m
+        alertname: SyntheticCanaryDelegationFailing
+        exp_alerts:
+          - exp_labels:
+              namespace: canary
+              severity: warning
+            exp_annotations:
+              summary: Synthetic delegation canary is failing
+              description: >-
+                The scheduled @mention→A2A→reply canary in the `canary` namespace failed within the
+                last 15 minutes. The delegation plane is broken even if no user has hit it yet — check
+                the bridge, agentgateway/kagent route, appservice registration, and model credential.
+      - eval_time: 10m
+        alertname: SyntheticCanaryStale
+        exp_alerts: []
+  # A CronJob that has not scheduled in 30 minutes fires the stale alert.
+  - name: a canary that stopped scheduling fires the stale alert
+    interval: 1m
+    input_series:
+      - series: 'kube_cronjob_status_last_schedule_time{namespace="canary",cronjob="delegation-canary"}'
+        values: "60x60"
+      - series: 'kube_job_status_failed{namespace="canary",job_name="delegation-canary-28000000"}'
+        values: "0x60"
+    alert_rule_test:
+      - eval_time: 40m
+        alertname: SyntheticCanaryStale
+        exp_alerts:
+          - exp_labels:
+              namespace: canary
+              severity: warning
+            exp_annotations:
+              summary: Synthetic delegation canary has stopped scheduling
+              description: >-
+                The synthetic delegation canary CronJob has not scheduled a run in 30 minutes — it is
+                suspended, its controller is stuck, or the cluster cannot place the probe Pod.
+                Investigate the CronJob and the cluster; a scheduling-but-failing canary is covered by
+                SyntheticCanaryDelegationFailing.
+      - eval_time: 40m
+        alertname: SyntheticCanaryDelegationFailing
+        exp_alerts: []
+  # A healthy canary — scheduling recently, nothing failing — fires nothing.
+  - name: a healthy canary is silent
+    interval: 1m
+    input_series:
+      - series: 'kube_job_status_failed{namespace="canary",job_name="delegation-canary-28000002"}'
+        values: "0x40"
+      - series: 'kube_cronjob_status_last_schedule_time{namespace="canary",cronjob="delegation-canary"}'
+        values: "60+60x40"
+    alert_rule_test:
+      - eval_time: 39m
+        alertname: SyntheticCanaryStale
+        exp_alerts: []
+      - eval_time: 39m
+        alertname: SyntheticCanaryDelegationFailing
+        exp_alerts: []

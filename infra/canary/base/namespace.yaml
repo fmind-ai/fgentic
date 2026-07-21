@@ -1,0 +1,14 @@
+# The synthetic delegation canary is an optional, scheduled end-to-end probe. Its namespace exists
+# only while the synthetic_canary platform profile is enabled; disabling the profile lets Flux prune
+# it completely (issue #454).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: canary
+  labels:
+    fgentic.dev/managed: "true"
+    fgentic.dev/image-policy: enforce
+    fgentic.dev/quota-profile: small
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
