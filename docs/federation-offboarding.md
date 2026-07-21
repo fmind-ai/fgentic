@@ -53,6 +53,20 @@ Revoke from the **narrowest, fastest-failing plane outward to the slowest and mo
 
 The emergency short-path is steps 1→4 (data-plane + live policy reload, no restart) to stop the blast radius, followed by the full ordered sequence.
 
+### 3.1 Break-glass automation (`fed:break-glass`)
+
+The manual per-plane sequence in §3 is the authoritative mechanism; for a compromise you want it fast, ordered, reversible, and evidenced without a hand-scramble across five planes. `mise run fed:break-glass contain <partner_server_name>` (issue #350) is the registry-native break-glass: it flips the partner's `contained` flag in the [partner trust registry](federation.md#821-partner-trust-registry--one-validated-source-of-truth) and re-renders, which drops the partner from the callback border (`policy.json` `allowed_servers`) so every federated event from it is denied at [§4.3](#43-policy-border--appssynapse-federation-policy). Because containment is GitOps-native, it is auditable (a git commit) and reversible (`mise run fed:restore <partner>`); `mise run fed:break-glass status` lists contained partners. Committing the re-render and letting Flux reconcile applies the border deny; the remaining planes (transport whitelist, per-room ACL, bridge sender grants, `azp` quota) are revoked by the ordered runtime steps the command prints, matching §3's order.
+
+Each `contain`/`restore` writes one **content-free containment record** (`fgentic.federation.containment.v1`): the partner `server_name`/`azp`/`classification`, the git revision, a UTC timestamp, and the four safe-order planes — never event content, prompts, or message bodies. `mise run fed:evidence-pack <partner>` assembles that record plus the partner's verify-only identity facts (`server_name`, `azp`, `issuer`, key IDs — no secrets or private keys) into a `fgentic.federation.evidence.v1` **regulator evidence pack** that names the already-emitted content-free record streams a reviewer collects live — the Synapse callback denials, agentgateway authz/429 decisions, and bridge attribution audit (see [docs/audit.md](audit.md)) — reconstructing who/when/what from event IDs, policy digests, key IDs, and revisions only. The pack states its honest limits inline: ACL/whitelist removal does not retract already-replicated Matrix history (§7), and `X-User-Id` is attribution, not authentication ([D11](design-decisions.md)).
+
+The distinction a regulator asks for:
+
+1. **Public probe** — what an unauthenticated third party can observe (the partner's route now fails closed). Evidence: the [preflight](federation-onboarding.md#3-public-discovery-preflight); never sufficient on its own — reachability is not governance.
+1. **Operator evidence** — the content-free records above, collected by the owning operator with cluster access. This is the substantive who/when/what.
+1. **Contractual attestation** — both operators' signed completion record ([§10](#10-completion-record)) that the eviction and its evidence are accepted. Trust decisions live here, not in the tooling.
+
+**Abuse-report intake.** A partner reports abuse with a `fgentic.federation.abuse-report.v1` document (schema: [infra/federation/registry/abuse-report.schema.json](../infra/federation/registry/abuse-report.schema.json)): reporter and subject `server_name`, category, severity, requested action, and **reference-only** `evidence_refs` (Matrix event IDs, policy digests, key IDs — never message content). A `requested_action: contain` maps directly to `fed:break-glass contain <subject>` and the evidence pack above; intake logs the references, never the reported content. `mise run check:fed-break-glass` proves the border drop/restore, the content-free record and pack, and the abuse schema offline; triggering the live lab and asserting every plane denies the contained partner is the runtime-owner proof.
+
 ## 4. Per-plane revocation
 
 Each plane below names the exact control, how the change is applied, whether a reload/restart is needed, and the content-free evidence the revocation leaves. `${federation_partner_server_name}` is the partner being removed.

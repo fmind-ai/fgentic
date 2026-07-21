@@ -183,7 +183,7 @@ Run a rotation rehearsal before production and at the agreed interval:
 1. Prove the new identity on the limited route, then revoke the old identity and prove it fails.
 1. Record timestamps, owners, evidence IDs, and observed interruption; never record secret material.
 
-On a suspected compromise, either organization's security owner may suspend the affected room/route first and investigate second. Preserve content-free event IDs, policy digests, key IDs, Git revisions, and timestamps according to the agreement.
+On a suspected compromise, either organization's security owner may suspend the affected room/route first and investigate second. For a fast, reversible, evidenced containment use `mise run fed:break-glass contain <partner>` (registry-native break-glass — see the offboarding runbook [§3.1](federation-offboarding.md#31-break-glass-automation-fedbreak-glass)) and `mise run fed:evidence-pack <partner>` for the content-free regulator pack. Preserve content-free event IDs, policy digests, key IDs, Git revisions, and timestamps according to the agreement.
 
 Offboard in this order (the dedicated [offboarding runbook](federation-offboarding.md) expands each plane's exact mechanism, evidence, partial revocation, and re-admission):
 

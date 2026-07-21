@@ -31,6 +31,7 @@ partners:
   - server_name: org-a.fgentic.localhost
     role: host
     allowlisted: true
+    contained: false
     classification: public
     a2a:
       role: exporter
@@ -44,6 +45,9 @@ partners:
   - server_name: org-b.fgentic.localhost
     role: admitted
     allowlisted: true
+    # Break-glass containment (issue #350): `fed:break-glass org-b.fgentic.localhost` flips this to true
+    # and re-renders, dropping the partner from the callback border; `fed:restore` reverses it.
+    contained: false
     classification: public
     a2a:
       role: consumer

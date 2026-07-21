@@ -1,0 +1,133 @@
+#!/usr/bin/env bash
+# Deterministic offline contract for cross-org break-glass containment (issue #350): containment drops the
+# partner from the callback border and restore reverses it, the trust-registry gate stays green in both
+# states, the containment record and evidence pack are content-free with the expected who/when/what fields
+# in the offboarding-safe order, and the abuse-report schema accepts a reference-only report while rejecting
+# content-bearing or unknown fields. No live cluster: triggering the lab and asserting every plane denies is
+# the runtime-owner proof. The test snapshots the rendered artifacts and restores them on exit.
+set -euo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly ROOT_DIR
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
+WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-break-glass.XXXXXX")"
+readonly WORK_DIR
+
+require_commands yq jq python3 git
+
+readonly PARTNER="org-b.fgentic.localhost"
+readonly REGISTRY="${ROOT_DIR}/infra/federation/registry/partners.yaml"
+readonly POLICY="${ROOT_DIR}/apps/synapse-federation-policy/policy/policy.json"
+readonly SETTINGS="${ROOT_DIR}/clusters/federation/platform-settings.yaml"
+
+# Snapshot the three files break-glass mutates, and restore them however the test exits.
+cp "${REGISTRY}" "${WORK_DIR}/registry.orig"
+cp "${POLICY}" "${WORK_DIR}/policy.orig"
+cp "${SETTINGS}" "${WORK_DIR}/settings.orig"
+restore() {
+	cp "${WORK_DIR}/registry.orig" "${REGISTRY}"
+	cp "${WORK_DIR}/policy.orig" "${POLICY}"
+	cp "${WORK_DIR}/settings.orig" "${SETTINGS}"
+	rm -rf "${WORK_DIR}"
+}
+trap restore EXIT INT TERM
+
+export FGENTIC_FED_RECORD_DIR="${WORK_DIR}/records"
+
+# The partner starts admitted at the border.
+jq -e --arg p "${PARTNER}" '.allowed_servers | index($p) != null' "${POLICY}" >/dev/null \
+	|| fail "precondition: ${PARTNER} must be admitted before break-glass"
+
+# 1. Contain: border drops the partner; registry flag is a byte-safe single-line change; gate still green.
+bash "${ROOT_DIR}/scripts/fed-break-glass.sh" contain "${PARTNER}" >/dev/null 2>&1
+jq -e --arg p "${PARTNER}" '.allowed_servers | index($p) == null' "${POLICY}" >/dev/null \
+	|| fail "contain: ${PARTNER} must be dropped from policy.json allowed_servers"
+grep -v 'contained:' "${WORK_DIR}/registry.orig" >"${WORK_DIR}/orig.nc" || true
+grep -v 'contained:' "${REGISTRY}" >"${WORK_DIR}/new.nc" || true
+diff "${WORK_DIR}/orig.nc" "${WORK_DIR}/new.nc" >/dev/null \
+	|| fail "contain: only the 'contained:' line may change in the registry"
+yq -e '.partners[] | select(.server_name == "'"${PARTNER}"'") | .contained == true' "${REGISTRY}" >/dev/null \
+	|| fail "contain: registry contained flag must be true"
+bash "${ROOT_DIR}/scripts/check-fed-registry.sh" >/dev/null 2>&1 || fail "contain: trust-registry gate must stay green in the contained state"
+
+# 2. The containment record is content-free with who/when/what in the exact offboarding-safe order.
+record="${FGENTIC_FED_RECORD_DIR}/containment-${PARTNER}.json"
+[ -f "${record}" ] || fail "contain: no containment record written"
+jq -e --arg p "${PARTNER}" '
+	.schema == "fgentic.federation.containment.v1" and .action == "contain" and
+	.partner.server_name == $p and (.partner.azp == "org-b-a2a") and
+	(.git_revision | test("^[0-9a-f]{40}$")) and
+	(.recorded_at | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$")) and
+	([.safe_order[].plane] == ["a2a-quota", "bridge-sender", "callback-border", "acl-and-whitelist"]) and
+	([.safe_order[].order] == [1, 2, 3, 4]) and
+	(.safe_order[] | select(.plane == "callback-border") | .rendered == true)
+' "${record}" >/dev/null || fail "containment record missing expected content-free who/when/what fields"
+# No content-bearing keys anywhere in the record (message bodies, prompts, event content).
+if jq -e '.. | strings | select(test("(?i)(message|prompt|body|content|plaintext)"))' "${record}" >/dev/null 2>&1; then
+	fail "containment record must not carry any content-bearing string"
+fi
+
+# 3. Evidence pack: content-free, verify-only identity, every named source flagged content_free.
+pack="${WORK_DIR}/pack.json"
+bash "${ROOT_DIR}/scripts/fed-evidence-pack.sh" "${PARTNER}" >"${pack}" 2>/dev/null
+jq -e --arg p "${PARTNER}" '
+	.schema == "fgentic.federation.evidence.v1" and
+	.partner.server_name == $p and .partner.azp == "org-b-a2a" and
+	.partner.issuer == "https://id.org-b.fgentic.localhost/realms/fgentic-federation" and
+	.containment.action == "contain" and
+	([.evidence_sources[].content_free] | all) and
+	([.evidence_sources[].stream] | sort == ["agentgateway-a2a-authz", "bridge-delegation-audit", "synapse-federation-policy-denial"]) and
+	(.honest_limits | length >= 2)
+' "${pack}" >/dev/null || fail "evidence pack missing content-free identity/source/limit fields"
+# The pack must not embed any private key material.
+if jq -e '.. | strings | select(test("PRIVATE KEY|BEGIN EC|secret"))' "${pack}" >/dev/null 2>&1; then
+	fail "evidence pack must never carry private key or secret material"
+fi
+
+# 4. Restore: border re-admits the partner; gate green again.
+bash "${ROOT_DIR}/scripts/fed-break-glass.sh" restore "${PARTNER}" >/dev/null 2>&1
+jq -e --arg p "${PARTNER}" '.allowed_servers | index($p) != null' "${POLICY}" >/dev/null \
+	|| fail "restore: ${PARTNER} must be re-admitted to the border"
+bash "${ROOT_DIR}/scripts/check-fed-registry.sh" >/dev/null 2>&1 || fail "restore: trust-registry gate must stay green"
+
+# 5. Abuse-report schema: a reference-only report validates; content-bearing / unknown fields are rejected.
+schema="${ROOT_DIR}/infra/federation/registry/abuse-report.schema.json"
+[ -f "${schema}" ] || fail "abuse-report schema missing"
+jq -e '.["$id"] and (.required | index("subject_server_name")) and (.additionalProperties == false)' "${schema}" >/dev/null \
+	|| fail "abuse-report schema is malformed"
+# Structural validation mirroring check:mcp-governance (jq -e): required keys present, no unknown keys,
+# every evidence ref is a reference kind (no message/body/content kind), enums respected. Applied to one
+# valid report (must pass) and two malformed reports (must FAIL), so the rule genuinely discriminates.
+abuse_valid='
+	(["category", "reported_at", "reporter_server_name", "requested_action", "schema", "severity", "subject_server_name"]
+		- (keys - ["contact", "evidence_refs"]) | length == 0) and
+	((keys - ["category", "contact", "evidence_refs", "reported_at", "reporter_server_name", "requested_action", "schema", "severity", "subject_server_name"]) | length == 0) and
+	(.schema == "fgentic.federation.abuse-report.v1") and
+	(.category | . == "spam" or . == "harassment" or . == "policy-violation" or . == "credential-compromise" or . == "data-exfiltration" or . == "other") and
+	(.requested_action | . == "investigate" or . == "rate-limit" or . == "contain") and
+	([.evidence_refs[].kind] | all(. == "matrix_event_id" or . == "policy_digest" or . == "key_id" or . == "a2a_task_id" or . == "azp"))
+'
+valid_report="$(jq -n '{
+	schema: "fgentic.federation.abuse-report.v1",
+	reporter_server_name: "org-b.fgentic.localhost",
+	subject_server_name: "org-a.fgentic.localhost",
+	category: "policy-violation",
+	severity: "high",
+	requested_action: "contain",
+	evidence_refs: [{kind: "matrix_event_id", value: "$abc"}, {kind: "policy_digest", value: "sha256:deadbeef"}],
+	reported_at: "2026-07-21T00:00:00Z"
+}')"
+echo "${valid_report}" | jq -e "${abuse_valid}" >/dev/null || fail "a reference-only abuse report must validate"
+# Reject 1: a content-bearing evidence kind (message content is never a valid reference).
+content_report="$(echo "${valid_report}" | jq '.evidence_refs += [{kind: "message_body", value: "leaked prompt text"}]')"
+if echo "${content_report}" | jq -e "${abuse_valid}" >/dev/null 2>&1; then
+	fail "abuse report with a content-bearing evidence kind must be rejected"
+fi
+# Reject 2: an unknown top-level field (additionalProperties:false).
+rogue_report="$(echo "${valid_report}" | jq '.rogue_field = "x"')"
+if echo "${rogue_report}" | jq -e "${abuse_valid}" >/dev/null 2>&1; then
+	fail "abuse report with an unknown field must be rejected"
+fi
+
+echo "Cross-org break-glass containment contract passed: border drop/restore, content-free record + evidence pack, abuse intake"

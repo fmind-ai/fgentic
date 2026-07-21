@@ -197,6 +197,7 @@ depends = [
   "check:demo",
   "check:federation",
   "check:fed-registry",
+  "check:fed-break-glass",
   "check:federation-onboarding",
   "check:smoke-workflow",
   "check:mautrix-bridges",
@@ -436,6 +437,10 @@ run = "bash scripts/test-federation.sh"
 [tasks."check:fed-registry"]
 description = "Assert the partner trust registry is schema-valid and every federation enforcement plane is consistent"
 run = "bash scripts/check-fed-registry.sh"
+
+[tasks."check:fed-break-glass"]
+description = "Assert cross-org break-glass containment, the content-free evidence pack, and the abuse-report schema"
+run = "bash scripts/test-fed-break-glass.sh"
 
 [tasks."check:federation-onboarding"]
 description = "Test the read-only partner federation preflight and onboarding conformance with offline fixtures"
@@ -709,6 +714,14 @@ run = "bash scripts/dev.sh down"
 [tasks."fed:registry-render"]
 description = "Render the derived federation planes (policy.json + platform-settings) from the partner trust registry"
 run = "bash scripts/fed-registry-render.sh"
+
+[tasks."fed:break-glass"]
+description = "Break-glass containment: contain|restore|status a partner across the federation trust planes"
+run = "bash scripts/fed-break-glass.sh"
+
+[tasks."fed:evidence-pack"]
+description = "Assemble the content-free cross-org incident evidence pack for a contained partner"
+run = "bash scripts/fed-evidence-pack.sh"
 
 [tasks."fed:up"]
 description = "Reconcile and prove the provider-free federation hardening lab"
