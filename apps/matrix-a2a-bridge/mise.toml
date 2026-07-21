@@ -12,7 +12,7 @@ gitleaks = "latest"
 dprint = "latest"
 lefthook = "latest"
 kind = "0.32.0"
-kubectl = "1.35.0"
+kubectl = "1.36.2"
 
 [tasks.all]
 alias = "a"
