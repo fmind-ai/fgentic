@@ -87,6 +87,11 @@ run = "bash scripts/agent-gate.sh"
 description = "Scaffold one deny-by-default local Agent into the GitOps and evaluation seams"
 run = "bash scripts/new-agent.sh"
 
+[tasks."agent:test"]
+description = "Run one Agent's golden tasks locally against the deterministic zero-spend model (offline, no cluster) — the pre-PR loop; shares the CI test:agents-golden code path"
+dir = "apps/matrix-a2a-bridge"
+run = "bash scripts/eval-golden.sh"
+
 [tasks.format]
 alias = "f"
 description = "Format everything (config/markup, shell, Terraform, and applications)"
