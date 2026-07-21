@@ -90,6 +90,10 @@ apply_secret() {
 				;;
 		esac
 		case "${argument}" in
+			# --type is consumed by the dispatch case above; it carries no Secret data, so it is a
+			# no-op here. Without this branch a typed Secret (e.g. kubernetes.io/basic-auth) hits the
+			# default and fails closed with "unsupported apply_secret argument" (regression from #624).
+			--type=*) ;;
 			--from-literal=* | --from-file=*)
 				[[ "${key}" =~ ^[-._a-zA-Z0-9]+$ ]] || die "invalid Secret data key"
 				encoded="$(printf '%s' "${value}" | base64)"

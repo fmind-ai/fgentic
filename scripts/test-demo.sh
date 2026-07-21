@@ -1002,4 +1002,42 @@ if rg -n 'mas_password_login_enabled|llm_token_budget_15m' \
 	exit 1
 fi
 
+# Focused fixture: apply_secret must preserve a typed Secret's requested type and data, and stay
+# fail-closed on an unknown argument. Regression guard for the #624 SC2249 refactor that made the
+# second dispatch case reject --type and break kubernetes.io/basic-auth secrets (#680).
+(
+	# shellcheck source=scripts/lib.sh
+	source "${ROOT_DIR}/scripts/lib.sh"
+	# shellcheck source=scripts/lib/demo-secrets.sh
+	source "${ROOT_DIR}/scripts/lib/demo-secrets.sh"
+
+	captured="${WORK_DIR}/apply-secret.json"
+	kubectl() { cat >"${captured}"; }
+
+	apply_secret postgres pg-basic-auth --type=kubernetes.io/basic-auth \
+		--from-literal=username=alice --from-literal=password=s3cret
+	jq --exit-status '
+    .kind == "Secret"
+    and .metadata.name == "pg-basic-auth"
+    and .metadata.namespace == "postgres"
+    and .type == "kubernetes.io/basic-auth"
+    and .data.username == "YWxpY2U="
+    and .data.password == "czNjcmV0"
+  ' "${captured}" >/dev/null || {
+		echo 'error: apply_secret dropped a typed Secret type or data' >&2
+		exit 1
+	}
+
+	apply_secret bridge opaque-secret --from-literal=token=xyz
+	jq --exit-status '.type == "Opaque" and .data.token == "eHl6"' "${captured}" >/dev/null || {
+		echo 'error: apply_secret Opaque default regressed' >&2
+		exit 1
+	}
+
+	if (apply_secret ns name --bogus=1) 2>/dev/null; then
+		echo 'error: apply_secret accepted an unsupported argument' >&2
+		exit 1
+	fi
+)
+
 echo 'Demo install contracts passed.'
