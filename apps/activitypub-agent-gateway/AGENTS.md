@@ -8,6 +8,17 @@ A **self-contained** ActivityPub ↔ A2A gateway: it presents each platform agen
 
 This is the second federation transport ([standing rule](../../docs/fediverse.md)): additive to Matrix federation, never a replacement.
 
+## Commands
+
+Run every task from this directory via `mise --cd apps/activitypub-agent-gateway run <task>` (a bare `mise run <task>` at the repo root cannot see this app's `mise.toml`):
+
+- `mise --cd apps/activitypub-agent-gateway run install` — tidy and download Go modules (`go mod tidy`).
+- `mise --cd apps/activitypub-agent-gateway run check` — lint (golangci-lint), vuln scan (govulncheck), format check (dprint), and git-history secret scan (gitleaks).
+- `mise --cd apps/activitypub-agent-gateway run test` — race + coverage suite; `scripts/check-coverage.sh` ratchets per-package coverage, so it does not drop.
+- `mise --cd apps/activitypub-agent-gateway run format` — goimports + gofumpt + dprint.
+- `mise --cd apps/activitypub-agent-gateway run build` — compile the distroless binary (`build:image` builds the OCI image).
+- `mise --cd apps/activitypub-agent-gateway run interop` — re-derive the FEP-8b32 golden vector live against the apsig reference (needs uv + network; deliberately outside `check`/`test`, which stay offline/deterministic).
+
 ## Layout
 
 - `cmd/gateway/main.go` — wires config → registry → a2a client → gateway; runs a public AP HTTP server and a private `/metrics` server; graceful shutdown.
