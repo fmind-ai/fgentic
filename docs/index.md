@@ -19,6 +19,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 - [Licensing & Foundation Strategy](licensing.md) - Apache-2.0 rationale, AGPL boundaries, homeserver triggers (§10)
 - [Roadmap](roadmap.md) - phase history and the mapping to dated GitHub milestone snapshots (§13)
 - [Forking & Adapting](forking.md) - the checklist to run Fgentic under your own org, domain, GCP project, and registry
+- [Extending Without Forking](extending-without-forking.md) - consume the signed standalone bridge chart and ship agents from your own repo as an out-of-tree pack
 - [Exit Strategy](exit-strategy.md) - per-layer replacement targets, migration boundaries, one-way doors, and required exit evidence
 - [Incumbent Chat Coexistence](chat-coexistence.md) - choose whether to run Fgentic beside, bridge with, or migrate from an existing chat system
 - [Persona Onboarding](onboarding/index.md) - role-specific paths for security leads, DPOs, platform engineers, developers, and end users

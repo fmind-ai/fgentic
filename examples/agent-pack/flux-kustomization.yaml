@@ -1,0 +1,38 @@
+# How a cluster consumes an out-of-tree agent pack (issue #190): one extra Flux GitRepository pointing at
+# the pack's OWN repository, plus one Kustomization that applies its agent manifests — no change to the
+# Fgentic core tree. Removing the agent is deleting these two objects (plus reverting the agents.yaml
+# fragment); the pack leaves zero footprint. Adjust `url`, `ref`, and `path` to the real pack repository.
+#
+# The pack's kagent Agent still passes the same admission and governance the core agents do: the
+# ValidatingAdmissionPolicy set (approved model gateway, reviewed pod identity, scoped MCP subset) and
+# check:mcp-governance reject an uncataloged tool or an unapproved reference — an out-of-tree source does
+# not relax any control. Apply the Agent through GitOps; never `kubectl apply` it by hand.
+apiVersion: source.toolkit.fluxcd.io/v1
+kind: GitRepository
+metadata:
+  name: example-agent-pack
+  namespace: flux-system
+spec:
+  interval: 10m
+  url: https://github.com/example-org/fgentic-example-agent-pack
+  ref:
+    tag: v1.0.0 # pin the pack to an immutable tag, not a moving branch
+---
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: example-agent-pack
+  namespace: flux-system
+spec:
+  interval: 10m
+  retryInterval: 2m
+  timeout: 5m
+  prune: true # deleting this Kustomization removes the pack's agent — zero residual footprint
+  sourceRef:
+    kind: GitRepository
+    name: example-agent-pack
+  path: ./agents # the directory in the pack repo holding the kagent Agent manifest(s)
+  # dependsOn the platform layers the agent needs; it does not depend on the Matrix layer.
+  dependsOn:
+    - name: kagent
+    - name: agentgateway
