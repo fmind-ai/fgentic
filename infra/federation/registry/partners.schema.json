@@ -50,6 +50,16 @@
           "type": "string",
           "enum": ["none", "public", "internal", "confidential"]
         },
+        "review_by": {
+          "description": "Time-bounded trust (issue #463): UTC date (YYYY-MM-DD) by which this partner's controls must be re-reviewed. Required for an admitted partner. A passed review_by raises the review-due alert but does not fail the gate; renew by re-signing the agreement with a new window.",
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
+        "valid_until": {
+          "description": "Time-bounded trust (issue #463): optional UTC hard-expiry date (YYYY-MM-DD). A passed valid_until FAILS check:fed-registry closed, blocking reconciliation of federation trust config until the partner is renewed or offboarded. It is not a live traffic kill-switch — immediate containment is fed:break-glass (#350).",
+          "type": "string",
+          "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}$"
+        },
         "a2a": { "$ref": "#/$defs/a2a" }
       }
     },

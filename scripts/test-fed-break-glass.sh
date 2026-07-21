@@ -75,6 +75,7 @@ jq -e --arg p "${PARTNER}" '
 	.schema == "fgentic.federation.evidence.v1" and
 	.partner.server_name == $p and .partner.azp == "org-b-a2a" and
 	.partner.issuer == "https://id.org-b.fgentic.localhost/realms/fgentic-federation" and
+	(.partner.review_by | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")) and
 	.containment.action == "contain" and
 	([.evidence_sources[].content_free] | all) and
 	([.evidence_sources[].stream] | sort == ["agentgateway-a2a-authz", "bridge-delegation-audit", "synapse-federation-policy-denial"]) and

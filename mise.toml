@@ -199,6 +199,7 @@ depends = [
   "check:fed-registry",
   "check:fed-break-glass",
   "check:fed-agreement",
+  "check:fed-trust-alert",
   "check:federation-onboarding",
   "check:smoke-workflow",
   "check:mautrix-bridges",
@@ -446,6 +447,10 @@ run = "bash scripts/test-fed-break-glass.sh"
 [tasks."check:fed-agreement"]
 description = "Verify the signed bilateral agreements and assert the registry enforces exactly their signed terms"
 run = "bash scripts/test-fed-agreement.sh"
+
+[tasks."check:fed-trust-alert"]
+description = "Assert the time-bounded-trust review/expiry rules render from the registry and fire correctly (promtool)"
+run = "bash scripts/test-fed-trust-alert.sh"
 
 [tasks."check:federation-onboarding"]
 description = "Test the read-only partner federation preflight and onboarding conformance with offline fixtures"
@@ -723,6 +728,10 @@ run = "bash scripts/fed-registry-render.sh"
 [tasks."fed:agreement-render"]
 description = "Sync the registry reservation/quota/classification from the signed bilateral agreements"
 run = "bash scripts/fed-agreement-render.sh"
+
+[tasks."fed:trust-alert-render"]
+description = "Render the time-bounded-trust review/expiry PrometheusRules from the partner trust registry"
+run = "bash scripts/fed-trust-alert-render.sh"
 
 [tasks."fed:break-glass"]
 description = "Break-glass containment: contain|restore|status a partner across the federation trust planes"

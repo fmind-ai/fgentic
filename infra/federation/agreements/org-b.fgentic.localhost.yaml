@@ -29,3 +29,9 @@ allowed_classification: public
 residency:
   region: eu
   basis: contractual
+
+# Time-bounded trust (issue #463). review_by is the control-review due date; valid_until is the hard
+# expiry. Both are part of the SIGNED terms, so a validity window cannot be edited without re-signing.
+# Renewal is a re-signed agreement with a new window; expiry blocks reconciliation, not live traffic.
+review_by: "2027-07-21"
+valid_until: "2030-12-31"

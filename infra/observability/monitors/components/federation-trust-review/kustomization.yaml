@@ -1,0 +1,8 @@
+# Opt-in time-bounded-trust review/expiry alerts (issue #463), rendered from the partner trust registry
+# by scripts/fed-trust-alert-render.sh. A production-federation cluster (observability + federated
+# partners) composes this Component; validated offline by promtool. Not in a default cluster DAG.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - recording-rules.yaml
+  - alert-rules.yaml
