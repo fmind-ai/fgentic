@@ -351,7 +351,7 @@ static_contract() {
     any(.spec.egress[];
       .to == [{"namespaceSelector": {"matchLabels": {
         "kubernetes.io/metadata.name": "kube-system"
-      }}}] and
+      }}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}] and
       ([.ports[] | [.protocol, .port]] | sort) == [["TCP", 53], ["UDP", 53]]) and
     any(.spec.egress[];
       .to == [{"podSelector": {"matchLabels": {"cnpg.io/cluster": "platform-pg"}}}] and
@@ -367,7 +367,7 @@ static_contract() {
     any(.spec.egress[];
       .to == [{"namespaceSelector": {"matchLabels": {
         "kubernetes.io/metadata.name": "kube-system"
-      }}}] and
+      }}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}] and
       ([.ports[] | [.protocol, .port]] | sort) == [["TCP", 53], ["UDP", 53]]) and
     any(.spec.egress[];
       .to == [{"podSelector": {"matchLabels": {"cnpg.io/cluster": "platform-pg"}}}] and
@@ -384,7 +384,7 @@ static_contract() {
     any(.spec.egress[];
       .to == [{"namespaceSelector": {"matchLabels": {
         "kubernetes.io/metadata.name": "kube-system"
-      }}}] and
+      }}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}] and
       ([.ports[] | [.protocol, .port]] | sort) == [["TCP", 53], ["UDP", 53]]) and
     any(.spec.egress[];
       .to == [{"podSelector": {"matchLabels": {"cnpg.io/cluster": "platform-pg"}}}] and
