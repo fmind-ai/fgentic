@@ -197,6 +197,7 @@ depends = [
   "check:trivy-operator",
   "check:secret-rotation",
   "check:supply-chain",
+  "check:identity",
   "check:agents",
   "check:agent-new",
   "check:demo",
@@ -424,6 +425,14 @@ run = "bash scripts/test-rotate-secrets.sh"
 [tasks."check:supply-chain"]
 description = "Validate signed OCI bootstrap/active invariants and CD attestation controls"
 run = "bash scripts/check-supply-chain.sh"
+
+[tasks."check:identity"]
+description = "Assert the Keycloak↔MAS OIDC backchannel-logout wiring (client config, provider, egress)"
+run = "bash scripts/check-identity.sh"
+
+[tasks."identity:backchannel-migrate"]
+description = "Idempotently apply the OIDC backchannel-logout config to an existing cluster's live fgentic client"
+run = "bash scripts/keycloak-backchannel-migrate.sh"
 
 [tasks."check:agents"]
 description = "Validate every in-repo Agent, bridge mapping, sender policy, stage, and source contract"
