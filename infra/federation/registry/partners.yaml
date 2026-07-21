@@ -1,0 +1,60 @@
+# Partner trust registry — the single validated source of truth for cross-organization federation
+# trust (issue #349). Every enforcement plane is DERIVED from this file, never separately authored:
+#
+#   1. Synapse `federation_domain_whitelist`   (infra/federation/matrix-{a,b,c})
+#   2. Room `m.room.server_acl` allow list      (scripts/lib/federation-matrix.sh seed)
+#   3. Callback policy `allowed_servers`        (apps/synapse-federation-policy/policy/policy.json)
+#   4. Pinned AgentCard identity                (infra/federation/delegation/agent-card.json + signer)
+#   5. A2A azp / issuer / quota descriptors     (infra/federation/delegation/{policies,rate-limit}.yaml)
+#
+# Render the derived server-identity, budget, and allowlist values with `mise run fed:registry-render`
+# (it rewrites policy.json and the federation identity keys of clusters/federation/platform-settings.yaml,
+# which Flux post-build substitution propagates to the templated planes). `mise run check:fed-registry`
+# then fails closed on ANY plane that disagrees with this registry — an unknown field, a localpart-based
+# identifier (D6), a duplicate/empty allowlist, or a partner admitted on one plane and missing on another.
+#
+# Invariants: keys are EXACT Matrix `server_name`s (FQDN, never localpart — D6); trust is deny-by-default
+# (the denied control server appears in no enforcement plane); this registry holds verify-only public
+# material only — never a private key or secret.
+$schema: ./partners.schema.json
+version: 1
+
+# Cross-org budget admission: a per-`azp` reservation ceiling and a per-minute request quota. This is
+# admission accounting (one maximum request fits, a second in the same minute is refused), NOT
+# downstream model-token attribution — actual model metrics stay aggregate at the separate LLM hop.
+lab:
+  a2a_max_budget_units: 4096
+  a2a_quota_units_per_minute: 5000
+
+partners:
+  # Org A — the local/host homeserver that EXPORTS the docs-qa A2A route and signs the AgentCard.
+  - server_name: org-a.fgentic.localhost
+    role: host
+    allowlisted: true
+    classification: public
+    a2a:
+      role: exporter
+      route_host: a2a.org-a.fgentic.localhost
+      agent_path: /api/a2a/kagent/docs-qa
+      provider_organization: Fgentic Org A
+      card_key_id: fgentic-org-a-docs-qa-v1
+      usage_receipt_key_id: fgentic-org-a-usage-receipt-v1
+
+  # Org B — the admitted remote partner, authorized as an A2A consumer by a verified OIDC client.
+  - server_name: org-b.fgentic.localhost
+    role: admitted
+    allowlisted: true
+    classification: public
+    a2a:
+      role: consumer
+      azp: org-b-a2a
+      issuer: https://id.org-b.fgentic.localhost/realms/fgentic-federation
+      jwks_path: /realms/fgentic-federation/protocol/openid-connect/certs
+      audience: fgentic-a2a
+
+  # Org C — the deny-by-default control server. It is present in NO enforcement plane; the empty ACL
+  # deny list plus allowlist omission is the denial, proving deny-by-default survives rendering.
+  - server_name: org-c.fgentic.localhost
+    role: denied
+    allowlisted: false
+    classification: none

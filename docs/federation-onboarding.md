@@ -85,10 +85,11 @@ The record sets `governance_verified` to `false` throughout and `eligible_for_re
 
 ## 4. Matrix technical controls
 
-Each operator supplies authenticated or local evidence for the following controls. Hash or link to the reviewed evidence rather than copying secrets or room content.
+Each operator supplies authenticated or local evidence for the following controls. Hash or link to the reviewed evidence rather than copying secrets or room content. The partner's entry in the trust registry (`infra/federation/registry/partners.yaml`, §8.2.1) is the single validated source these controls derive from: reference the one registry entry and its `check:fed-registry` result rather than five separately captured configurations, since the gate proves each plane already agrees with it.
 
 | Gate                   | Required control                                                                                                                                                               | Evidence owner records                                               |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| Trust registry         | The partner has exactly one registry entry (exact `server_name`, allowlist membership, admitted A2A `azp`/issuer, classification); `check:fed-registry` passes                 | Registry entry reference plus the clean `check:fed-registry` run     |
 | DNS and TLS            | Apex `/.well-known` delegates to the agreed DNS server; publicly trusted certificate covers every advertised name; renewal is monitored                                        | Public preflight plus certificate/renewal monitor reference          |
 | Closed federation      | `federation_domain_whitelist` contains only the local and approved partner server names; network ingress is restricted to partner addresses where stable addressing permits it | Redacted effective config and Git revision                           |
 | Signing-key retrieval  | The approved partner is reachable as configured; any notary choice and failure behavior are documented                                                                         | Effective Synapse config and negative test                           |

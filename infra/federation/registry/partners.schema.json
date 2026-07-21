@@ -1,0 +1,87 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fgentic.fmind.ai/schemas/federation/partners.schema.json",
+  "title": "Fgentic partner trust registry",
+  "description": "Single validated source of truth for cross-organization federation trust (issue #349). Every enforcement plane is derived from this document; check:fed-registry validates against this schema and fails closed on any plane that drifts from it.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["$schema", "version", "lab", "partners"],
+  "properties": {
+    "$schema": { "type": "string", "const": "./partners.schema.json" },
+    "version": { "type": "integer", "const": 1 },
+    "lab": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["a2a_max_budget_units", "a2a_quota_units_per_minute"],
+      "properties": {
+        "a2a_max_budget_units": { "type": "integer", "minimum": 1 },
+        "a2a_quota_units_per_minute": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "partners": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/partner" }
+    }
+  },
+  "$defs": {
+    "partner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["server_name", "role", "allowlisted", "classification"],
+      "properties": {
+        "server_name": {
+          "description": "Exact Matrix server_name (FQDN, never a localpart — D6). Lowercase DNS name with an optional :port.",
+          "type": "string",
+          "pattern": "^(?=.{1,255}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$"
+        },
+        "role": {
+          "description": "host = the local exporting homeserver; admitted = an authorized remote partner; denied = the deny-by-default control server (present in no enforcement plane).",
+          "type": "string",
+          "enum": ["host", "admitted", "denied"]
+        },
+        "allowlisted": { "type": "boolean" },
+        "classification": {
+          "description": "Highest data classification this partner may exchange. A denied partner is 'none'.",
+          "type": "string",
+          "enum": ["none", "public", "internal", "confidential"]
+        },
+        "a2a": { "$ref": "#/$defs/a2a" }
+      }
+    },
+    "a2a": {
+      "type": "object",
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "required": [
+            "role",
+            "route_host",
+            "agent_path",
+            "provider_organization",
+            "card_key_id",
+            "usage_receipt_key_id"
+          ],
+          "properties": {
+            "role": { "const": "exporter" },
+            "route_host": { "type": "string" },
+            "agent_path": { "type": "string", "pattern": "^/" },
+            "provider_organization": { "type": "string", "minLength": 1 },
+            "card_key_id": { "type": "string", "minLength": 1 },
+            "usage_receipt_key_id": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "required": ["role", "azp", "issuer", "jwks_path", "audience"],
+          "properties": {
+            "role": { "const": "consumer" },
+            "azp": { "type": "string", "minLength": 1 },
+            "issuer": { "type": "string", "format": "uri", "pattern": "^https://" },
+            "jwks_path": { "type": "string", "pattern": "^/" },
+            "audience": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    }
+  }
+}
