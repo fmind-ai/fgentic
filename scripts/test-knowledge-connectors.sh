@@ -3,6 +3,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 readonly CONNECTOR_DIR="${ROOT_DIR}/infra/knowledge/connectors"
 readonly RUNTIME_DIR="${CONNECTOR_DIR}/git-markdown-runtime"
@@ -10,11 +13,6 @@ readonly ENABLED_DIR="${ROOT_DIR}/infra/knowledge/profiles/enabled"
 readonly LOCAL_SETTINGS="${ROOT_DIR}/clusters/local/platform-settings.yaml"
 readonly GCP_SETTINGS="${ROOT_DIR}/clusters/gcp/platform-settings.yaml"
 readonly PYTHON_IMAGE="python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6"
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
 
 for command in flux git jq kubeconform kubectl python yq; do
 	command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"

@@ -4,6 +4,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 readonly CLUSTER_MANIFEST="${ROOT_DIR}/infra/postgres/cluster.yaml"
 readonly FILTER="${ROOT_DIR}/scripts/lib/postgres-audit.jq"
@@ -23,18 +26,6 @@ case "${1:-}" in
 		exit 2
 		;;
 esac
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
-
-require_commands() {
-	local command
-	for command in "$@"; do
-		command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
-	done
-}
 
 static_contract() {
 	require_commands jq yq

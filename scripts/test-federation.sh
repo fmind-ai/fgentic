@@ -3,15 +3,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-federation-check.XXXXXX")"
 readonly WORK_DIR
 trap 'rm -rf "${WORK_DIR}"' EXIT INT TERM
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
 
 assert_yq() {
 	local expression="$1"

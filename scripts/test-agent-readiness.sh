@@ -3,13 +3,11 @@
 set -euo pipefail
 
 root_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${root_dir}/scripts/lib.sh"
 readonly root_dir
 readonly agent_instruction_budget=28672
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
 
 [[ -L "${root_dir}/AGENTS.md" ]] || fail "AGENTS.md must remain a symlink"
 agents_link="$(readlink "${root_dir}/AGENTS.md")"

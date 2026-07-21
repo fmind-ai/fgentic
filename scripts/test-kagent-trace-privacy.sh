@@ -4,6 +4,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 readonly KAGENT_VERSION="0.9.11"
 # Multi-architecture app digest linked into the pinned kagent 0.9.11 controller build.
@@ -47,13 +50,6 @@ fail() {
 	echo "kagent trace privacy acceptance failed: $*" >&2
 	dump_logs >&2
 	exit 1
-}
-
-require_commands() {
-	local command
-	for command in "$@"; do
-		command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
-	done
 }
 
 render_release() {

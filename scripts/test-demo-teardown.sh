@@ -6,6 +6,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 readonly DEMO="${ROOT_DIR}/scripts/demo.sh"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-teardown-check.XXXXXX")"
@@ -21,11 +24,6 @@ cleanup() {
 	fi
 }
 trap cleanup EXIT INT TERM
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
 
 cat >"${FAKE_BIN}/k3d" <<'EOF'
 #!/usr/bin/env bash

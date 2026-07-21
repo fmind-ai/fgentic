@@ -5,6 +5,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 readonly NAMESPACE_DIR="${ROOT_DIR}/infra/namespaces"
 readonly NAMESPACE_FILE="${NAMESPACE_DIR}/namespaces.yaml"
@@ -35,18 +38,6 @@ elif [[ "$#" -ne 0 ]]; then
 	echo "usage: $0 [--runtime]" >&2
 	exit 2
 fi
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
-
-require_commands() {
-	local command
-	for command in "$@"; do
-		command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
-	done
-}
 
 load_profile_settings() {
 	local profile="$1"
