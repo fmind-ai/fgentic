@@ -196,6 +196,7 @@ depends = [
   "check:agent-new",
   "check:demo",
   "check:federation",
+  "check:fed-registry",
   "check:federation-onboarding",
   "check:smoke-workflow",
   "check:mautrix-bridges",
@@ -431,6 +432,10 @@ run = "bash scripts/test-demo.sh"
 [tasks."check:federation"]
 description = "Validate the offline federation topology, room policy, and denied control"
 run = "bash scripts/test-federation.sh"
+
+[tasks."check:fed-registry"]
+description = "Assert the partner trust registry is schema-valid and every federation enforcement plane is consistent"
+run = "bash scripts/check-fed-registry.sh"
 
 [tasks."check:federation-onboarding"]
 description = "Test the read-only partner federation preflight and onboarding conformance with offline fixtures"
@@ -700,6 +705,10 @@ run = "bash scripts/dev.sh stop"
 [tasks."dev:down"]
 description = "Delete only the owned lightweight development cluster"
 run = "bash scripts/dev.sh down"
+
+[tasks."fed:registry-render"]
+description = "Render the derived federation planes (policy.json + platform-settings) from the partner trust registry"
+run = "bash scripts/fed-registry-render.sh"
 
 [tasks."fed:up"]
 description = "Reconcile and prove the provider-free federation hardening lab"

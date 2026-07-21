@@ -230,6 +230,7 @@ manifest_list="$(find infra clusters -type f \( -name '*.yaml' -o -name '*.yml' 
 	! -name 'kustomization.yaml' \
 	! -name '*.sops.yaml' \
 	! -path 'infra/agentgateway/providers/model-catalog.yaml' \
+	! -path 'infra/federation/registry/*' \
 	! -path '*/bridges/chart/*' \
 	! -path '*/terraform/*' \
 	! -path '*/flux-system/*')"
