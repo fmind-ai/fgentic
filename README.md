@@ -28,6 +28,8 @@ Fgentic ships opt-in, digest-pinned GitOps units for **Slack** and **Telegram** 
 
 > **Joining an evaluation?** Choose the [security lead, DPO, platform engineer, developer, or end-user onboarding path](docs/onboarding/index.md) for a short route to the controls and evidence your role owns.
 
+> **Authoring an Agent?** Start with the [developer onboarding boundary](docs/onboarding/developer.md), then use the repository-owned [Agent authoring runbook](.agents/skills/matrix-agents/SKILL.md#runbook-author-and-ship-an-agent) for the exact offline test, promotion, and rollback loop.
+
 ---
 
 ## Core principles

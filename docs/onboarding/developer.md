@@ -14,12 +14,14 @@ Ordinary conversations use a distinct A2A `contextId` for each `(room, ghost)` p
 
 Read [Bridge §6](../bridge.md#6-async-delegation-as-implemented), [D5](../design-decisions.md#d5--context-threads-keyed-by-room-agent-was-per-room), and [D18](../design-decisions.md#d18--permission-aware-retrieval-binds-the-projected-identity-and-output-audience) before changing message or session semantics.
 
+For the complete scaffold → local golden test → review → promotion → rollback workflow, follow the repository-owned [Agent authoring runbook](../../.agents/skills/matrix-agents/SKILL.md#runbook-author-and-ship-an-agent). It is the operational source for exact tasks and generated files; this onboarding page explains the security boundary those steps preserve.
+
 ## 2. Add one governed Agent
 
-1. Add or update a kagent `Agent` in [`infra/kagent/agent-zoo.yaml`](../../infra/kagent/agent-zoo.yaml). Follow the existing `spec.type: Declarative` and `spec.declarative` shape, use `a2aConfig`, and reference the central agentgateway model configuration. An Agent never receives a model credential.
+1. Run `mise run agent:new <name>` to create the Agent CRD, bridge mapping, and `evals/<name>/golden.json` fixture as one deny-by-default composition. Edit those generated files rather than introducing a parallel runtime or evaluation service.
 1. Give it the smallest prompt data, service account, tool inventory, and network path it needs. Treat room content and tool results as untrusted. A read-only description in an AgentCard or MCP annotation is not an authorization decision.
 1. For MCP, pin the reviewed server/tool surface and route calls through agentgateway's authenticated, audited boundary. Do not add direct Internet/tool egress to avoid the gateway contract.
-1. Map `agent-<name>` to exactly one `namespace`/`name` in the bridge `agents` values at [`apps/matrix-a2a-bridge/chart/values.yaml`](../../apps/matrix-a2a-bridge/chart/values.yaml). Set homeserver names in `allowedServers` and full-MXID globs in `allowedSenders`; never authorize by display name or localpart.
+1. Keep `agent-<name>` mapped to exactly one `namespace`/`name`, retain `stage: dev`, and authorize only explicit full MXIDs in `allowedSenders`; never authorize by display name or localpart.
 1. If an approved optional network bridge must relay this ghost, add the exact ghost permission only to that network's opt-in unit. Do not put provider identities or permissions into the canonical cluster-independent map.
 1. Update the welcome/gallery text when the new Agent should be discoverable. Cached AgentCard metadata is descriptive and quarantined when remote trust fails.
 
@@ -28,9 +30,12 @@ Read [Bridge §6](../bridge.md#6-async-delegation-as-implemented), [D5](../desig
 Run focused deterministic checks first:
 
 ```bash
+mise run agent:test <name>
 mise run check:agents
 mise --cd apps/matrix-a2a-bridge run test
 ```
+
+`agent:test` runs only `evals/<name>/golden.json` against the same deterministic loopback model and assertion code used by CI's all-Agent gate. It starts no cluster, makes no external request, and spends no model tokens.
 
 Then let the repository hooks and CI run the complete gates. Tests should cover at least:
 

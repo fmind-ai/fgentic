@@ -87,6 +87,11 @@ run = "bash scripts/agent-gate.sh"
 description = "Scaffold one deny-by-default local Agent into the GitOps and evaluation seams"
 run = "bash scripts/new-agent.sh"
 
+[tasks."agent:test"]
+description = "Run one Agent's golden tasks through the bridge's deterministic CI harness"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run agent:test"
+
 [tasks.format]
 alias = "f"
 description = "Format everything (config/markup, shell, Terraform, and applications)"

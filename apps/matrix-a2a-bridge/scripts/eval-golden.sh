@@ -4,6 +4,40 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 demo_manifest="${repo_root}/infra/models/demo/server.yaml"
 evals_dir="${repo_root}/evals"
+
+if [[ "${1:-}" == "--all" ]]; then
+	(( $# == 1 )) || {
+		echo "usage: scripts/eval-golden.sh --all" >&2
+		exit 1
+	}
+	agent=""
+elif (( $# == 1 )); then
+	agent="$1"
+else
+	echo "usage: mise run agent:test <lowercase-agent-name>" >&2
+	exit 1
+fi
+if [[ -n "${agent}" && ! "${agent}" =~ ^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$ ]]; then
+	echo "agent name must be a lowercase Kubernetes DNS label of at most 63 characters" >&2
+	exit 1
+fi
+
+if [[ -n "${agent}" ]]; then
+	golden_files=("${evals_dir}/${agent}/golden.json")
+	[[ -f "${golden_files[0]}" ]] || {
+		echo "golden fixture not found: evals/${agent}/golden.json" >&2
+		exit 1
+	}
+else
+	shopt -s nullglob
+	golden_files=("${evals_dir}"/*/golden.json)
+	shopt -u nullglob
+	(( ${#golden_files[@]} > 0 )) || {
+		echo "no <agent>/golden.json fixtures under evals" >&2
+		exit 1
+	}
+fi
+
 workdir="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-golden-agent.XXXXXX")"
 server_pid=""
 attribution_user="@golden-eval:fgentic.localhost"
@@ -48,6 +82,7 @@ port="$(<"${workdir}/port")"
 # asserted Matrix identity. Golden requests below still carry the header as forwarded attribution.
 anonymous_payload='{"model":"fgentic-demo","messages":[{"role":"user","content":"attribution boundary probe"}]}'
 anonymous_answer="$(curl --fail --silent --show-error \
+	--noproxy '*' \
 	--header 'Content-Type: application/json' \
 	--data "${anonymous_payload}" \
 	"http://127.0.0.1:${port}/v1/chat/completions" \
@@ -58,12 +93,14 @@ expected_answer="$(<"${workdir}/response.txt")"
 	exit 1
 }
 
+jq -ec '.scenarios[] | {id, prompt}' "${golden_files[@]}" >"${workdir}/scenarios.jsonl"
 while IFS= read -r golden; do
 	scenario_id="$(jq -er '.id' <<<"${golden}")"
 	prompt="$(jq -er '.prompt' <<<"${golden}")"
 	payload="$(jq -cn --arg prompt "${prompt}" \
 		'{model:"fgentic-demo",messages:[{role:"user",content:$prompt}]}')"
 	answer="$(curl --fail --silent --show-error \
+		--noproxy '*' \
 		--header 'Content-Type: application/json' \
 		--header "X-User-Id: ${attribution_user}" \
 		--data "${payload}" \
@@ -71,15 +108,20 @@ while IFS= read -r golden; do
 		| jq -er '.choices[0].message.content')"
 	jq -cn --arg scenario_id "${scenario_id}" --arg answer "${answer}" \
 		'{scenario_id:$scenario_id,answer:$answer}' >>"${workdir}/answers.jsonl"
-done < <(jq -ec '.scenarios[] | {id, prompt}' "${evals_dir}"/*/golden.json)
+done <"${workdir}/scenarios.jsonl"
 jq -s '{answers:.}' "${workdir}/answers.jsonl" >"${workdir}/answers.json"
 
 kubectl kustomize "${repo_root}/infra/kagent" >"${workdir}/agents.yaml"
-go run ./cmd/eval-golden \
-	--evals "${evals_dir}" \
-	--agents "${workdir}/agents.yaml" \
-	--prompts "${workdir}/agents.yaml" \
+eval_args=(
+	--evals "${evals_dir}"
+	--agents "${workdir}/agents.yaml"
+	--prompts "${workdir}/agents.yaml"
 	--actual-answer "${workdir}/answers.json"
+)
+if [[ -n "${agent}" ]]; then
+	eval_args+=(--agent "${agent}")
+fi
+GOPROXY=off GOTOOLCHAIN=local go run ./cmd/eval-golden "${eval_args[@]}"
 
 jq -s -e --arg user_id "${attribution_user}" \
 	'.[0].user_id == null and (.[1:] | length > 0) and all(.[1:][]; .user_id == $user_id)' \

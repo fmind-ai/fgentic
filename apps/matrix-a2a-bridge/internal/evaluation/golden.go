@@ -16,7 +16,10 @@ import (
 // AgentGoldenSchemaVersion identifies the per-Agent deterministic regression contract.
 const AgentGoldenSchemaVersion = "fgentic.agent.eval.v1"
 
-const maxGoldenAnswerBytes = 1 << 20
+const (
+	maxGoldenAnswerBytes = 1 << 20
+	maxGoldenDiffRunes   = 4096
+)
 
 var (
 	sha256Pattern  = regexp.MustCompile(`^[0-9a-f]{64}$`)
@@ -114,6 +117,32 @@ func VerifyAgentGoldenSuites(
 	promptManifest io.Reader,
 	actualAnswers GoldenAnswers,
 ) ([]GoldenResult, error) {
+	return verifyAgentGoldenSuites(suites, agentManifests, promptManifest, actualAnswers, true)
+}
+
+// VerifyAgentGoldenSuite runs one Agent through the same deterministic assertions as the complete CI gate.
+func VerifyAgentGoldenSuite(
+	suite AgentGoldenSuite,
+	agentManifests io.Reader,
+	promptManifest io.Reader,
+	actualAnswers GoldenAnswers,
+) ([]GoldenResult, error) {
+	return verifyAgentGoldenSuites(
+		[]AgentGoldenSuite{suite},
+		agentManifests,
+		promptManifest,
+		actualAnswers,
+		false,
+	)
+}
+
+func verifyAgentGoldenSuites(
+	suites []AgentGoldenSuite,
+	agentManifests io.Reader,
+	promptManifest io.Reader,
+	actualAnswers GoldenAnswers,
+	requireCompleteFixtureSet bool,
+) ([]GoldenResult, error) {
 	agents, err := decodeDocuments(agentManifests, "Agent")
 	if err != nil {
 		return nil, fmt.Errorf("decode Agent manifests: %w", err)
@@ -122,7 +151,7 @@ func VerifyAgentGoldenSuites(
 	if err != nil {
 		return nil, fmt.Errorf("decode Agent prompts: %w", err)
 	}
-	if len(suites) != len(agents) {
+	if requireCompleteFixtureSet && len(suites) != len(agents) {
 		return nil, fmt.Errorf("rendered Agent count = %d, golden fixture count = %d", len(agents), len(suites))
 	}
 
@@ -163,7 +192,7 @@ func VerifyAgentGoldenSuites(
 				return nil, fmt.Errorf("score golden scenario %q: %w", scenario.ID, scoreErr)
 			}
 			if score.Verdict != VerdictPass {
-				return nil, fmt.Errorf("golden scenario %q failed: %s", scenario.ID, score.Reason)
+				return nil, fmt.Errorf("golden scenario %q failed: %s", scenario.ID, goldenFailureDetail(answer, scenario.Rubric, score.Reason))
 			}
 			results = append(results, GoldenResult{
 				ScenarioID:          scenario.ID,
@@ -172,15 +201,38 @@ func VerifyAgentGoldenSuites(
 			})
 		}
 	}
-	for name := range agents {
-		if _, found := seenAgents[Agent(name)]; !found {
-			return nil, fmt.Errorf("rendered Agent %q has no evals/%s/golden.json fixture", name, name)
+	if requireCompleteFixtureSet {
+		for name := range agents {
+			if _, found := seenAgents[Agent(name)]; !found {
+				return nil, fmt.Errorf("rendered Agent %q has no evals/%s/golden.json fixture", name, name)
+			}
 		}
 	}
 	if len(answersByScenario) != len(seenScenarios) {
 		return nil, fmt.Errorf("deterministic demo answer count = %d, golden scenario count = %d", len(answersByScenario), len(seenScenarios))
 	}
 	return results, nil
+}
+
+func goldenFailureDetail(answer string, rubric Rubric, reason string) string {
+	if rubric.Kind == RubricExact {
+		expected := boundedGoldenDiffValue(rubric.Expected[0])
+		actual := boundedGoldenDiffValue(answer)
+		return fmt.Sprintf(
+			"exact answer mismatch\n--- expected\n+++ actual\n-%s\n+%s",
+			strings.ReplaceAll(expected, "\n", "\n-"),
+			strings.ReplaceAll(actual, "\n", "\n+"),
+		)
+	}
+	return fmt.Sprintf("%s\nactual: %q", reason, boundedGoldenDiffValue(answer))
+}
+
+func boundedGoldenDiffValue(value string) string {
+	runes := []rune(strings.TrimSpace(value))
+	if len(runes) <= maxGoldenDiffRunes {
+		return string(runes)
+	}
+	return string(runes[:maxGoldenDiffRunes]) + "\n... output truncated"
 }
 
 // AgentContractDigest returns the stable effective contract hash for one rendered Agent.
