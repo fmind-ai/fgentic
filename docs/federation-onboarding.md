@@ -140,6 +140,8 @@ Matrix room federation and direct A2A invocation are separate trust boundaries. 
 
 Exchange only verify-only public keys and public discovery material. Private signing keys, client secrets, bearer tokens, and model credentials never cross organizations or enter Git. A Signed AgentCard authenticates the declared card under the pinned key; it does not replace transport authentication or prove the identity of the Matrix user who initiated a task.
 
+Record the agreed quota, allowed classification, and residency as a **signed agreement artifact** (`infra/federation/agreements/<partner>.yaml`, detached ES256 signature) so the enforced values render from the signed contract and cannot silently diverge — see [federation §8.3.1](federation.md#831-signed-bilateral-agreement-as-the-enforcement-source). `mise run check:fed-agreement` fails closed on a tampered agreement, an [ADR 0015](adr/0015-federated-room-encryption.md)-out-of-bound classification, or a registry that disagrees with the signed terms.
+
 ## 7. Contractual and privacy gates
 
 Legal and privacy owners must approve the following in the bilateral agreement. Matrix history is replicated to each participating homeserver and cross-server redaction is best-effort, so technical controls cannot substitute for these commitments.
