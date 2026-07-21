@@ -117,8 +117,12 @@ chmod +x "${WORK_DIR}/bin/xh"
 run_onboard() {
 	local fixture="$1" card_file="$2"
 	shift 2
+	# The fake xh always responds instantly; this timeout only has to survive scheduler starvation
+	# under heavy aggregate host load without spuriously firing (a delayed stub previously surfaced
+	# as a false "Matrix federation version request failed"). Generous but finite, well under the
+	# 60s max; production defaults stay untouched (#789).
 	PATH="${WORK_DIR}/bin:${PATH}" FED_ONBOARD_FIXTURE="${fixture}" \
-		FED_ONBOARD_CARD_FILE="${card_file}" FGENTIC_FED_CHECK_TIMEOUT=2 \
+		FED_ONBOARD_CARD_FILE="${card_file}" FGENTIC_FED_CHECK_TIMEOUT=30 \
 		"${ONBOARD}" "$@"
 }
 
