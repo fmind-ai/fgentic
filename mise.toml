@@ -198,6 +198,7 @@ depends = [
   "check:federation",
   "check:fed-registry",
   "check:fed-break-glass",
+  "check:fed-agreement",
   "check:federation-onboarding",
   "check:smoke-workflow",
   "check:mautrix-bridges",
@@ -441,6 +442,10 @@ run = "bash scripts/check-fed-registry.sh"
 [tasks."check:fed-break-glass"]
 description = "Assert cross-org break-glass containment, the content-free evidence pack, and the abuse-report schema"
 run = "bash scripts/test-fed-break-glass.sh"
+
+[tasks."check:fed-agreement"]
+description = "Verify the signed bilateral agreements and assert the registry enforces exactly their signed terms"
+run = "bash scripts/test-fed-agreement.sh"
 
 [tasks."check:federation-onboarding"]
 description = "Test the read-only partner federation preflight and onboarding conformance with offline fixtures"
@@ -714,6 +719,10 @@ run = "bash scripts/dev.sh down"
 [tasks."fed:registry-render"]
 description = "Render the derived federation planes (policy.json + platform-settings) from the partner trust registry"
 run = "bash scripts/fed-registry-render.sh"
+
+[tasks."fed:agreement-render"]
+description = "Sync the registry reservation/quota/classification from the signed bilateral agreements"
+run = "bash scripts/fed-agreement-render.sh"
 
 [tasks."fed:break-glass"]
 description = "Break-glass containment: contain|restore|status a partner across the federation trust planes"

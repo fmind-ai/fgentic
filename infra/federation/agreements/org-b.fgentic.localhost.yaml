@@ -1,0 +1,31 @@
+# Signed bilateral federation agreement (issue #353). This artifact is the SIGNED SOURCE for the
+# machine-enforced terms both organizations agreed to: the per-azp admission reservation (D7), the
+# per-minute quota, and the allowed data classification. `fed:agreement-render` syncs these into the
+# trust registry (#349), which renders the enforcement planes (agentgateway rate-limit, room ACL,
+# callback border). `check:fed-agreement` verifies the detached signature over THIS file's exact bytes
+# and asserts the rendered values match — so enforcement cannot silently diverge from the signed contract.
+#
+# Signature: infra/federation/agreements/org-b.fgentic.localhost.yaml.sig (base64, detached), verifiable
+# with the committed public key infra/federation/agreements/signing.pub. The signing PRIVATE key is held
+# out-of-band by the agreement owner and is deliberately NOT committed; re-signing (a term change) is a
+# manual owner action. In the reference lab the committed key is the lab's own reference signer.
+schema: fgentic.federation.agreement.v1
+partner_server_name: org-b.fgentic.localhost
+azp: org-b-a2a
+
+# D7 admission reservation: ADMISSION ACCOUNTING, not measured consumption. One maximum request fits;
+# a second in the same minute deterministically exceeds the quota. Actual model metrics stay aggregate
+# at the separate LLM hop and are NEVER reported as this reservation.
+a2a_max_budget_units: 4096
+a2a_quota_units_per_minute: 5000
+
+# Allowed data classification (ADR 0015): only `public` or partner-approved `internal`. Restricted,
+# regulated, confidential, secret, and authentication material are NEVER permitted in a federated room.
+allowed_classification: public
+
+# Residency is a CONTRACTUAL control, recorded and surfaced here — NOT a technical guarantee. Matrix
+# federation replicates room state to every participating homeserver, so residency is honored by
+# agreement and operator jurisdiction, not enforced in transport. Stated plainly, never over-claimed.
+residency:
+  region: eu
+  basis: contractual
