@@ -272,6 +272,13 @@ run = "bash scripts/check-terraform.sh"
 
 [tasks."check:terraform-hermetic"]
 description = "Prove check:terraform survives a poisoned GCS backend cache with no credentials"
+# Ordered after check:terraform so the two Terraform trees never spin up their google provider
+# plugin concurrently inside the highly parallel aggregate `check`. Two providers under the
+# aggregate's process/disk pressure on the 14 GiB host is what killed the plugin ("did not respond
+# to plugin.(*GRPCProvider).ValidateProviderConfig"); the ordinary and hermetic proofs pass fine
+# one-at-a-time. This only serializes the two Terraform tasks — every other check still fans out
+# in parallel (issue #794).
+depends = ["check:terraform"]
 run = "bash scripts/test-terraform-hermetic.sh"
 
 [tasks."check:manifests"]
