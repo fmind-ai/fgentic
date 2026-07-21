@@ -117,6 +117,7 @@ nav:
           - Prompt injection: security/prompt-injection.md
           - Supply chain: security/supply-chain.md
           - Security releases: security/release-process.md
+          - OpenSSF best practices: security/openssf-best-practices.md
   - Architecture decisions:
       - Index: adr/index.md
       - 0001 Open-standard agent platform: adr/0001-open-standard-agent-platform.md
