@@ -91,3 +91,16 @@ spec:
       ports:
         - protocol: TCP
           port: 7800
+    # OIDC backchannel logout (issue #278): on an explicit Keycloak user/session logout, Keycloak POSTs
+    # the logout token to MAS at its internal Service. Exactly the MAS pod on :8080 — no broader egress.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: ess-matrix-authentication-service
+              app.kubernetes.io/name: matrix-authentication-service
+      ports:
+        - protocol: TCP
+          port: 8080

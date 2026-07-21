@@ -18,7 +18,9 @@ The browser flow is Element → MAS (`auth.<server_name>`) → Keycloak (`id.<se
 https://auth.<server_name>/upstream/callback/01H8PKNWKKRPCBW4YGH1RWV279
 ```
 
-The SOPS Secret `mas-upstream-oidc` supplies the exact MAS 1.19.0 `upstream_oauth2` fragment through ESS 26.6.2's `matrixAuthenticationService.additional.configSecret` interface. On the first successful upstream login, `claims_imports.skip_confirmation: true` completes MAS registration and queues Synapse provisioning automatically.
+The SOPS Secret `mas-upstream-oidc` supplies the exact MAS 1.19.0 `upstream_oauth2` fragment through ESS 26.7.0's `matrixAuthenticationService.additional.configSecret` interface. On the first successful upstream login, `claims_imports.skip_confirmation: true` completes MAS registration and queues Synapse provisioning automatically.
+
+**OIDC backchannel logout (session hygiene, issue #278).** The provider fragment sets `on_backchannel_logout: logout_all`, and the Keycloak `fgentic` client is configured with front-channel logout **off** and a backchannel-logout URL pointed at the **internal** MAS Service — `http://ess-matrix-authentication-service.matrix.svc.cluster.local:8080/upstream/backchannel-logout/01H8PKNWKKRPCBW4YGH1RWV279` — with the session id required. An **explicit** Keycloak user or session logout then POSTs a logout token to MAS, which terminates every session started by that upstream OIDC session (the MAS browser session **and** its client sessions); a user who stays enabled can log in again afterward. Keycloak's `keycloak` NetworkPolicy allows exactly that egress to the MAS pod on `:8080` and nothing broader. Stated precisely: this is **defense-in-depth session hygiene, not the IdP-disable trigger** — setting a Keycloak user `enabled=false` does not emit backchannel logout and does not deactivate the MAS account (that is [#153](https://github.com/fmind-ai/fgentic/issues/153)). `mise run check:identity` asserts this wiring offline; the live proof (an explicit logout terminating the derived MAS sessions) is a cluster step.
 
 Identity mapping is deliberately fail-closed:
 
@@ -46,6 +48,8 @@ For another production cluster, set the value to `"false"` in its `platform-sett
 1. `matrix/mas-upstream-oidc`, containing the MAS provider config and the same client secret.
 
 The generator preserves this file even with `--force`; rotating only one side would break login because Keycloak skips startup import after the realm exists. To rotate deliberately, update the live Keycloak client through its Admin API, update both encrypted Secret payloads with `sops`, and restart MAS after Flux reconciles. Never commit a decrypted copy.
+
+Because the realm import is bootstrap-only, changing the committed realm config (for example the #278 backchannel-logout attributes) reaches only **fresh** clusters. To bring an **existing** cluster's live `fgentic` client to the same state, run the idempotent Admin-API migration `mise run identity:backchannel-migrate` (it execs `kcadm.sh` inside the running Keycloak pod, so it needs no exposed admin endpoint or extra NetworkPolicy; re-running is a no-op). Fresh bootstrap and a migrated realm then expose identical backchannel-logout configuration.
 
 ## Entra ID variant
 
