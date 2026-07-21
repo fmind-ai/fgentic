@@ -21,7 +21,7 @@ spec:
       - issuer: ^https://token.actions.githubusercontent.com$
         subject: ^https://github\.com/fmind-ai/fgentic/\.github/workflows/cd\.yml@refs/heads/main$
   ref:
-    digest: sha256:e3b93a1d487ae424ed14897d62fb1c1378959ee20074ea81d4a98b28e96a5e62
+    digest: sha256:df9b8edb663fa838a8bdc7e9f961f75983cfd234d3318bd18a02945698c9f414
 ---
 # The Matrix<->A2A bridge initially deploys from its in-repo Helm chart. The first successful CD
 # publication switches it to the digest-pinned OCIRepository above. Ordering
@@ -41,7 +41,7 @@ spec:
   values:
     image:
       repository: ghcr.io/fmind-ai/matrix-a2a-bridge
-      tag: sha-7c029a92da92609ba8243771a504f7cb1b9e672c@sha256:591d444d7a596e3be570c7475c2d9f1b603c1b9b7cd1e43d28befb8328237ceb # v0.1.0 build; CI re-pins on the next bridge change to main
+      tag: sha-15a2d9843fac49176a7c60642f9b0cb1ecec2525@sha256:3b75a9d889e226c87b7200d26ab723087fa17d3aa6ae20dc8a473cf694b517b3 # v0.1.0 build; CI re-pins on the next bridge change to main
     config:
       serverName: ${server_name}
       agentCardRefreshInterval: 5m
