@@ -3,6 +3,7 @@ apiVersion: kustomize.config.k8s.io/v1beta1
 kind: Kustomization
 resources:
   - helmrelease.yaml
+  - grafana-sidecar-rbac.yaml
   - tracing-helmreleases.yaml
   - tracing-networkpolicy.yaml
   - tracing-referencegrant.yaml
@@ -10,7 +11,8 @@ resources:
   - grafana-networkpolicy.yaml
   - grafana-route.yaml
 
-# kube-prometheus-stack's Grafana sidecar watches this stable ConfigMap label in every namespace.
+# kube-prometheus-stack's Grafana sidecar watches this stable ConfigMap label in the monitoring
+# namespace (scoped by grafana-sidecar-rbac.yaml + the HelmRelease sidecar values, issue #647).
 # Keep dashboard JSON as standalone files so dprint and the deterministic contract check parse the
 # exact payload Grafana receives. Flux post-build substitution resolves the token-budget threshold.
 configMapGenerator:
