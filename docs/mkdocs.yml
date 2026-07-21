@@ -71,6 +71,7 @@ nav:
       - CNCF Sandbox application dossier: cncf-sandbox-application.md
       - Incumbent chat coexistence: chat-coexistence.md
       - Forking and adapting: forking.md
+      - Extending without forking: extending-without-forking.md
       - Exit strategy: exit-strategy.md
       - Persona onboarding:
           - Overview: onboarding/index.md
