@@ -134,11 +134,24 @@ jq -e '
     "CronJob/knowledge/knowledge-ingestion-cache-gc",
     "HTTPRoute/agentgateway-system/knowledge-embeddings",
     "NetworkPolicy/agentgateway-system/agentgateway-allow-knowledge-ingestion",
+    "NetworkPolicy/knowledge/knowledge-default-deny",
     "NetworkPolicy/knowledge/knowledge-ingestion",
     "NetworkPolicy/knowledge/knowledge-ingestion-cache-gc",
     "ServiceAccount/knowledge/knowledge-ingestion"
   ] | if . then true else error("inventory") end
 ' <<<"${normalized_objects}" >/dev/null || fail "enabled knowledge-ingestion resource inventory drifted"
+# The namespace-wide fail-closed baseline (issue #566): exactly one podSelector {} policy carrying
+# both policy types and no allow rules, so an unlabelled/controller-created Pod has no ambient access.
+jq -e '
+  ([.[] | select(.kind == "NetworkPolicy" and .metadata.name == "knowledge-default-deny")]) as $p
+  | ($p | length) == 1
+    and ($p[0].metadata.namespace == "knowledge")
+    and ($p[0].spec.podSelector == {})
+    and (($p[0].spec.policyTypes | sort) == ["Egress", "Ingress"])
+    and ($p[0].spec | has("ingress") | not)
+    and ($p[0].spec | has("egress") | not)
+' <<<"${objects}" >/dev/null \
+	|| fail "knowledge-default-deny must be a single podSelector {} ingress+egress policy with no allow rules"
 jq -e '
   ([.[] | select(.kind == "PersistentVolumeClaim")] | length) == 0 and
   ([.[] | select(
