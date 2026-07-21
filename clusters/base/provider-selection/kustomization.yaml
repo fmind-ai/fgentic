@@ -49,3 +49,20 @@ replacements:
         options:
           delimiter: /
           index: 4
+  - source:
+      kind: ConfigMap
+      name: platform-settings
+      namespace: flux-system
+      fieldPath: data.synthetic_canary
+    targets:
+      - select:
+          group: kustomize.toolkit.fluxcd.io
+          version: v1
+          kind: Kustomization
+          name: canary
+          namespace: flux-system
+        fieldPaths:
+          - spec.path
+        options:
+          delimiter: /
+          index: 4

@@ -448,3 +448,32 @@ spec:
       - kind: ConfigMap
         name: platform-settings-overrides
         optional: true
+---
+# Optional synthetic delegation canary (issue #454): a scheduled probe of @mention → A2A → reply.
+# Defaults to the disabled profile (zero footprint); the provider-selection Component swaps the
+# profile segment from platform-settings.synthetic_canary. demo/federation keep it disabled. It
+# only needs Synapse to deploy — if the bridge/kagent/agentgateway path is down the probe correctly
+# fails and its alert fires.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: canary
+  namespace: flux-system
+spec:
+  interval: 30m
+  path: ./infra/canary/profiles/disabled
+  prune: true
+  wait: true
+  dependsOn:
+    - name: policies
+    - name: matrix
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true

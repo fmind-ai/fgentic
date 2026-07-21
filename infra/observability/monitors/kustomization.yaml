@@ -13,3 +13,4 @@ resources:
   - podmonitors.yaml
   - cost-alert.yaml
   - trivy-alert.yaml
+  - canary-alert.yaml

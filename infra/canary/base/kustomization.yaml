@@ -1,0 +1,20 @@
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - serviceaccount.yaml
+  - resource-quotas.yaml
+  - config.yaml
+  - networkpolicy.yaml
+  - cronjob.yaml
+
+# The probe is one self-contained stdlib script mounted into the pinned python image — no added
+# dependency, no bespoke image. Keep it as a standalone file so probe_test.py exercises the exact
+# bytes the CronJob runs.
+configMapGenerator:
+  - name: canary-probe
+    namespace: canary
+    files:
+      - probe.py
+generatorOptions:
+  disableNameSuffixHash: true

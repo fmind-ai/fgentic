@@ -9,6 +9,7 @@ data:
   server_name: org-a.fgentic.localhost
   # The federation lab proves cross-org protocols, not operator administration.
   admin_console: disabled
+  synthetic_canary: disabled
   federation_partner_server_name: org-b.fgentic.localhost
   federation_denied_server_name: org-c.fgentic.localhost
   # RFC 5737 placeholder: valid for offline rendering, deliberately unreachable at runtime.
