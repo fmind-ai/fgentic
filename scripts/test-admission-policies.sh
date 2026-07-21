@@ -3,6 +3,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 readonly POLICY_DIR="${ROOT_DIR}/infra/policies"
 readonly -a NAMESPACE_FILES=(
@@ -12,18 +15,6 @@ readonly -a NAMESPACE_FILES=(
 )
 readonly CRD_FIXTURE="${ROOT_DIR}/scripts/testdata/admission-policies/agent-crd.yaml"
 readonly DIGEST_IMAGE="registry.k8s.io/pause@sha256:7031c1b283388d2c2b555df8906cc39a3fcec4ee08d94a6af11c0cfe7e99e7f5"
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
-
-require_commands() {
-	local command
-	for command in "$@"; do
-		command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
-	done
-}
 
 static_contract() {
 	require_commands kubectl yq

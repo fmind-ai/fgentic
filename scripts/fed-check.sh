@@ -2,6 +2,10 @@
 # Read-only public preflight for a prospective Matrix federation partner.
 set -euo pipefail
 
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
+
 readonly DEFAULT_TIMEOUT_SECONDS=10
 readonly MAX_TIMEOUT_SECONDS=60
 readonly MAX_RESPONSE_BYTES=65536
@@ -16,11 +20,6 @@ This unauthenticated probe does not prove mutual allowlists, room policy, or gov
 Environment:
   FGENTIC_FED_CHECK_TIMEOUT  Per-request connection and total timeout in seconds (default: 10; max: 60).
 EOF
-}
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
 }
 
 validate_dns_name() {

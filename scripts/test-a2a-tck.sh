@@ -4,6 +4,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 readonly RUNNER="${ROOT_DIR}/scripts/fed-tck.sh"
 readonly PLUGIN="${ROOT_DIR}/scripts/a2a_tck_plugin.py"
@@ -11,11 +14,6 @@ readonly SCOPE="${ROOT_DIR}/scripts/a2a-tck-scope.json"
 readonly MISE_CONFIG="${ROOT_DIR}/mise.toml"
 readonly TCK_COMMIT="5996b79f9cefa6fc390980e383e358a66fb9e49e"
 readonly TCK_SHA256="74fc0cd3e8c5fad08fb090885c5fc76228d63dd9a5ff5f29e0cc7fea56414e8c"
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
 
 for command in bash jq rg; do
 	command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"

@@ -5,6 +5,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 readonly POLICY="${ROOT_DIR}/infra/k3d-audit-policy.yaml"
 readonly K3D_CONFIG="${ROOT_DIR}/infra/k3d-config.yaml"
@@ -27,18 +30,6 @@ case "${1:-}" in
 		exit 2
 		;;
 esac
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
-
-require_commands() {
-	local command
-	for command in "$@"; do
-		command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
-	done
-}
 
 normalized_resources() {
 	local rule_index="$1"

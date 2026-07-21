@@ -3,6 +3,9 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${repo_root}/scripts/lib.sh"
 policy_file="${repo_root}/infra/agentgateway/a2a-authorization.yaml"
 route_file="${repo_root}/infra/agentgateway/a2a-route.yaml"
 owner_file="${repo_root}/infra/agentgateway/kustomization.yaml"
@@ -15,11 +18,6 @@ elif [ "$#" -ne 0 ]; then
 	echo "usage: $0 [--runtime]" >&2
 	exit 2
 fi
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
 
 assert_equal() {
 	local actual="$1"
