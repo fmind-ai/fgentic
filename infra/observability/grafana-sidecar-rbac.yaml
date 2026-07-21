@@ -1,0 +1,36 @@
+# Exact, least-privilege RBAC for the Grafana dashboard/datasource sidecars (issue #647).
+#
+# The kube-prometheus-stack Grafana subchart otherwise ships a cluster-wide ClusterRole with
+# get/list/watch on every ConfigMap AND Secret (its default when a sidecar sets searchNamespace).
+# Fgentic's dashboards, the built-in chart dashboards, and the Prometheus/Alertmanager/Jaeger
+# datasource ConfigMaps all live in `monitoring`, and no enabled sidecar reads Secrets. We disable
+# the subchart RBAC (`grafana.rbac.create: false`) and grant only this: ConfigMap read within
+# `monitoring`. A compromised public Grafana Pod thus has no cluster-wide, cross-namespace, or
+# Secret-read path. The subject is the exact Grafana ServiceAccount pinned in the HelmRelease.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: kube-prometheus-stack-grafana-sidecar
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: kube-prometheus-stack
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: kube-prometheus-stack-grafana-sidecar
+  namespace: monitoring
+  labels:
+    app.kubernetes.io/part-of: kube-prometheus-stack
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: kube-prometheus-stack-grafana-sidecar
+subjects:
+  - kind: ServiceAccount
+    name: kube-prometheus-stack-grafana
+    namespace: monitoring
