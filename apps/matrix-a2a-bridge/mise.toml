@@ -5,12 +5,12 @@ APP_NAME = "matrix-a2a-bridge"
 run_auto_install = false # fail fast in hooks/CI on a missing tool
 
 [tools]
-go = "latest"
-golangci-lint = "latest"
-gotestsum = "latest"
-gitleaks = "latest"
-dprint = "latest"
-lefthook = "latest"
+go = "1.26.5"
+golangci-lint = "2.12.2"
+gotestsum = "1.13.0"
+gitleaks = "8.30.1"
+dprint = "0.55.2"
+lefthook = "2.1.10"
 kind = "0.32.0"
 kubectl = "1.36.2"
 
