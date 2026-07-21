@@ -9,7 +9,7 @@ COPY . .
 RUN go build -trimpath -ldflags="-s -w" -o /out/bridge ./cmd/bridge && \
     go build -trimpath -ldflags="-s -w" -o /out/usage-receipt ./cmd/usage-receipt
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 LABEL org.opencontainers.image.source="https://github.com/fmind-ai/fgentic"
 LABEL org.opencontainers.image.title="matrix-a2a-bridge"
 LABEL org.opencontainers.image.description="Matrix Application Service that delegates @mentions to AI agents over A2A"

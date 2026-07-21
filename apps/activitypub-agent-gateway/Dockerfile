@@ -8,7 +8,7 @@ ENV CGO_ENABLED=0 GOFLAGS=-mod=mod
 COPY . .
 RUN go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gateway
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 LABEL org.opencontainers.image.source="https://github.com/fmind-ai/fgentic"
 LABEL org.opencontainers.image.title="activitypub-agent-gateway"
 LABEL org.opencontainers.image.description="ActivityPub Service actor per agent, delegating fediverse mentions to AI agents over A2A"
