@@ -366,6 +366,9 @@ func agentCardRejectReason(err error) string {
 	if errors.Is(err, a2aclient.ErrRemoteExtensionUnsupported) {
 		return "agent_card_extension_unsupported"
 	}
+	if errors.Is(err, a2aclient.ErrRemoteKeyRevoked) {
+		return "agent_card_revoked"
+	}
 	return "agent_card_untrusted"
 }
 

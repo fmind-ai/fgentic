@@ -28,6 +28,10 @@ const (
 // material implicitly: startup and periodic profile refresh own that network boundary.
 var ErrRemoteTargetUntrusted = errors.New("remote A2A target has no verified AgentCard")
 
+// ErrRemoteKeyRevoked re-exports the AgentCard revoked-key-ID signal (#352) so the bridge can attribute
+// a distinct audit reason when a card was offered only under a retired signing key ID.
+var ErrRemoteKeyRevoked = agentcardjws.ErrRevokedKeyID
+
 // ErrRemoteExtensionUnsupported marks a verified card that declares a `required: true` A2A
 // extension the bridge is not configured to activate. It wraps ErrRemoteTargetUntrusted so every
 // fail-closed path still quarantines the target, while giving the audit a distinct terminal reason
@@ -261,11 +265,13 @@ func verifyRemoteAgentCard(raw []byte, target Target) (*a2a.AgentCard, error) {
 	if err := validateRemoteCardContract(card, target); err != nil {
 		return nil, err
 	}
-	publicKey := target.es256PublicKey()
-	if publicKey == nil {
+	pinnedKeys := target.pinnedKeys()
+	if len(pinnedKeys) == 0 {
 		return nil, fmt.Errorf("pinned ES256 public key is invalid")
 	}
-	if err := agentcardjws.Verify(document, publicKey, target.expectedKeyID); err != nil {
+	// Verify against the currently-valid pin set (rotation overlap) and the revoked list (#352): a card
+	// under any pinned, non-revoked key is trusted; one under a retired key is refused.
+	if err := agentcardjws.VerifySet(document, pinnedKeys, target.revoked()); err != nil {
 		return nil, err
 	}
 	return card, nil

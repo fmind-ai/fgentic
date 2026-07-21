@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -230,27 +231,89 @@ func Sign(raw []byte, key *ecdsa.PrivateKey, keyID string) (Bundle, error) {
 	return Bundle{AgentCard: signedCard, PublicJWK: jwk}, nil
 }
 
-// Verify accepts the document when at least one signature is a valid ES256 signature made by
-// key under the exact protected key ID. Unsupported signatures are ignored so key rotation can
-// publish a multi-signature card without weakening the pinned trust decision.
+// PinnedKey is one currently-valid AgentCard signing key in a rotation overlap window: the protected
+// key ID and the ES256 public key that must have produced the signature carrying that ID.
+type PinnedKey struct {
+	KeyID string
+	Key   *ecdsa.PublicKey
+}
+
+// ErrRevokedKeyID reports that a card's only recognizable signatures were made under an explicitly
+// revoked key ID. It is distinguished from a generic untrusted card so the retired-key case can be
+// audited deterministically.
+var ErrRevokedKeyID = errors.New("card signed only with a revoked key ID")
+
+// Verify accepts the document when at least one signature is a valid ES256 signature made by key
+// under the exact protected key ID. It is the single-key form of VerifySet, preserved for callers
+// that pin exactly one key.
 func Verify(document *Document, key *ecdsa.PublicKey, keyID string) error {
+	return VerifySet(document, []PinnedKey{{KeyID: keyID, Key: key}}, nil)
+}
+
+// VerifySet accepts the document when at least one signature is a valid ES256 signature made under a
+// pinned key — the multi-key rotation overlap window. During rotation both the old and new keys are
+// pinned so a partner that still presents the old key ID keeps verifying; once the old key is retired
+// its key ID is added to revoked (and removed from the pinned set) and a card offered under it is
+// refused. A card may carry several signatures (old + new during overlap); it is trusted as soon as
+// one pinned key verifies, so a stale signature alongside a valid one never blocks it.
+//
+// Security invariant: a revoked key ID must never also be a pinned key (this fails closed below), so
+// acceptance can only ever occur via a currently-pinned, non-revoked key. The revoked set is consulted
+// only to attribute the rejection reason AFTER no pinned key has matched — it can never cause acceptance.
+func VerifySet(document *Document, keys []PinnedKey, revoked map[string]bool) error {
 	if document == nil {
 		return fmt.Errorf("card document is nil")
 	}
-	if err := validatePublicKey(key); err != nil {
-		return err
+	if len(keys) == 0 {
+		return fmt.Errorf("no pinned keys to verify against")
+	}
+	for _, pinned := range keys {
+		if err := validateKeyID(pinned.KeyID); err != nil {
+			return err
+		}
+		if err := validatePublicKey(pinned.Key); err != nil {
+			return err
+		}
+		if revoked[pinned.KeyID] {
+			return fmt.Errorf("pinned key ID %q is also marked revoked", pinned.KeyID)
+		}
 	}
 	signatures, present := document.Signatures()
 	if !present || len(signatures) == 0 {
 		return fmt.Errorf("card is unsigned")
 	}
 	for _, signature := range signatures {
-		matches, err := verifySignature(document.payload, signature, keyID, key)
-		if err == nil && matches {
-			return nil
+		for _, pinned := range keys {
+			matches, err := verifySignature(document.payload, signature, pinned.KeyID, pinned.Key)
+			if err == nil && matches {
+				return nil
+			}
 		}
 	}
-	return fmt.Errorf("card has no valid ES256 signature for pinned key ID %q", keyID)
+	// Rejection is already decided. If any signature was offered under a revoked key ID, attribute the
+	// revoked reason; this lenient key-ID read is post-decision and cannot affect acceptance.
+	for _, signature := range signatures {
+		if keyID, ok := signatureKeyID(signature); ok && revoked[keyID] {
+			return ErrRevokedKeyID
+		}
+	}
+	return fmt.Errorf("card has no valid ES256 signature for any pinned key ID")
+}
+
+// signatureKeyID leniently reads the protected "kid" for post-rejection reason attribution only. It
+// returns ("", false) for any malformed header; it is never used to decide acceptance.
+func signatureKeyID(signature a2a.AgentCardSignature) (string, bool) {
+	protectedJSON, err := base64.RawURLEncoding.Strict().DecodeString(signature.Protected)
+	if err != nil {
+		return "", false
+	}
+	var header struct {
+		KeyID string `json:"kid"`
+	}
+	if json.Unmarshal(protectedJSON, &header) != nil || header.KeyID == "" {
+		return "", false
+	}
+	return header.KeyID, true
 }
 
 func verifySignature(

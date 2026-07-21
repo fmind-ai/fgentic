@@ -390,6 +390,12 @@ func TestAgentCardRejectReasonDistinguishesExtensionGap(t *testing.T) {
 	if got := agentCardRejectReason(fmt.Errorf("bad signature: %w", a2aclient.ErrRemoteTargetUntrusted)); got != "agent_card_untrusted" {
 		t.Fatalf("generic trust failure reason = %q", got)
 	}
+	// A card offered only under a retired signing key ID gets its own content-free reason (#352), even
+	// wrapped through the quarantine's double %w.
+	revokedErr := fmt.Errorf("%w: partner.example: %w", a2aclient.ErrRemoteTargetUntrusted, a2aclient.ErrRemoteKeyRevoked)
+	if got := agentCardRejectReason(revokedErr); got != "agent_card_revoked" {
+		t.Fatalf("revoked key reason = %q, want agent_card_revoked", got)
+	}
 }
 
 func TestRemoteExtensionGapAuditsDistinctReason(t *testing.T) {

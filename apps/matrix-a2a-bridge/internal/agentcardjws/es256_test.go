@@ -10,9 +10,12 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"math/big"
 	"strings"
 	"testing"
+
+	"github.com/a2aproject/a2a-go/v2/a2a"
 )
 
 func TestParseP256PrivateKeyPEM(t *testing.T) {
@@ -237,5 +240,108 @@ func TestParsePublicJWKOptionalMetadataPolicy(t *testing.T) {
 	}
 	if _, err := ParsePublicJWK(minimalRaw, "card-key", PublicJWKMetadataPolicy(255)); err == nil {
 		t.Fatal("ParsePublicJWK accepted an unknown metadata policy")
+	}
+}
+
+func TestVerifySetOverlapAndRevocation(t *testing.T) {
+	keyA := testPrivateKey(t)
+	keyB := testPrivateKey(t)
+	card := testCardJSON(t)
+
+	bundleA, err := Sign(card, keyA, "key-a")
+	if err != nil {
+		t.Fatalf("Sign A: %v", err)
+	}
+	bundleB, err := Sign(card, keyB, "key-b")
+	if err != nil {
+		t.Fatalf("Sign B: %v", err)
+	}
+	pubA, err := ParsePublicJWK(bundleA.PublicJWK, "key-a", RequirePublicJWKMetadata)
+	if err != nil {
+		t.Fatalf("ParsePublicJWK A: %v", err)
+	}
+	pubB, err := ParsePublicJWK(bundleB.PublicJWK, "key-b", RequirePublicJWKMetadata)
+	if err != nil {
+		t.Fatalf("ParsePublicJWK B: %v", err)
+	}
+	docA, err := Parse(bundleA.AgentCard)
+	if err != nil {
+		t.Fatalf("Parse A: %v", err)
+	}
+	docB, err := Parse(bundleB.AgentCard)
+	if err != nil {
+		t.Fatalf("Parse B: %v", err)
+	}
+
+	pins := []PinnedKey{{KeyID: "key-a", Key: pubA}, {KeyID: "key-b", Key: pubB}}
+
+	// Overlap window: cards under either the old (A) or the new (B) key verify — no rotation gap.
+	if err := VerifySet(docA, pins, nil); err != nil {
+		t.Fatalf("overlap old key: %v", err)
+	}
+	if err := VerifySet(docB, pins, nil); err != nil {
+		t.Fatalf("overlap new key: %v", err)
+	}
+
+	// After retiring A: only B is pinned and A is revoked. A card under A is refused with the revoked
+	// reason; the new key still verifies.
+	pinsAfter := []PinnedKey{{KeyID: "key-b", Key: pubB}}
+	revoked := map[string]bool{"key-a": true}
+	if err := VerifySet(docA, pinsAfter, revoked); !errors.Is(err, ErrRevokedKeyID) {
+		t.Fatalf("retired key: want ErrRevokedKeyID, got %v", err)
+	}
+	if err := VerifySet(docB, pinsAfter, revoked); err != nil {
+		t.Fatalf("new key after revoke: %v", err)
+	}
+
+	// Invariant: a key that is both pinned and revoked fails closed (never silently trusted).
+	if err := VerifySet(docB, []PinnedKey{{KeyID: "key-b", Key: pubB}}, map[string]bool{"key-b": true}); err == nil {
+		t.Fatal("accepted a key that is both pinned and revoked")
+	}
+
+	// A card under an unpinned, unrevoked key is rejected generically (not the revoked reason).
+	keyC := testPrivateKey(t)
+	bundleC, err := Sign(card, keyC, "key-c")
+	if err != nil {
+		t.Fatalf("Sign C: %v", err)
+	}
+	docC, err := Parse(bundleC.AgentCard)
+	if err != nil {
+		t.Fatalf("Parse C: %v", err)
+	}
+	if err := VerifySet(docC, pins, nil); err == nil || errors.Is(err, ErrRevokedKeyID) {
+		t.Fatalf("unpinned key: want generic rejection, got %v", err)
+	}
+
+	// Tampering after signing is rejected even with the full pin set.
+	tampered := decodeTestObject(t, bundleB.AgentCard)
+	tampered["name"] = "tampered after signing"
+	tamperedDoc, err := Parse(encodeTestObject(t, tampered))
+	if err != nil {
+		t.Fatalf("Parse tampered: %v", err)
+	}
+	if err := VerifySet(tamperedDoc, pins, nil); err == nil {
+		t.Fatal("accepted a tampered card")
+	}
+
+	// A dual-signed overlap card (both A and B signatures over the same payload) stays trusted via the
+	// still-valid new key after the old key is retired — no verification gap for a mid-rotation card.
+	sigsA, _ := docA.Signatures()
+	sigsB, _ := docB.Signatures()
+	dualBytes, err := docB.marshalWithSignatures([]a2a.AgentCardSignature{sigsA[0], sigsB[0]})
+	if err != nil {
+		t.Fatalf("marshal dual-signed: %v", err)
+	}
+	dualDoc, err := Parse(dualBytes)
+	if err != nil {
+		t.Fatalf("Parse dual-signed: %v", err)
+	}
+	if err := VerifySet(dualDoc, pinsAfter, revoked); err != nil {
+		t.Fatalf("dual-signed card must stay trusted via the new key: %v", err)
+	}
+
+	// An empty pin set fails closed.
+	if err := VerifySet(docB, nil, nil); err == nil {
+		t.Fatal("accepted a card with no pinned keys")
 	}
 }
