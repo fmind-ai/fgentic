@@ -115,6 +115,10 @@ spec:
               value: {{ .Values.policy.signatureMaxSkew | quote }}
             - name: SIGNATURE_FUTURE_SKEW
               value: {{ .Values.policy.signatureFutureSkew | quote }}
+            {{- if .Values.pinnedKeys.enabled }}
+            - name: PINNED_KEYS_PATH
+              value: /etc/activitypub-agent-gateway/pinned-keys/{{ .Values.pinnedKeys.key }}
+            {{- end }}
             {{- end }}
             {{- if .Values.integrity.enabled }}
             - name: INTEGRITY_KEY_PATH
@@ -162,6 +166,11 @@ spec:
               # Whole-directory mount so the projected policy.json hot-reloads without a restart.
               mountPath: /etc/activitypub-agent-gateway/policy
               readOnly: true
+            {{- if .Values.pinnedKeys.enabled }}
+            - name: pinned-keys
+              mountPath: /etc/activitypub-agent-gateway/pinned-keys
+              readOnly: true
+            {{- end }}
             {{- end }}
             {{- if .Values.integrity.enabled }}
             - name: signing-key
@@ -207,6 +216,12 @@ spec:
         - name: policy
           configMap:
             name: {{ .Values.policy.configMapName }}
+        {{- if .Values.pinnedKeys.enabled }}
+        - name: pinned-keys
+          secret:
+            secretName: {{ .Values.pinnedKeys.secretName }}
+            defaultMode: 0400
+        {{- end }}
         {{- end }}
         {{- if .Values.integrity.enabled }}
         - name: signing-key

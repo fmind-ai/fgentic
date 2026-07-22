@@ -9,7 +9,7 @@ from unittest import TestCase
 
 DOCS_ROOT = Path(__file__).resolve().parents[1]
 DECISION_MAXIMUM = 20
-ADR_MAXIMUM = 20
+ADR_MAXIMUM = 21
 SECTION_OWNERS = {
     "architecture.md": (1, 2, 3, 11),
     "design-decisions.md": (4,),
@@ -279,13 +279,13 @@ class IdentifierIntegrityTest(TestCase):
         decisions = "\n".join(
             ("# Design Decisions D1\u2013D19", *(f"### D{value} — Decision" for value in range(1, 20)))
         )
-        adrs = {f"{value:04d}-decision.md": f"# {value:04d} — Decision\n" for value in range(1, 20)}
+        adrs = {f"{value:04d}-decision.md": f"# {value:04d} — Decision\n" for value in range(1, 21)}
 
         self.assertEqual(
             _decision_errors(decisions),
             ("design-decisions.md: advertised maximum D19 must remain D20",),
         )
-        self.assertEqual(_adr_errors(adrs), ("ADR inventory: missing identifiers 0020",))
+        self.assertEqual(_adr_errors(adrs), ("ADR inventory: missing identifiers 0021",))
 
     def test_reports_adr_gaps_duplicates_and_heading_mismatch(self) -> None:
         documents = {

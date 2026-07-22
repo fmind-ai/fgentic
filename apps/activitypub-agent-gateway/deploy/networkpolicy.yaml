@@ -1,0 +1,72 @@
+# Default-deny NetworkPolicy for the reconciled ActivityPub gateway (issue #489). This is the
+# deployment-side, defense-in-depth counterpart to the in-code SSRF key-resolver guard (#320): even
+# if a border check were bypassed, the pod cannot reach cloud metadata, arbitrary in-cluster
+# Services, or the public internet. It is authoritative for the namespace, so the Helm chart's own
+# ingress-only NetworkPolicy is disabled in the deploy values.
+#
+# Ingress: only the Gateway (Traefik, namespace `gateway`) may reach the public AP listener, and only
+#   Prometheus (namespace `monitoring`) may scrape the never-public metrics port.
+# Egress: DNS; the shared CloudNativePG cluster (durable inbox activity ledger / dedup, #321); and the
+#   agentgateway proxy — the sole A2A/LLM chokepoint (kagent is reached THROUGH it, never directly). No
+#   public-internet egress: the public AP border stays gated on every profile, and outbound federation
+#   delivery to an in-cluster demo peer is added by the runtime interop harness.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: activitypub-agent-gateway
+  namespace: activitypub
+  labels:
+    app.kubernetes.io/name: activitypub-agent-gateway
+    app.kubernetes.io/part-of: fgentic
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: activitypub-agent-gateway
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    # The shared Gateway (Traefik runs in the `gateway` namespace) fronts the single exact AP route.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: gateway
+      ports:
+        - protocol: TCP
+          port: 8480
+    # Prometheus scrapes the metrics side port (never public).
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+      ports:
+        - protocol: TCP
+          port: 9090
+  egress:
+    # DNS resolution (CoreDNS in kube-system).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # The durable inbox activity ledger and async delegation queue (#321) in the shared CNPG cluster.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
+    # The A2A path: agentgateway is the LLM-credential chokepoint. kagent sits behind it and is never
+    # dialed directly from here.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: agentgateway-system
+      ports:
+        - protocol: TCP
+          port: 8080

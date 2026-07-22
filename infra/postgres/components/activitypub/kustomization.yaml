@@ -1,0 +1,26 @@
+# Opt-in Postgres tenant for the ActivityPub agent gateway (issue #489), rendered inside the canonical
+# Postgres Flux Kustomization so platform-pg keeps one field owner. Selected by the demo overlay only;
+# local/gcp do not compose it, so their CNPG render stays unchanged. Mirrors the mautrix bridge
+# components: append one scoped login role plus its exact per-tenant TLS HBA row, and add the Database.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - database.yaml
+patches:
+  - target:
+      group: postgresql.cnpg.io
+      version: v1
+      kind: Cluster
+      name: platform-pg
+      namespace: postgres
+    patch: |
+      - op: add
+        path: /spec/managed/roles/-
+        value:
+          name: activitypub
+          login: true
+          passwordSecret:
+            name: pg-activitypub
+      - op: add
+        path: /spec/postgresql/pg_hba/0
+        value: hostssl activitypub activitypub all scram-sha-256

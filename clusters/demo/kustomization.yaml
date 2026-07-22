@@ -7,6 +7,9 @@ resources:
   - ../base
   - platform-settings.yaml
   - secrets.yaml
+  # Demo-only: reconcile the ActivityPub agent gateway (issue #489). local/gcp deliberately omit it,
+  # so this is the single composition point. Public exposure stays gated (deploy keeps httpRoute off).
+  - activitypub.yaml
 components:
   - ../base/provider-selection
 patches:
@@ -123,6 +126,10 @@ patches:
         name: postgres
         namespace: flux-system
       spec:
+        # Demo reconciles the ActivityPub gateway (issue #489), so its scoped role + Database compose
+        # into platform-pg here. local/gcp omit this component, keeping their CNPG render unchanged.
+        components:
+          - components/activitypub
         dependsOn:
           - name: controllers
           - name: platform-secrets
@@ -212,6 +219,46 @@ patches:
               metadata:
                 name: tracing
                 namespace: agentgateway-system
+          # Demo also reconciles the ActivityPub agent gateway (issue #489), a SECOND caller of the
+          # A2A chokepoint. Admit its workload identity onto the SAME kagent route the bridge uses —
+          # demo-scoped only, so clusters/local and clusters/gcp keep the single-caller boundary.
+          # The AP gateway dials /api/a2a/kagent/<name> through agentgateway with its own workload
+          # credential (activitypub-agent-gateway-credential), registered as a second a2a-bridge-callers
+          # entry by the cluster-only demo secret path. Widen the fail-closed CEL to OR in that workload
+          # without loosening the path/method scope, so a bridge compromise still cannot reach another
+          # namespace and the AP gateway still cannot leave the reviewed kagent A2A surface.
+          - target:
+              group: agentgateway.dev
+              version: v1alpha1
+              kind: AgentgatewayPolicy
+              name: a2a-bridge-authorization
+              namespace: agentgateway-system
+            patch: |
+              - op: replace
+                path: /spec/traffic/authorization/policy/matchExpressions/0
+                value: >-
+                  (apiKey.workload == "matrix-a2a-bridge" ||
+                  apiKey.workload == "activitypub-agent-gateway") &&
+                  request.path.startsWith("/api/a2a/kagent/") &&
+                  (request.method == "POST" ||
+                  (request.method == "GET" &&
+                  request.path.endsWith("/.well-known/agent-card.json")))
+          # kagent's A2A endpoint is unauthenticated by default, so the agentgateway ingress
+          # NetworkPolicy is load-bearing: only the `bridge` and `kagent` namespaces may reach the
+          # proxy data plane on :8080. Demo adds the `activitypub` namespace to that exact allow rule
+          # so the reconciled AP gateway can dial the chokepoint. Demo-scoped: local/gcp keep the
+          # gateway (and this ingress source) absent.
+          - target:
+              kind: NetworkPolicy
+              name: agentgateway-allow-agents
+              namespace: agentgateway-system
+            patch: |
+              - op: add
+                path: /spec/ingress/0/from/-
+                value:
+                  namespaceSelector:
+                    matchLabels:
+                      kubernetes.io/metadata.name: activitypub
   - target:
       group: kustomize.toolkit.fluxcd.io
       version: v1

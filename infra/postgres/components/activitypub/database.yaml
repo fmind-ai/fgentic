@@ -1,0 +1,16 @@
+# The ActivityPub gateway's own database in the shared CloudNativePG cluster (AGENTS.md principle 3:
+# every stateful tenant gets its own database + scoped role). It backs the durable inbox activity
+# ledger and async delegation queue (#321) — the at-least-once dedup fix that a public federation
+# border requires. Retained on component removal so accepted-work history is never dropped implicitly.
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: activitypub
+  namespace: postgres
+spec:
+  cluster:
+    name: platform-pg
+  name: activitypub
+  owner: activitypub
+  encoding: UTF8
+  databaseReclaimPolicy: retain
