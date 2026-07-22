@@ -7,17 +7,23 @@
 # shellcheck disable=SC2016 # the Flux ${...} substitution placeholders are matched as intentional literals
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-readonly ROOT_DIR
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly SCRIPT_ROOT
 # shellcheck source=scripts/lib.sh
-source "${ROOT_DIR}/scripts/lib.sh"
+source "${SCRIPT_ROOT}/scripts/lib.sh"
+
+# The audited data tree defaults to the repo root (standalone `check:fed-registry` behavior is unchanged),
+# but FGENTIC_FED_TREE redirects it to an isolated scratch mirror. The break-glass contract test sets it so
+# the FULL gate runs against its scratch copy in the contained/restored states — without racing the parallel
+# standalone gate, which reads the committed tree. Scripts and libraries always resolve against SCRIPT_ROOT.
+readonly FED_TREE="${FGENTIC_FED_TREE:-${SCRIPT_ROOT}}"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-fed-registry.XXXXXX")"
 readonly WORK_DIR
 trap 'rm -rf "${WORK_DIR}"' EXIT INT TERM
 
 require_commands yq jq python3 diff
 
-readonly REGISTRY="${ROOT_DIR}/infra/federation/registry/partners.yaml"
+readonly REGISTRY="${FED_TREE}/infra/federation/registry/partners.yaml"
 [ -f "${REGISTRY}" ] || fail "registry not found: ${REGISTRY}"
 readonly REGISTRY_JSON="${WORK_DIR}/registry.json"
 yq -o=json '.' "${REGISTRY}" >"${REGISTRY_JSON}"
@@ -130,9 +136,9 @@ quota_per_minute="$(jq -r '.lab.a2a_quota_units_per_minute' "${REGISTRY_JSON}")"
 	|| fail "registry admitted issuer '${issuer}' does not resolve to the admitted server_name"
 
 # 2. Deterministic render: re-render into a scratch mirror and require byte-identical committed artifacts.
-bash "${ROOT_DIR}/scripts/fed-registry-render.sh" --out-root "${WORK_DIR}/render" >/dev/null
+bash "${SCRIPT_ROOT}/scripts/fed-registry-render.sh" --registry "${REGISTRY}" --out-root "${WORK_DIR}/render" >/dev/null
 for rel in apps/synapse-federation-policy/policy/policy.json clusters/federation/platform-settings.yaml; do
-	diff -u "${ROOT_DIR}/${rel}" "${WORK_DIR}/render/${rel}" >/dev/null \
+	diff -u "${FED_TREE}/${rel}" "${WORK_DIR}/render/${rel}" >/dev/null \
 		|| fail "${rel} drifted from the registry — run 'mise run fed:registry-render' (no hand-edits)"
 done
 
@@ -143,7 +149,7 @@ done
 #     and a bad rotation (duplicate or pinned-and-revoked kid) fails the renderer CLOSED.
 readonly CARD_KEYS_REL="infra/federation/delegation/agent-card-keys.json"
 # (a) Absent = unchanged: the real registry has no rotation fields, so the derived artifact must not exist.
-[ ! -e "${ROOT_DIR}/${CARD_KEYS_REL}" ] \
+[ ! -e "${FED_TREE}/${CARD_KEYS_REL}" ] \
 	|| fail "committed ${CARD_KEYS_REL} exists but no host declares a rotation set — the model must stay additive"
 [ ! -e "${WORK_DIR}/render/${CARD_KEYS_REL}" ] \
 	|| fail "renderer emitted ${CARD_KEYS_REL} for a single-key host — absent rotation fields must render nothing"
@@ -161,8 +167,8 @@ fixture_registry() { # $1=out $2=additional-json $3=revoked-json
 # (b) Valid rotation renders the exact bridge cardIdentity shape, deterministically (rendered twice, diffed).
 valid_fixture="${WORK_DIR}/registry-rotation-valid.yaml"
 fixture_registry "${valid_fixture}" "[\"${OVERLAP_KID}\"]" "[\"${REVOKED_KID}\"]"
-bash "${ROOT_DIR}/scripts/fed-registry-render.sh" --registry "${valid_fixture}" --out-root "${WORK_DIR}/rot1" >/dev/null
-bash "${ROOT_DIR}/scripts/fed-registry-render.sh" --registry "${valid_fixture}" --out-root "${WORK_DIR}/rot2" >/dev/null
+bash "${SCRIPT_ROOT}/scripts/fed-registry-render.sh" --registry "${valid_fixture}" --out-root "${WORK_DIR}/rot1" >/dev/null
+bash "${SCRIPT_ROOT}/scripts/fed-registry-render.sh" --registry "${valid_fixture}" --out-root "${WORK_DIR}/rot2" >/dev/null
 diff -u "${WORK_DIR}/rot1/${CARD_KEYS_REL}" "${WORK_DIR}/rot2/${CARD_KEYS_REL}" >/dev/null \
 	|| fail "AgentCard rotation render is non-deterministic"
 jq -e --arg p "${PRIMARY_KID}" --arg a "${OVERLAP_KID}" --arg r "${REVOKED_KID}" '
@@ -171,25 +177,25 @@ jq -e --arg p "${PRIMARY_KID}" --arg a "${OVERLAP_KID}" --arg r "${REVOKED_KID}"
 	|| fail "rendered ${CARD_KEYS_REL} does not match the derived overlap+revocation cardIdentity"
 # The additive render must not perturb the existing planes even when a rotation set is present.
 for rel in apps/synapse-federation-policy/policy/policy.json clusters/federation/platform-settings.yaml; do
-	diff -u "${ROOT_DIR}/${rel}" "${WORK_DIR}/rot1/${rel}" >/dev/null \
+	diff -u "${FED_TREE}/${rel}" "${WORK_DIR}/rot1/${rel}" >/dev/null \
 		|| fail "a rotation set perturbed ${rel} — the AgentCard key model must be additive"
 done
 # (c) Fail-closed: a duplicate kid (overlap == primary) and a pinned-and-revoked kid must each be rejected.
 dup_fixture="${WORK_DIR}/registry-rotation-dup.yaml"
 fixture_registry "${dup_fixture}" "[\"${PRIMARY_KID}\"]" "[]"
-if bash "${ROOT_DIR}/scripts/fed-registry-render.sh" --registry "${dup_fixture}" --out-root "${WORK_DIR}/rotdup" >/dev/null 2>&1; then
+if bash "${SCRIPT_ROOT}/scripts/fed-registry-render.sh" --registry "${dup_fixture}" --out-root "${WORK_DIR}/rotdup" >/dev/null 2>&1; then
 	fail "renderer accepted a duplicate AgentCard signing kid (overlap == primary)"
 fi
 conflict_fixture="${WORK_DIR}/registry-rotation-conflict.yaml"
 fixture_registry "${conflict_fixture}" "[\"${OVERLAP_KID}\"]" "[\"${PRIMARY_KID}\"]"
-if bash "${ROOT_DIR}/scripts/fed-registry-render.sh" --registry "${conflict_fixture}" --out-root "${WORK_DIR}/rotconflict" >/dev/null 2>&1; then
+if bash "${SCRIPT_ROOT}/scripts/fed-registry-render.sh" --registry "${conflict_fixture}" --out-root "${WORK_DIR}/rotconflict" >/dev/null 2>&1; then
 	fail "renderer accepted a pinned-and-revoked AgentCard signing kid (revocation must win, fail closed)"
 fi
 
 # (d) A whitespace-only kid is not a real key ID and must fail closed, same as an empty one (#352 Task 4).
 ws_fixture="${WORK_DIR}/registry-rotation-ws.yaml"
 fixture_registry "${ws_fixture}" "[\"  \"]" "[]"
-if bash "${ROOT_DIR}/scripts/fed-registry-render.sh" --registry "${ws_fixture}" --out-root "${WORK_DIR}/rotws" >/dev/null 2>&1; then
+if bash "${SCRIPT_ROOT}/scripts/fed-registry-render.sh" --registry "${ws_fixture}" --out-root "${WORK_DIR}/rotws" >/dev/null 2>&1; then
 	fail "renderer accepted a whitespace-only AgentCard signing kid"
 fi
 
@@ -209,26 +215,26 @@ extract_whitelist() {
 expected_ab="$(printf '%s\n' '${federation_partner_server_name}' '${server_name}' | LC_ALL=C sort)"
 expected_c="$(printf '%s\n' '${federation_denied_server_name}' '${federation_partner_server_name}' '${server_name}' | LC_ALL=C sort)"
 for env in a b; do
-	actual="$(extract_whitelist "${ROOT_DIR}/infra/federation/matrix-${env}/"*.yaml)"
+	actual="$(extract_whitelist "${FED_TREE}/infra/federation/matrix-${env}/"*.yaml)"
 	[ -n "${actual}" ] || fail "matrix-${env}: federation_domain_whitelist not found"
 	[ "${actual}" = "${expected_ab}" ] \
 		|| fail "matrix-${env} whitelist is not exactly {host, admitted} — an unregistered domain would broaden trust"
 done
-actual_c="$(extract_whitelist "${ROOT_DIR}/infra/federation/matrix-c/helmrelease.yaml")"
+actual_c="$(extract_whitelist "${FED_TREE}/infra/federation/matrix-c/helmrelease.yaml")"
 [ "${actual_c}" = "${expected_c}" ] || fail "matrix-c whitelist is not exactly {host, admitted, denied}"
 
 # 4. Plane 2 — room m.room.server_acl seed. allow == the admitted set (host + admitted), deny empty, and
 #    the seed's SERVER_A/B/C literals equal the registry host/admitted/denied.
-seed_acl="${ROOT_DIR}/scripts/lib/federation-matrix.sh"
+seed_acl="${FED_TREE}/scripts/lib/federation-matrix.sh"
 grep -Fq 'allow: [$a, $b], deny: [], allow_ip_literals: false' "${seed_acl}" \
 	|| fail "server_acl seed must be allow:[host,admitted] deny:[] allow_ip_literals:false"
-seed_env="${ROOT_DIR}/scripts/seed-federation.sh"
+seed_env="${FED_TREE}/scripts/seed-federation.sh"
 grep -Fxq "readonly SERVER_A=\"${host_name}\"" "${seed_env}" || fail "seed SERVER_A must equal the registry host"
 grep -Fxq "readonly SERVER_B=\"${admitted_name}\"" "${seed_env}" || fail "seed SERVER_B must equal the registry admitted partner"
 grep -Fxq "readonly SERVER_C=\"${denied_name}\"" "${seed_env}" || fail "seed SERVER_C must equal the registry denied server"
 
 # 5. Plane 3 — callback policy.json. allowed_servers == the sorted allowlisted set (also rendered, step 2).
-policy_json="${ROOT_DIR}/apps/synapse-federation-policy/policy/policy.json"
+policy_json="${FED_TREE}/apps/synapse-federation-policy/policy/policy.json"
 # A break-glass contained partner (issue #350) is dropped from the border even while allowlisted.
 expected_allowed="$(jq -c '[.partners[] | select(.allowlisted == true and (.contained // false | not)) | .server_name] | sort' "${REGISTRY_JSON}")"
 jq -e --argjson want "${expected_allowed}" '.allowed_servers == $want' "${policy_json}" >/dev/null \
@@ -236,20 +242,20 @@ jq -e --argjson want "${expected_allowed}" '.allowed_servers == $want' "${policy
 
 # 6. Plane 4 — pinned AgentCard identity. Provider org, exported route host+path, and the admitted issuer
 #    (via the substitution var) all bind to the registry; the signer's default key IDs match.
-card="${ROOT_DIR}/infra/federation/delegation/agent-card.json"
+card="${FED_TREE}/infra/federation/delegation/agent-card.json"
 jq -e --arg org "${provider_org}" --arg url "https://a2a.\${server_name}${agent_path}" '
   .provider.organization == $org and (.supportedInterfaces[0].url == $url)
 ' "${card}" >/dev/null || fail "agent-card provider org / exported route does not match the registry"
 [ "${route_host}" = "a2a.${host_name}" ] || fail "registry route_host must be a2a.<host_name>"
 grep -Fq 'openIdConnectUrl": "https://id.${federation_partner_server_name}/realms/fgentic-federation/.well-known/openid-configuration"' "${card}" \
 	|| fail "agent-card orgBOIDC issuer does not bind to the admitted partner"
-signing="${ROOT_DIR}/scripts/lib/federation-contract-signing.sh"
+signing="${FED_TREE}/scripts/lib/federation-contract-signing.sh"
 grep -Fq "${card_key_id}" "${signing}" || fail "signer default AgentCard key id != registry card_key_id"
 grep -Fq "${receipt_key_id}" "${signing}" || fail "signer default usage-receipt key id != registry usage_receipt_key_id"
 
 # 7. Plane 5 — A2A azp / issuer / quota descriptors across policies.yaml, rate-limit.yaml, usage-receipt.yaml,
 #    and the Keycloak client. The azp is the literal partner client id; issuer/jwks/audience/budget bind too.
-policies="${ROOT_DIR}/infra/federation/delegation/policies.yaml"
+policies="${FED_TREE}/infra/federation/delegation/policies.yaml"
 # The manifest templates the issuer host with ${federation_partner_server_name}; resolve the registry
 # issuer back to that templated form so the comparison is byte-exact against the committed manifest.
 templated_issuer="${issuer/${admitted_name}/\$\{federation_partner_server_name\}}"
@@ -259,17 +265,17 @@ grep -Fq "jwksPath: ${jwks_path}" "${policies}" || fail "policies.yaml jwksPath 
 grep -Fq -- "- ${audience}" "${policies}" || fail "policies.yaml audience != registry audience"
 grep -Fq 'budget.maxTokens <= ${federation_a2a_max_budget_units}' "${policies}" \
 	|| fail "policies.yaml maxTokens ceiling must use the rendered budget var"
-grep -Fq 'requests_per_unit: ${federation_a2a_quota_budget_units_per_minute}' "${ROOT_DIR}/infra/federation/delegation/rate-limit.yaml" \
+grep -Fq 'requests_per_unit: ${federation_a2a_quota_budget_units_per_minute}' "${FED_TREE}/infra/federation/delegation/rate-limit.yaml" \
 	|| fail "rate-limit.yaml quota must use the rendered quota var"
-grep -Fq -- "--azp=${azp}" "${ROOT_DIR}/infra/federation/delegation/usage-receipt.yaml" \
+grep -Fq -- "--azp=${azp}" "${FED_TREE}/infra/federation/delegation/usage-receipt.yaml" \
 	|| fail "usage-receipt azp != registry azp"
-grep -Fq "\"clientId\": \"${azp}\"" "${ROOT_DIR}/infra/federation/delegation/keycloak/kustomization.yaml" \
+grep -Fq "\"clientId\": \"${azp}\"" "${FED_TREE}/infra/federation/delegation/keycloak/kustomization.yaml" \
 	|| fail "keycloak client id != registry azp"
 : "${max_budget}" "${quota_per_minute}" # rendered into platform-settings (step 2), enforced above
 
 # 8. Deny-by-default survives rendering: the denied control server (and any denied name) must appear in NONE
 #    of the derived enforcement planes — the delegation dir and the callback policy.
-for plane in "${ROOT_DIR}/infra/federation/delegation" "${policy_json}"; do
+for plane in "${FED_TREE}/infra/federation/delegation" "${policy_json}"; do
 	if grep -rFq -- "${denied_name}" "${plane}" 2>/dev/null; then
 		fail "denied server '${denied_name}' leaked into an enforcement plane: ${plane}"
 	fi

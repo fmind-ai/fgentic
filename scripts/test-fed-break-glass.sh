@@ -4,43 +4,55 @@
 # states, the containment record and evidence pack are content-free with the expected who/when/what fields
 # in the offboarding-safe order, and the abuse-report schema accepts a reference-only report while rejecting
 # content-bearing or unknown fields. No live cluster: triggering the lab and asserting every plane denies is
-# the runtime-owner proof. The test snapshots the rendered artifacts and restores them on exit.
+# the runtime-owner proof.
+#
+# Isolation: break-glass mutates its data tree IN PLACE (registry + rendered policy.json/platform-settings),
+# so this test runs it against a SCRATCH MIRROR via FGENTIC_FED_TREE and never touches the committed files.
+# That removes the race with check:fed-registry, which reads the same real files under the parallel `check`
+# aggregate. Every assertion — including the FULL trust-registry gate — runs against the scratch copy.
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-readonly ROOT_DIR
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly SCRIPT_ROOT
 # shellcheck source=scripts/lib.sh
-source "${ROOT_DIR}/scripts/lib.sh"
+source "${SCRIPT_ROOT}/scripts/lib.sh"
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-break-glass.XXXXXX")"
 readonly WORK_DIR
+trap 'rm -rf "${WORK_DIR}"' EXIT INT TERM
 
 require_commands yq jq python3 git
 
 readonly PARTNER="org-b.fgentic.localhost"
-readonly REGISTRY="${ROOT_DIR}/infra/federation/registry/partners.yaml"
-readonly POLICY="${ROOT_DIR}/apps/synapse-federation-policy/policy/policy.json"
-readonly SETTINGS="${ROOT_DIR}/clusters/federation/platform-settings.yaml"
 
-# Snapshot the three files break-glass mutates, and restore them however the test exits.
-cp "${REGISTRY}" "${WORK_DIR}/registry.orig"
-cp "${POLICY}" "${WORK_DIR}/policy.orig"
-cp "${SETTINGS}" "${WORK_DIR}/settings.orig"
-restore() {
-	cp "${WORK_DIR}/registry.orig" "${REGISTRY}"
-	cp "${WORK_DIR}/policy.orig" "${POLICY}"
-	cp "${WORK_DIR}/settings.orig" "${SETTINGS}"
-	rm -rf "${WORK_DIR}"
-}
-trap restore EXIT INT TERM
+# Build a scratch mirror of exactly the federation surface break-glass mutates and check:fed-registry audits,
+# preserving the repo-relative paths so both scripts resolve their data under FGENTIC_FED_TREE. Scripts and
+# libraries still resolve against the real repo; only the DATA tree is redirected here.
+readonly TREE="${WORK_DIR}/tree"
+mkdir -p "${TREE}/infra" "${TREE}/apps/synapse-federation-policy" "${TREE}/clusters" "${TREE}/scripts/lib"
+cp -r "${SCRIPT_ROOT}/infra/federation" "${TREE}/infra/"
+cp -r "${SCRIPT_ROOT}/apps/synapse-federation-policy/policy" "${TREE}/apps/synapse-federation-policy/"
+cp -r "${SCRIPT_ROOT}/clusters/federation" "${TREE}/clusters/"
+# check:fed-registry greps these library/seed scripts as trust-consistency DATA (not as executables).
+cp "${SCRIPT_ROOT}/scripts/lib/federation-matrix.sh" "${SCRIPT_ROOT}/scripts/lib/federation-contract-signing.sh" "${TREE}/scripts/lib/"
+cp "${SCRIPT_ROOT}/scripts/seed-federation.sh" "${TREE}/scripts/"
 
+export FGENTIC_FED_TREE="${TREE}"
 export FGENTIC_FED_RECORD_DIR="${WORK_DIR}/records"
 
+readonly REGISTRY="${TREE}/infra/federation/registry/partners.yaml"
+readonly POLICY="${TREE}/apps/synapse-federation-policy/policy/policy.json"
+# Snapshot the scratch registry so the "only the contained: line changed" assertion has a baseline.
+cp "${REGISTRY}" "${WORK_DIR}/registry.orig"
+
+# The scratch tree must be self-consistent before we touch it (the gate is green against the committed copy).
+bash "${SCRIPT_ROOT}/scripts/check-fed-registry.sh" >/dev/null 2>&1 \
+	|| fail "precondition: the scratch mirror must pass the trust-registry gate before break-glass"
 # The partner starts admitted at the border.
 jq -e --arg p "${PARTNER}" '.allowed_servers | index($p) != null' "${POLICY}" >/dev/null \
 	|| fail "precondition: ${PARTNER} must be admitted before break-glass"
 
 # 1. Contain: border drops the partner; registry flag is a byte-safe single-line change; gate still green.
-bash "${ROOT_DIR}/scripts/fed-break-glass.sh" contain "${PARTNER}" >/dev/null 2>&1
+bash "${SCRIPT_ROOT}/scripts/fed-break-glass.sh" contain "${PARTNER}" >/dev/null 2>&1
 jq -e --arg p "${PARTNER}" '.allowed_servers | index($p) == null' "${POLICY}" >/dev/null \
 	|| fail "contain: ${PARTNER} must be dropped from policy.json allowed_servers"
 grep -v 'contained:' "${WORK_DIR}/registry.orig" >"${WORK_DIR}/orig.nc" || true
@@ -49,7 +61,7 @@ diff "${WORK_DIR}/orig.nc" "${WORK_DIR}/new.nc" >/dev/null \
 	|| fail "contain: only the 'contained:' line may change in the registry"
 yq -e '.partners[] | select(.server_name == "'"${PARTNER}"'") | .contained == true' "${REGISTRY}" >/dev/null \
 	|| fail "contain: registry contained flag must be true"
-bash "${ROOT_DIR}/scripts/check-fed-registry.sh" >/dev/null 2>&1 || fail "contain: trust-registry gate must stay green in the contained state"
+bash "${SCRIPT_ROOT}/scripts/check-fed-registry.sh" >/dev/null 2>&1 || fail "contain: trust-registry gate must stay green in the contained state"
 
 # 2. The containment record is content-free with who/when/what in the exact offboarding-safe order.
 record="${FGENTIC_FED_RECORD_DIR}/containment-${PARTNER}.json"
@@ -70,7 +82,7 @@ fi
 
 # 3. Evidence pack: content-free, verify-only identity, every named source flagged content_free.
 pack="${WORK_DIR}/pack.json"
-bash "${ROOT_DIR}/scripts/fed-evidence-pack.sh" "${PARTNER}" >"${pack}" 2>/dev/null
+bash "${SCRIPT_ROOT}/scripts/fed-evidence-pack.sh" "${PARTNER}" >"${pack}" 2>/dev/null
 jq -e --arg p "${PARTNER}" '
 	.schema == "fgentic.federation.evidence.v1" and
 	.partner.server_name == $p and .partner.azp == "org-b-a2a" and
@@ -87,13 +99,16 @@ if jq -e '.. | strings | select(test("PRIVATE KEY|BEGIN EC|secret"))' "${pack}" 
 fi
 
 # 4. Restore: border re-admits the partner; gate green again.
-bash "${ROOT_DIR}/scripts/fed-break-glass.sh" restore "${PARTNER}" >/dev/null 2>&1
+bash "${SCRIPT_ROOT}/scripts/fed-break-glass.sh" restore "${PARTNER}" >/dev/null 2>&1
 jq -e --arg p "${PARTNER}" '.allowed_servers | index($p) != null' "${POLICY}" >/dev/null \
 	|| fail "restore: ${PARTNER} must be re-admitted to the border"
-bash "${ROOT_DIR}/scripts/check-fed-registry.sh" >/dev/null 2>&1 || fail "restore: trust-registry gate must stay green"
+bash "${SCRIPT_ROOT}/scripts/check-fed-registry.sh" >/dev/null 2>&1 || fail "restore: trust-registry gate must stay green"
+# Restore is a full reversal: the scratch tree is byte-identical to its pre-break-glass state.
+diff "${WORK_DIR}/registry.orig" "${REGISTRY}" >/dev/null \
+	|| fail "restore: the registry must return byte-for-byte to its pre-containment state"
 
 # 5. Abuse-report schema: a reference-only report validates; content-bearing / unknown fields are rejected.
-schema="${ROOT_DIR}/infra/federation/registry/abuse-report.schema.json"
+schema="${SCRIPT_ROOT}/infra/federation/registry/abuse-report.schema.json"
 [ -f "${schema}" ] || fail "abuse-report schema missing"
 jq -e '.["$id"] and (.required | index("subject_server_name")) and (.additionalProperties == false)' "${schema}" >/dev/null \
 	|| fail "abuse-report schema is malformed"

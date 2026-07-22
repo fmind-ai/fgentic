@@ -14,15 +14,22 @@
 # touches a live cluster — commit the render and let Flux reconcile, then run the printed runtime steps.
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-readonly ROOT_DIR
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly SCRIPT_ROOT
 # shellcheck source=scripts/lib.sh
-source "${ROOT_DIR}/scripts/lib.sh"
+source "${SCRIPT_ROOT}/scripts/lib.sh"
 
 require_commands yq jq python3 git
 
-readonly REGISTRY="${ROOT_DIR}/infra/federation/registry/partners.yaml"
-readonly RECORD_DIR="${FGENTIC_FED_RECORD_DIR:-${ROOT_DIR}/.agents/tmp}"
+# The mutated data tree (registry + the rendered callback/policy planes) defaults to the repo root, so the
+# operator path stays byte-identical. FGENTIC_FED_TREE redirects ONLY the data files to an isolated scratch
+# mirror — the break-glass contract test uses it so its in-place registry/policy.json mutation never races
+# check:fed-registry, which reads the same committed files under the parallel `check` aggregate. Scripts and
+# libraries always resolve against SCRIPT_ROOT; the git revision stamped in the record is the real repo HEAD.
+readonly FED_TREE="${FGENTIC_FED_TREE:-${SCRIPT_ROOT}}"
+readonly REGISTRY="${FED_TREE}/infra/federation/registry/partners.yaml"
+readonly RECORD_DIR="${FGENTIC_FED_RECORD_DIR:-${SCRIPT_ROOT}/.agents/tmp}"
+[ -f "${REGISTRY}" ] || fail "registry not found: ${REGISTRY}"
 
 usage() {
 	cat >&2 <<'EOF'
@@ -97,7 +104,7 @@ write_record() {
 	local azp classification revision now
 	azp="$(partner_field "${partner}" ".a2a.azp")"
 	classification="$(partner_field "${partner}" ".classification")"
-	revision="$(git -C "${ROOT_DIR}" rev-parse HEAD)"
+	revision="$(git -C "${SCRIPT_ROOT}" rev-parse HEAD)"
 	now="$(date -u +%Y-%m-%dT%H:%M:%SZ)"
 	mkdir -p "${RECORD_DIR}"
 	local record="${RECORD_DIR}/containment-${partner}.json"
@@ -149,7 +156,7 @@ main() {
 			local partner="$2"
 			require_admitted_partner "${partner}"
 			set_contained "${partner}" true
-			bash "${ROOT_DIR}/scripts/fed-registry-render.sh" >/dev/null
+			bash "${SCRIPT_ROOT}/scripts/fed-registry-render.sh" --registry "${REGISTRY}" --out-root "${FED_TREE}" >/dev/null
 			local record
 			record="$(write_record "${partner}" contain)"
 			echo "break-glass ENGAGED for ${partner}: dropped from the callback border; record ${record}"
@@ -166,7 +173,7 @@ main() {
 			local partner="$2"
 			require_admitted_partner "${partner}"
 			set_contained "${partner}" false
-			bash "${ROOT_DIR}/scripts/fed-registry-render.sh" >/dev/null
+			bash "${SCRIPT_ROOT}/scripts/fed-registry-render.sh" --registry "${REGISTRY}" --out-root "${FED_TREE}" >/dev/null
 			write_record "${partner}" restore >/dev/null
 			echo "break-glass RESTORED for ${partner}: re-admitted to the callback border (commit the re-render)."
 			;;
