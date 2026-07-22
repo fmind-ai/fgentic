@@ -246,6 +246,67 @@ func TestVerifyUnrevokedTamperedCardFails(t *testing.T) {
 	}
 }
 
+func TestVerifyRejectsMalformedAdditionalKey(t *testing.T) {
+	directory := t.TempDir()
+	signedPath, publicKeyPath := signCardForTest(t, directory, "old-key")
+	// additionalKeyList.Set must reject any value that is not a non-empty kid=path pair rather than
+	// panicking or silently accepting an unusable pin.
+	for _, malformed := range []string{
+		"no-separator",      // missing '='
+		"=" + publicKeyPath, // empty kid
+		"new-key=",          // empty path
+		"new-key=-",         // stdin path, not a file
+	} {
+		t.Run(malformed, func(t *testing.T) {
+			err := run([]string{
+				"verify",
+				"--input", signedPath,
+				"--public-key", publicKeyPath,
+				"--key-id", "old-key",
+				"--additional-key", malformed,
+			}, strings.NewReader("unused"))
+			if err == nil {
+				t.Fatalf("verify accepted malformed additional key %q", malformed)
+			}
+			if !strings.Contains(err.Error(), "additional key must be formatted as kid=path") &&
+				!strings.Contains(err.Error(), "additional key path must be a file path") {
+				t.Fatalf("malformed additional key %q error = %v", malformed, err)
+			}
+		})
+	}
+}
+
+func TestVerifyRejectsDuplicateKeyID(t *testing.T) {
+	directory := t.TempDir()
+	signedPath, publicKeyPath := signCardForTest(t, directory, "old-key")
+	_, otherPublicKeyPath := signCardForTest(t, directory, "new-key")
+	// The seenKeyIDs guard rejects a pin set that names one kid twice, whether it collides with the
+	// primary key or with an earlier additional key.
+	for _, testCase := range []struct {
+		name           string
+		additionalKeys []string
+	}{
+		{name: "duplicates primary key", additionalKeys: []string{"old-key=" + publicKeyPath}},
+		{name: "two additional keys share a kid", additionalKeys: []string{"new-key=" + otherPublicKeyPath, "new-key=" + otherPublicKeyPath}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			args := []string{
+				"verify",
+				"--input", signedPath,
+				"--public-key", publicKeyPath,
+				"--key-id", "old-key",
+			}
+			for _, additionalKey := range testCase.additionalKeys {
+				args = append(args, "--additional-key", additionalKey)
+			}
+			err := run(args, strings.NewReader("unused"))
+			if err == nil || !strings.Contains(err.Error(), "duplicate pinned key ID") {
+				t.Fatalf("duplicate key ID error = %v", err)
+			}
+		})
+	}
+}
+
 func TestSignFailurePreservesExistingOutput(t *testing.T) {
 	directory := t.TempDir()
 	cardPath := filepath.Join(directory, "invalid.json")
