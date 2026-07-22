@@ -1,0 +1,46 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fgentic.dev/schemas/fgentic.admin_action.v1.json",
+  "title": "fgentic.admin_action.v1",
+  "description": "Closed record: one privileged Synapse/MAS admin-API mutation attributed to the acting admin (issue #455, ADR 0018 discipline). It attributes an admin-API call; it does not authenticate intent, and actions performed by a direct database operator or via kubectl are out of scope. Message content, media bytes, tokens, IPs, User-Agent values, and request arguments are structurally excluded.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "occurred_at",
+    "acting_admin",
+    "action_class",
+    "target",
+    "outcome"
+  ],
+  "properties": {
+    "occurred_at": { "type": "string", "minLength": 1 },
+    "acting_admin": {
+      "description": "Full MXID of the authenticated admin who issued the request (never a bare localpart — D6).",
+      "type": "string",
+      "pattern": "^@[a-z0-9._=\\-/+]+:[^:]+$"
+    },
+    "action_class": {
+      "description": "The closed set of audited privileged action classes. Adding a class is a new schema version.",
+      "type": "string",
+      "enum": [
+        "user_suspend",
+        "user_reactivate",
+        "room_purge",
+        "media_quarantine",
+        "registration_token_issue",
+        "registration_token_revoke",
+        "report_dismiss"
+      ]
+    },
+    "target": {
+      "description": "Bounded target identifier (an MXID, room ID, media ID, token ID, or report ID) — a linkable operational identifier, never content or a secret.",
+      "type": "string",
+      "minLength": 1
+    },
+    "outcome": {
+      "description": "Terminal outcome of the admin request; a denied non-admin attempt is recorded as denied, never silently dropped.",
+      "type": "string",
+      "enum": ["succeeded", "failed", "denied"]
+    }
+  }
+}
