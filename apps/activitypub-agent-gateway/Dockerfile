@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Multi-stage, static, distroless-nonroot image for the ActivityPub agent gateway.
-FROM golang:1.25 AS build
+FROM golang:1.26 AS build
 WORKDIR /src
 # -mod=mod lets the build fetch + record sums even before a committed go.sum (run `go mod tidy`
 # locally for a reproducible, pinned build). CGO off => a fully static binary for distroless.

@@ -173,10 +173,18 @@ func ParsePublicJWK(
 	if err != nil || len(yBytes) != p256CoordinateBytes {
 		return nil, fmt.Errorf("public JWK y must be a 32-byte base64url coordinate")
 	}
-	key := &ecdsa.PublicKey{
-		Curve: elliptic.P256(),
-		X:     new(big.Int).SetBytes(xBytes),
-		Y:     new(big.Int).SetBytes(yBytes),
+	// Build the SEC 1 uncompressed point and parse it: ParseUncompressedPublicKey rejects an
+	// off-curve or identity point (Go 1.26 deprecated raw big.Int coordinate assignment on
+	// ecdsa.PublicKey; parsing the encoded point is the supported, on-curve-checked path).
+	encoded := make([]byte, 1+p256CoordinateBytes*2)
+	encoded[0] = 4
+	copy(encoded[1:1+p256CoordinateBytes], xBytes)
+	copy(encoded[1+p256CoordinateBytes:], yBytes)
+	// The coordinate lengths are already validated above, so ParseUncompressedPublicKey can only
+	// fail here for an off-curve or identity point — keep the original error message for that case.
+	key, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), encoded)
+	if err != nil {
+		return nil, fmt.Errorf("public key point is not on P-256")
 	}
 	if err := validatePublicKey(key); err != nil {
 		return nil, err
@@ -477,8 +485,14 @@ func EncodePublicJWK(key *ecdsa.PublicKey, keyID string) ([]byte, error) {
 	if err := validateKeyID(keyID); err != nil {
 		return nil, err
 	}
-	x := base64.RawURLEncoding.EncodeToString(key.X.FillBytes(make([]byte, p256CoordinateBytes)))
-	y := base64.RawURLEncoding.EncodeToString(key.Y.FillBytes(make([]byte, p256CoordinateBytes)))
+	// Derive the coordinate halves from the validated SEC 1 uncompressed encoding rather than the
+	// deprecated raw X/Y big.Int fields; validatePublicKey above already proved the point is on-curve.
+	point, err := encodePublicKey(key)
+	if err != nil {
+		return nil, err
+	}
+	x := base64.RawURLEncoding.EncodeToString(point[1 : 1+p256CoordinateBytes])
+	y := base64.RawURLEncoding.EncodeToString(point[1+p256CoordinateBytes:])
 	encoded, err := json.Marshal(publicJWK{
 		KeyType:   "EC",
 		Curve:     "P-256",
@@ -514,16 +528,19 @@ func validateKeyID(keyID string) error {
 }
 
 func validatePrivateKey(key *ecdsa.PrivateKey) error {
-	if key == nil || key.D == nil {
+	if key == nil {
 		return fmt.Errorf("private key is missing")
 	}
 	if err := validatePublicKey(&key.PublicKey); err != nil {
 		return fmt.Errorf("private key: %w", err)
 	}
-	if key.D.Sign() <= 0 || key.D.BitLen() > p256CoordinateBytes*8 {
+	// PrivateKey.Bytes returns the fixed-length scalar and fails for a nil, zero, or out-of-range
+	// scalar (Go 1.26 deprecated the raw D big.Int); ecdh.NewPrivateKey re-validates P-256 range,
+	// preserving the previous Sign/BitLen + round-trip guarantee.
+	privateBytes, err := key.Bytes()
+	if err != nil {
 		return fmt.Errorf("private key scalar is outside the P-256 range")
 	}
-	privateBytes := key.D.FillBytes(make([]byte, p256CoordinateBytes))
 	ecdhPrivateKey, err := ecdh.P256().NewPrivateKey(privateBytes)
 	if err != nil {
 		return fmt.Errorf("private key scalar is outside the P-256 range")
@@ -539,7 +556,7 @@ func validatePrivateKey(key *ecdsa.PrivateKey) error {
 }
 
 func validatePublicKey(key *ecdsa.PublicKey) error {
-	if key == nil || key.Curve != elliptic.P256() || key.X == nil || key.Y == nil {
+	if key == nil || key.Curve != elliptic.P256() {
 		return fmt.Errorf("public key must be ECDSA P-256")
 	}
 	if _, err := encodePublicKey(key); err != nil {
@@ -549,16 +566,17 @@ func validatePublicKey(key *ecdsa.PublicKey) error {
 }
 
 func encodePublicKey(key *ecdsa.PublicKey) ([]byte, error) {
-	if key == nil || key.X == nil || key.Y == nil ||
-		key.X.Sign() < 0 || key.Y.Sign() < 0 ||
-		key.X.BitLen() > p256CoordinateBytes*8 || key.Y.BitLen() > p256CoordinateBytes*8 {
+	if key == nil {
 		return nil, fmt.Errorf("public key point is not on P-256")
 	}
-	encoded := make([]byte, 1+p256CoordinateBytes*2)
-	encoded[0] = 4 // SEC 1 uncompressed point encoding.
-	key.X.FillBytes(encoded[1 : 1+p256CoordinateBytes])
-	key.Y.FillBytes(encoded[1+p256CoordinateBytes:])
-	if _, err := ecdh.P256().NewPublicKey(encoded); err != nil {
+	// PublicKey.Bytes returns the SEC 1 uncompressed encoding and fails for a nil, invalid,
+	// off-curve, or identity point — the same guarantee the previous coordinate range check plus
+	// ecdh.NewPublicKey round-trip gave, without touching the Go 1.26-deprecated X/Y fields.
+	encoded, err := key.Bytes()
+	if err != nil {
+		return nil, fmt.Errorf("public key point is not on P-256")
+	}
+	if len(encoded) != 1+p256CoordinateBytes*2 || encoded[0] != 4 {
 		return nil, fmt.Errorf("public key point is not on P-256")
 	}
 	return encoded, nil

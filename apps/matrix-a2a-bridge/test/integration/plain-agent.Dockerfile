@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1
 # This image intentionally contains only the plain official-SDK A2A server. It proves that the
 # bridge's runtime contract does not depend on kagent or on the bridge binary itself.
-FROM docker.io/library/golang:1.25@sha256:d7912cedddfa15b2900a8dfb7187df0af5ec2cb424a371139b5b352fd3e6b740 AS build
+FROM docker.io/library/golang:1.26@sha256:3aff6657219a4d9c14e27fb1d8976c49c29fddb70ba835014f477e1c70636647 AS build
 WORKDIR /src
 ENV CGO_ENABLED=0
 COPY go.mod go.sum ./

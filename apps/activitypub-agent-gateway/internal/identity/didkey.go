@@ -27,7 +27,16 @@ func EncodeP256DIDKey(pub *ecdsa.PublicKey) (string, error) {
 	if pub == nil || pub.Curve != elliptic.P256() {
 		return "", fmt.Errorf("identity: public key is not P-256")
 	}
-	compressed := elliptic.MarshalCompressed(elliptic.P256(), pub.X, pub.Y)
+	// SEC 1 compressed point (0x02/0x03 by Y parity || X) derived from the uncompressed encoding,
+	// avoiding the Go 1.26-deprecated X/Y fields that elliptic.MarshalCompressed would require.
+	point, err := pub.Bytes()
+	if err != nil {
+		return "", fmt.Errorf("identity: encode public key: %w", err)
+	}
+	const coordLen = 32
+	compressed := make([]byte, 1+coordLen)
+	compressed[0] = 0x02 | (point[1+2*coordLen-1] & 1)
+	copy(compressed[1:], point[1:1+coordLen])
 	wrapped := make([]byte, 0, len(p256Multicodec)+len(compressed))
 	wrapped = append(wrapped, p256Multicodec...)
 	wrapped = append(wrapped, compressed...)
@@ -51,7 +60,18 @@ func DecodeP256DIDKey(did string) (*ecdsa.PublicKey, error) {
 	if x == nil {
 		return nil, fmt.Errorf("identity: invalid P-256 point in did:key")
 	}
-	return &ecdsa.PublicKey{Curve: elliptic.P256(), X: x, Y: y}, nil
+	// Re-encode as an uncompressed point and parse it, avoiding a deprecated X/Y struct write; the
+	// x/y here are local big.Ints from UnmarshalCompressed, already proven on-curve.
+	const coordLen = 32
+	uncompressed := make([]byte, 1+2*coordLen)
+	uncompressed[0] = 0x04
+	x.FillBytes(uncompressed[1 : 1+coordLen])
+	y.FillBytes(uncompressed[1+coordLen:])
+	pub, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), uncompressed)
+	if err != nil {
+		return nil, fmt.Errorf("identity: invalid P-256 point in did:key")
+	}
+	return pub, nil
 }
 
 func trimPrefix(s, prefix string) (string, bool) {
