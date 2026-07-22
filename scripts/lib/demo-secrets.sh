@@ -111,16 +111,25 @@ apply_secret() {
 
 a2a_caller_document() {
 	local key="$1"
-	jq --null-input --compact-output --arg key "${key}" \
-		'{key: $key, metadata: {workload: "matrix-a2a-bridge"}}'
+	local workload="$2"
+	jq --null-input --compact-output --arg key "${key}" --arg workload "${workload}" \
+		'{key: $key, metadata: {workload: $workload}}'
 }
 
 apply_a2a_secrets() {
 	local key="$1"
-	local caller
-	caller="$(a2a_caller_document "${key}")"
+	local bridge_caller ap_token ap_caller
+	bridge_caller="$(a2a_caller_document "${key}" matrix-a2a-bridge)"
+	# Demo also reconciles the ActivityPub agent gateway (issue #489), a second caller of the A2A
+	# chokepoint. Register its workload credential alongside the bridge's in the SAME callers Secret so
+	# agentgateway resolves its Authorization bearer to the `activitypub-agent-gateway` workload the
+	# demo-scoped CEL admits (clusters/demo/kustomization.yaml). local/gcp use the SOPS caller Secret,
+	# which has no such entry, keeping their single-caller boundary intact.
+	ap_token="$(bootstrap_secret_value ap-a2a-key)"
+	ap_caller="$(a2a_caller_document "${ap_token}" activitypub-agent-gateway)"
 	apply_secret agentgateway-system a2a-bridge-callers \
-		--from-literal=matrix-a2a-bridge="${caller}"
+		--from-literal=matrix-a2a-bridge="${bridge_caller}" \
+		--from-literal=activitypub-agent-gateway="${ap_caller}"
 	apply_secret bridge a2a-bridge-credential --from-literal=token="${key}"
 }
 
@@ -137,7 +146,7 @@ create_ephemeral_secrets() {
 	local -a bootstrap_key_specs=(
 		pg-synapse:24 pg-mas:24 pg-bridge:24 pg-kagent:24 pg-activitypub:24
 		pg-knowledge-owner:24 pg-knowledge-retrieval:24
-		as-token:32 hs-token:32 a2a-key:32 mcp-platform-helper-key:32
+		as-token:32 hs-token:32 a2a-key:32 ap-a2a-key:32 mcp-platform-helper-key:32
 		mas-admin-client:32 demo-password:24
 	)
 	local -a missing_bootstrap_arguments=()
@@ -273,20 +282,24 @@ EOF
 # counterparts of the SOPS templates in infra/secrets/ — generated in-cluster, never committed and
 # never SOPS-encrypted (the ephemeral demo secret path). The identity (P-256) and signing (Ed25519)
 # PEM keys are persisted in the bootstrap Secret so a retained cluster keeps a stable did:key anchor
-# across restarts; the A2A workload credential proves the gateway is the caller to agentgateway.
+# across restarts; the A2A workload credential (bootstrap ap-a2a-key, also registered as an
+# agentgateway caller by apply_a2a_secrets) proves the gateway is the caller to agentgateway.
 create_activitypub_secrets() {
-	local ap_identity ap_signing ap_token ap_db_password
+	local ap_identity ap_signing ap_rsa ap_token ap_db_password
 	ap_identity="$(bootstrap_secret_value ap-identity-key)"
 	if [ -z "${ap_identity}" ]; then
-		local ap_identity_key ap_signing_key ap_a2a_key ap_patch_document ap_patch_data
+		local ap_identity_key ap_signing_key ap_rsa_key ap_patch_document ap_patch_data
 		ap_identity_key="$(openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 2>/dev/null)"
 		ap_signing_key="$(openssl genpkey -algorithm ed25519 2>/dev/null)"
-		ap_a2a_key="$(random_hex 32)"
+		# The deploy enables groups + the status feed, so the gateway also needs the RSA transport key
+		# (rsa.pem) for outbound RFC 9421 / Cavage HTTP signatures (docs/fediverse.md §3, #476). Without
+		# it the pod fails to start. 2048-bit is the app-enforced minimum (chart/values.yaml).
+		ap_rsa_key="$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null)"
 		ap_patch_document="$(kubectl --namespace flux-system create secret generic \
 			fgentic-demo-bootstrap \
 			--from-literal="ap-identity-key=${ap_identity_key}" \
 			--from-literal="ap-signing-key=${ap_signing_key}" \
-			--from-literal="ap-a2a-key=${ap_a2a_key}" \
+			--from-literal="ap-rsa-key=${ap_rsa_key}" \
 			--dry-run=client --output=json)"
 		ap_patch_data="$(jq --compact-output '{data: .data}' <<<"${ap_patch_document}")"
 		printf '%s\n' "${ap_patch_data}" \
@@ -296,11 +309,15 @@ create_activitypub_secrets() {
 
 	ap_identity="$(bootstrap_secret_value ap-identity-key)"
 	ap_signing="$(bootstrap_secret_value ap-signing-key)"
+	ap_rsa="$(bootstrap_secret_value ap-rsa-key)"
 	ap_token="$(bootstrap_secret_value ap-a2a-key)"
 	apply_secret activitypub activitypub-agent-gateway-identity-key \
 		--from-literal="p256.pem=${ap_identity}"
+	# Both object-integrity (ed25519.pem, FEP-8b32) and hop-signature (rsa.pem, #476) keys live in the
+	# single signing-key Secret the deploy mounts for integrity + groups + status feed.
 	apply_secret activitypub activitypub-agent-gateway-signing-key \
-		--from-literal="ed25519.pem=${ap_signing}"
+		--from-literal="ed25519.pem=${ap_signing}" \
+		--from-literal="rsa.pem=${ap_rsa}"
 	apply_secret activitypub activitypub-agent-gateway-credential \
 		--from-literal="token=${ap_token}"
 

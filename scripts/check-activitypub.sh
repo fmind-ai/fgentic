@@ -125,6 +125,51 @@ assert_yq \
 	 ([.spec.postBuild.substituteFrom[].name] | any(. == "platform-settings"))' \
 	"${ap_flux}" "demo activitypub Flux Kustomization drifted (path/deps/matrix-independence/podMonitor)"
 
+# The reconciled AP gateway is a second caller of the A2A chokepoint. Demo (and ONLY demo) must widen
+# the agentgateway layer so its workload can reach kagent: the fail-closed a2a-bridge-authorization CEL
+# must OR in the `activitypub-agent-gateway` workload on the SAME kagent path/method scope, and the
+# load-bearing agentgateway-allow-agents ingress NetworkPolicy must admit the `activitypub` namespace
+# on :8080. These live as embedded patches on the demo `agentgateway` Flux Kustomization; local/gcp
+# keep the single-caller boundary (asserted absent below).
+demo_agentgateway_flux="${WORK_DIR}/demo-agentgateway-flux.yaml"
+yq eval 'select(.kind == "Kustomization" and .metadata.name == "agentgateway")' \
+	"${demo_render}" >"${demo_agentgateway_flux}"
+[ -s "${demo_agentgateway_flux}" ] || fail "demo overlay does not patch the agentgateway Flux Kustomization"
+assert_yq \
+	'([.spec.patches[] | select(.target.name == "a2a-bridge-authorization") | .patch] | join(" ") |
+	   contains("activitypub-agent-gateway") and contains("/spec/traffic/authorization/policy/matchExpressions/0")) and
+	 ([.spec.patches[] | select(.target.name == "agentgateway-allow-agents") | .patch] | join(" ") |
+	   contains("/spec/ingress/0/from/-") and contains("kubernetes.io/metadata.name: activitypub"))' \
+	"${demo_agentgateway_flux}" "demo agentgateway widening for the AP workload drifted (CEL/NetworkPolicy)"
+
+# Prove the widening actually APPLIES cleanly through Flux (a malformed JSON patch or a bad path would
+# fail the build), then assert the EFFECTIVE rendered CEL + NetworkPolicy — not just the patch strings.
+# Reuse the CI fixture's canonical substitute set (infra/agentgateway needs vars beyond demo settings).
+demo_agentgateway_flux_built="${WORK_DIR}/demo-agentgateway-flux-built.yaml"
+FIXTURE_PATH="${FIXTURE}" yq eval-all -o=yaml \
+	'select(.kind == "Kustomization" and .metadata.name == "agentgateway") |
+	 .spec.postBuild = load(strenv(FIXTURE_PATH)).spec.postBuild' \
+	"${demo_render}" >"${WORK_DIR}/demo-agentgateway-kustomization.yaml"
+(
+	cd "${ROOT_DIR}"
+	flux build kustomization agentgateway \
+		--path infra/agentgateway \
+		--kustomization-file "${WORK_DIR}/demo-agentgateway-kustomization.yaml" \
+		--dry-run --in-memory-build --strict-substitute
+) >"${demo_agentgateway_flux_built}"
+assert_yq \
+	'select(.kind == "AgentgatewayPolicy" and .metadata.name == "a2a-bridge-authorization") |
+	 (.spec.traffic.authorization.policy.matchExpressions[0] |
+	   contains("activitypub-agent-gateway") and contains("matrix-a2a-bridge") and
+	   contains("/api/a2a/kagent/"))' \
+	"${demo_agentgateway_flux_built}" "demo CEL does not admit the activitypub-agent-gateway workload after build"
+assert_yq \
+	'select(.kind == "NetworkPolicy" and .metadata.name == "agentgateway-allow-agents") |
+	 ((.spec.ingress[0].from | length) == 3 and
+	  ([.spec.ingress[0].from[].namespaceSelector.matchLabels."kubernetes.io/metadata.name"] |
+	    sort | join(",")) == "activitypub,bridge,kagent")' \
+	"${demo_agentgateway_flux_built}" "demo agentgateway ingress does not admit the activitypub namespace after build"
+
 # The demo overlay must also compose the opt-in Postgres tenant into the shared CNPG cluster, so the
 # durable activity store the border requires has a scoped role + database. local/gcp must not.
 demo_postgres_flux="${WORK_DIR}/demo-postgres-flux.yaml"
@@ -197,6 +242,20 @@ for secret in activitypub-agent-gateway-identity-key activitypub-agent-gateway-s
 	grep -q "${secret}" "${ROOT_DIR}/scripts/lib/demo-secrets.sh" \
 		|| fail "demo secret path is missing ${secret}"
 done
+demo_secrets="${ROOT_DIR}/scripts/lib/demo-secrets.sh"
+# The deploy enables groups + status feed, so the signing-key Secret must carry BOTH the Ed25519
+# object-proof key and the RSA hop-signature key (rsa.pem) or the pod fails to start (#476). The SOPS
+# example template documents the same two-key shape for a production enablement.
+grep -qF 'rsa.pem=' "${demo_secrets}" \
+	|| fail "demo signing-key Secret must provide rsa.pem (groups/status-feed HTTP signatures)"
+grep -qF 'rsa.pem' "${ROOT_DIR}/infra/secrets/activitypub-agent-gateway-signing-key.sops.yaml.example" \
+	|| fail "signing-key SOPS example must document rsa.pem for a production enablement"
+# The AP gateway must be registered as an agentgateway A2A caller (its own workload identity) so the
+# demo-scoped CEL admits it; the exact workload string must match the CEL widening above.
+grep -qF "activitypub-agent-gateway=\"\${ap_caller}\"" "${demo_secrets}" \
+	|| fail "demo secret path must register the activitypub-agent-gateway A2A caller"
+grep -qF "a2a_caller_document \"\${ap_token}\" activitypub-agent-gateway" "${demo_secrets}" \
+	|| fail "AP caller must bind the activitypub-agent-gateway workload identity"
 # The namespace-local DATABASE_URL must reuse the CNPG role password (same-password contract). Prove
 # it statically: the URL password field is the ${ap_db_password} variable, and that variable is
 # assigned from bootstrap_secret_value pg-activitypub — the exact source the CNPG pg-activitypub role
