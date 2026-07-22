@@ -406,7 +406,7 @@ description = "Validate the pgvector image, scoped roles, ACL schema, indexes, a
 run = "bash scripts/test-knowledge-store.sh"
 
 [tasks."check:identity-audit"]
-description = "Validate the content-bounded Synapse/MAS audit projectors and closed record schemas (ADR 0018)"
+description = "Validate the content-bounded Synapse/MAS/admin-action audit projectors and closed record schemas (ADR 0018)"
 # Reuse the pinned synapse-federation-policy toolchain (like check:knowledge-ingestion) rather than
 # standing up a separate lock; the projectors are pure Python with no runtime dependency.
 run = [

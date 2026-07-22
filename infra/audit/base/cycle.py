@@ -16,8 +16,14 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from collector import Execute, collect_mas_authentications, collect_matrix_events
-from records import MasAuthenticationRecord, MatrixEventRecord
+from collector import (
+    AdminFetch,
+    Execute,
+    collect_admin_actions,
+    collect_mas_authentications,
+    collect_matrix_events,
+)
+from records import AdminActionRecord, MasAuthenticationRecord, MatrixEventRecord
 
 
 class MatrixSink(Protocol):
@@ -104,3 +110,42 @@ def run_mas_collection_cycle(
     if records:
         cursor_store.save(max(record.occurred_at for record in records))
     return len(records)
+
+
+class AdminSink(Protocol):
+    """The durable operator/auditor-only store for admin-action records (#157)."""
+
+    def emitted_positions(self) -> frozenset[int]:
+        """The log-ingest `position`s already persisted, for `(schema, position)` dedup."""
+        ...
+
+    def write(self, records: list[AdminActionRecord]) -> None:
+        """Durably persist the batch before the cursor advances."""
+        ...
+
+
+class AdminCursorStore(Protocol):
+    """The durable monotonic admin access-log ingest-position high-water cursor."""
+
+    def load(self) -> int: ...
+
+    def save(self, cursor: int) -> None: ...
+
+
+def run_admin_collection_cycle(
+    fetch: AdminFetch,
+    sink: AdminSink,
+    cursor_store: AdminCursorStore,
+    limit: int = 500,
+) -> int:
+    """Run one admin-action collection cycle; return the number of records written.
+
+    Same crash-safe ordering as the matrix cycle: load the cursor, collect + reconcile the access-log batch
+    beyond it, WRITE the records, THEN save the advanced ingest-position cursor. Any exception aborts before
+    the cursor is saved, so the cycle is crash-safe and idempotent under the sink's `(schema, position)` dedup.
+    """
+    cursor = cursor_store.load()
+    outcome = collect_admin_actions(fetch, cursor, sink.emitted_positions(), limit)
+    sink.write(outcome.records)
+    cursor_store.save(outcome.cursor)
+    return len(outcome.records)
