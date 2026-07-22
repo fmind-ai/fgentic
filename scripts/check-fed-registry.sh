@@ -315,6 +315,58 @@ authorized_azps="$(grep -oE 'jwt\.azp == "[^"]+"' "${policies}" | sed -E 's/.*"(
 expected_azps="$(printf '%s\n' "${admitted_azps[@]}" | LC_ALL=C sort -u)"
 [ "${authorized_azps}" = "${expected_azps}" ] \
 	|| fail "policies.yaml CEL authorizes an azp set that is not exactly the registered admitted consumers"
+# The union-equality above proves NO unregistered azp is authorized, but NOT that each single-azp route
+# mints receipts under its OWN azp (follow-up to #354). Re-adding an already-admitted azp disjunct onto the
+# WRONG per-consumer route would keep the union equal yet reintroduce the D7/D8 receipt misattribution #354
+# fixed — that route's usage-receipt signer stamps its own static `--azp`. So bind, PER delegation policy,
+# the authorized `jwt.azp` to the `--azp` of the signer its extProc routes to: trace policy → extProc
+# backendRef Service → selector `app.kubernetes.io/name` → signer Deployment → `--azp`. Fail closed on any
+# mismatch. Fully deterministic and offline (parse the committed manifests, no live cluster).
+policies_json="${WORK_DIR}/policies-docs.json"
+receipts_json="${WORK_DIR}/receipts-docs.json"
+yq -o=json -N '.' "${policies}" | jq -s '.' >"${policies_json}"
+yq -o=json -N '.' "${receipts}" | jq -s '.' >"${receipts_json}"
+# Resolve an extProc backend Service name to the single `--azp` its signer Deployment stamps, via the
+# shared app.kubernetes.io/name selector label. Emits every matching `--azp` line so the caller can assert
+# there is exactly one (fail-closed when the chain does not resolve or resolves ambiguously).
+signer_azps_for() {
+	local svc="$1" label
+	label="$(jq -r --arg n "${svc}" \
+		'.[] | select(.kind == "Service" and .metadata.name == $n) | .spec.selector["app.kubernetes.io/name"] // empty' \
+		"${receipts_json}")"
+	[ -n "${label}" ] || return 0
+	jq -r --arg l "${label}" '
+		.[] | select(.kind == "Deployment" and .spec.selector.matchLabels["app.kubernetes.io/name"] == $l)
+		| .spec.template.spec.containers[].args[]? | select(startswith("--azp=")) | ltrimstr("--azp=")
+	' "${receipts_json}"
+}
+extproc_policies="$(jq '[.[] | select(.kind == "AgentgatewayPolicy" and .spec.traffic.extProc != null)] | length' "${policies_json}")"
+[ "${extproc_policies}" -ge 1 ] || fail "no delegation policy routes through a usage-receipt extProc signer"
+# Materialize the per-route (name, backend, authorized azp) tuples first, then iterate over a here-string —
+# a process substitution would mask jq's exit status (check-extra-masked-returns).
+route_bindings="$(jq -r '
+	.[] | select(.kind == "AgentgatewayPolicy" and .spec.traffic.extProc != null)
+	| [.metadata.name,
+	   .spec.traffic.extProc.backendRef.name,
+	   ([.spec.traffic.authorization.policy.matchExpressions[]?
+	     | capture("jwt\\.azp == \"(?<azp>[^\"]+)\"").azp] | first // "")]
+	| @tsv
+' "${policies_json}")"
+bound_routes=0
+while IFS=$'\t' read -r pol_name backend route_azp; do
+	[ -n "${pol_name}" ] || continue
+	[ -n "${route_azp}" ] || fail "delegation policy '${pol_name}' has an extProc signer but authorizes no jwt.azp"
+	[ -n "${backend}" ] || fail "delegation policy '${pol_name}' has an extProc block with no backendRef name"
+	signer_azps="$(signer_azps_for "${backend}")"
+	mapfile -t signer_azp_list <<<"${signer_azps}"
+	[ "${#signer_azp_list[@]}" -eq 1 ] && [ -n "${signer_azp_list[0]}" ] \
+		|| fail "policy '${pol_name}' extProc backend '${backend}' does not resolve to exactly one usage-receipt signer --azp"
+	[ "${route_azp}" = "${signer_azp_list[0]}" ] \
+		|| fail "policy '${pol_name}' authorizes azp '${route_azp}' but its usage-receipt signer stamps '${signer_azp_list[0]}' — per-route azp↔signer misbinding reintroduces D7/D8 receipt misattribution (#354)"
+	bound_routes=$((bound_routes + 1))
+done <<<"${route_bindings}"
+[ "${bound_routes}" -eq "${extproc_policies}" ] \
+	|| fail "not every extProc delegation policy bound its authorized azp to a usage-receipt signer (${bound_routes}/${extproc_policies})"
 # Rate-limit: the default per-azp reservation budget plus the second admitted consumer's DISTINCT budget on
 # its OWN keyed counter (D7/D8 independence). The override descriptor keys the second admitted azp exactly.
 grep -Fq 'requests_per_unit: ${federation_a2a_quota_budget_units_per_minute}' "${rate_limit}" \
