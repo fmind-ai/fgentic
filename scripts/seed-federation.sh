@@ -15,6 +15,9 @@ readonly MATRIX_B_URL="https://matrix.${SERVER_B}"
 readonly MATRIX_D_URL="https://matrix.${SERVER_D}"
 readonly MATRIX_C_URL="https://matrix.${SERVER_C}"
 readonly A2A_URL="https://a2a.${SERVER_A}"
+# Org A's dedicated per-consumer host for the second admitted consumer org D (issue #354): the same
+# docs-qa agent/path, but org D's own route carries its own azp-bound seller-receipt signer.
+readonly A2A_D_URL="https://a2a-d.${SERVER_A}"
 readonly A2A_AGENT_PATH="/api/a2a/kagent/docs-qa"
 readonly IDP_B_URL="https://id.${SERVER_B}"
 readonly TOKEN_BUDGET_EXTENSION="https://fgentic.fmind.ai/a2a/extensions/token-budget/v1"
@@ -92,6 +95,7 @@ curl() {
 		--resolve "${SERVER_C}:443:${FEDERATION_LOOPBACK}" \
 		--resolve "matrix.${SERVER_C}:443:${FEDERATION_LOOPBACK}" \
 		--resolve "a2a.${SERVER_A}:443:${FEDERATION_LOOPBACK}" \
+		--resolve "a2a-d.${SERVER_A}:443:${FEDERATION_LOOPBACK}" \
 		--resolve "id.${SERVER_B}:443:${FEDERATION_LOOPBACK}" \
 		"$@"
 }
@@ -304,8 +308,9 @@ CHARLIE_TOKEN=""
 cat <<EOF
 
 Multi-party federation proof passed without a provider connection.
-A2A org B:    verified JWT -> signed docs-qa -> deterministic model reply
-A2A quota B:  3,000-token reservation accepted, second reservation rejected
+A2A org B:    verified JWT -> signed docs-qa -> deterministic model reply -> org-b-a2a receipt
+A2A org D:    verified JWT -> docs-qa on org A's per-consumer host -> receipt correctly stamped org-d-a2a
+A2A quota B:  3,000-token reservation accepted, second reservation rejected (org-b-a2a counter)
 A2A quota D:  independent per-azp reservation exhausts at org D's distinct budget (429, org-d-a2a only)
 A2A metrics:  aggregate provider-reported token count increased
 Room:        ${room_id} (three admitted orgs)

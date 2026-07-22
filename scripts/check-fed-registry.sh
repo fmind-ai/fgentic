@@ -298,19 +298,23 @@ grep -Fq "jwksPath: ${jwks_path}" "${policies}" || fail "policies.yaml jwksPath 
 grep -Fq -- "- ${audience}" "${policies}" || fail "policies.yaml audience != registry audience"
 grep -Fq 'budget.maxTokens <= ${federation_a2a_max_budget_units}' "${policies}" \
 	|| fail "policies.yaml maxTokens ceiling must use the rendered budget var"
-# Every admitted consumer's azp must be an authorized principal in the CEL authorization and a client in
-# the shared realm. `azp` (not the issuer) distinguishes the consumer, so the shared IdP stays D6-safe.
+# Every admitted consumer's azp must be a client in the shared realm and must bind its OWN azp-scoped
+# usage-receipt signer, so a completed delegation is stamped with that consumer's exact azp and can never
+# be misattributed to another. `azp` (not the issuer) distinguishes the consumer, so the shared IdP is D6-safe.
+receipts="${FED_TREE}/infra/federation/delegation/usage-receipt.yaml"
 for consumer_azp in "${admitted_azps[@]}"; do
-	grep -Fq "jwt.azp == \"${consumer_azp}\"" "${policies}" \
-		|| fail "policies.yaml authorization omits admitted azp ${consumer_azp}"
 	grep -Fq "\"clientId\": \"${consumer_azp}\"" "${keycloak_realm}" \
 		|| fail "keycloak realm omits admitted client ${consumer_azp}"
+	grep -Fq -- "--azp=${consumer_azp}" "${receipts}" \
+		|| fail "no per-consumer usage-receipt signer stamps admitted azp ${consumer_azp} (attribution must be per-consumer)"
 done
-# The first admitted partner (org B) is the sole seller-receipt consumer; the second admitted consumer
-# (org D) proves its independent per-azp reservation at its DISTINCT lower budget without a billable
-# completion, so it never mints a receipt and the usage-receipt signer stays single-azp and correct.
-grep -Fq -- "--azp=${admitted_azps[0]}" "${FED_TREE}/infra/federation/delegation/usage-receipt.yaml" \
-	|| fail "usage-receipt azp != the first admitted (seller-receipt) consumer"
+# The CEL authorization across ALL delegation policies must authorize EXACTLY the registered admitted azp
+# set — no extra disjunct can slip an unregistered consumer past authorization. Each admitted consumer
+# also has its own single-azp policy (per-consumer route + signer), so the union equals the registry set.
+authorized_azps="$(grep -oE 'jwt\.azp == "[^"]+"' "${policies}" | sed -E 's/.*"([^"]+)"/\1/' | LC_ALL=C sort -u)"
+expected_azps="$(printf '%s\n' "${admitted_azps[@]}" | LC_ALL=C sort -u)"
+[ "${authorized_azps}" = "${expected_azps}" ] \
+	|| fail "policies.yaml CEL authorizes an azp set that is not exactly the registered admitted consumers"
 # Rate-limit: the default per-azp reservation budget plus the second admitted consumer's DISTINCT budget on
 # its OWN keyed counter (D7/D8 independence). The override descriptor keys the second admitted azp exactly.
 grep -Fq 'requests_per_unit: ${federation_a2a_quota_budget_units_per_minute}' "${rate_limit}" \

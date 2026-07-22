@@ -64,3 +64,20 @@ patches:
                 selector:
                   matchLabels:
                     kubernetes.io/metadata.name: agentgateway-system
+          # Second admitted consumer org D (issue #354) reaches the same docs-qa agent on its own
+          # dedicated public host, so its invocation carries its own azp-bound seller receipt signer.
+          # cert-manager's gateway-shim extends the multi-SAN matrix-tls cert with this hostname.
+          - name: https-a2a-d
+            protocol: HTTPS
+            port: 443
+            hostname: a2a-d.${server_name}
+            tls:
+              mode: Terminate
+              certificateRefs:
+                - name: matrix-tls
+            allowedRoutes:
+              namespaces:
+                from: Selector
+                selector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: agentgateway-system

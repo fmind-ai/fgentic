@@ -79,11 +79,8 @@ spec:
         # optimizes a static header lookup to the first value; requiring one raw value makes
         # duplicate fields fail closed before the media type is inspected.
         matchExpressions:
-          # Two admitted A2A consumers (issue #354): org B and org D authenticate through the SAME shared
-          # federation IdP (one JWT provider above) and are distinguished only by their verified `azp`. The
-          # per-`azp` rate-limit descriptor gives each its own independent reservation counter (D7/D8).
           - >-
-            (jwt.azp == "org-b-a2a" || jwt.azp == "org-d-a2a") &&
+            jwt.azp == "org-b-a2a" &&
             request.method == "POST" &&
             request.path == "/api/a2a/kagent/docs-qa" &&
             "content-type" in request.headers &&
@@ -132,6 +129,115 @@ spec:
                     - name: consumer
                       expression: jwt.azp
                   # Requests evaluates cost before proxying and maps it to RLS hits_addend.
+                  unit: Requests
+                  cost: >-
+                    json(request.body).params.message.metadata[
+                      "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1"
+                    ].maxTokens
+---
+# Second admitted A2A consumer org D (issue #354) has its OWN delegation route on org A's dedicated
+# per-consumer host `a2a-d.${server_name}`, its OWN `azp`-bound usage-receipt signer, and its OWN
+# reservation counter — so a completed org-D delegation mints a receipt stamped `org-d-a2a` and can
+# NEVER be misattributed to org B, regardless of the reserved maxTokens. Same shared federation IdP,
+# same kagent backend and path; only the verified `azp` and the seller-signer identity differ.
+apiVersion: agentgateway.dev/v1alpha1
+kind: AgentgatewayPolicy
+metadata:
+  name: federated-docs-qa-d
+  namespace: agentgateway-system
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: federated-docs-qa-d
+  traffic:
+    buffer:
+      request:
+        maxBytes: 8Ki
+      response:
+        maxBytes: 8Ki
+    extProc:
+      backendRef:
+        group: ""
+        kind: Service
+        name: federation-usage-receipt-d
+        port: 4444
+      processingOptions:
+        requestBodyMode: Buffered
+        responseBodyMode: Buffered
+        requestHeaderMode: Skip
+        responseHeaderMode: Skip
+        requestTrailerMode: Skip
+        responseTrailerMode: Skip
+    jwtAuthentication:
+      mode: Strict
+      providers:
+        - issuer: https://id.${federation_partner_server_name}/realms/fgentic-federation
+          audiences:
+            - fgentic-a2a
+          jwks:
+            remote:
+              jwksPath: /realms/fgentic-federation/protocol/openid-connect/certs
+              cacheDuration: 5m
+              backendRef:
+                group: ""
+                kind: Service
+                name: keycloak-http
+                namespace: keycloak
+                port: 80
+    authorization:
+      action: Require
+      policy:
+        matchExpressions:
+          - >-
+            jwt.azp == "org-d-a2a" &&
+            request.method == "POST" &&
+            request.path == "/api/a2a/kagent/docs-qa" &&
+            "content-type" in request.headers &&
+            size(request.headers.raw()["content-type"]) == 1 &&
+            request.headers.raw()["content-type"][0].lowerAscii().split(";")[0].trim()
+              == "application/json" &&
+            "a2a-version" in request.headers &&
+            request.headers["a2a-version"] == "1.0" &&
+            "a2a-extensions" in request.headers &&
+            "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1"
+              in request.headers.split()["a2a-extensions"] &&
+            "https://fgentic.fmind.ai/a2a/extensions/usage-receipt/v1"
+              in request.headers.split()["a2a-extensions"] &&
+            json(request.body).with(body,
+              body.jsonrpc == "2.0" &&
+              (
+                body.method == "GetTask" ||
+                (
+                  body.method == "SendMessage" &&
+                  "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1"
+                    in body.params.message.extensions &&
+                  body.params.message.metadata[
+                    "https://fgentic.fmind.ai/a2a/extensions/token-budget/v1"
+                  ].with(budget,
+                    budget.maxTokens == int(budget.maxTokens) &&
+                    budget.maxTokens >= 1 &&
+                    budget.maxTokens <= ${federation_a2a_max_budget_units}
+                  )
+                )
+              )
+            )
+    rateLimit:
+      conditional:
+        - condition: json(request.body).method == "SendMessage"
+          policy:
+            global:
+              backendRef:
+                group: ""
+                kind: Service
+                name: federation-rate-limit
+                port: 8081
+              failureMode: FailClosed
+              domain: fgentic-cross-org-a2a
+              descriptors:
+                - entries:
+                    - name: consumer
+                      expression: jwt.azp
                   unit: Requests
                   cost: >-
                     json(request.body).params.message.metadata[

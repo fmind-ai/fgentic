@@ -26,8 +26,10 @@ lab:
   a2a_max_budget_units: 4096
   a2a_quota_units_per_minute: 5000
   # The second admitted consumer (org D, issue #354) carries a distinct, lower per-minute reservation
-  # budget so its independent per-`azp` exhaustion is provable without a billable completion: a 3000-unit
-  # reservation org B accepts is refused for org-d-a2a. Rendered to federation_second_a2a_quota_budget_units_per_minute.
+  # budget, so per-`azp` reservations are demonstrably independent: a 3000-unit reservation org B accepts
+  # is refused for org-d-a2a, and org D still succeeds after org B is exhausted (separate counters).
+  # Correct per-consumer receipt attribution comes from org D's own azp-bound signer, NOT this budget.
+  # Rendered to federation_second_a2a_quota_budget_units_per_minute.
   a2a_second_quota_units_per_minute: 2000
 
 partners:

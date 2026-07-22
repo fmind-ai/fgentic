@@ -70,10 +70,14 @@ check_federation_acceptance() {
 		'MATRIX_D_URL' \
 		'register_user matrix-c' \
 		'register_user matrix-d' \
+		'A2A_D_URL="https://a2a-d.${SERVER_A}"' \
 		'client_credentials_token org-d-a2a' \
-		'verify_org_d_independent_reservation' \
-		'expect_a2a_status org-d-independent-reservation 429' \
-		'expect_a2a_status org-d-distinct-budget 429' \
+		'verify_org_d_delegation' \
+		'authorized org D delegation returned HTTP' \
+		'usage_receipt_archive_count_d' \
+		'org D usage receipt is not correctly attributed to org-d-a2a' \
+		'org D delegation minted a receipt misattributed to org-b-a2a' \
+		'expect_a2a_status_d org-d-exhausted-reservation 429' \
 		'create_federated_room' \
 		'denied control join' \
 		'send_signed_federation_probe' \
