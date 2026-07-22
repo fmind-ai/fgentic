@@ -10,14 +10,17 @@ and the #157 sink write wrap this layer as deferred runtime tasks.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Callable, Mapping, Sequence
 
 from reconcile import (
+    AdminReconcileOutcome,
     MatrixReconcileOutcome,
+    reconcile_admin_actions,
     reconcile_mas_authentications,
     reconcile_matrix_events,
 )
-from records import MasAuthenticationRecord
+from records import MasAuthenticationRecord, ProjectionError
 
 # An injected query executor: run `sql` bound with `params` and return each result row as a dict of
 # column name -> value. The collector never builds SQL by string interpolation; parameters are bound.
@@ -84,3 +87,56 @@ def collect_mas_authentications(
     """Fetch committed MAS authentications after the `created_at` cursor and reconcile (dedup) them."""
     rows = execute(MAS_AUTHENTICATION_QUERY, {"cursor": cursor, "limit": limit})
     return reconcile_mas_authentications(list(rows), server_name, already_emitted)
+
+
+# --- Admin actions (#455): a LOG-LINE source, not SQL ---------------------------------------------
+# The pinned Synapse 1.155.0 `SynapseRequest` completion access-log message format (synapse/http/site.py
+# `_finished_processing`). This regex IS the fingerprint, exactly as the SQL column set is for the DB
+# streams: a Synapse whose format string drifts no longer matches and the parse fails closed. It reads
+# ONLY the authenticated entity, HTTP status, method, and redacted path. The leading client IP and the
+# trailing quoted User-Agent are matched positionally but NEVER captured, so they cannot reach a record.
+ADMIN_ACCESS_LOG_PATTERN = re.compile(
+    r"^\S+ - \S+ - \{(?P<entity>[^}]*)\} Processed request: "
+    r"\S+ ru=\([^)]*\) db=\([^)]*\) \d+B (?P<status>\d+)!? "
+    r'"(?P<method>[A-Z]+) (?P<path>\S+) HTTP/[0-9.]+"'
+)
+
+# The exact-version source and the pinned access-log format the parse above is bound to. An upgrade that
+# changes either fails the offline contract until the fixtures are re-proved (ADR 0018).
+ADMIN_SOURCE_SYNAPSE_VERSION = "v1.155.0"
+
+# The deferred log adapter tails the pinned log_config JSON handler, calls parse_admin_log_message on each
+# access-log message, adds `occurred_at` (the formatter timestamp) and a monotonic `position` (ingest
+# offset), and returns rows beyond `cursor` ordered by position ascending.
+AdminFetch = Callable[[int, int], Sequence[dict[str, object]]]
+
+
+def parse_admin_log_message(message: str) -> dict[str, object]:
+    """Parse one pinned Synapse v1.155.0 access-log message into the four content-free request fields.
+
+    Returns `{acting_entity, method, path, status}` — the only fields a record needs. A message that does
+    not match the pinned format is treated as format/version drift and fails closed via ``ProjectionError``,
+    so the client IP and User-Agent that live in the raw line can never be captured or emitted.
+    """
+    match = ADMIN_ACCESS_LOG_PATTERN.match(message)
+    if match is None:
+        raise ProjectionError(
+            f"admin access-log message does not match the pinned Synapse {ADMIN_SOURCE_SYNAPSE_VERSION} format"
+        )
+    return {
+        "acting_entity": match.group("entity"),
+        "method": match.group("method"),
+        "path": match.group("path"),
+        "status": int(match.group("status")),
+    }
+
+
+def collect_admin_actions(
+    fetch: AdminFetch,
+    cursor: int,
+    already_emitted: frozenset[int],
+    limit: int = 500,
+) -> AdminReconcileOutcome:
+    """Fetch the next admin access-log batch beyond `cursor` and reconcile it into records + new cursor."""
+    rows = fetch(cursor, limit)
+    return reconcile_admin_actions(list(rows), cursor, already_emitted)

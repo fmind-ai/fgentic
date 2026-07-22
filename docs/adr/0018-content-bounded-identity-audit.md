@@ -10,7 +10,7 @@ Status: Accepted
 
 Decision register: [D19](../design-decisions.md)
 
-Implementation: #300 owns the reference-IdP event contract; #157 owns the optional durable query store; #418 owns the Synapse/MAS adapters and the executable schemas and negative gates in this ADR.
+Implementation: #300 owns the reference-IdP event contract; #157 owns the optional durable query store; #418 owns the Synapse/MAS authentication and event adapters and the executable schemas and negative gates in this ADR; #455 owns the third stream — the privileged admin-action adapter recorded in [Admin-action audit (#455)](#admin-action-audit-455) below, built to the same discipline.
 
 ## Context
 
@@ -60,9 +60,43 @@ Publishing under the maintainer's identity remains a human action. The prepared 
 
 No current implementation depends on that request being accepted. Track the upstream issue and first stable release in the implementation issue once the maintainer publishes it; retain the pinned private-schema adapter until the supported replacement passes the same fixtures. Synapse already supplies the documented post-persistence callback, so no Synapse request is a prerequisite; a future durable cursor API could replace its private reconciliation query under the same gate.
 
+## Admin-action audit (#455)
+
+A regulated adopter's auditor asks the converse of the authentication question with teeth: _who_ suspended this user, purged this room, quarantined this media, or dismissed this report, _when_, and with what outcome. Enabling the Ketesa admin console (#135) widens a privileged surface, so the same content-bounded discipline is extended to a third stream, `fgentic.admin_action.v1`. Its offline core (projector, cursor/dedup reconcile, crash-safe cycle, and negative gates) lives beside the other two in `infra/audit`; the runtime log adapter, the opt-in component, and the #157 sink write are deferred exactly as the #418 runtime adapters are.
+
+### Capture point, with evidence
+
+1. The authoritative source is the **pinned Synapse 1.155.0 `SynapseRequest` completion access log** — the line emitted by [`_finished_processing`](https://github.com/element-hq/synapse/blob/v1.155.0/synapse/http/site.py) — projected to the authenticated requester, HTTP method, redacted admin route, and status. It is the _only_ source that resolves an admin's opaque bearer token to their MXID: Synapse computes the authenticated entity (`{@admin:server}`) while processing the request. The **gateway/Traefik access log cannot attribute the action** — it sees an opaque `Authorization: Bearer …` header (or nothing, under MSC3861 the token is validated by MAS), never the MXID, and resolving it would require an out-of-band introspection the reference deliberately does not add. agentgateway is not in the Synapse admin request path at all.
+1. The access-log **format string is the version fingerprint**, exactly as the DB column set is for the other two streams: `"%s - %s - {%s} Processed request: … %sB %s \"%s %s %s\" \"%s\" …"`. The projector's parse (`collector.ADMIN_ACCESS_LOG_PATTERN`) binds only the authenticated entity, status, method, and redacted path. The line _also carries the client IP (leading field) and the User-Agent (trailing quoted field) inline_ — neither is ever bound to a capture group, so they cannot reach a record. A Synapse whose format string drifts no longer matches and the parse fails closed.
+1. This is a **structured LOG-LINE projection, not a database query**, so unlike the #418 streams there is **no read-only database role or column grant** — the source is a log handler the opt-in component configures, not a table. The offline projector consumes the already-parsed structured row (`occurred_at`, `acting_entity`, `method`, `path`, `status`, and a monotonic ingest `position`); the runtime adapter that tails the pinned `log_config` JSON handler and assigns `position` is the deferred half.
+
+### Closed record and the pinned route table
+
+`fgentic.admin_action.v1` is closed with `additionalProperties: false`: `occurred_at`, `acting_admin` (a full MXID), `action_class` (a fixed enum), `target` (a bounded operational identifier), and `outcome` (`succeeded` | `failed` | `denied`). `position` is the reconcile cursor/dedup key on the dataclass and is deliberately **not** part of the wire record. Outcome maps from status: `2xx` → succeeded, `403` → denied, everything else → failed.
+
+The projector emits a record only for the pinned v1.155.0 admin mutation routes whose action class **and** a content-free, non-secret target are fully determined by the request line alone:
+
+| Action class       | Pinned route(s)                                                                                                                                    | Target                 |
+| ------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------- |
+| `room_purge`       | `DELETE /_synapse/admin/v1/rooms/<room_id>`, `DELETE /_synapse/admin/v2/rooms/<room_id>`                                                           | room id                |
+| `media_quarantine` | `POST /_synapse/admin/v1/media/quarantine/<server>/<media_id>`, `POST …/room/<room_id>/media/quarantine`, `POST …/user/<user_id>/media/quarantine` | media / room / user id |
+| `report_dismiss`   | `DELETE /_synapse/admin/v1/event_reports/<report_id>`                                                                                              | report id              |
+
+### Non-claims (must survive a skeptical DPO reading)
+
+1. **Suspend vs reactivate direction is not asserted.** Account suspension is a single endpoint, `PUT /_synapse/admin/v1/suspend/<user_id>`, whose direction lives only in the request body `{"suspend": true|false}` — a _request argument_ the content-free record structurally excludes. Emitting `user_suspend` vs `user_reactivate` from the request line would be a guess, so this stream does not emit it; the `user_suspend`/`user_reactivate` enum values remain reserved for a future body-aware capture. This is a documented boundary, not a silent gap: the projector returns no record for the suspend route.
+1. **Registration-token actions are not attributed.** `registration_token_revoke` puts the secret token itself in the URL (`DELETE …/registration_tokens/<token>`) and `registration_token_issue` returns the new token only in the response body; neither yields a content-free, non-secret target from the request line, so both are scoped out (the token action is covered by this documented non-claim).
+1. **MAS-plane admin actions are not attributed.** As established for authentication above, MAS 1.19.0 request telemetry identifies neither the authenticated user nor a stable outcome; MAS admin-API session termination and token operations have no attributable source at the pinned version and are not inferred from timing or generic telemetry.
+1. **Only admin-API calls are seen.** Actions performed by a direct database operator or via `kubectl` never traverse the Synapse admin API and are out of scope; this stream attributes an admin-API _call_, it does not authenticate _intent_. Unauthenticated (`401`) and puppeted/appservice (`authenticated_entity|requester`) requests are not attributed to a single human admin and emit nothing.
+1. **Denied non-admin attempts are recorded, not dropped.** A non-admin who is authenticated but unauthorised receives `403` with their own MXID, which is recorded with `outcome: denied` — no silent gap.
+
+### Required negative gates (admin stream)
+
+Deterministic fixtures (`infra/audit/tests/test_admin_*.py`) prove, without a runtime: the closed field set and structural exclusion of every payload/credential/network field; the action-class and outcome enums against real projected instances; that the client IP and User-Agent present in the raw line are never captured; that each audited route maps to its class and target; that denials are recorded; that suspend/reactivate, token, read, unauthenticated, and puppeted rows emit nothing; the monotonic `position` cursor/dedup and crash-safe write-before-cursor ordering; and fail-closed behaviour on format/version drift, missing/extra columns, malformed MXIDs, and invalid status/position. The opt-in component (zero footprint in default/demo/federation renders), the `log_config` and log adapter, the #157 sink write, and the live Ketesa proof are the deferred remainder.
+
 ## Consequences
 
-1. A regulated deployment can answer “which Matrix identity authenticated successfully?” and “which non-rejected event did this homeserver persist?” without treating arbitrary application logs as evidence.
+1. A regulated deployment can answer “which Matrix identity authenticated successfully?”, “which non-rejected event did this homeserver persist?”, and “which admin performed this privileged mutation, and with what outcome?” without treating arbitrary application logs as evidence.
 1. The design does not overclaim session-to-event causality or named failed-login attribution. Those gaps remain visible rather than being filled with time correlation.
 1. Private schema coupling creates deliberate upgrade work, isolated behind an opt-in component and exact-version fixtures. Unmodified upstream images and a separate adapter preserve the repository's AGPL boundary.
 1. The retained identifiers require explicit access and deletion controls. “Content-bounded” means payload- and secret-free, not anonymous.

@@ -16,11 +16,13 @@ projectors to the read-only roles, the `on_new_event` wake-up, the durable curso
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Final
 
 MAS_AUTHENTICATION_SCHEMA: Final = "fgentic.mas_authentication.v1"
 MATRIX_EVENT_SCHEMA: Final = "fgentic.matrix_event.v1"
+ADMIN_ACTION_SCHEMA: Final = "fgentic.admin_action.v1"
 
 # The exact source column set each pinned query selects. The projector rejects a row whose keys are
 # not exactly this set: a missing column (schema regression) and an unexpected extra column (a source
@@ -240,4 +242,185 @@ def project_mas_authentication(
         matrix_user=_reconstruct_matrix_user(username, server_name),
         method=method,
         upstream_provider_id=upstream_provider_id,
+    )
+
+
+# --- Privileged admin-action stream (issue #455) --------------------------------------------------
+# A THIRD content-bounded stream under the same ADR 0018 discipline. Unlike the two DB-row projectors
+# above, its authoritative source is a LOG LINE, not a database table: the pinned Synapse 1.155.0
+# `SynapseRequest` access log projects the authenticated requester, method, redacted admin route, and
+# HTTP status. That is the only source that resolves an admin's opaque bearer token to their MXID (the
+# gateway/Traefik access log never sees the identity — see the README/ADR non-claims). There is
+# therefore NO read-only database grant for this stream. The structured row below is what the deferred
+# log adapter (collector.parse_admin_log_message + the pinned log_config) hands this projector; no
+# request body, IP, or User-Agent is ever present in it.
+
+# The exact structured field set the deferred access-log adapter supplies per Synapse admin request.
+# `position` is a monotonic ingest offset used ONLY as the reconcile cursor/dedup key; it is never
+# emitted (as_record omits it). `occurred_at` comes from the pinned log_config formatter timestamp; the
+# other four are parsed from the pinned v1.155.0 access-log message. A row whose keys are not exactly
+# this set (a format/version drift) fails closed before any field is read.
+ADMIN_ACTION_SOURCE_COLUMNS: Final = frozenset({"occurred_at", "acting_entity", "method", "path", "status", "position"})
+
+# Synapse logs this authenticated-entity for an unauthenticated request; such a request is attributable
+# to no admin, so it is skipped (returned as None), never guessed or failed closed as drift.
+_UNAUTHENTICATED_ENTITIES: Final = frozenset({"None", "-", ""})
+
+# A full MXID, matching the closed schema's acting_admin pattern (never a bare localpart — D6).
+_MXID_PATTERN: Final = re.compile(r"^@[a-z0-9._=\-/+]+:[^:]+$")
+
+
+@dataclass(frozen=True, slots=True)
+class _AdminRoute:
+    method: str
+    path: re.Pattern[str]
+    action_class: str
+
+
+# Pinned Synapse v1.155.0 admin-mutation routes whose action class AND a content-free, non-secret
+# target are FULLY determined by the request line alone. Routes deliberately absent here are documented
+# non-claims (README / ADR 0018), never silent gaps:
+#   - account suspension `PUT /_synapse/admin/v1/suspend/<user_id>`: the suspend/reactivate DIRECTION
+#     lives only in the request body `{"suspend": bool}`, a request argument the content-free record
+#     structurally excludes; emitting user_suspend vs user_reactivate from the request line would be a
+#     guess, so it is not emitted.
+#   - registration-token issue/revoke: the target is the secret token itself (in the revoke URL, in the
+#     issue response), so no content-free non-secret target exists.
+#   - every read (GET) and any other admin route: not a mutation this stream audits.
+# Adding a route or action class is a schema/fingerprint change gated offline.
+_ADMIN_ROUTES: Final = (
+    _AdminRoute("DELETE", re.compile(r"^/_synapse/admin/v[12]/rooms/(?P<target>[^/?]+)$"), "room_purge"),
+    _AdminRoute(
+        "POST",
+        re.compile(r"^/_synapse/admin/v1/media/quarantine/(?P<server>[^/?]+)/(?P<media>[^/?]+)$"),
+        "media_quarantine",
+    ),
+    _AdminRoute(
+        "POST", re.compile(r"^/_synapse/admin/v1/room/(?P<target>[^/?]+)/media/quarantine$"), "media_quarantine"
+    ),
+    # Legacy alias served by the SAME QuarantineMediaInRoom servlet in Synapse v1.155.0 (a second PATTERN
+    # `/quarantine_media/<room_id>` under the admin_patterns() `^/_synapse/admin/v1` prefix, "kept around
+    # for legacy reasons" per the source). A quarantine issued via this deprecated URL maps to the same
+    # media_quarantine class with a bounded <room_id> target, so it is never a silent capture gap.
+    _AdminRoute("POST", re.compile(r"^/_synapse/admin/v1/quarantine_media/(?P<target>[^/?]+)$"), "media_quarantine"),
+    _AdminRoute(
+        "POST", re.compile(r"^/_synapse/admin/v1/user/(?P<target>[^/?]+)/media/quarantine$"), "media_quarantine"
+    ),
+    _AdminRoute("DELETE", re.compile(r"^/_synapse/admin/v1/event_reports/(?P<target>[^/?]+)$"), "report_dismiss"),
+)
+
+
+@dataclass(frozen=True, slots=True)
+class AdminActionRecord:
+    """Closed `fgentic.admin_action.v1` record: one attributed privileged Synapse admin-API mutation."""
+
+    occurred_at: str
+    acting_admin: str
+    action_class: str
+    target: str
+    outcome: str
+    # Monotonic ingest position of the source access-log line: the reconcile cursor/dedup key. It is NOT
+    # part of the closed wire record (as_record omits it), so it never widens the audited field set.
+    position: int
+
+    @property
+    def schema(self) -> str:
+        return ADMIN_ACTION_SCHEMA
+
+    @property
+    def dedupe_key(self) -> tuple[str, int]:
+        """`(schema, position)` — the sink deduplicates admin-action records on the ingest position."""
+        return (ADMIN_ACTION_SCHEMA, self.position)
+
+    def as_record(self) -> dict[str, object]:
+        """The canonical wire form validated by `fgentic.admin_action.v1` (position deliberately omitted)."""
+        return {
+            "occurred_at": self.occurred_at,
+            "acting_admin": self.acting_admin,
+            "action_class": self.action_class,
+            "target": self.target,
+            "outcome": self.outcome,
+        }
+
+
+def admin_position(row: dict[str, object]) -> int:
+    """Read the monotonic ingest `position` from a source row as the reconcile cursor/dedup key."""
+    value = row.get("position")
+    # bool is an int subclass; reject it so a flag can never masquerade as a cursor position.
+    if isinstance(value, bool) or not isinstance(value, int):
+        raise ProjectionError("admin_action field 'position' must be an integer")
+    return value
+
+
+def _outcome_from_status(status: int) -> str:
+    """Map an HTTP status to the closed outcome enum: 2xx succeeded, 403 denied, everything else failed."""
+    if 200 <= status < 300:
+        return "succeeded"
+    if status == 403:
+        # A non-admin (authenticated but unauthorised) attempt is recorded as denied, never dropped.
+        return "denied"
+    return "failed"
+
+
+def _match_admin_route(method: str, path: str) -> tuple[str, str] | None:
+    """Map a pinned admin route to `(action_class, target)`, or ``None`` if this stream does not audit it."""
+    # Every pattern is `$`-anchored, so a path carrying a query string (`…?foo=bar`) matches nothing and
+    # safely emits no record — erring toward skip-not-leak. These admin endpoints take JSON bodies, not
+    # query params, so a real audited mutation never carries one; a query-bearing variant is not a mutation.
+    for route in _ADMIN_ROUTES:
+        if route.method != method:
+            continue
+        match = route.path.match(path)
+        if match is None:
+            continue
+        groups = match.groupdict()
+        # The single-media route yields a `<server_name>/<media_id>` locator; every other route names a
+        # single `target` group. Both are bounded operational identifiers, never content or a secret.
+        target = groups["target"] if "target" in groups else f"{groups['server']}/{groups['media']}"
+        if target == "":
+            raise ProjectionError(f"admin_action route {method} {path!r} matched with an empty target")
+        return route.action_class, target
+    return None
+
+
+def project_admin_action(row: dict[str, object]) -> AdminActionRecord | None:
+    """Project one pinned Synapse admin access-log row into a closed record, or ``None`` if none emits.
+
+    Returns ``None`` for an unauthenticated/puppeted request (unattributable to a single admin) or an
+    admin route this content-free stream does not audit — both documented non-claims, never a guess.
+    Raises ``ProjectionError`` on any schema/version drift, malformed value, or non-sentinel entity that
+    is not a full MXID, so the collection cycle fails closed.
+    """
+    _require_columns(row, ADMIN_ACTION_SOURCE_COLUMNS, "admin_action")
+
+    entity = row["acting_entity"]
+    if not isinstance(entity, str):
+        raise ProjectionError("admin_action field 'acting_entity' must be a string")
+    if entity in _UNAUTHENTICATED_ENTITIES:
+        return None
+    if "|" in entity:
+        # Synapse renders a puppeted/appservice request as `authenticated_entity|requester`; it is not a
+        # single human admin action, so it is not attributed here (documented non-claim), not failed closed.
+        return None
+    if _MXID_PATTERN.match(entity) is None:
+        raise ProjectionError(f"admin_action acting_entity {entity!r} is not a full MXID or a known sentinel")
+
+    status = _require_int(row["status"], "status", "admin_action")
+    if not (100 <= status <= 599):
+        raise ProjectionError(f"admin_action status {status} is not a valid HTTP status code")
+
+    method = _require_str(row["method"], "method", "admin_action")
+    path = _require_str(row["path"], "path", "admin_action")
+    matched = _match_admin_route(method, path)
+    if matched is None:
+        return None
+    action_class, target = matched
+
+    return AdminActionRecord(
+        occurred_at=_require_str(row["occurred_at"], "occurred_at", "admin_action"),
+        acting_admin=entity,
+        action_class=action_class,
+        target=target,
+        outcome=_outcome_from_status(status),
+        position=admin_position(row),
     )

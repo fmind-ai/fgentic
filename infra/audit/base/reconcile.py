@@ -17,9 +17,12 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 
 from records import (
+    AdminActionRecord,
     MasAuthenticationRecord,
     MatrixEventRecord,
     ProjectionError,
+    admin_position,
+    project_admin_action,
     project_mas_authentication,
     project_matrix_event,
 )
@@ -102,3 +105,49 @@ def reconcile_mas_authentications(
         seen_in_batch.add(record.authentication_id)
         records.append(record)
     return records
+
+
+@dataclass(frozen=True, slots=True)
+class AdminReconcileOutcome:
+    """Admin-action records to emit this cycle plus the advanced monotonic log-position high-water cursor."""
+
+    records: list[AdminActionRecord]
+    cursor: int
+
+
+def reconcile_admin_actions(
+    rows: Iterable[dict[str, object]],
+    cursor: int,
+    already_emitted: frozenset[int],
+) -> AdminReconcileOutcome:
+    """Reconcile a batch of pinned Synapse admin access-log rows ordered by ingest `position` ascending.
+
+    `cursor` is the durable high-water ingest position; the fetch returns only rows beyond it. The log
+    line has no natural stable id, so the monotonic append-only ingest position is BOTH the cursor and the
+    `(schema, position)` dedup key: a crash between the sink write and the cursor save re-fetches from the
+    old cursor and `already_emitted` (positions already in the sink) drops the re-emit exactly once. A row
+    whose `position` does not strictly advance the cursor fails the cycle closed (retrograde/duplicate), and
+    any schema/format drift fails closed in the projector before a partial record is emitted.
+    """
+    if isinstance(cursor, bool) or not isinstance(cursor, int):
+        raise ProjectionError("admin reconcile cursor must be an integer")
+    records: list[AdminActionRecord] = []
+    next_cursor = cursor
+    for row in rows:
+        # project_admin_action validates the full pinned column set first, so a format drift fails here.
+        record = project_admin_action(row)
+        position = admin_position(row)
+        if position <= next_cursor:
+            raise ProjectionError(
+                f"admin cursor did not advance (retrograde or duplicate position {position} "
+                f"at or below cursor {next_cursor})"
+            )
+        next_cursor = position
+        if record is None:
+            # Unauthenticated/puppeted request or a non-audited route: never emitted, but the cursor still
+            # advances past it so the stream cannot stall on ordinary admin traffic.
+            continue
+        if record.position in already_emitted:
+            continue
+        records.append(record)
+    return AdminReconcileOutcome(records=records, cursor=next_cursor)
