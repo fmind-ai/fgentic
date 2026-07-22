@@ -128,7 +128,9 @@ class Policy:
             raise PolicyError("policy must be a JSON object")
 
         expected_keys = {"allowed_event_types", "allowed_servers", "invite_rule", "version"}
-        actual_keys = set(document)
+        # JSON object keys are always strings (enforced by the duplicate-key hook); make that explicit
+        # so the set differences below are set[str] and remain sortable under strict type checking.
+        actual_keys: set[str] = {str(key) for key in document}
         if actual_keys != expected_keys:
             missing = sorted(expected_keys - actual_keys)
             unknown = sorted(actual_keys - expected_keys)
