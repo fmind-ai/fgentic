@@ -89,6 +89,18 @@ policy:
   signatureMaxSkew: 12h # reject inbound signatures older than this replay window
   signatureFutureSkew: 5m # max ahead-of-gateway signer clock; app rejects values above 5m
 
+# Out-of-band PINNED signer keys (ADR 0021). An optional JSON `{"pins":{"<actorURI>":"<publicKeyPem>"}}`
+# mounted from a Secret. For a pinned actor the border verifies the inbound HTTP signature from this
+# operator-placed key WITHOUT any network fetch; every other actor still goes through the #320
+# SSRF-guarded HTTPS resolver UNCHANGED — pinning strictly reduces SSRF surface. It exists so a peer
+# that cannot be SSRF-fetched (e.g. an in-cluster demo peer at a private address) can still be
+# verified, mirroring the platform's pinned-remote-agent identity model (docs/fediverse.md §3).
+# DISABLED here so the chart installs standalone; the demo profile enables it (issue #489).
+pinnedKeys:
+  enabled: false
+  secretName: activitypub-agent-gateway-pinned-keys
+  key: pins.json
+
 # FEP-8b32 object integrity proofs (eddsa-jcs-2022, issue #212). When enabled, outbound replies carry
 # an Ed25519 DataIntegrityProof and each actor publishes its assertionMethod Multikey, so a remote
 # verifier confirms a sovereign agent authored the reply even after relaying. The signing key is an

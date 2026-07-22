@@ -65,6 +65,13 @@ type Config struct {
 	// much smaller tolerance for an ahead-of-gateway signer clock and cannot exceed five minutes.
 	SignatureMaxSkew    time.Duration `env:"SIGNATURE_MAX_SKEW" envDefault:"12h"`
 	SignatureFutureSkew time.Duration `env:"SIGNATURE_FUTURE_SKEW" envDefault:"5m"`
+	// PinnedKeysPath is an optional mounted JSON map of actor URI -> PKIX/SPKI public-key PEM. When
+	// set, the border resolves a signer's key from this out-of-band pin WITHOUT any network fetch for
+	// exactly those actors, and every other actor still goes through the unchanged #320 SSRF-guarded
+	// HTTPS resolver. It mirrors the platform's pinned-remote-agent identity model and lets a pinned
+	// (e.g. in-cluster) peer be verified without being SSRF-fetchable (ADR 0021, docs/fediverse.md §3).
+	// Empty keeps the pure guarded-HTTP resolver — the default, unchanged behavior.
+	PinnedKeysPath string `env:"PINNED_KEYS_PATH"`
 
 	// IntegrityKeyPath is the mounted, SOPS-backed PKCS#8 PEM Ed25519 key used to attach FEP-8b32
 	// object integrity proofs to outbound replies (and publish the actor's assertionMethod Multikey).

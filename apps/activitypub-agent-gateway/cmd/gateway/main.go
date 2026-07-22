@@ -118,8 +118,20 @@ func run() error {
 		store := policy.NewStore(cfg.PolicyPath, log)
 		go store.Watch(ctx, cfg.PolicyReloadInterval)
 		keyClient := &http.Client{Timeout: cfg.RequestTimeout}
+		var keyResolver httpsig.KeyResolver = httpsig.NewHTTPKeyResolver(keyClient)
+		// Optional out-of-band pinned keys for peers that cannot be SSRF-fetched (e.g. in-cluster).
+		// A pinned actor skips the network entirely; every other actor still uses the guarded HTTPS
+		// resolver above, unchanged — pinning strictly reduces SSRF surface (ADR 0021).
+		if cfg.PinnedKeysPath != "" {
+			pinned, perr := httpsig.NewPinnedResolver(cfg.PinnedKeysPath, keyResolver)
+			if perr != nil {
+				return perr
+			}
+			keyResolver = pinned
+			log.Info("pinned key resolver enabled", "pins", pinned.Count(), "path", cfg.PinnedKeysPath)
+		}
 		verifier := httpsig.NewVerifierWithFutureSkew(
-			httpsig.NewHTTPKeyResolver(keyClient), cfg.SignatureMaxSkew, cfg.SignatureFutureSkew,
+			keyResolver, cfg.SignatureMaxSkew, cfg.SignatureFutureSkew,
 		)
 		border := apgateway.NewBorder(verifier, store, log)
 		if cfg.IntegrityRequireInbound {
