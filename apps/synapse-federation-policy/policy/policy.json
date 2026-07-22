@@ -2,7 +2,8 @@
   "version": 1,
   "allowed_servers": [
     "org-a.fgentic.localhost",
-    "org-b.fgentic.localhost"
+    "org-b.fgentic.localhost",
+    "org-d.fgentic.localhost"
   ],
   "allowed_event_types": [
     "m.room.create",

@@ -13,6 +13,7 @@ check_federation_topology() {
 	[ -f "${MATRIX_A_COMPONENT}" ] || fail 'homeserver A component is missing'
 	[ -f "${MATRIX_B_LAYER}/kustomization.yaml" ] || fail 'homeserver B layer is missing'
 	[ -f "${MATRIX_C_LAYER}/kustomization.yaml" ] || fail 'homeserver C layer is missing'
+	[ -f "${MATRIX_D_LAYER}/kustomization.yaml" ] || fail 'homeserver D layer is missing'
 	[ -f "${NAMESPACE_COMPONENT}/kustomization.yaml" ] || fail 'federation namespace component is missing'
 	[ -f "${POSTGRES_COMPONENT}/kustomization.yaml" ] || fail 'federation Postgres component is missing'
 	[ -f "${DELEGATION_COMPONENT}/kustomization.yaml" ] || fail 'delegation component is missing'
@@ -60,10 +61,12 @@ check_federation_topology() {
 		'select(.kind == "ConfigMap" and .metadata.name == "platform-settings") |
     .data.server_name == "org-a.fgentic.localhost" and
     .data.federation_partner_server_name == "org-b.fgentic.localhost" and
+    .data.federation_second_partner_server_name == "org-d.fgentic.localhost" and
     .data.federation_denied_server_name == "org-c.fgentic.localhost" and
     .data.federation_gateway_ip == "192.0.2.1" and
     .data.federation_a2a_max_budget_units == "4096" and
     .data.federation_a2a_quota_budget_units_per_minute == "5000" and
+    .data.federation_second_a2a_quota_budget_units_per_minute == "2000" and
     .data.demo_bridge_tag == "local" and
     .data.llm_provider == "demo" and .data.llm_model == "fgentic-demo" and
     .data.cluster_issuer == "local-ca"' \
@@ -82,6 +85,14 @@ check_federation_topology() {
     ([.spec.postBuild.substituteFrom[].name] |
       contains(["platform-settings", "platform-settings-overrides"]))' \
 		"${WORK_DIR}/cluster.yaml" 'homeserver C is not an ordered, independently reconcilable Flux layer'
+	assert_yq \
+		'select(.kind == "Kustomization" and .metadata.name == "matrix-d") |
+    .metadata.namespace == "flux-system" and
+    .spec.path == "./infra/federation/matrix-d" and
+    ([.spec.dependsOn[].name] | contains(["gateway", "postgres"])) and
+    ([.spec.postBuild.substituteFrom[].name] |
+      contains(["platform-settings", "platform-settings-overrides"]))' \
+		"${WORK_DIR}/cluster.yaml" 'homeserver D (second admitted partner) is not an ordered, independently reconcilable Flux layer'
 	assert_yq \
 		'select(.kind == "Kustomization" and .metadata.name == "namespaces") |
     (.spec.components | contains(["../federation/namespaces"]))' \
@@ -145,7 +156,7 @@ check_federation_topology() {
 	yq --unwrapScalar '.patches[] | select(.target.kind == "Gateway") | .patch' \
 		"${GATEWAY_COMPONENT}" >"${WORK_DIR}/gateway-a-patch.yaml"
 	assert_yq \
-		'length == 1 and .[0].path == "/spec/listeners" and (.[0].value | length) == 4 and
+		'length == 1 and .[0].path == "/spec/listeners" and (.[0].value | length) == 5 and
     .[0].value[0].name == "http" and
     .[0].value[0].allowedRoutes.namespaces.from == "Selector" and
     .[0].value[0].allowedRoutes.namespaces.selector.matchLabels."kubernetes.io/metadata.name" == "gateway" and
@@ -160,22 +171,32 @@ check_federation_topology() {
     .[0].value[3].protocol == "HTTPS" and
     .[0].value[3].tls.certificateRefs[0].name == "matrix-tls" and
     .[0].value[3].allowedRoutes.namespaces.from == "Selector" and
-    .[0].value[3].allowedRoutes.namespaces.selector.matchLabels."kubernetes.io/metadata.name" == "agentgateway-system"' \
+    .[0].value[3].allowedRoutes.namespaces.selector.matchLabels."kubernetes.io/metadata.name" == "agentgateway-system" and
+    .[0].value[4].name == "https-a2a-d" and
+    .[0].value[4].hostname == "a2a-d.${server_name}" and
+    .[0].value[4].protocol == "HTTPS" and
+    .[0].value[4].tls.certificateRefs[0].name == "matrix-tls" and
+    .[0].value[4].allowedRoutes.namespaces.from == "Selector" and
+    .[0].value[4].allowedRoutes.namespaces.selector.matchLabels."kubernetes.io/metadata.name" == "agentgateway-system"' \
 		"${WORK_DIR}/gateway-a-patch.yaml" \
-		'homeserver A Gateway listeners allow routes from unrelated namespaces'
+		'homeserver A Gateway listeners are not exactly the four Matrix/A2A hosts plus org D''s per-consumer host'
 
 	assert_yq \
 		'select(.kind == "Gateway" and .metadata.name == "agentgateway-proxy") |
     .metadata.namespace == "agentgateway-system" and
-    (.spec.listeners | length) == 2 and
+    (.spec.listeners | length) == 3 and
     .spec.listeners[0].name == "default" and
     .spec.listeners[0].port == 8080 and
     .spec.listeners[0].allowedRoutes.namespaces.from == "All" and
     .spec.listeners[1].name == "federation-a2a" and
     .spec.listeners[1].port == 8081 and
     .spec.listeners[1].hostname == "a2a.${server_name}" and
-    .spec.listeners[1].allowedRoutes.namespaces.from == "Same"' \
-		"${WORK_DIR}/recursive.yaml" 'agentgateway has no isolated cross-org listener'
+    .spec.listeners[1].allowedRoutes.namespaces.from == "Same" and
+    .spec.listeners[2].name == "federation-a2a-d" and
+    .spec.listeners[2].port == 8082 and
+    .spec.listeners[2].hostname == "a2a-d.${server_name}" and
+    .spec.listeners[2].allowedRoutes.namespaces.from == "Same"' \
+		"${WORK_DIR}/recursive.yaml" 'agentgateway has no isolated per-consumer cross-org listeners'
 	assert_yq \
 		'select(.kind == "HTTPRoute" and .metadata.name == "federated-docs-qa-public") |
     .metadata.namespace == "agentgateway-system" and
@@ -303,6 +324,98 @@ check_federation_topology() {
 			|| fail "delegation authorization omits ${contract}"
 	done
 
+	# Second admitted consumer org D (issue #354): its own delegation policy on its own route, authorizing
+	# ONLY org-d-a2a and routing extProc to org D's own azp-bound signer — so a completed org-D delegation
+	# is stamped org-d-a2a and can never be misattributed to org B.
+	assert_yq \
+		'select(.kind == "AgentgatewayPolicy" and .metadata.name == "federated-docs-qa-d") |
+    (.spec.targetRefs | length) == 1 and
+    .spec.targetRefs[0].kind == "HTTPRoute" and
+    .spec.targetRefs[0].name == "federated-docs-qa-d" and
+    .spec.traffic.extProc.backendRef.name == "federation-usage-receipt-d" and
+    .spec.traffic.extProc.backendRef.port == 4444 and
+    .spec.traffic.jwtAuthentication.mode == "Strict" and
+    .spec.traffic.jwtAuthentication.providers[0].issuer ==
+      "https://id.${federation_partner_server_name}/realms/fgentic-federation" and
+    .spec.traffic.rateLimit.conditional[0].policy.global.domain == "fgentic-cross-org-a2a" and
+    .spec.traffic.rateLimit.conditional[0].policy.global.descriptors[0].entries[0].expression ==
+      "jwt.azp"' \
+		"${WORK_DIR}/recursive.yaml" 'org D delegation policy is not azp-scoped to its own signer'
+	yq --unwrapScalar '
+  select(.kind == "AgentgatewayPolicy" and .metadata.name == "federated-docs-qa-d") |
+  .spec.traffic.authorization.policy.matchExpressions[0]
+' "${WORK_DIR}/recursive.yaml" >"${WORK_DIR}/delegation-authorization-d.cel"
+	rg --fixed-strings 'jwt.azp == "org-d-a2a"' "${WORK_DIR}/delegation-authorization-d.cel" >/dev/null \
+		|| fail 'org D delegation authorization does not require azp org-d-a2a'
+	if rg --fixed-strings 'org-b-a2a' "${WORK_DIR}/delegation-authorization-d.cel" >/dev/null; then
+		fail 'org D delegation authorization must not reference org-b-a2a'
+	fi
+	if rg --fixed-strings 'org-d-a2a' "${WORK_DIR}/delegation-authorization.cel" >/dev/null; then
+		fail 'org B delegation authorization must not reference org-d-a2a'
+	fi
+	assert_yq \
+		'select(.kind == "HTTPRoute" and .metadata.name == "federated-docs-qa-public-d") |
+    .spec.parentRefs[0].name == "fgentic-gateway" and
+    .spec.parentRefs[0].sectionName == "https-a2a-d" and
+    .spec.hostnames[0] == "a2a-d.${server_name}" and
+    (.spec.rules[0].matches | length) == 1 and
+    .spec.rules[0].matches[0].method == "POST" and
+    .spec.rules[0].matches[0].path.value == "/api/a2a/kagent/docs-qa" and
+    .spec.rules[0].backendRefs[0].name == "agentgateway-proxy" and
+    .spec.rules[0].backendRefs[0].port == 8082' \
+		"${WORK_DIR}/recursive.yaml" 'org D public route does not expose exactly its POST invocation on port 8082'
+	assert_yq \
+		'select(.kind == "HTTPRoute" and .metadata.name == "federated-docs-qa-d") |
+    .spec.parentRefs[0].name == "agentgateway-proxy" and
+    .spec.parentRefs[0].sectionName == "federation-a2a-d" and
+    .spec.hostnames[0] == "a2a-d.${server_name}" and
+    .spec.rules[0].matches[0].method == "POST" and
+    .spec.rules[0].matches[0].path.value == "/api/a2a/kagent/docs-qa" and
+    .spec.rules[0].backendRefs[0].name == "federated-docs-qa-a2a"' \
+		"${WORK_DIR}/recursive.yaml" 'org D internal route is not exact and backend-scoped'
+
+	for signer in federation-usage-receipt federation-usage-receipt-d; do
+		assert_yq \
+			'select(.kind == "Deployment" and .metadata.name == "'"${signer}"'") |
+    .spec.replicas == 1 and .spec.strategy.type == "Recreate" and
+    .spec.template.spec.automountServiceAccountToken == false and
+    .spec.template.spec.containers[0].name == "usage-receipt" and
+    .spec.template.spec.containers[0].image == "matrix-a2a-bridge:${demo_bridge_tag}" and
+    .spec.template.spec.containers[0].imagePullPolicy == "Never" and
+    .spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem == true and
+    .spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation == false' \
+			"${WORK_DIR}/recursive.yaml" "${signer} is not single-writer, local, and hardened"
+	done
+	# Each signer is bound to exactly ONE distinct admitted azp — the structural per-consumer attribution.
+	assert_yq \
+		'select(.kind == "Deployment" and .metadata.name == "federation-usage-receipt") |
+    (.spec.template.spec.containers[0].args | contains(["--azp=org-b-a2a"])) and
+    (.spec.template.spec.containers[0].args | contains(["--azp=org-d-a2a"]) | not)' \
+		"${WORK_DIR}/recursive.yaml" 'org B signer is not bound to exactly org-b-a2a'
+	assert_yq \
+		'select(.kind == "Deployment" and .metadata.name == "federation-usage-receipt-d") |
+    (.spec.template.spec.containers[0].args | contains(["--azp=org-d-a2a"])) and
+    (.spec.template.spec.containers[0].args | contains(["--azp=org-b-a2a"]) | not) and
+    ([.spec.template.spec.volumes[] |
+      select(.persistentVolumeClaim.claimName == "federation-usage-receipts-d")] | length) == 1' \
+		"${WORK_DIR}/recursive.yaml" 'org D signer is not bound to exactly org-d-a2a with its own archive'
+	for claim in federation-usage-receipts federation-usage-receipts-d; do
+		assert_yq \
+			'select(.kind == "PersistentVolumeClaim" and .metadata.name == "'"${claim}"'") |
+    (.spec.accessModes | length) == 1 and .spec.accessModes[0] == "ReadWriteOnce"' \
+			"${WORK_DIR}/recursive.yaml" "${claim} is not a single-writer archive"
+	done
+	for svc in federation-usage-receipt federation-usage-receipt-d; do
+		assert_yq \
+			'select(.kind == "Service" and .metadata.name == "'"${svc}"'") |
+    (.spec.ports | length) == 1 and .spec.ports[0].appProtocol == "kubernetes.io/h2c" and
+    .spec.ports[0].port == 4444' \
+			"${WORK_DIR}/recursive.yaml" "${svc} Service is not gRPC h2c"
+		assert_yq \
+			'select(.kind == "NetworkPolicy" and .metadata.name == "'"${svc}"'") |
+    (.spec.ingress | length) == 1 and (.spec.egress | length) == 0' \
+			"${WORK_DIR}/recursive.yaml" "${svc} signer is not isolated from untrusted workloads"
+	done
 	assert_yq \
 		'select(.kind == "Deployment" and .metadata.name == "federation-usage-receipt") |
     .spec.replicas == 1 and .spec.strategy.type == "Recreate" and
@@ -342,12 +455,17 @@ check_federation_topology() {
   .data."config.yaml"
 ' "${WORK_DIR}/recursive.yaml" >"${WORK_DIR}/rate-limit-config.yaml"
 	assert_yq \
-		'.domain == "fgentic-cross-org-a2a" and (.descriptors | length) == 1 and
-    .descriptors[0].key == "consumer" and
+		'.domain == "fgentic-cross-org-a2a" and (.descriptors | length) == 2 and
+    .descriptors[0].key == "consumer" and (.descriptors[0] | has("value") | not) and
     .descriptors[0].rate_limit.unit == "minute" and
     .descriptors[0].rate_limit.requests_per_unit ==
-      "${federation_a2a_quota_budget_units_per_minute}"' \
-		"${WORK_DIR}/rate-limit-config.yaml" 'global limiter is not an azp-keyed reservation quota'
+      "${federation_a2a_quota_budget_units_per_minute}" and
+    .descriptors[1].key == "consumer" and .descriptors[1].value == "org-d-a2a" and
+    .descriptors[1].rate_limit.unit == "minute" and
+    .descriptors[1].rate_limit.requests_per_unit ==
+      "${federation_second_a2a_quota_budget_units_per_minute}"' \
+		"${WORK_DIR}/rate-limit-config.yaml" \
+		'global limiter is not an azp-keyed reservation quota with an independent org-D override'
 	assert_yq \
 		'select(.kind == "Service" and .metadata.name == "federation-rate-limit") |
     (.spec.ports | length) == 1 and
@@ -405,10 +523,12 @@ check_federation_topology() {
 	jq -e '
   .realm == "fgentic-federation" and .accessTokenLifespan == 300 and
   ([.clients[].clientId] | sort) ==
-    (["org-b-a2a", "untrusted-a2a", "wrong-audience-a2a"] | sort) and
+    (["org-b-a2a", "org-d-a2a", "untrusted-a2a", "wrong-audience-a2a"] | sort) and
   all(.clients[]; .serviceAccountsEnabled == true and
     .standardFlowEnabled == false and .directAccessGrantsEnabled == false) and
   ([.clients[] | select(.clientId == "org-b-a2a") |
+    .protocolMappers[].config."included.client.audience"] == ["fgentic-a2a"]) and
+  ([.clients[] | select(.clientId == "org-d-a2a") |
     .protocolMappers[].config."included.client.audience"] == ["fgentic-a2a"]) and
   ([.clients[] | select(.clientId == "untrusted-a2a") |
     .protocolMappers[].config."included.client.audience"] == ["fgentic-a2a"]) and

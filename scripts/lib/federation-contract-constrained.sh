@@ -775,9 +775,9 @@ check_federation_constrained_render() {
 	assert_yq_all \
 		'[.] | map(select(.kind == "Kustomization")) |
 	  map(.spec.components[]? // "") | map(select(contains("constrained"))) |
-	  length == 8' \
+	  length == 9' \
 		"${WORK_DIR}/constrained-cluster.yaml" \
-		'constrained profile does not compose all eight workload tunings'
+		'constrained profile does not compose all nine workload tunings'
 
 	write_federation_inventory "${WORK_DIR}/default-cluster.yaml" \
 		"${WORK_DIR}/default-cluster-inventory.json"
@@ -794,7 +794,7 @@ check_federation_constrained_render() {
 		"${WORK_DIR}/constrained-resource-inventory.json" \
 		|| fail 'constrained profile adds or removes a canonical runtime object'
 
-	for homeserver in matrix-stack matrix-stack-b matrix-stack-c; do
+	for homeserver in matrix-stack matrix-stack-b matrix-stack-c matrix-stack-d; do
 		assert_yq \
 			'select(.kind == "HelmRelease" and .metadata.name == "'"${homeserver}"'") |
         .spec.values.synapse.resources == null and
@@ -817,7 +817,8 @@ postgres|gateway
 matrix|postgres
 matrix-b|matrix
 matrix-c|matrix-b
-keycloak|matrix-c
+matrix-d|matrix-c
+keycloak|matrix-d
 agentgateway|keycloak
 agentgateway-provider|agentgateway
 kagent|agentgateway-provider
@@ -843,13 +844,13 @@ check_federation_constrained_resources() {
           (map(.value.value) | join("|")) == "1|25|64MiB")' \
 			"${recursive}" "${controller} does not have the constrained Go runtime envelope"
 	done
-	for homeserver in matrix-stack matrix-stack-b matrix-stack-c; do
+	for homeserver in matrix-stack matrix-stack-b matrix-stack-c matrix-stack-d; do
 		assert_yq \
 			'select(.kind == "HelmRelease" and .metadata.name == "'"${homeserver}"'") |
         .spec.values.synapse.resources.requests.memory == "128Mi" and
         .spec.values.synapse.resources.limits.memory == "640Mi" and
         .spec.values.synapse.additional."05-constrained-memory".config ==
-          "caches:\n  global_factor: 0.1\n# Ten idle database connections per homeserver dominate a tiny three-room lab.\n# Keep one warm connection and two slots for short concurrent proof bursts.\ndatabase:\n  args:\n    cp_min: 1\n    cp_max: 2\n" and
+          "caches:\n  global_factor: 0.1\n# Ten idle database connections per homeserver dominate a tiny four-room lab.\n# Keep one warm connection and two slots for short concurrent proof bursts.\ndatabase:\n  args:\n    cp_min: 1\n    cp_max: 2\n" and
         .spec.values.haproxy.resources.requests.memory == "32Mi" and
         .spec.values.haproxy.resources.limits.memory == "96Mi"' \
 			"${recursive}" "${homeserver} does not have the constrained Matrix envelope"

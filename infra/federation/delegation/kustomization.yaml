@@ -30,6 +30,18 @@ patches:
           allowedRoutes:
             namespaces:
               from: Same
+      # Second admitted consumer org D (issue #354) gets its own isolated listener + host so its route
+      # carries its own azp-bound usage-receipt signer. Same trust boundary: routes from Same only.
+      - op: add
+        path: /spec/listeners/-
+        value:
+          name: federation-a2a-d
+          protocol: HTTP
+          port: 8082
+          hostname: a2a-d.${server_name}
+          allowedRoutes:
+            namespaces:
+              from: Same
   # The federation profile has no local bridge or MCP tool caller. Remove those broad base
   # routes and their Secret-backed policies instead of manufacturing unused credentials.
   - target:

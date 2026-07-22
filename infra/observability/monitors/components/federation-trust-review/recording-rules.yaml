@@ -19,3 +19,11 @@ spec:
           expr: vector(1924905600)
           labels:
             server_name: org-b.fgentic.localhost
+        - record: fgentic:federation_partner_review_by:timestamp
+          expr: vector(1816128000)
+          labels:
+            server_name: org-d.fgentic.localhost
+        - record: fgentic:federation_partner_valid_until:timestamp
+          expr: vector(1924905600)
+          labels:
+            server_name: org-d.fgentic.localhost

@@ -1,9 +1,9 @@
-# A second, namespace-isolated ESS release containing only Synapse and well-known delegation.
+# A second admitted partner: a namespace-isolated ESS release with only Synapse and well-known delegation.
 apiVersion: helm.toolkit.fluxcd.io/v2
 kind: HelmRelease
 metadata:
-  name: matrix-stack-b
-  namespace: matrix-b
+  name: matrix-stack-d
+  namespace: matrix-d
 spec:
   interval: 30m
   timeout: 15m
@@ -19,22 +19,22 @@ spec:
     name: ess-matrix-stack
     namespace: flux-system
   values:
-    serverName: ${federation_partner_server_name}
+    serverName: ${federation_second_partner_server_name}
     storage:
       resourcePolicy: delete
 
     synapse:
       ingress:
-        host: matrix.${federation_partner_server_name}
+        host: matrix.${federation_second_partner_server_name}
         tlsEnabled: false
       postgres:
         host: platform-pg-rw.postgres.svc.cluster.local
         port: 5432
-        user: synapse_b
-        database: synapse_b
+        user: synapse_d
+        database: synapse_d
         sslMode: require
         password:
-          secret: pg-synapse-b
+          secret: pg-synapse-d
           secretKey: password
       serviceMonitors:
         enabled: false

@@ -14,10 +14,20 @@ data:
   config.yaml: |
     domain: fgentic-cross-org-a2a
     descriptors:
+      # Default per-`azp` reservation budget: every admitted consumer (e.g. org B) gets its OWN counter
+      # keyed by the `consumer` (jwt.azp) value, so reservations never cross organizations (D7/D8).
       - key: consumer
         rate_limit:
           unit: minute
           requests_per_unit: ${federation_a2a_quota_budget_units_per_minute}
+      # Second admitted consumer org D (issue #354): a DISTINCT, lower budget on its OWN per-`azp`
+      # counter. A reservation org B accepts is refused for org-d-a2a, proving the two members'
+      # reservations are independent — one cannot consume another's budget. Reservation, not spend.
+      - key: consumer
+        value: org-d-a2a
+        rate_limit:
+          unit: minute
+          requests_per_unit: ${federation_second_a2a_quota_budget_units_per_minute}
 ---
 apiVersion: v1
 kind: Service

@@ -184,15 +184,18 @@ check_federation_signing() {
 	# Public CA material is copied into every Matrix namespace at runtime; the repository and cluster
 	# snapshots must never carry the local signing key.
 	for contract in \
-		'for namespace in matrix matrix-b matrix-c' \
+		'for namespace in matrix matrix-b matrix-d matrix-c' \
 		'create configmap fgentic-local-ca' \
 		'ca.crt' \
 		'pg-synapse-b' \
+		'pg-synapse-d' \
 		'pg-synapse-c' \
 		'pg-keycloak' \
 		'pg-kagent' \
+		'dave-password' \
 		'charlie-password' \
 		'org-b-a2a-client-secret' \
+		'org-d-a2a-client-secret' \
 		'untrusted-a2a-client-secret' \
 		'wrong-audience-a2a-client-secret' \
 		'prepare_federation_agent_card_key' \
@@ -216,7 +219,10 @@ check_federation_signing() {
 		'apply_secret agentgateway-system federated-usage-receipt-signing' \
 		'apply_secret postgres pg-synapse-c' \
 		'--from-literal=username=synapse_c' \
-		'apply_secret matrix-c pg-synapse-c'; do
+		'apply_secret matrix-c pg-synapse-c' \
+		'apply_secret postgres pg-synapse-d' \
+		'--from-literal=username=synapse_d' \
+		'apply_secret matrix-d pg-synapse-d'; do
 		rg --fixed-strings -- "${contract}" "${DEMO_SOURCES[@]}" >/dev/null \
 			|| fail "federation lifecycle omits ${contract}"
 	done

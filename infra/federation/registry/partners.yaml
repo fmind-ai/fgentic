@@ -1,7 +1,7 @@
 # Partner trust registry — the single validated source of truth for cross-organization federation
 # trust (issue #349). Every enforcement plane is DERIVED from this file, never separately authored:
 #
-#   1. Synapse `federation_domain_whitelist`   (infra/federation/matrix-{a,b,c})
+#   1. Synapse `federation_domain_whitelist`   (infra/federation/matrix-{a,b,c,d})
 #   2. Room `m.room.server_acl` allow list      (scripts/lib/federation-matrix.sh seed)
 #   3. Callback policy `allowed_servers`        (apps/synapse-federation-policy/policy/policy.json)
 #   4. Pinned AgentCard identity                (infra/federation/delegation/agent-card.json + signer)
@@ -25,6 +25,12 @@ version: 1
 lab:
   a2a_max_budget_units: 4096
   a2a_quota_units_per_minute: 5000
+  # The second admitted consumer (org D, issue #354) carries a distinct, lower per-minute reservation
+  # budget, so per-`azp` reservations are demonstrably independent: a 3000-unit reservation org B accepts
+  # is refused for org-d-a2a, and org D still succeeds after org B is exhausted (separate counters).
+  # Correct per-consumer receipt attribution comes from org D's own azp-bound signer, NOT this budget.
+  # Rendered to federation_second_a2a_quota_budget_units_per_minute.
+  a2a_second_quota_units_per_minute: 2000
 
 partners:
   # Org A — the local/host homeserver that EXPORTS the docs-qa A2A route and signs the AgentCard.
@@ -57,6 +63,26 @@ partners:
     a2a:
       role: consumer
       azp: org-b-a2a
+      issuer: https://id.org-b.fgentic.localhost/realms/fgentic-federation
+      jwks_path: /realms/fgentic-federation/protocol/openid-connect/certs
+      audience: fgentic-a2a
+
+  # Org D — a SECOND admitted partner (issue #354): a third participating homeserver AND a second
+  # A2A consumer. Multi-party consortium proof. Org D authenticates through the SAME shared lab
+  # federation IdP that org B hosts (issuer id.org-b/...), distinguished only by its own azp
+  # `org-d-a2a`; per-`azp` quota reservations are independent (D7/D8), so org D can never spend org
+  # B's budget. The shared broker stays D6-safe: the issuer is an EXACT FQDN of a registered admitted
+  # partner, never a localpart — see docs/federation.md §8.3 and check-fed-registry.sh gate 1b.
+  - server_name: org-d.fgentic.localhost
+    role: admitted
+    allowlisted: true
+    contained: false
+    classification: public
+    review_by: "2027-07-21"
+    valid_until: "2030-12-31"
+    a2a:
+      role: consumer
+      azp: org-d-a2a
       issuer: https://id.org-b.fgentic.localhost/realms/fgentic-federation
       jwks_path: /realms/fgentic-federation/protocol/openid-connect/certs
       audience: fgentic-a2a

@@ -12,10 +12,15 @@
     "lab": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["a2a_max_budget_units", "a2a_quota_units_per_minute"],
+      "required": ["a2a_max_budget_units", "a2a_quota_units_per_minute", "a2a_second_quota_units_per_minute"],
       "properties": {
         "a2a_max_budget_units": { "type": "integer", "minimum": 1 },
-        "a2a_quota_units_per_minute": { "type": "integer", "minimum": 1 }
+        "a2a_quota_units_per_minute": { "type": "integer", "minimum": 1 },
+        "a2a_second_quota_units_per_minute": {
+          "description": "Distinct, independent per-minute reservation budget for the SECOND admitted A2A consumer (org D, issue #354). Kept separate from the first consumer's budget so multi-party per-azp reservation independence (D7/D8) is provable — one member cannot spend another's budget.",
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "partners": {

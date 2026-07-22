@@ -1,5 +1,5 @@
 # Constrained-host wiring for the federation lab. Each canonical Flux layer retains field
-# ownership while the shared Matrix tuning is composed into all three isolated ESS releases.
+# ownership while the shared Matrix tuning is composed into all four isolated ESS releases.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 patches:
@@ -73,6 +73,21 @@ patches:
       group: kustomize.toolkit.fluxcd.io
       version: v1
       kind: Kustomization
+      name: matrix-d
+      namespace: flux-system
+    patch: |
+      - op: add
+        path: /spec/components
+        value:
+          - ../constrained/matrix
+      - op: add
+        path: /spec/dependsOn/-
+        value:
+          name: matrix-c
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
       name: keycloak
       namespace: flux-system
     patch: |
@@ -82,7 +97,7 @@ patches:
       - op: add
         path: /spec/dependsOn/-
         value:
-          name: matrix-c
+          name: matrix-d
   - target:
       group: kustomize.toolkit.fluxcd.io
       version: v1

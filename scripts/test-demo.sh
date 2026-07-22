@@ -364,7 +364,7 @@ federation_bootstrap_names="$(
 		"${WORK_DIR}/federation-bootstrap-namespaces.yaml" | jq --compact-output .
 )"
 [ "${federation_bootstrap_names}" = \
-	'["agentgateway-system","cert-manager","cnpg-system","gateway","kagent","keycloak","knowledge","matrix","matrix-b","matrix-c","models","postgres"]' ] || {
+	'["agentgateway-system","cert-manager","cnpg-system","gateway","kagent","keycloak","knowledge","matrix","matrix-b","matrix-c","matrix-d","models","postgres"]' ] || {
 	echo "error: federation bootstrap Namespace set drifted: ${federation_bootstrap_names}" >&2
 	exit 1
 }
