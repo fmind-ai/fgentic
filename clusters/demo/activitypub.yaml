@@ -49,6 +49,26 @@ spec:
         - op: replace
           path: /spec/values/integrity/requireInbound
           value: false
+        # The AP gateway is the LAST workload in the demo dependency chain (platform-secrets ->
+        # agentgateway -> kagent), so its first COLD rollout can exceed helm's default 5m --wait even
+        # though the Deployment does reach Available/ready 1/1. Give the demo release a longer wait and
+        # remediation so the slow first reconcile completes cleanly instead of being marked Failed. The
+        # deploy unit carries no timeout/remediation, so local/gcp keep the Flux defaults (unchanged).
+        - op: add
+          path: /spec/timeout
+          value: 10m
+        - op: add
+          path: /spec/install
+          value:
+            remediation:
+              retries: 3
+              remediateLastFailure: true
+        - op: add
+          path: /spec/upgrade
+          value:
+            remediation:
+              retries: 3
+              remediateLastFailure: true
     # Demo-scoped only: allow the in-cluster interop peer namespace to reach the gateway inbox on
     # :8480 (the public route stays gated). local/gcp never reconcile this unit, so their gateway
     # ingress boundary is unaffected. The authoritative default-deny NetworkPolicy is otherwise

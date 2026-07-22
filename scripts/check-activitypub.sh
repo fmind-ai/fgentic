@@ -345,6 +345,20 @@ assert_yq \
 	'select(.kind == "HelmRelease" and .metadata.name == "activitypub-agent-gateway") |
 	 .spec.values.image.repository == "ghcr.io/fmind-ai/activitypub-agent-gateway"' \
 	"${DEPLOY_DIR}/helmrelease.yaml" "deploy unit must keep the GHCR image repository for local/gcp"
+# The AP gateway is the last demo workload, so its first cold rollout can exceed helm's default 5m
+# wait. The DEMO release must extend the timeout + add remediation retries so the slow reconcile
+# completes; the deploy unit must NOT carry them, so local/gcp keep the Flux defaults.
+assert_yq \
+	'select(.kind == "HelmRelease" and .metadata.name == "activitypub-agent-gateway") |
+	 (.spec.timeout == "10m" and
+	  .spec.install.remediation.retries >= 1 and .spec.install.remediation.remediateLastFailure == true and
+	  .spec.upgrade.remediation.retries >= 1 and .spec.upgrade.remediation.remediateLastFailure == true)' \
+	"${demo_deploy_built}" "demo HelmRelease must extend the helm wait + remediation for the cold rollout"
+if yq -e 'select(.kind == "HelmRelease" and .metadata.name == "activitypub-agent-gateway") |
+	(has("spec")) and (.spec | has("timeout") or has("install") or has("upgrade"))' \
+	"${DEPLOY_DIR}/helmrelease.yaml" >/dev/null 2>&1; then
+	fail "deploy unit must not set timeout/install/upgrade (local/gcp keep Flux defaults; demo overrides)"
+fi
 # The demo build + side-load lifecycle must mirror the bridge: build the AP image and k3d-import it.
 grep -q 'AP_GATEWAY_IMAGE' "${ROOT_DIR}/scripts/demo.sh" \
 	|| fail "demo lifecycle does not define the AP gateway image tag"
