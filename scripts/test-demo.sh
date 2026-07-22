@@ -135,24 +135,39 @@ reply_fixture_matches() {
 
 bash -n "${DEMO_SOURCES[@]}" "${DEV}" "${ROOT_DIR}/scripts/seed-demo.sh"
 (
-	# The Secret key already names the caller. Its value must be one Agentgateway credential record,
-	# not another caller-name map, or every bridge request is rejected as an unknown API key.
+	# The a2a-bridge-callers Secret carries one Agentgateway credential record PER caller name, never a
+	# nested caller-name map, or the caller is rejected as an unknown API key. Demo registers TWO
+	# callers in that single Secret (issue #489): the bridge and the second ActivityPub gateway caller.
 	# shellcheck source=scripts/lib/demo-secrets.sh
 	source "${ROOT_DIR}/scripts/lib/demo-secrets.sh"
 	secret_calls=()
 	apply_secret() {
 		secret_calls+=("$*")
 	}
+	# apply_a2a_secrets reads the AP caller's token from the demo bootstrap Secret; stub it
+	# deterministically offline, mirroring the apply_secret stub above.
+	bootstrap_secret_value() {
+		printf 'fixture-ap-token'
+	}
 	apply_a2a_secrets fixture-key
 	[ "${#secret_calls[@]}" -eq 2 ]
-	server_prefix='agentgateway-system a2a-bridge-callers --from-literal=matrix-a2a-bridge='
-	[[ "${secret_calls[0]}" == "${server_prefix}"* ]]
-	server_document="${secret_calls[0]#"${server_prefix}"}"
+	callers_prefix='agentgateway-system a2a-bridge-callers '
+	[[ "${secret_calls[0]}" == "${callers_prefix}"* ]]
+	callers_args="${secret_calls[0]#"${callers_prefix}"}"
+	# Two space-delimited --from-literal=<name>=<compact-json> tokens (the JSON is space-free).
+	bridge_document="${callers_args%% --from-literal=activitypub-agent-gateway=*}"
+	bridge_document="${bridge_document#--from-literal=matrix-a2a-bridge=}"
+	ap_document="${callers_args##*--from-literal=activitypub-agent-gateway=}"
 	jq --exit-status '
     .key == "fixture-key" and
     .metadata == {"workload": "matrix-a2a-bridge"} and
     (has("matrix-a2a-bridge") | not)
-  ' <<<"${server_document}" >/dev/null
+  ' <<<"${bridge_document}" >/dev/null
+	jq --exit-status '
+    .key == "fixture-ap-token" and
+    .metadata == {"workload": "activitypub-agent-gateway"} and
+    (has("activitypub-agent-gateway") | not)
+  ' <<<"${ap_document}" >/dev/null
 	[ "${secret_calls[1]}" = \
 		'bridge a2a-bridge-credential --from-literal=token=fixture-key' ]
 )
@@ -169,6 +184,8 @@ bash -n "${DEMO_SOURCES[@]}" "${DEV}" "${ROOT_DIR}/scripts/seed-demo.sh"
 	SOURCE_GIT_PACKAGES='git git-daemon busybox-extras'
 	SOURCE_IMAGE='fgentic-demo-source:fixture'
 	BRIDGE_IMAGE='matrix-a2a-bridge:fixture'
+	# Demo also builds + eagerly side-loads the GHCR-unpublished ActivityPub gateway image (issue #489).
+	AP_GATEWAY_IMAGE='activitypub-agent-gateway:fixture'
 	mkdir -p "${SOURCE_CONTEXT}"
 	early_image_calls=()
 	build_image() {
@@ -182,12 +199,18 @@ bash -n "${DEMO_SOURCES[@]}" "${DEV}" "${ROOT_DIR}/scripts/seed-demo.sh"
 		early_image_calls+=("prune:$1")
 	}
 	build_and_load_images
+	# SOURCE + bridge + AP gateway are built; SOURCE imports first, then — after the AP gateway sits
+	# ready deep in the dependency chain — the AP gateway is eagerly imported (the bridge loads later).
 	[ "${early_image_calls[0]}" = 'build:fgentic-demo-source:fixture' ]
 	[ "${early_image_calls[1]}" = 'build:matrix-a2a-bridge:fixture' ]
-	[ "${early_image_calls[2]}" = \
+	[ "${early_image_calls[2]}" = 'build:activitypub-agent-gateway:fixture' ]
+	[ "${early_image_calls[3]}" = \
 		'k3d:image import --mode auto --cluster fgentic-demo-fixture fgentic-demo-source:fixture' ]
-	[ "${early_image_calls[3]}" = 'prune:fgentic-demo-source' ]
-	[ "${#early_image_calls[@]}" -eq 4 ]
+	[ "${early_image_calls[4]}" = 'prune:fgentic-demo-source' ]
+	[ "${early_image_calls[5]}" = \
+		'k3d:image import --mode auto --cluster fgentic-demo-fixture activitypub-agent-gateway:fixture' ]
+	[ "${early_image_calls[6]}" = 'prune:activitypub-agent-gateway' ]
+	[ "${#early_image_calls[@]}" -eq 7 ]
 	bridge_image_calls="${WORK_DIR}/bridge-image-calls"
 	: >"${bridge_image_calls}"
 	kubectl() {
