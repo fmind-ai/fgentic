@@ -1,0 +1,23 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fgentic.dev/schemas/fgentic.mas_authentication.v1.json",
+  "title": "fgentic.mas_authentication.v1",
+  "description": "Closed record: one MAS 1.19.0 authentication committed successfully (ADR 0018). It does not represent a failed attempt, token issuance, consent, or a later Matrix API request. Credentials, emails, IPs, User-Agent values, OAuth codes, and tokens are structurally excluded.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "occurred_at",
+    "authentication_id",
+    "session_id",
+    "matrix_user",
+    "method"
+  ],
+  "properties": {
+    "occurred_at": { "type": "string", "minLength": 1 },
+    "authentication_id": { "type": "string", "minLength": 1 },
+    "session_id": { "type": "string", "minLength": 1 },
+    "matrix_user": { "type": "string", "pattern": "^@[a-z0-9._=\\-/+]+:[^:]+$" },
+    "method": { "type": "string", "enum": ["password", "upstream_oidc"] },
+    "upstream_provider_id": { "type": "string", "minLength": 1 }
+  }
+}

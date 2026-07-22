@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fgentic.dev/schemas/fgentic.matrix_event.v1.json",
+  "title": "fgentic.matrix_event.v1",
+  "description": "Closed record: one non-rejected timeline/state event Synapse 1.155.0 persisted locally (ADR 0018). It does not identify the device, MAS session, access token, HTTP request, or whether another homeserver retains the event. Payload, unsigned/state content, and unrecognized keys are structurally excluded.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "origin_server_ts",
+    "received_ts",
+    "event_id",
+    "room_id",
+    "sender",
+    "event_type",
+    "stream_ordering"
+  ],
+  "properties": {
+    "origin_server_ts": { "type": "integer" },
+    "received_ts": { "type": "integer" },
+    "event_id": { "type": "string", "minLength": 1 },
+    "room_id": { "type": "string", "minLength": 1 },
+    "sender": { "type": "string", "minLength": 1 },
+    "event_type": { "type": "string", "minLength": 1 },
+    "stream_ordering": { "type": "integer" }
+  }
+}
