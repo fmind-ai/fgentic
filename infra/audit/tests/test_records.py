@@ -8,8 +8,6 @@ suppression, single-method selection, and fail-closed behaviour on every enumera
 from __future__ import annotations
 
 import dataclasses
-import json
-import re
 from pathlib import Path
 
 import pytest
@@ -24,6 +22,7 @@ from records import (
     project_mas_authentication,
     project_matrix_event,
 )
+from schemacheck import load_schema, schema_property_names, schema_required, validate_instance
 
 SCHEMA_DIR = Path(__file__).resolve().parent.parent / "schemas"
 SERVER_NAME = "fgentic.localhost"
@@ -99,58 +98,7 @@ def _valid_upstream_row() -> dict[str, object]:
 
 
 def _load_schema(name: str) -> dict[str, object]:
-    parsed = json.loads((SCHEMA_DIR / name).read_text(encoding="utf-8"))
-    assert isinstance(parsed, dict)
-    return parsed
-
-
-def _schema_property_names(schema: dict[str, object]) -> set[str]:
-    properties = schema["properties"]
-    assert isinstance(properties, dict)
-    return {str(name) for name in properties}
-
-
-def _schema_required(schema: dict[str, object]) -> set[str]:
-    required = schema["required"]
-    assert isinstance(required, list)
-    return {str(name) for name in required}
-
-
-def _validate_instance(instance: dict[str, object], schema: dict[str, object]) -> None:
-    """Schema-driven validation of a serialized record against the closed contract.
-
-    Dependency-free interpreter for the exact JSON Schema subset these two schemas use
-    (type string/integer, minLength, enum, pattern, required, additionalProperties: false). It
-    enforces the enum and pattern values, so it proves ADR 0018 gate 2 for real record instances —
-    not just field-name equality. Raises ``AssertionError`` on any violation.
-    """
-    raw_properties = schema["properties"]
-    assert isinstance(raw_properties, dict)
-    properties = {str(name): spec for name, spec in raw_properties.items()}
-    assert schema["additionalProperties"] is False
-    unexpected = set(instance) - set(properties)
-    assert unexpected == set(), f"instance carries keys outside the closed schema: {unexpected}"
-    assert _schema_required(schema) <= set(instance), "instance is missing a required field"
-    for key, value in instance.items():
-        spec = properties[key]
-        assert isinstance(spec, dict)
-        expected_type = spec.get("type")
-        if expected_type == "integer":
-            assert isinstance(value, int), key
-            assert not isinstance(value, bool), key
-        elif expected_type == "string":
-            assert isinstance(value, str), key
-            min_length = spec.get("minLength")
-            if isinstance(min_length, int):
-                assert len(value) >= min_length, key
-            enum = spec.get("enum")
-            if isinstance(enum, list):
-                assert value in enum, key
-            pattern = spec.get("pattern")
-            if isinstance(pattern, str):
-                assert re.search(pattern, value) is not None, key
-        else:  # pragma: no cover - guards against an unhandled schema type slipping in
-            raise AssertionError(f"unhandled schema type for {key!r}: {expected_type!r}")
+    return load_schema(SCHEMA_DIR / name)
 
 
 # --- Gate 1 & 2: closed field sets, no forbidden field, no automatic pass-through ------------------
@@ -201,31 +149,31 @@ def test_a_forbidden_source_column_fails_closed_instead_of_passing_through(forbi
 def test_output_fields_match_the_published_json_schema_contract() -> None:
     event_schema = _load_schema("matrix_event.v1.schema.json")
     record_fields = {field.name for field in dataclasses.fields(MatrixEventRecord)}
-    assert record_fields == _schema_property_names(event_schema)
-    assert _schema_required(event_schema) == record_fields
+    assert record_fields == schema_property_names(event_schema)
+    assert schema_required(event_schema) == record_fields
     assert event_schema["additionalProperties"] is False
 
     mas_schema = _load_schema("mas_authentication.v1.schema.json")
     record_fields = {field.name for field in dataclasses.fields(MasAuthenticationRecord)}
-    assert record_fields == _schema_property_names(mas_schema)
+    assert record_fields == schema_property_names(mas_schema)
     # upstream_provider_id is optional; every other output field is required.
-    assert _schema_required(mas_schema) == record_fields - {"upstream_provider_id"}
+    assert schema_required(mas_schema) == record_fields - {"upstream_provider_id"}
     assert mas_schema["additionalProperties"] is False
 
 
 def test_serialized_records_validate_against_the_published_schema() -> None:
     event = project_matrix_event(_valid_event_row())
     assert event is not None
-    _validate_instance(event.as_record(), _load_schema("matrix_event.v1.schema.json"))
+    validate_instance(event.as_record(), _load_schema("matrix_event.v1.schema.json"))
 
     mas_schema = _load_schema("mas_authentication.v1.schema.json")
     password = project_mas_authentication(_valid_password_row(), SERVER_NAME).as_record()
     # A password record OMITS upstream_provider_id rather than emitting a schema-invalid null.
     assert "upstream_provider_id" not in password
-    _validate_instance(password, mas_schema)
+    validate_instance(password, mas_schema)
     upstream = project_mas_authentication(_valid_upstream_row(), SERVER_NAME).as_record()
     assert upstream["upstream_provider_id"] == "01H8PKNWKKRPCBW4YGH1RWV279"
-    _validate_instance(upstream, mas_schema)
+    validate_instance(upstream, mas_schema)
 
 
 def test_schema_validator_rejects_contract_violations() -> None:
@@ -240,7 +188,7 @@ def test_schema_validator_rejects_contract_violations() -> None:
         {"occurred_at": ""},  # violates minLength
     ):
         with pytest.raises(AssertionError):
-            _validate_instance(valid | violation, mas_schema)
+            validate_instance(valid | violation, mas_schema)
 
 
 # --- Gate 3: rejected/outlier suppression and deterministic dedupe keys ----------------------------
