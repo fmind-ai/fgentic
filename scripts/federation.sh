@@ -36,6 +36,9 @@ Environment:
   FGENTIC_FED_TRACE    yes writes allowlisted resource-only JSON under .agents/tmp (default: no)
   FGENTIC_FED_POLICY_PROBE
                        deny (default) or allow; allow changes only the ephemeral Git snapshot
+  FGENTIC_FED_AGENT_CARD_ROTATION
+                       yes (default) serves + proves the AgentCard key-rotation overlap window and
+                       revocation; no restores the byte-identical single-key path
   FGENTIC_DEMO_CACHE_DIR
                        optional persistent BuildKit cache directory for the source image
   FGENTIC_DEMO_STATE_DIR

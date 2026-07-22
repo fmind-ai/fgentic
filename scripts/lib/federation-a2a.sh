@@ -160,6 +160,83 @@ verify_kagent_not_public() {
   ' <<<"${routes}" >/dev/null || die "a Gateway API route exposes kagent directly"
 }
 
+verify_agent_card_rotation() {
+	# Zero-downtime AgentCard signing-key rotation acceptance (#352 Task 5). Reuses the merged bridge
+	# verifier through sign-agent-card.sh (agentcardjws.VerifySet, #920/#939) against the overlap set the
+	# lifecycle published: a card verifies under the primary OR overlap kid (overlap window), the retired
+	# kid is refused deterministically once revoked, and a tampered card still fails — all content-free.
+	# Skipped byte-for-byte when rotation is disabled, so the single-key fed:up path is unchanged.
+	[ "${FEDERATION_AGENT_CARD_ROTATION:-no}" = yes ] || return 0
+	local dir="${WORK_DIR}/rotation"
+	local keys="${dir}/agent-card-keys.json"
+	local primary_card="${dir}/agent-card.json" primary_jwk="${dir}/public-jwk.json"
+	local overlap_card="${dir}/agent-card-overlap.json" overlap_jwk="${dir}/public-jwk-overlap.json"
+	local revoked_card="${dir}/agent-card-revoked.json" revoked_jwk="${dir}/public-jwk-revoked.json"
+	local tampered="${dir}/tampered-agent-card.json" output="${dir}/verify-output.txt"
+	local primary_kid overlap_kid revoked_kid entry
+	local primary_jwk_kid overlap_jwk_kid revoked_jwk_kid
+	local signer="${ROOT_DIR}/scripts/sign-agent-card.sh"
+	mkdir -p "${dir}"
+	for entry in agent-card-keys.json agent-card.json public-jwk.json \
+		agent-card-overlap.json public-jwk-overlap.json \
+		agent-card-revoked.json public-jwk-revoked.json; do
+		kubectl --namespace agentgateway-system get configmap "${AGENT_CARD_CONFIGMAP}" \
+			--output "go-template={{index .data \"${entry}\"}}" >"${dir}/${entry}" \
+			|| die "federation AgentCard rotation artifact ${entry} is missing"
+	done
+
+	# The derived cardIdentity models the bridge shape (#920): the pinned set {primary, overlap} is disjoint
+	# from the revoked kid, and each served card's JWK kid matches its declared rotation key ID.
+	primary_kid="$(jq -er '.keyID | select(type == "string" and length > 0)' "${keys}")"
+	overlap_kid="$(jq -er '.additionalKeys[0].keyID | select(type == "string" and length > 0)' "${keys}")"
+	revoked_kid="$(jq -er '.revokedKeyIDs[0] | select(type == "string" and length > 0)' "${keys}")"
+	primary_jwk_kid="$(jq -er '.kid' "${primary_jwk}")"
+	overlap_jwk_kid="$(jq -er '.kid' "${overlap_jwk}")"
+	revoked_jwk_kid="$(jq -er '.kid' "${revoked_jwk}")"
+	[ "${primary_jwk_kid}" = "${primary_kid}" ] \
+		|| die "served AgentCard primary JWK kid does not match the rotation key set"
+	[ "${overlap_jwk_kid}" = "${overlap_kid}" ] \
+		|| die "overlap AgentCard JWK kid does not match the rotation key set"
+	[ "${revoked_jwk_kid}" = "${revoked_kid}" ] \
+		|| die "revoked AgentCard JWK kid does not match the rotation key set"
+	{ [ "${revoked_kid}" != "${primary_kid}" ] && [ "${revoked_kid}" != "${overlap_kid}" ]; } \
+		|| die "revoked AgentCard kid must be disjoint from the pinned overlap set"
+
+	# (a) Mid-overlap: a card under EITHER pinned kid verifies against the pinned set {primary, overlap}.
+	"${signer}" verify --input "${primary_card}" --public-key "${primary_jwk}" \
+		--key-id "${primary_kid}" --additional-key "${overlap_kid}=${overlap_jwk}" \
+		|| die "primary-kid AgentCard did not verify mid-overlap"
+	"${signer}" verify --input "${overlap_card}" --public-key "${primary_jwk}" \
+		--key-id "${primary_kid}" --additional-key "${overlap_kid}=${overlap_jwk}" \
+		|| die "overlap-kid AgentCard did not verify mid-overlap"
+
+	# (b) After revocation the retired kid is refused fail-closed while the promoted (overlap) kid verifies;
+	# the refused card body must never surface in the evidence (content-free revocation record).
+	if "${signer}" verify --input "${revoked_card}" --public-key "${primary_jwk}" \
+		--key-id "${primary_kid}" --additional-key "${overlap_kid}=${overlap_jwk}" \
+		--revoked-key-id "${revoked_kid}" >"${output}" 2>&1; then
+		die "revoked-kid AgentCard was accepted after revocation"
+	fi
+	if rg --fixed-strings 'fgentic-documentation' "${output}" >/dev/null; then
+		die "revoked AgentCard verification logged card content"
+	fi
+	"${signer}" verify --input "${overlap_card}" --public-key "${primary_jwk}" \
+		--key-id "${primary_kid}" --additional-key "${overlap_kid}=${overlap_jwk}" \
+		--revoked-key-id "${revoked_kid}" \
+		|| die "promoted overlap-kid AgentCard did not verify after revocation"
+
+	# (c) An unrevoked but tampered card still fails, and its mutated body is never logged.
+	jq '.description = "rotation-tamper-must-not-be-logged"' "${primary_card}" >"${tampered}"
+	if "${signer}" verify --input "${tampered}" --public-key "${primary_jwk}" \
+		--key-id "${primary_kid}" --additional-key "${overlap_kid}=${overlap_jwk}" \
+		>"${output}" 2>&1; then
+		die "tampered AgentCard was accepted mid-overlap"
+	fi
+	if rg --fixed-strings 'rotation-tamper-must-not-be-logged' "${output}" >/dev/null; then
+		die "tampered AgentCard verification logged card content"
+	fi
+}
+
 reset_delegation_quota_fixture() {
 	local flushed size
 	# This Redis exists only in the disposable acceptance lab. Resetting its transient counters
@@ -181,6 +258,7 @@ verify_cross_org_delegation() {
 	local before_receipts after_denials after_receipt receipt request request_hash tampered
 	reset_delegation_quota_fixture
 	verify_public_agent_card
+	verify_agent_card_rotation
 	verify_kagent_not_public
 
 	org_b_secret="$(bootstrap_secret_value org-b-a2a-client-secret)"
