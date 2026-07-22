@@ -14,7 +14,7 @@ The ActivityPub federation border verifies every inbound activity's HTTP Signatu
 
 That guard is correct for the real Fediverse, where peers are public. It also makes an **in-cluster peer unverifiable**: the demo profile's GoToSocial/Mastodon-wire interop peer ([#489](https://github.com/fmind-ai/fgentic/issues/489) Task 7) is reachable only at a private ClusterIP over plain HTTP, which the guard rejects before dialing. With no way to resolve the peer's key, the border denies even a legitimate, allowlisted peer at `key_unresolved`, so the whole governed-reply path cannot be exercised on demo. There is no production injection point in the resolver, and **weakening the SSRF guard is not an option** — it is a hard prerequisite that closed before the gateway was reconciled.
 
-The platform already solves the analogous problem for A2A: an explicitly configured remote agent is trusted through a **pinned** identity ("explicitly configured remote agents require a currently verified pinned Signed AgentCard", [core protocol §binding platform invariants](../../AGENTS.md); pinned P-256 JWK per remote agent, [federation spec §8.3](../federation.md)). The same first principle — an operator vouches for a specific counterparty's key out of band — applies to the ActivityPub transport.
+The platform already solves the analogous problem for A2A: an explicitly configured remote agent is trusted through a **pinned** identity — a currently verified, pinned Signed AgentCard and pinned P-256 JWK per remote agent, verified per call ([federation spec §8.3](../federation.md)). The same first principle — an operator vouches for a specific counterparty's key out of band — applies to the ActivityPub transport.
 
 ## Decision
 
