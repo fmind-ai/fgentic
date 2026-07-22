@@ -194,6 +194,7 @@ depends = [
   "check:postgres-audit",
   "check:knowledge-store",
   "check:knowledge-ingestion",
+  "check:identity-audit",
   "check:trivy-operator",
   "check:secret-rotation",
   "check:supply-chain",
@@ -403,6 +404,17 @@ run = "bash scripts/test-postgres-audit.sh"
 [tasks."check:knowledge-store"]
 description = "Validate the pgvector image, scoped roles, ACL schema, indexes, and migration Job"
 run = "bash scripts/test-knowledge-store.sh"
+
+[tasks."check:identity-audit"]
+description = "Validate the content-bounded Synapse/MAS audit projectors and closed record schemas (ADR 0018)"
+# Reuse the pinned synapse-federation-policy toolchain (like check:knowledge-ingestion) rather than
+# standing up a separate lock; the projectors are pure Python with no runtime dependency.
+run = [
+  "mise --cd apps/synapse-federation-policy exec -- uv run ruff format --check --config ../../infra/audit/pyproject.toml ../../infra/audit/base ../../infra/audit/tests",
+  "mise --cd apps/synapse-federation-policy exec -- uv run ruff check --config ../../infra/audit/pyproject.toml ../../infra/audit/base ../../infra/audit/tests",
+  "mise --cd apps/synapse-federation-policy exec -- env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=../../infra/audit/base uv run ty check ../../infra/audit/base ../../infra/audit/tests",
+  "mise --cd apps/synapse-federation-policy exec -- env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=../../infra/audit/base uv run pytest -q ../../infra/audit/tests",
+]
 
 [tasks."check:knowledge-ingestion"]
 description = "Validate bounded ingestion, connector state, ACL mirroring, and opt-in Flux contracts"
