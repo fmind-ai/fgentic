@@ -1,0 +1,12 @@
+# Disposable namespace for the ActivityPub demo interop peer (issue #489 Task 7). Applied ONLY by the
+# acceptance harness (scripts/test-activitypub-interop.sh) on the demo profile; it is not part of any
+# Flux DAG, so local/gcp never see it. Restricted Pod Security, matching every managed namespace.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: activitypub-interop
+  labels:
+    app.kubernetes.io/part-of: fgentic
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

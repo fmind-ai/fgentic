@@ -1,0 +1,17 @@
+# Self-contained, DEMO-ONLY manifest for the ActivityPub interop peer (issue #489 Task 7). It is NOT
+# referenced by any Flux entrypoint (base/local/gcp/demo overlays) — the acceptance harness applies it
+# with `kubectl apply -k` on the demo cluster and deletes it afterwards, so the peer never becomes
+# platform infrastructure. check:activitypub validates it renders and stays out of the reconciled DAG.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: activitypub-interop
+resources:
+  - namespace.yaml
+  - networkpolicy.yaml
+  - deployment.yaml
+configMapGenerator:
+  - name: activitypub-interop-peer-script
+    files:
+      - peer.py
+generatorOptions:
+  disableNameSuffixHash: true # the Deployment references a stable ConfigMap name

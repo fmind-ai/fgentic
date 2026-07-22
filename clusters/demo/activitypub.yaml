@@ -19,6 +19,11 @@ spec:
   patches:
     # Evaluation omits the observability stack, so its PodMonitor CRD is absent. Disable scraping here
     # exactly as the demo overlay does for the bridge; the deploy unit keeps it on for full profiles.
+    # Also enable the interop-acceptance posture (issue #489 Task 7): pin the two in-cluster peer
+    # public keys (ADR 0021 — an in-cluster peer cannot be SSRF-fetched by the #320-guarded resolver),
+    # and relax the FEP-8b32 object-proof requirement, because a Mastodon/GoToSocial-wire peer signs
+    # only HTTP Signatures. The HTTP-signature border, allowlist, budget admission, dedup, and
+    # FEP-8b32 OUTBOUND signing all stay ON — only the inbound object-proof gate relaxes. Demo-only.
     - target:
         kind: HelmRelease
         name: activitypub-agent-gateway
@@ -26,6 +31,34 @@ spec:
         - op: replace
           path: /spec/values/metrics/podMonitor/enabled
           value: false
+        - op: add
+          path: /spec/values/pinnedKeys
+          value:
+            enabled: true
+            secretName: activitypub-agent-gateway-pinned-keys
+            key: pins.json
+        - op: replace
+          path: /spec/values/integrity/requireInbound
+          value: false
+    # Demo-scoped only: allow the in-cluster interop peer namespace to reach the gateway inbox on
+    # :8480 (the public route stays gated). local/gcp never reconcile this unit, so their gateway
+    # ingress boundary is unaffected. The authoritative default-deny NetworkPolicy is otherwise
+    # unchanged (ingress still only from the Gateway and Prometheus).
+    - target:
+        kind: NetworkPolicy
+        name: activitypub-agent-gateway
+        namespace: activitypub
+      patch: |
+        - op: add
+          path: /spec/ingress/-
+          value:
+            from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: activitypub-interop
+            ports:
+              - protocol: TCP
+                port: 8480
   prune: true
   dependsOn:
     - name: platform-secrets # the identity/signing/credential Secrets (cluster-only demo path)

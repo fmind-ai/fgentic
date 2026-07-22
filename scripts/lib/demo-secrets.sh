@@ -337,4 +337,32 @@ create_activitypub_secrets() {
 	ap_db_password="$(bootstrap_secret_value pg-activitypub)"
 	apply_secret activitypub activitypub-agent-gateway-db \
 		--from-literal="url=postgres://activitypub:${ap_db_password}@platform-pg-rw.postgres.svc.cluster.local:5432/activitypub?sslmode=require"
+
+	create_activitypub_interop_pins
+}
+
+# Interop-acceptance pinned peer keys (issue #489 Task 7, ADR 0021). Generate two Mastodon/GtS-wire-
+# compatible RSA signer identities and pin their PUBLIC keys into the gateway. The gateway verifies an
+# inbound signature from these actors WITHOUT the #320 SSRF fetch (they are only reachable in-cluster),
+# while every unpinned actor still uses the guarded HTTPS resolver unchanged. The PRIVATE keys stay in
+# the cluster-only bootstrap Secret for the acceptance harness to load into the peer pod; only the
+# public keys are pinned. The allowlist itself is applied at acceptance time (hot-reloaded), so a peer
+# is admitted only during the proof.
+create_activitypub_interop_pins() {
+	# shellcheck source=scripts/lib/activitypub-interop.sh
+	source "${ROOT_DIR}/scripts/lib/activitypub-interop.sh"
+	ensure_activitypub_bootstrap_key "${AP_INTEROP_ALLOWED_KEY}" RSA rsa_keygen_bits:2048
+	ensure_activitypub_bootstrap_key "${AP_INTEROP_DENIED_KEY}" RSA rsa_keygen_bits:2048
+	local allowed_priv denied_priv allowed_pub denied_pub pins_json
+	allowed_priv="$(bootstrap_secret_value "${AP_INTEROP_ALLOWED_KEY}")"
+	denied_priv="$(bootstrap_secret_value "${AP_INTEROP_DENIED_KEY}")"
+	allowed_pub="$(printf '%s' "${allowed_priv}" | openssl pkey -pubout 2>/dev/null)"
+	denied_pub="$(printf '%s' "${denied_priv}" | openssl pkey -pubout 2>/dev/null)"
+	[ -n "${allowed_pub}" ] && [ -n "${denied_pub}" ] \
+		|| die "failed to derive ActivityPub interop peer public keys"
+	pins_json="$(jq -cn \
+		--arg allowed "${AP_INTEROP_ALLOWED_ACTOR}" --arg allowed_pem "${allowed_pub}" \
+		--arg denied "${AP_INTEROP_DENIED_ACTOR}" --arg denied_pem "${denied_pub}" \
+		'{pins: {($allowed): $allowed_pem, ($denied): $denied_pem}}')"
+	apply_secret activitypub "${AP_INTEROP_PINS_SECRET}" --from-literal="pins.json=${pins_json}"
 }

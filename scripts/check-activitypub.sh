@@ -274,4 +274,96 @@ if compgen -G "${ROOT_DIR}/clusters/*/secrets/activitypub-agent-gateway-*" >/dev
 	fail "an ActivityPub key leaked into a production per-cluster secret dir (demo path is cluster-only)"
 fi
 
-echo "activitypub gateway: deploy unit, default-deny NetworkPolicy, gated route, demo-only composition, and cluster-only secret path validated offline."
+# --- 6. Pinned-key resolver + the interop-acceptance posture (issue #489 Task 7, ADR 0021) --------
+# The pinned-key resolver lets an in-cluster peer that the #320 SSRF guard cannot fetch be verified
+# from an out-of-band pin, WITHOUT weakening the guard (unpinned actors stay on the guarded HTTP
+# resolver). The border, allowlist, budget, dedup, and FEP-8b32 OUTBOUND signing stay ON; only the
+# inbound object-proof gate relaxes for the Mastodon/GtS-wire peer. All demo-scoped.
+grep -q 'PINNED_KEYS_PATH' "${ROOT_DIR}/apps/activitypub-agent-gateway/internal/config/config.go" \
+	|| fail "the gateway config is missing the PINNED_KEYS_PATH knob"
+
+# The chart mounts the pinned-keys Secret and sets PINNED_KEYS_PATH only when pinnedKeys.enabled.
+pinned_render="${WORK_DIR}/chart-pinned.yaml"
+helm template activitypub-agent-gateway "${CHART_DIR}" --namespace activitypub \
+	--values "${chart_values}" --set pinnedKeys.enabled=true >"${pinned_render}"
+assert_yq \
+	'select(.kind == "Deployment") |
+	 ([.spec.template.spec.containers[0].env[] | select(.name == "PINNED_KEYS_PATH")] | length) == 1 and
+	 ([.spec.template.spec.volumes[] | select(.name == "pinned-keys")] | length) == 1' \
+	"${pinned_render}" "chart does not mount the pinned-keys Secret when pinnedKeys.enabled"
+# With pinnedKeys DISABLED (the deploy default) no pin is mounted — pinning is strictly opt-in.
+if yq -e 'select(.kind == "Deployment") | .spec.template.spec.containers[0].env[] |
+	select(.name == "PINNED_KEYS_PATH")' "${chart_render}" >/dev/null 2>&1; then
+	fail "the deploy default must NOT mount pinned keys (pinning is opt-in, demo-only)"
+fi
+
+# The demo overlay's activitypub Flux Kustomization must enable the pins, relax requireInbound, and
+# open the gateway inbox to the interop-peer namespace — and nothing else may.
+assert_yq \
+	'([.spec.patches[] | select(.target.kind == "HelmRelease") | .patch] | join(" ") |
+	   contains("pinnedKeys") and contains("activitypub-agent-gateway-pinned-keys") and
+	   contains("/spec/values/integrity/requireInbound")) and
+	 ([.spec.patches[] | select(.target.kind == "NetworkPolicy") | .patch] | join(" ") |
+	   contains("/spec/ingress/-") and contains("kubernetes.io/metadata.name: activitypub-interop"))' \
+	"${ap_flux}" "demo activitypub overlay lost the pinned-key / requireInbound / peer-ingress posture"
+
+# Prove those demo patches actually APPLY to the deploy unit (a bad JSON-patch path fails the build),
+# then assert the EFFECTIVE HelmRelease values + NetworkPolicy — not just that the patch strings exist.
+demo_deploy_flux="${WORK_DIR}/demo-activitypub-deploy-flux.yaml"
+FIXTURE_PATH="${FIXTURE}" yq eval-all -o=yaml \
+	'select(.apiVersion == "kustomize.toolkit.fluxcd.io/v1" and .kind == "Kustomization" and .metadata.name == "activitypub") |
+	 .spec.postBuild = load(strenv(FIXTURE_PATH)).spec.postBuild' \
+	"${demo_render}" >"${demo_deploy_flux}"
+demo_deploy_built="${WORK_DIR}/demo-activitypub-deploy.yaml"
+(
+	cd "${ROOT_DIR}"
+	flux build kustomization activitypub \
+		--path apps/activitypub-agent-gateway/deploy \
+		--kustomization-file "${demo_deploy_flux}" \
+		--dry-run --in-memory-build --strict-substitute
+) >"${demo_deploy_built}"
+assert_yq \
+	'select(.kind == "HelmRelease" and .metadata.name == "activitypub-agent-gateway") |
+	 (.spec.values.pinnedKeys.enabled == true and
+	  .spec.values.pinnedKeys.secretName == "activitypub-agent-gateway-pinned-keys" and
+	  .spec.values.integrity.requireInbound == false and
+	  .spec.values.policy.enabled == true and .spec.values.budget.enabled == true and
+	  .spec.values.integrity.enabled == true and .spec.values.httpRoute.enabled == false)' \
+	"${demo_deploy_built}" "demo HelmRelease posture drifted (pins on, requireInbound off, border/budget still on, route off)"
+assert_yq \
+	'select(.kind == "NetworkPolicy" and .metadata.name == "activitypub-agent-gateway") |
+	 ([.spec.ingress[].from[].namespaceSelector.matchLabels."kubernetes.io/metadata.name"] | sort | join(",")) == "activitypub-interop,gateway,monitoring"' \
+	"${demo_deploy_built}" "demo gateway ingress must add ONLY the interop-peer namespace (gateway + monitoring retained)"
+
+# The demo secret path pins the peer PUBLIC keys and keeps the private keys cluster-only.
+grep -q 'create_activitypub_interop_pins' "${demo_secrets}" \
+	|| fail "demo secret path does not pin the interop peer keys"
+for token in ap-peer-allowed-key ap-peer-denied-key activitypub-agent-gateway-pinned-keys; do
+	grep -q "${token}" "${ROOT_DIR}/scripts/lib/activitypub-interop.sh" \
+		|| fail "interop constants missing ${token}"
+done
+
+# The scripted peer manifest renders, is digest-pinned (never :latest), default-deny, and — being in
+# no Flux entrypoint — is applied ONLY by the acceptance harness (local/gcp never see it).
+peer_render="${WORK_DIR}/interop-peer.yaml"
+kubectl kustomize "${ROOT_DIR}/clusters/demo/interop-peer" >"${peer_render}"
+kubeconform -strict -ignore-missing-schemas -summary "${peer_render}" >/dev/null
+assert_yq \
+	'select(.kind == "Deployment") |
+	 (.spec.template.spec.containers[0].image | test("@sha256:[0-9a-f]{64}$")) and
+	 (.spec.template.spec.containers[0].image | test(":latest$") | not) and
+	 (.spec.template.spec.securityContext.runAsNonRoot == true)' \
+	"${peer_render}" "interop peer image must be digest-pinned non-root (never :latest)"
+assert_yq \
+	'select(.kind == "NetworkPolicy" and .metadata.name == "activitypub-interop-peer") |
+	 ((.spec.policyTypes | sort | join(",")) == "Egress,Ingress" and
+	  ((.spec | has("ingress")) | not) and
+	  ([.spec.egress[].to[].namespaceSelector.matchLabels."kubernetes.io/metadata.name"] | sort | join(",")) == "activitypub,kube-system")' \
+	"${peer_render}" "interop peer NetworkPolicy must be default-deny, egress only to DNS + the gateway"
+for entrypoint in base local gcp; do
+	if grep -qi 'activitypub-interop' "${WORK_DIR}/${entrypoint}.yaml"; then
+		fail "clusters/${entrypoint} must not reference the interop peer (acceptance-only, demo profile)"
+	fi
+done
+
+echo "activitypub gateway: deploy unit, default-deny NetworkPolicy, gated route, demo-only composition, pinned-key resolver + interop peer, and cluster-only secret path validated offline."

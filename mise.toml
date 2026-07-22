@@ -502,6 +502,10 @@ run = "bash scripts/test-mautrix-bridges.sh"
 description = "Validate the demo-reconciled ActivityPub gateway: rendered deploy unit, quota, default-deny NetworkPolicy, gated route, and demo-only composition"
 run = "bash scripts/check-activitypub.sh"
 
+[tasks."test:activitypub-interop"]
+description = "Runtime GoToSocial/Mastodon-wire interop acceptance for the demo ActivityPub gateway (run after demo:up)"
+run = "bash scripts/test-activitypub-interop.sh"
+
 [tasks."test:network-policies"]
 description = "Probe allow and deny paths on the active reconciled cluster"
 run = "bash scripts/test-network-policies.sh"
