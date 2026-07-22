@@ -24,18 +24,25 @@ source "${ROOT_DIR}/scripts/lib.sh"
 require_commands yq jq python3
 
 OUT_ROOT="${ROOT_DIR}"
+REGISTRY="${ROOT_DIR}/infra/federation/registry/partners.yaml"
 while [ "$#" -gt 0 ]; do
 	case "$1" in
 		--out-root)
 			OUT_ROOT="${2:?"--out-root requires a directory"}"
 			shift 2
 			;;
+		--registry)
+			# check:fed-registry drives an alternate (fixture) registry through the same renderer to prove
+			# the additive AgentCard rotation model renders deterministically and fails closed on bad input.
+			REGISTRY="${2:?"--registry requires a file"}"
+			shift 2
+			;;
 		*) fail "unknown argument: $1" ;;
 	esac
 done
 readonly OUT_ROOT
+readonly REGISTRY
 
-readonly REGISTRY="${ROOT_DIR}/infra/federation/registry/partners.yaml"
 [ -f "${REGISTRY}" ] || fail "registry not found: ${REGISTRY}"
 
 # Exactly one host and one denied control server match the federation lab's single-partner platform
@@ -105,5 +112,37 @@ if missing:
 with open(dst, "w", encoding="utf-8") as handle:
     handle.writelines(out)
 PY
+
+# 3. AgentCard signing-key rotation set (#352, Task 4) — ADDITIVE. Rotation is modelled as key-IDENTITY
+#    state in the registry (kids only; the signer lifecycle owns the private PEM and serves the matching
+#    public JWKs, never Git). We derive the exact bridge cardIdentity shape (keyID + additionalKeys[].keyID
+#    + revokedKeyIDs, #920) so ONE registry change drives both the signer (which kids to serve during the
+#    overlap window) and the verifier (which kids to accept, which to refuse). A host with NEITHER an overlap
+#    set NOR a revocation list writes NO artifact, so a single-key deployment stays byte-identical to today.
+card_key_set="$(yq -o=json '.partners[] | select(.role == "host") | .a2a' "${REGISTRY}" | jq -c '{
+  keyID: .card_key_id,
+  additionalKeys: [ (.card_additional_key_ids // [])[] | {keyID: .} ],
+  revokedKeyIDs: (.card_revoked_key_ids // [])
+}')"
+# Fail closed on an invalid rotation set so the derived signer/verifier config is never wrong: every kid is
+# non-empty, the pinned set (primary + overlap) has no duplicates, the revoked set has no duplicates, and no
+# kid is both pinned and revoked (revocation wins). check:fed-registry asserts the same invariant on intake.
+printf '%s' "${card_key_set}" | jq -e '
+  ([.keyID] + [.additionalKeys[].keyID]) as $pinned
+  | .revokedKeyIDs as $revoked
+  | ($pinned | all(type == "string" and length >= 1))
+    and ($revoked | all(type == "string" and length >= 1))
+    and (($pinned | length) == ($pinned | unique | length))
+    and (($revoked | length) == ($revoked | unique | length))
+    and (($pinned - ($pinned - $revoked)) | length == 0)
+' >/dev/null || fail "host AgentCard key rotation set is invalid (empty, duplicate, or pinned-and-revoked kid)"
+# Only a host that actually rotates (declares an overlap window or a revocation) materializes the derived
+# artifact; the default single-key host renders nothing here, preserving byte-for-byte the committed tree.
+rotation_entries="$(printf '%s' "${card_key_set}" | jq -r '(.additionalKeys | length) + (.revokedKeyIDs | length)')"
+if [ "${rotation_entries}" -gt 0 ]; then
+	card_keys_out="${OUT_ROOT}/infra/federation/delegation/agent-card-keys.json"
+	mkdir -p "$(dirname "${card_keys_out}")"
+	printf '%s\n' "${card_key_set}" | jq '.' >"${card_keys_out}"
+fi
 
 echo "fed-registry: rendered policy.json + platform-settings federation keys from the trust registry"
