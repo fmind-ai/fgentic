@@ -210,6 +210,7 @@ depends = [
   "check:federation-onboarding",
   "check:smoke-workflow",
   "check:mautrix-bridges",
+  "check:activitypub",
   "check:agent-readiness",
   "check:github-actions",
   "check:workflows",
@@ -496,6 +497,10 @@ run = "bash scripts/check-github-actions.sh"
 [tasks."check:mautrix-bridges"]
 description = "Render and validate optional mautrix runtimes, privacy defaults, secrets, and composable Flux layers"
 run = "bash scripts/test-mautrix-bridges.sh"
+
+[tasks."check:activitypub"]
+description = "Validate the demo-reconciled ActivityPub gateway: rendered deploy unit, quota, default-deny NetworkPolicy, gated route, and demo-only composition"
+run = "bash scripts/check-activitypub.sh"
 
 [tasks."test:network-policies"]
 description = "Probe allow and deny paths on the active reconciled cluster"

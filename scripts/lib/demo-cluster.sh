@@ -1314,6 +1314,16 @@ render_bootstrap_namespaces() {
 	PROFILE="${PROFILE}" yq 'select(.kind == "Namespace" and
       (strenv(PROFILE) != "demo" or .metadata.name != "trivy-system"))' \
 		<<<"${rendered_namespaces}"
+
+	# Demo also reconciles the ActivityPub gateway (issue #489). Its Namespace lives with the app
+	# deploy unit rather than infra/namespaces, so surface it here too — the cluster-only
+	# identity/signing/credential Secrets must land in it before Flux starts. Flux later adopts it.
+	# The explicit document separator keeps this stream a valid multi-doc after the first yq output.
+	if [ "${PROFILE}" = "demo" ]; then
+		echo "---"
+		yq 'select(.kind == "Namespace")' \
+			"${SNAPSHOT_DIR}/apps/activitypub-agent-gateway/deploy/namespace.yaml"
+	fi
 }
 
 demo_up() {

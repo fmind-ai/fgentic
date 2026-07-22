@@ -255,6 +255,8 @@ EOF
 	)"
 	apply_secret matrix mas-demo-admin --from-literal=config.yaml="${mas_admin_config}"
 
+	create_activitypub_secrets
+
 	if [ -n "${MODEL_SECRET_NAME}" ]; then
 		apply_secret agentgateway-system "${MODEL_SECRET_NAME}" \
 			--from-literal=Authorization="${MODEL_SECRET_VALUE}"
@@ -262,4 +264,40 @@ EOF
 		apply_secret agentgateway-system gcp-adc \
 			--from-file="key.json=${GOOGLE_APPLICATION_CREDENTIALS}"
 	fi
+}
+
+# ActivityPub agent gateway secrets (issue #489, demo profile only). These are the cluster-only
+# counterparts of the SOPS templates in infra/secrets/ — generated in-cluster, never committed and
+# never SOPS-encrypted (the ephemeral demo secret path). The identity (P-256) and signing (Ed25519)
+# PEM keys are persisted in the bootstrap Secret so a retained cluster keeps a stable did:key anchor
+# across restarts; the A2A workload credential proves the gateway is the caller to agentgateway.
+create_activitypub_secrets() {
+	local ap_identity ap_signing ap_token
+	ap_identity="$(bootstrap_secret_value ap-identity-key)"
+	if [ -z "${ap_identity}" ]; then
+		local ap_identity_key ap_signing_key ap_a2a_key ap_patch_document ap_patch_data
+		ap_identity_key="$(openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 2>/dev/null)"
+		ap_signing_key="$(openssl genpkey -algorithm ed25519 2>/dev/null)"
+		ap_a2a_key="$(random_hex 32)"
+		ap_patch_document="$(kubectl --namespace flux-system create secret generic \
+			fgentic-demo-bootstrap \
+			--from-literal="ap-identity-key=${ap_identity_key}" \
+			--from-literal="ap-signing-key=${ap_signing_key}" \
+			--from-literal="ap-a2a-key=${ap_a2a_key}" \
+			--dry-run=client --output=json)"
+		ap_patch_data="$(jq --compact-output '{data: .data}' <<<"${ap_patch_document}")"
+		printf '%s\n' "${ap_patch_data}" \
+			| kubectl --namespace flux-system patch secret fgentic-demo-bootstrap \
+				--type=merge --patch-file /dev/stdin >/dev/null
+	fi
+
+	ap_identity="$(bootstrap_secret_value ap-identity-key)"
+	ap_signing="$(bootstrap_secret_value ap-signing-key)"
+	ap_token="$(bootstrap_secret_value ap-a2a-key)"
+	apply_secret activitypub activitypub-agent-gateway-identity-key \
+		--from-literal="p256.pem=${ap_identity}"
+	apply_secret activitypub activitypub-agent-gateway-signing-key \
+		--from-literal="ed25519.pem=${ap_signing}"
+	apply_secret activitypub activitypub-agent-gateway-credential \
+		--from-literal="token=${ap_token}"
 }

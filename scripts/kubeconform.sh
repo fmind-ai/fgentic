@@ -123,9 +123,10 @@ if [ -d apps/matrix-a2a-bridge/chart ]; then
 fi
 
 echo "==> Rendering + validating apps/activitypub-agent-gateway/chart"
-# The ActivityPub gateway is an opt-in second federation transport (docs/adr/0014); it is not yet
-# wired into the reconciled cluster DAG, so — like the mautrix bridge profiles — its chart is
-# validated here directly. Render with the public route enabled so the gated HTTPRoute is checked.
+# The ActivityPub gateway is an additive second federation transport (docs/adr/0014), reconciled on
+# the demo profile only (issue #489; local/gcp keep it absent). Its chart is validated here directly;
+# the demo composition, default-deny NetworkPolicy, and gated route are gated by check:activitypub.
+# Render with the public route enabled so the gated HTTPRoute is checked.
 if [ -d apps/activitypub-agent-gateway/chart ]; then
 	# Render with the public route AND the policy border on so both gated paths are checked.
 	helm template activitypub-agent-gateway apps/activitypub-agent-gateway/chart \

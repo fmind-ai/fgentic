@@ -329,8 +329,10 @@ demo_bootstrap_names="$(
 	yq eval-all -o=json '[select(.kind == "Namespace") | .metadata.name] | sort' \
 		"${WORK_DIR}/demo-bootstrap-namespaces.yaml" | jq --compact-output .
 )"
+# The demo profile additionally reconciles the ActivityPub gateway (issue #489), whose Namespace
+# lives with the app deploy unit and is surfaced early so its cluster-only Secrets can land.
 [ "${demo_bootstrap_names}" = \
-	'["agentgateway-system","bridge","bridges","cert-manager","cnpg-system","gateway","kagent","keycloak","knowledge","matrix","models","monitoring","postgres"]' ] || {
+	'["activitypub","agentgateway-system","bridge","bridges","cert-manager","cnpg-system","gateway","kagent","keycloak","knowledge","matrix","models","monitoring","postgres"]' ] || {
 	echo "error: demo bootstrap Namespace set drifted: ${demo_bootstrap_names}" >&2
 	exit 1
 }
@@ -665,7 +667,7 @@ assert_yq \
 	'select(.kind == "Kustomization" and .metadata.name == "agentgateway-embeddings") |
     .spec.path == "./infra/agentgateway/providers/profiles/embeddings/disabled"' \
 	"${WORK_DIR}/cluster.yaml" 'demo must keep the sovereign embeddings runtime structurally disabled'
-expected_demo_layers=$'admin\nagentgateway\nagentgateway-embeddings\nagentgateway-provider\nalert-delivery\nbridge\ncanary\ncontrollers\ngateway\nkagent\nknowledge-ingestion\nmatrix\nnamespaces\nplatform-secrets\npolicies\npostgres'
+expected_demo_layers=$'activitypub\nadmin\nagentgateway\nagentgateway-embeddings\nagentgateway-provider\nalert-delivery\nbridge\ncanary\ncontrollers\ngateway\nkagent\nknowledge-ingestion\nmatrix\nnamespaces\nplatform-secrets\npolicies\npostgres'
 actual_demo_layers="$(
 	yq eval-all -N -r 'select(.kind == "Kustomization") | .metadata.name' \
 		"${WORK_DIR}/cluster.yaml" | sort

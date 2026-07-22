@@ -7,6 +7,9 @@ resources:
   - ../base
   - platform-settings.yaml
   - secrets.yaml
+  # Demo-only: reconcile the ActivityPub agent gateway (issue #489). local/gcp deliberately omit it,
+  # so this is the single composition point. Public exposure stays gated (deploy keeps httpRoute off).
+  - activitypub.yaml
 components:
   - ../base/provider-selection
 patches:
