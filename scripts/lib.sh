@@ -29,7 +29,7 @@ require_commands() {
 
 bootstrap_secret_value() {
 	kubectl --namespace flux-system get secret fgentic-demo-bootstrap \
-		--output "go-template={{index .data \"$1\" | base64decode}}"
+		--output "go-template={{if index .data \"$1\"}}{{index .data \"$1\" | base64decode}}{{end}}"
 }
 
 request_status() {
