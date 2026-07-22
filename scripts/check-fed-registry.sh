@@ -95,8 +95,8 @@ jq -e '
       # and NO kid both pinned and revoked (revocation wins — a pinned-and-revoked kid fails closed).
       ([.card_key_id] + (.card_additional_key_ids // [])) as $pinned
       | (.card_revoked_key_ids // []) as $revoked
-      | ($pinned | all(type == "string" and length >= 1))
-        and ($revoked | all(type == "string" and length >= 1))
+      | ($pinned | all(type == "string" and test("\\S")))
+        and ($revoked | all(type == "string" and test("\\S")))
         and (($pinned | length) == ($pinned | unique | length))
         and (($revoked | length) == ($revoked | unique | length))
         and (($pinned - ($pinned - $revoked)) | length == 0)
@@ -184,6 +184,13 @@ conflict_fixture="${WORK_DIR}/registry-rotation-conflict.yaml"
 fixture_registry "${conflict_fixture}" "[\"${OVERLAP_KID}\"]" "[\"${PRIMARY_KID}\"]"
 if bash "${ROOT_DIR}/scripts/fed-registry-render.sh" --registry "${conflict_fixture}" --out-root "${WORK_DIR}/rotconflict" >/dev/null 2>&1; then
 	fail "renderer accepted a pinned-and-revoked AgentCard signing kid (revocation must win, fail closed)"
+fi
+
+# (d) A whitespace-only kid is not a real key ID and must fail closed, same as an empty one (#352 Task 4).
+ws_fixture="${WORK_DIR}/registry-rotation-ws.yaml"
+fixture_registry "${ws_fixture}" "[\"  \"]" "[]"
+if bash "${ROOT_DIR}/scripts/fed-registry-render.sh" --registry "${ws_fixture}" --out-root "${WORK_DIR}/rotws" >/dev/null 2>&1; then
+	fail "renderer accepted a whitespace-only AgentCard signing kid"
 fi
 
 # 3. Plane 1 — Synapse federation_domain_whitelist. platform-settings is registry-rendered (step 2), so

@@ -130,8 +130,8 @@ card_key_set="$(yq -o=json '.partners[] | select(.role == "host") | .a2a' "${REG
 printf '%s' "${card_key_set}" | jq -e '
   ([.keyID] + [.additionalKeys[].keyID]) as $pinned
   | .revokedKeyIDs as $revoked
-  | ($pinned | all(type == "string" and length >= 1))
-    and ($revoked | all(type == "string" and length >= 1))
+  | ($pinned | all(type == "string" and test("\\S")))
+    and ($revoked | all(type == "string" and test("\\S")))
     and (($pinned | length) == ($pinned | unique | length))
     and (($revoked | length) == ($revoked | unique | length))
     and (($pinned - ($pinned - $revoked)) | length == 0)
