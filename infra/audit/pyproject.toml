@@ -5,6 +5,7 @@ target-version = "py312"
 [tool.ruff.lint.per-file-ignores]
 "test_*.py" = [
   "A002",
+  "ARG002", # test fakes implement Protocol methods with intentionally-unused args
   "S101",
   "SLF001",
 ]
