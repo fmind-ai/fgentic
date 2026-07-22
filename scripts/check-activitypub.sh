@@ -328,8 +328,31 @@ assert_yq \
 	  .spec.values.pinnedKeys.secretName == "activitypub-agent-gateway-pinned-keys" and
 	  .spec.values.integrity.requireInbound == false and
 	  .spec.values.policy.enabled == true and .spec.values.budget.enabled == true and
-	  .spec.values.integrity.enabled == true and .spec.values.httpRoute.enabled == false)' \
-	"${demo_deploy_built}" "demo HelmRelease posture drifted (pins on, requireInbound off, border/budget still on, route off)"
+	  .spec.values.integrity.enabled == true and .spec.values.httpRoute.enabled == false and
+	  .spec.values.image.repository == "activitypub-agent-gateway" and
+	  .spec.values.image.pullPolicy == "Never" and
+	  (.spec.values.image.repository | contains("ghcr.io") | not))' \
+	"${demo_deploy_built}" "demo HelmRelease posture drifted (pins on, requireInbound off, border/budget on, route off, local image)"
+# The GHCR-unpublished AP image is built + k3d-imported locally for demo; the demo HelmRelease must
+# reference the locally imported tag (the CI-substituted demo_bridge_tag), never GHCR.
+assert_yq \
+	'select(.kind == "HelmRelease" and .metadata.name == "activitypub-agent-gateway") |
+	 .spec.values.image.tag == "local"' \
+	"${demo_deploy_built}" "demo AP image tag must be the local demo_bridge_tag, not a GHCR digest"
+# The deploy unit (the reference for local/gcp, which do NOT override it) must still name the GHCR
+# repository, so only demo diverges to a local image.
+assert_yq \
+	'select(.kind == "HelmRelease" and .metadata.name == "activitypub-agent-gateway") |
+	 .spec.values.image.repository == "ghcr.io/fmind-ai/activitypub-agent-gateway"' \
+	"${DEPLOY_DIR}/helmrelease.yaml" "deploy unit must keep the GHCR image repository for local/gcp"
+# The demo build + side-load lifecycle must mirror the bridge: build the AP image and k3d-import it.
+grep -q 'AP_GATEWAY_IMAGE' "${ROOT_DIR}/scripts/demo.sh" \
+	|| fail "demo lifecycle does not define the AP gateway image tag"
+grep -qF "build_image \"\${AP_GATEWAY_IMAGE}\"" "${ROOT_DIR}/scripts/lib/demo-cluster.sh" \
+	|| fail "demo lifecycle does not build the AP gateway image like the bridge"
+grep -qF "k3d image import --mode auto --cluster \"\${CLUSTER_NAME}\" \"\${AP_GATEWAY_IMAGE}\"" \
+	"${ROOT_DIR}/scripts/lib/demo-cluster.sh" \
+	|| fail "demo lifecycle does not side-load the AP gateway image into the cluster"
 assert_yq \
 	'select(.kind == "NetworkPolicy" and .metadata.name == "activitypub-agent-gateway") |
 	 ([.spec.ingress[].from[].namespaceSelector.matchLabels."kubernetes.io/metadata.name"] | sort | join(",")) == "activitypub-interop,gateway,monitoring"' \

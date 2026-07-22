@@ -118,6 +118,10 @@ BRIDGE_TAG="demo-${RANDOM}-$$"
 SOURCE_IMAGE="fgentic-demo-source-${CLUSTER_NAME}:${BRIDGE_TAG}"
 SOURCE_REVISION=""
 BRIDGE_IMAGE="matrix-a2a-bridge:${BRIDGE_TAG}"
+# The demo profile also reconciles the ActivityPub agent gateway (issue #489), whose image is not
+# published to GHCR. Build + side-load it locally under the same shared demo tag as the bridge, and
+# override the HelmRelease to this local tag with pullPolicy Never (demo only; local/gcp use GHCR).
+AP_GATEWAY_IMAGE="activitypub-agent-gateway:${BRIDGE_TAG}"
 [[ "${CLUSTER_NAME}" =~ ^[a-z0-9][a-z0-9-]{0,47}$ ]] || die "invalid FGENTIC_DEMO_CLUSTER"
 if [ "${PROFILE}" = "demo" ]; then
 	case "${CLUSTER_NAME}" in

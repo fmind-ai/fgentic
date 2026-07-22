@@ -880,6 +880,12 @@ EOF
 		build_image "${BRIDGE_IMAGE}" "${ROOT_DIR}/apps/matrix-a2a-bridge/Dockerfile" \
 			"${ROOT_DIR}/apps/matrix-a2a-bridge" bridge
 	fi
+	# The ActivityPub gateway image is GHCR-unpublished and reconciled only on demo (issue #489). Build
+	# it exactly like the bridge (same buildx/cache path via build_image).
+	if [ "${PROFILE}" = "demo" ]; then
+		build_image "${AP_GATEWAY_IMAGE}" "${ROOT_DIR}/apps/activitypub-agent-gateway/Dockerfile" \
+			"${ROOT_DIR}/apps/activitypub-agent-gateway" activitypub
+	fi
 	# The source is the first side-loaded workload requested; delay only the bridge image through
 	# the much longer platform dependency chain.
 	k3d image import --mode auto --cluster "${CLUSTER_NAME}" "${SOURCE_IMAGE}" >/dev/null
@@ -887,6 +893,15 @@ EOF
 	# k3d copied the image into its owned image volume. Dropping the transient host image prevents
 	# random-tagged images from accumulating on every stop/up reuse, including pre-fix leftovers.
 	prune_owned_host_images "${SOURCE_IMAGE%:*}"
+	# Side-load the AP gateway image eagerly. Unlike the bridge (loaded late to narrow the Never-image
+	# window), the AP gateway sits deep in the Flux dependency chain (platform-secrets, agentgateway,
+	# kagent), so importing it now guarantees it is present in the cluster well before its HelmRelease
+	# reconciles and creates the pod — no GHCR pull is ever attempted.
+	if [ "${PROFILE}" = "demo" ]; then
+		k3d image import --mode auto --cluster "${CLUSTER_NAME}" "${AP_GATEWAY_IMAGE}" >/dev/null
+		resource_trace_require_volume_sample
+		prune_owned_host_images "${AP_GATEWAY_IMAGE%:*}"
+	fi
 }
 
 load_bridge_image_if_requested() {
@@ -1483,6 +1498,9 @@ demo_up() {
 	prune_stale_node_images "${SOURCE_IMAGE}"
 	if [ "${PROFILE}" = demo ] || [ "${PROFILE}" = federation ]; then
 		prune_stale_node_images "${BRIDGE_IMAGE}"
+	fi
+	if [ "${PROFILE}" = demo ]; then
+		prune_stale_node_images "${AP_GATEWAY_IMAGE}"
 	fi
 	local admission_context
 	admission_context="$(kubectl config current-context)"

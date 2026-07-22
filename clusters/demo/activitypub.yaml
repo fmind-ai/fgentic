@@ -19,6 +19,9 @@ spec:
   patches:
     # Evaluation omits the observability stack, so its PodMonitor CRD is absent. Disable scraping here
     # exactly as the demo overlay does for the bridge; the deploy unit keeps it on for full profiles.
+    # The AP gateway image is GHCR-unpublished, so — exactly like the bridge — demo overrides it to the
+    # locally built + k3d-imported tag (${demo_bridge_tag}) with pullPolicy Never so the pod never
+    # pulls from GHCR. local/gcp keep the deploy unit's GHCR repository reference unchanged.
     # Also enable the interop-acceptance posture (issue #489 Task 7): pin the two in-cluster peer
     # public keys (ADR 0021 — an in-cluster peer cannot be SSRF-fetched by the #320-guarded resolver),
     # and relax the FEP-8b32 object-proof requirement, because a Mastodon/GoToSocial-wire peer signs
@@ -31,6 +34,12 @@ spec:
         - op: replace
           path: /spec/values/metrics/podMonitor/enabled
           value: false
+        - op: replace
+          path: /spec/values/image
+          value:
+            repository: activitypub-agent-gateway
+            tag: ${demo_bridge_tag}
+            pullPolicy: Never
         - op: add
           path: /spec/values/pinnedKeys
           value:
