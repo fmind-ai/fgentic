@@ -284,28 +284,39 @@ EOF
 # PEM keys are persisted in the bootstrap Secret so a retained cluster keeps a stable did:key anchor
 # across restarts; the A2A workload credential (bootstrap ap-a2a-key, also registered as an
 # agentgateway caller by apply_a2a_secrets) proves the gateway is the caller to agentgateway.
+# Generate one ActivityPub PEM key into the demo bootstrap Secret if (and only if) it is absent, so a
+# retained cluster preserves established identities and only newly added keys are minted.
+# Args: <bootstrap-key-name> <openssl-algorithm> [pkeyopt]
+ensure_activitypub_bootstrap_key() {
+	local bootstrap_key="$1"
+	local algorithm="$2"
+	local pkeyopt="${3:-}"
+	local existing generated patch_document patch_data
+	existing="$(bootstrap_secret_value "${bootstrap_key}")"
+	[ -n "${existing}" ] && return 0
+	if [ -n "${pkeyopt}" ]; then
+		generated="$(openssl genpkey -algorithm "${algorithm}" -pkeyopt "${pkeyopt}" 2>/dev/null)"
+	else
+		generated="$(openssl genpkey -algorithm "${algorithm}" 2>/dev/null)"
+	fi
+	[ -n "${generated}" ] || die "failed to generate ActivityPub ${bootstrap_key} (${algorithm})"
+	patch_document="$(kubectl --namespace flux-system create secret generic fgentic-demo-bootstrap \
+		--from-literal="${bootstrap_key}=${generated}" --dry-run=client --output=json)"
+	patch_data="$(jq --compact-output '{data: .data}' <<<"${patch_document}")"
+	printf '%s\n' "${patch_data}" \
+		| kubectl --namespace flux-system patch secret fgentic-demo-bootstrap \
+			--type=merge --patch-file /dev/stdin >/dev/null
+}
+
 create_activitypub_secrets() {
 	local ap_identity ap_signing ap_rsa ap_token ap_db_password
-	ap_identity="$(bootstrap_secret_value ap-identity-key)"
-	if [ -z "${ap_identity}" ]; then
-		local ap_identity_key ap_signing_key ap_rsa_key ap_patch_document ap_patch_data
-		ap_identity_key="$(openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 2>/dev/null)"
-		ap_signing_key="$(openssl genpkey -algorithm ed25519 2>/dev/null)"
-		# The deploy enables groups + the status feed, so the gateway also needs the RSA transport key
-		# (rsa.pem) for outbound RFC 9421 / Cavage HTTP signatures (docs/fediverse.md §3, #476). Without
-		# it the pod fails to start. 2048-bit is the app-enforced minimum (chart/values.yaml).
-		ap_rsa_key="$(openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 2>/dev/null)"
-		ap_patch_document="$(kubectl --namespace flux-system create secret generic \
-			fgentic-demo-bootstrap \
-			--from-literal="ap-identity-key=${ap_identity_key}" \
-			--from-literal="ap-signing-key=${ap_signing_key}" \
-			--from-literal="ap-rsa-key=${ap_rsa_key}" \
-			--dry-run=client --output=json)"
-		ap_patch_data="$(jq --compact-output '{data: .data}' <<<"${ap_patch_document}")"
-		printf '%s\n' "${ap_patch_data}" \
-			| kubectl --namespace flux-system patch secret fgentic-demo-bootstrap \
-				--type=merge --patch-file /dev/stdin >/dev/null
-	fi
+	# Persist each PEM key in the bootstrap Secret independently, generating ONLY the missing ones so a
+	# retained cluster keeps its stable did:key / #main-key anchors while a newly required key (e.g. the
+	# RSA transport key rsa.pem, #476 — the deploy enables groups + the status feed, without which the
+	# pod fails to start) self-heals on upgrade without rotating the established identity keys.
+	ensure_activitypub_bootstrap_key ap-identity-key EC ec_paramgen_curve:P-256
+	ensure_activitypub_bootstrap_key ap-signing-key ed25519
+	ensure_activitypub_bootstrap_key ap-rsa-key RSA rsa_keygen_bits:2048 # >= 2048 (chart-enforced)
 
 	ap_identity="$(bootstrap_secret_value ap-identity-key)"
 	ap_signing="$(bootstrap_secret_value ap-signing-key)"
