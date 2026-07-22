@@ -12,15 +12,18 @@
 # by scripts/audit-attribution.sh and the streams named in evidence_sources against the reconciled lab.
 set -euo pipefail
 
-ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-readonly ROOT_DIR
+SCRIPT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+readonly SCRIPT_ROOT
 # shellcheck source=scripts/lib.sh
-source "${ROOT_DIR}/scripts/lib.sh"
+source "${SCRIPT_ROOT}/scripts/lib.sh"
 
 require_commands yq jq
 
-readonly REGISTRY="${ROOT_DIR}/infra/federation/registry/partners.yaml"
-readonly RECORD_DIR="${FGENTIC_FED_RECORD_DIR:-${ROOT_DIR}/.agents/tmp}"
+# FGENTIC_FED_TREE redirects the registry read to a scratch mirror (see fed-break-glass.sh); it defaults to
+# the repo root so the operator path is unchanged. Scripts/libraries always resolve against SCRIPT_ROOT.
+readonly FED_TREE="${FGENTIC_FED_TREE:-${SCRIPT_ROOT}}"
+readonly REGISTRY="${FED_TREE}/infra/federation/registry/partners.yaml"
+readonly RECORD_DIR="${FGENTIC_FED_RECORD_DIR:-${SCRIPT_ROOT}/.agents/tmp}"
 
 [ "$#" -eq 1 ] || fail "usage: scripts/fed-evidence-pack.sh <partner_server_name>"
 partner="$1"
