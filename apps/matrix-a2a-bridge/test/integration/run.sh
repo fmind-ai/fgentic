@@ -508,6 +508,64 @@ disrupt_crash_recovery() {
   done
 }
 
+wait_for_driver_phase() {
+  local field="$1"
+  local phase="$2"
+  local timeout="${3:-120}"
+  local deadline=$((SECONDS + timeout))
+  while ((SECONDS < deadline)); do
+    if kubectl --request-timeout=5s --namespace "${NAMESPACE}" logs "job/${DRIVER_JOB_NAME}" 2>/dev/null |
+      jq -R -e --arg field "${field}" --arg phase "${phase}" \
+        'fromjson? | select(.[$field] == $phase)' >/dev/null; then
+      return 0
+    fi
+    sleep 0.2
+  done
+  echo "Error: driver did not reach ${field}=${phase} within ${timeout}s" >&2
+  print_driver_logs
+  return 1
+}
+
+disrupt_model_outage() {
+  echo "==> Scaling the model backend to zero for the outage window"
+  wait_for_driver_phase model_outage_phase await_outage 120
+  kubectl --request-timeout=10s --namespace "${PLAIN_AGENT_NAMESPACE}" \
+    scale deployment/plain-a2a-agent --replicas=0
+  kubectl --request-timeout=65s --namespace "${PLAIN_AGENT_NAMESPACE}" wait \
+    --for=delete pod --selector app.kubernetes.io/name=plain-a2a-agent --timeout=60s
+  echo "==> Restoring the model backend"
+  wait_for_driver_phase model_outage_phase await_recovery 180
+  kubectl --request-timeout=10s --namespace "${PLAIN_AGENT_NAMESPACE}" \
+    scale deployment/plain-a2a-agent --replicas=1
+  kubectl --request-timeout=125s --namespace "${PLAIN_AGENT_NAMESPACE}" \
+    rollout status deployment/plain-a2a-agent --timeout=120s
+}
+
+disrupt_synapse_restart() {
+  echo "==> Restarting Synapse while a task is mid-poll"
+  wait_for_driver_phase synapse_restart_phase task_polling 120
+  kubectl --request-timeout=10s --namespace "${NAMESPACE}" rollout restart deployment/synapse
+  kubectl --request-timeout=305s --namespace "${NAMESPACE}" \
+    rollout status deployment/synapse --timeout=300s
+}
+
+verify_model_outage_evidence() {
+  local want=$((${MODEL_OUTAGE_MAX_ATTEMPTS:-3} - 1))
+  local retries
+  retries="$(
+    kubectl --request-timeout=10s --namespace "${NAMESPACE}" logs deployment/bridge 2>/dev/null |
+      jq -Rr 'fromjson?
+        | select(.msg == "durable delegation scheduled for retry" and .error_code == "a2a_preflight_retry")
+        | .error_code' |
+      wc -l | tr -d ' '
+  )"
+  if [[ "${retries}" != "${want}" ]]; then
+    echo "Error: model-outage preflight retries = ${retries}, want ${want} (DELEGATION_MAX_ATTEMPTS-1)" >&2
+    return 1
+  fi
+  echo "==> Model-outage bounded to ${MODEL_OUTAGE_MAX_ATTEMPTS:-3} attempts (${retries} content-free retry log lines)"
+}
+
 verify_crash_recovery_evidence() {
   docker exec "${crash_runtime_node}" crictl logs "${crash_bridge_container}" >>"${crash_log_file}" 2>&1 || true
   if rg -n 'crash boundary|long room=(96|98)|input room=97|kube-system' "${crash_log_file}"; then
@@ -670,6 +728,12 @@ if [[ "${SCENARIO}" == "crash-recovery" ]]; then
   echo "==> Injecting twelve hard bridge process failures"
   disrupt_crash_recovery
 fi
+if [[ "${SCENARIO}" == "model-outage" ]]; then
+  disrupt_model_outage
+fi
+if [[ "${SCENARIO}" == "synapse-restart" ]]; then
+  disrupt_synapse_restart
+fi
 kubectl --request-timeout=155s --namespace "${NAMESPACE}" wait \
   --for=condition=complete "job/${DRIVER_JOB_NAME}" --timeout="${DRIVER_WAIT_TIMEOUT}"
 driver_logs="$(
@@ -718,6 +782,10 @@ fi
 
 if [[ "${SCENARIO}" == "crash-recovery" ]]; then
   verify_crash_recovery_evidence
+fi
+
+if [[ "${SCENARIO}" == "model-outage" ]]; then
+  verify_model_outage_evidence
 fi
 
 if [[ "${SCENARIO}" == "integration" ]]; then

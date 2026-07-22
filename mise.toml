@@ -623,6 +623,16 @@ description = "Run the bridge's durable hard-crash recovery scenario"
 dir = "apps/matrix-a2a-bridge"
 run = "mise run test:crash-recovery"
 
+[tasks."test:model-outage"]
+description = "Run the bridge's model-backend outage dependency drill (#466)"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run test:model-outage"
+
+[tasks."test:synapse-restart"]
+description = "Run the bridge's Synapse-restart dependency drill (#466)"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run test:synapse-restart"
+
 [tasks."test:tracing"]
 description = "Render the tracing stack and prove an OTLP span reaches Jaeger locally"
 run = "bash scripts/test-tracing.sh"

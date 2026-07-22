@@ -118,6 +118,10 @@ func run() error {
 		return f.runAvailability(ctx)
 	case "crash-recovery":
 		return f.runCrashRecovery(ctx)
+	case "model-outage":
+		return f.runModelOutage(ctx)
+	case "synapse-restart":
+		return f.runSynapseRestart(ctx)
 	case "load":
 		return f.runLoad(ctx)
 	default:

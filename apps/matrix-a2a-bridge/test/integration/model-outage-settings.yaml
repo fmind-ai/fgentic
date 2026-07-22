@@ -1,0 +1,39 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fixture-settings
+  namespace: bridge-integration
+data:
+  # The bridge dials the model backend and its database directly (no fault proxy): the drill induces
+  # the outage by scaling the backend Deployment to zero, so a real connection failure reaches pgx.
+  a2aBaseURL: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080
+  databaseURL: postgres://postgres@postgres:5432/bridge?sslmode=disable
+  homeserverURL: http://synapse:8008
+  agentCardRefreshInterval: 30s
+  concurrency: "2"
+  delegationClaimInterval: 100ms
+  delegationLeaseDuration: 10s
+  # A small, fast bounded retry loop. DELEGATION_MAX_ATTEMPTS here must match MODEL_OUTAGE_MAX_ATTEMPTS
+  # in run-model-outage.sh; run.sh asserts DELEGATION_MAX_ATTEMPTS-1 content-free preflight-retry logs.
+  delegationMaxAttempts: "3"
+  delegationRetryInitial: 200ms
+  delegationRetryMax: 500ms
+  deadManSwitchDelay: 0s
+  senderRatePerMinute: "6000"
+  senderRateBurst: "20"
+  roomRatePerMinute: "6000"
+  roomRateBurst: "20"
+  maxTaskProgressPosts: "2"
+  pinInFlightTasks: "false"
+  controlCapacityPerJob: "16"
+  taskTimeout: 5m
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fixture-settings
+  namespace: plain-agent
+data:
+  a2aStubDelay: 0s
+  a2aStubHold: "false"
+  a2aStubLongHold: "false" # gitleaks:allow -- ConfigMap field name, not a credential.
