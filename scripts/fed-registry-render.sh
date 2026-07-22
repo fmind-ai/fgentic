@@ -45,16 +45,20 @@ readonly REGISTRY
 
 [ -f "${REGISTRY}" ] || fail "registry not found: ${REGISTRY}"
 
-# Exactly one host and one denied control server match the federation lab's single-partner platform
-# settings; the registry schema permits more, but this renderer maps the lab's fixed variable slots.
-host_name="$(yq -r '[.partners[] | select(.role == "host") | .server_name] | @csv' "${REGISTRY}")"
-admitted_name="$(yq -r '[.partners[] | select(.role == "admitted") | .server_name] | @csv' "${REGISTRY}")"
-denied_name="$(yq -r '[.partners[] | select(.role == "denied") | .server_name] | @csv' "${REGISTRY}")"
+# One host, one denied control, and — since issue #354 — the two admitted partners of the multi-party
+# lab, mapped in registry (document) order to the two fixed platform-settings partner slots. The schema
+# permits more admitted partners, but this lab has exactly two fixed slots (org B, org D).
+host_name="$(yq -r '[.partners[] | select(.role == "host") | .server_name] | join(",")' "${REGISTRY}")"
+denied_name="$(yq -r '[.partners[] | select(.role == "denied") | .server_name] | join(",")' "${REGISTRY}")"
+admitted_names="$(yq -r '[.partners[] | select(.role == "admitted") | .server_name] | join(",")' "${REGISTRY}")"
 [ "${host_name}" != "" ] && [[ "${host_name}" != *,* ]] || fail "registry must define exactly one host partner"
-[ "${admitted_name}" != "" ] && [[ "${admitted_name}" != *,* ]] || fail "registry must define exactly one admitted partner"
 [ "${denied_name}" != "" ] && [[ "${denied_name}" != *,* ]] || fail "registry must define exactly one denied partner"
+IFS=',' read -r admitted_name second_admitted_name admitted_rest <<<"${admitted_names}"
+[ -n "${admitted_name}" ] && [ -n "${second_admitted_name}" ] && [ -z "${admitted_rest}" ] \
+	|| fail "registry must define exactly two admitted partners (the lab's fixed first/second slots)"
 max_budget="$(yq -r '.lab.a2a_max_budget_units' "${REGISTRY}")"
 quota_per_minute="$(yq -r '.lab.a2a_quota_units_per_minute' "${REGISTRY}")"
+second_quota_per_minute="$(yq -r '.lab.a2a_second_quota_units_per_minute' "${REGISTRY}")"
 
 # 1. policy.json — allowed_servers is the sorted set of allowlisted, NON-contained partners; a break-glass
 #    contained partner (issue #350) is dropped from the callback border here. The event-type allowlist and
@@ -91,9 +95,11 @@ src, dst = sys.argv[1], sys.argv[2]
 replacements = {
     "server_name": "${host_name}",
     "federation_partner_server_name": "${admitted_name}",
+    "federation_second_partner_server_name": "${second_admitted_name}",
     "federation_denied_server_name": "${denied_name}",
     "federation_a2a_max_budget_units": '"${max_budget}"',
     "federation_a2a_quota_budget_units_per_minute": '"${quota_per_minute}"',
+    "federation_second_a2a_quota_budget_units_per_minute": '"${second_quota_per_minute}"',
 }
 seen = {key: False for key in replacements}
 out = []

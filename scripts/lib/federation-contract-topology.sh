@@ -13,6 +13,7 @@ check_federation_topology() {
 	[ -f "${MATRIX_A_COMPONENT}" ] || fail 'homeserver A component is missing'
 	[ -f "${MATRIX_B_LAYER}/kustomization.yaml" ] || fail 'homeserver B layer is missing'
 	[ -f "${MATRIX_C_LAYER}/kustomization.yaml" ] || fail 'homeserver C layer is missing'
+	[ -f "${MATRIX_D_LAYER}/kustomization.yaml" ] || fail 'homeserver D layer is missing'
 	[ -f "${NAMESPACE_COMPONENT}/kustomization.yaml" ] || fail 'federation namespace component is missing'
 	[ -f "${POSTGRES_COMPONENT}/kustomization.yaml" ] || fail 'federation Postgres component is missing'
 	[ -f "${DELEGATION_COMPONENT}/kustomization.yaml" ] || fail 'delegation component is missing'
@@ -60,10 +61,12 @@ check_federation_topology() {
 		'select(.kind == "ConfigMap" and .metadata.name == "platform-settings") |
     .data.server_name == "org-a.fgentic.localhost" and
     .data.federation_partner_server_name == "org-b.fgentic.localhost" and
+    .data.federation_second_partner_server_name == "org-d.fgentic.localhost" and
     .data.federation_denied_server_name == "org-c.fgentic.localhost" and
     .data.federation_gateway_ip == "192.0.2.1" and
     .data.federation_a2a_max_budget_units == "4096" and
     .data.federation_a2a_quota_budget_units_per_minute == "5000" and
+    .data.federation_second_a2a_quota_budget_units_per_minute == "2000" and
     .data.demo_bridge_tag == "local" and
     .data.llm_provider == "demo" and .data.llm_model == "fgentic-demo" and
     .data.cluster_issuer == "local-ca"' \
@@ -82,6 +85,14 @@ check_federation_topology() {
     ([.spec.postBuild.substituteFrom[].name] |
       contains(["platform-settings", "platform-settings-overrides"]))' \
 		"${WORK_DIR}/cluster.yaml" 'homeserver C is not an ordered, independently reconcilable Flux layer'
+	assert_yq \
+		'select(.kind == "Kustomization" and .metadata.name == "matrix-d") |
+    .metadata.namespace == "flux-system" and
+    .spec.path == "./infra/federation/matrix-d" and
+    ([.spec.dependsOn[].name] | contains(["gateway", "postgres"])) and
+    ([.spec.postBuild.substituteFrom[].name] |
+      contains(["platform-settings", "platform-settings-overrides"]))' \
+		"${WORK_DIR}/cluster.yaml" 'homeserver D (second admitted partner) is not an ordered, independently reconcilable Flux layer'
 	assert_yq \
 		'select(.kind == "Kustomization" and .metadata.name == "namespaces") |
     (.spec.components | contains(["../federation/namespaces"]))' \
@@ -286,6 +297,7 @@ check_federation_topology() {
 ' "${WORK_DIR}/recursive.yaml" >"${WORK_DIR}/delegation-authorization.cel"
 	for contract in \
 		'jwt.azp == "org-b-a2a"' \
+		'jwt.azp == "org-d-a2a"' \
 		'request.path == "/api/a2a/kagent/docs-qa"' \
 		'"content-type" in request.headers' \
 		'size(request.headers.raw()["content-type"]) == 1' \
@@ -342,12 +354,17 @@ check_federation_topology() {
   .data."config.yaml"
 ' "${WORK_DIR}/recursive.yaml" >"${WORK_DIR}/rate-limit-config.yaml"
 	assert_yq \
-		'.domain == "fgentic-cross-org-a2a" and (.descriptors | length) == 1 and
-    .descriptors[0].key == "consumer" and
+		'.domain == "fgentic-cross-org-a2a" and (.descriptors | length) == 2 and
+    .descriptors[0].key == "consumer" and (.descriptors[0] | has("value") | not) and
     .descriptors[0].rate_limit.unit == "minute" and
     .descriptors[0].rate_limit.requests_per_unit ==
-      "${federation_a2a_quota_budget_units_per_minute}"' \
-		"${WORK_DIR}/rate-limit-config.yaml" 'global limiter is not an azp-keyed reservation quota'
+      "${federation_a2a_quota_budget_units_per_minute}" and
+    .descriptors[1].key == "consumer" and .descriptors[1].value == "org-d-a2a" and
+    .descriptors[1].rate_limit.unit == "minute" and
+    .descriptors[1].rate_limit.requests_per_unit ==
+      "${federation_second_a2a_quota_budget_units_per_minute}"' \
+		"${WORK_DIR}/rate-limit-config.yaml" \
+		'global limiter is not an azp-keyed reservation quota with an independent org-D override'
 	assert_yq \
 		'select(.kind == "Service" and .metadata.name == "federation-rate-limit") |
     (.spec.ports | length) == 1 and
@@ -405,10 +422,12 @@ check_federation_topology() {
 	jq -e '
   .realm == "fgentic-federation" and .accessTokenLifespan == 300 and
   ([.clients[].clientId] | sort) ==
-    (["org-b-a2a", "untrusted-a2a", "wrong-audience-a2a"] | sort) and
+    (["org-b-a2a", "org-d-a2a", "untrusted-a2a", "wrong-audience-a2a"] | sort) and
   all(.clients[]; .serviceAccountsEnabled == true and
     .standardFlowEnabled == false and .directAccessGrantsEnabled == false) and
   ([.clients[] | select(.clientId == "org-b-a2a") |
+    .protocolMappers[].config."included.client.audience"] == ["fgentic-a2a"]) and
+  ([.clients[] | select(.clientId == "org-d-a2a") |
     .protocolMappers[].config."included.client.audience"] == ["fgentic-a2a"]) and
   ([.clients[] | select(.clientId == "untrusted-a2a") |
     .protocolMappers[].config."included.client.audience"] == ["fgentic-a2a"]) and

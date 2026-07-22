@@ -79,8 +79,11 @@ spec:
         # optimizes a static header lookup to the first value; requiring one raw value makes
         # duplicate fields fail closed before the media type is inspected.
         matchExpressions:
+          # Two admitted A2A consumers (issue #354): org B and org D authenticate through the SAME shared
+          # federation IdP (one JWT provider above) and are distinguished only by their verified `azp`. The
+          # per-`azp` rate-limit descriptor gives each its own independent reservation counter (D7/D8).
           - >-
-            jwt.azp == "org-b-a2a" &&
+            (jwt.azp == "org-b-a2a" || jwt.azp == "org-d-a2a") &&
             request.method == "POST" &&
             request.path == "/api/a2a/kagent/docs-qa" &&
             "content-type" in request.headers &&

@@ -27,3 +27,18 @@ spec:
   localeCollate: C
   localeCType: C
   template: template0
+---
+apiVersion: postgresql.cnpg.io/v1
+kind: Database
+metadata:
+  name: synapse-d
+  namespace: postgres
+spec:
+  cluster:
+    name: platform-pg
+  name: synapse_d
+  owner: synapse_d
+  encoding: UTF8
+  localeCollate: C
+  localeCType: C
+  template: template0

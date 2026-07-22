@@ -21,7 +21,7 @@ patches:
           config: |
             caches:
               global_factor: 0.1
-            # Ten idle database connections per homeserver dominate a tiny three-room lab.
+            # Ten idle database connections per homeserver dominate a tiny four-room lab.
             # Keep one warm connection and two slots for short concurrent proof bursts.
             database:
               args:
@@ -37,7 +37,7 @@ patches:
               memory: 96Mi
       # ESS lets HAProxy auto-size itself from the host CPU count. A 16-core laptop therefore
       # allocated roughly 80 MiB per otherwise-idle proxy. Keep threading automatic, but bound
-      # HAProxy's own allocator for this three-room lab; 32 MB passed the complete federation proof.
+      # HAProxy's own allocator for this four-room lab; 32 MB passed the complete federation proof.
       - op: add
         path: /spec/postRenderers
         value:

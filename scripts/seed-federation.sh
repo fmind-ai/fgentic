@@ -6,9 +6,13 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 readonly ROOT_DIR
 readonly SERVER_A="org-a.fgentic.localhost"
 readonly SERVER_B="org-b.fgentic.localhost"
+# Org D is the SECOND admitted partner (issue #354): a third participating homeserver and second A2A
+# consumer. Org C remains the deny-by-default control. Order the fixed slots host, admitted, admitted, denied.
+readonly SERVER_D="org-d.fgentic.localhost"
 readonly SERVER_C="org-c.fgentic.localhost"
 readonly MATRIX_A_URL="https://matrix.${SERVER_A}"
 readonly MATRIX_B_URL="https://matrix.${SERVER_B}"
+readonly MATRIX_D_URL="https://matrix.${SERVER_D}"
 readonly MATRIX_C_URL="https://matrix.${SERVER_C}"
 readonly A2A_URL="https://a2a.${SERVER_A}"
 readonly A2A_AGENT_PATH="/api/a2a/kagent/docs-qa"
@@ -30,8 +34,10 @@ source "${ROOT_DIR}/scripts/lib.sh"
 
 ALICE_TOKEN=""
 BOB_TOKEN=""
+DAVE_TOKEN=""
 CHARLIE_TOKEN=""
 ORG_B_A2A_TOKEN=""
+ORG_D_A2A_TOKEN=""
 UNTRUSTED_A2A_TOKEN=""
 WRONG_AUDIENCE_A2A_TOKEN=""
 USAGE_RECEIPT_KEY_ID=""
@@ -48,6 +54,11 @@ cleanup() {
 			--header "Authorization: Bearer ${BOB_TOKEN}" \
 			"${MATRIX_B_URL}/_matrix/client/v3/logout" >/dev/null 2>&1 || true
 	fi
+	if [ -n "${DAVE_TOKEN}" ]; then
+		curl --silent --cacert "${CA_CERT}" --request POST \
+			--header "Authorization: Bearer ${DAVE_TOKEN}" \
+			"${MATRIX_D_URL}/_matrix/client/v3/logout" >/dev/null 2>&1 || true
+	fi
 	if [ -n "${CHARLIE_TOKEN}" ]; then
 		curl --silent --cacert "${CA_CERT}" --request POST \
 			--header "Authorization: Bearer ${CHARLIE_TOKEN}" \
@@ -55,8 +66,10 @@ cleanup() {
 	fi
 	ALICE_TOKEN=""
 	BOB_TOKEN=""
+	DAVE_TOKEN=""
 	CHARLIE_TOKEN=""
 	ORG_B_A2A_TOKEN=""
+	ORG_D_A2A_TOKEN=""
 	UNTRUSTED_A2A_TOKEN=""
 	WRONG_AUDIENCE_A2A_TOKEN=""
 	USAGE_RECEIPT_KEY_ID=""
@@ -74,6 +87,8 @@ curl() {
 		--resolve "matrix.${SERVER_A}:443:${FEDERATION_LOOPBACK}" \
 		--resolve "${SERVER_B}:443:${FEDERATION_LOOPBACK}" \
 		--resolve "matrix.${SERVER_B}:443:${FEDERATION_LOOPBACK}" \
+		--resolve "${SERVER_D}:443:${FEDERATION_LOOPBACK}" \
+		--resolve "matrix.${SERVER_D}:443:${FEDERATION_LOOPBACK}" \
 		--resolve "${SERVER_C}:443:${FEDERATION_LOOPBACK}" \
 		--resolve "matrix.${SERVER_C}:443:${FEDERATION_LOOPBACK}" \
 		--resolve "a2a.${SERVER_A}:443:${FEDERATION_LOOPBACK}" \
@@ -101,25 +116,32 @@ verify_cross_org_delegation
 
 alice_password="$(bootstrap_secret_value alice-password)"
 bob_password="$(bootstrap_secret_value bob-password)"
+dave_password="$(bootstrap_secret_value dave-password)"
 charlie_password="$(bootstrap_secret_value charlie-password)"
 register_user matrix "${MATRIX_A_URL}" alice 'Alice Federation' "${alice_password}"
 register_user matrix-b "${MATRIX_B_URL}" bob 'Bob Federation' "${bob_password}"
+register_user matrix-d "${MATRIX_D_URL}" dave 'Dave Federation' "${dave_password}"
 register_user matrix-c "${MATRIX_C_URL}" charlie 'Charlie Denied Control' "${charlie_password}"
 login_user "${MATRIX_A_URL}" alice "${alice_password}" ALICE_TOKEN
 login_user "${MATRIX_B_URL}" bob "${bob_password}" BOB_TOKEN
+login_user "${MATRIX_D_URL}" dave "${dave_password}" DAVE_TOKEN
 login_user "${MATRIX_C_URL}" charlie "${charlie_password}" CHARLIE_TOKEN
 alice_password=""
 bob_password=""
+dave_password=""
 charlie_password=""
 
 verify_server "${SERVER_A}"
 verify_server "${SERVER_B}"
+verify_server "${SERVER_D}"
 verify_server "${SERVER_C}"
 verify_whitelist "${MATRIX_A_URL}" "${ALICE_TOKEN}"
 verify_whitelist "${MATRIX_B_URL}" "${BOB_TOKEN}"
+verify_whitelist "${MATRIX_D_URL}" "${DAVE_TOKEN}"
 verify_control_whitelist "${MATRIX_C_URL}" "${CHARLIE_TOKEN}"
 wait_for_mounted_policy_mode matrix
 wait_for_mounted_policy_mode matrix-b
+wait_for_mounted_policy_mode matrix-d
 
 create_federated_room room_id
 encoded_room="$(jq --null-input --raw-output --arg value "${room_id}" '$value | @uri')"
@@ -127,6 +149,7 @@ invite_and_join_partner "${encoded_room}"
 encoded_a="$(jq --null-input --raw-output --arg value "${SERVER_A}" '$value | @uri')"
 verify_federated_room_policy "${MATRIX_A_URL}" "${ALICE_TOKEN}" "${encoded_room}"
 verify_federated_room_policy "${MATRIX_B_URL}" "${BOB_TOKEN}" "${encoded_room}"
+verify_federated_room_policy "${MATRIX_D_URL}" "${DAVE_TOKEN}" "${encoded_room}"
 
 denied_join_response="${WORK_DIR}/denied-join.json"
 expect_forbidden "denied control join" "${denied_join_response}" --request POST \
@@ -135,6 +158,7 @@ expect_forbidden "denied control join" "${denied_join_response}" --request POST 
 	"${MATRIX_C_URL}/_matrix/client/v3/join/${encoded_room}?server_name=${encoded_a}"
 verify_denied_membership "${MATRIX_A_URL}" "${ALICE_TOKEN}" "${encoded_room}"
 verify_denied_membership "${MATRIX_B_URL}" "${BOB_TOKEN}" "${encoded_room}"
+verify_denied_membership "${MATRIX_D_URL}" "${DAVE_TOKEN}" "${encoded_room}"
 
 signed_control_response="${WORK_DIR}/signed-control.json"
 signed_control_status=""
@@ -145,7 +169,8 @@ send_signed_federation_probe "${SERVER_C}" "${MATRIX_C_URL}" "${room_id}" \
 jq -e '.pdus == {}' "${signed_control_response}" >/dev/null \
 	|| die "signed federation positive control returned an invalid transaction response"
 
-for target in "${SERVER_A}|${MATRIX_A_URL}|A" "${SERVER_B}|${MATRIX_B_URL}|B"; do
+for target in "${SERVER_A}|${MATRIX_A_URL}|A" "${SERVER_B}|${MATRIX_B_URL}|B" \
+	"${SERVER_D}|${MATRIX_D_URL}|D"; do
 	target_server="${target%%|*}"
 	target_rest="${target#*|}"
 	target_url="${target_rest%%|*}"
@@ -158,10 +183,14 @@ for target in "${SERVER_A}|${MATRIX_A_URL}|A" "${SERVER_B}|${MATRIX_B_URL}|B"; d
 		"${denied_send_status}" "${denied_send_response}"
 done
 
+# N-way attribution (issue #354): each admitted org sends one message that arrives at BOTH other
+# admitted orgs, and every receiver resolves the sender to the exact full MXID (@user:<server_name>) —
+# never a localpart (D6). Capture a sync cursor per receiver before each send.
 bob_since="$(initial_sync_token "${MATRIX_B_URL}" "${BOB_TOKEN}")"
+dave_since="$(initial_sync_token "${MATRIX_D_URL}" "${DAVE_TOKEN}")"
 alice_since="$(initial_sync_token "${MATRIX_A_URL}" "${ALICE_TOKEN}")"
 
-marker_a="federation-a-to-b-${RANDOM}-$$"
+marker_a="federation-a-to-bd-${RANDOM}-$$"
 message_a="$(jq --null-input --compact-output --arg body "${marker_a}" \
 	'{msgtype: "m.text", body: $body}')"
 event_a_response="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
@@ -171,8 +200,14 @@ event_a_response="$(curl --silent --show-error --fail-with-body --cacert "${CA_C
 event_a="$(jq -er '.event_id' <<<"${event_a_response}")"
 wait_for_event "${MATRIX_B_URL}" "${BOB_TOKEN}" "${room_id}" "${bob_since}" "${event_a}" \
 	"@alice:${SERVER_A}" "${marker_a}"
+wait_for_event "${MATRIX_D_URL}" "${DAVE_TOKEN}" "${room_id}" "${dave_since}" "${event_a}" \
+	"@alice:${SERVER_A}" "${marker_a}"
 
-marker_b="federation-b-to-a-${RANDOM}-$$"
+# Refresh receiver cursors so each subsequent wait starts after the prior delivery.
+bob_since="$(initial_sync_token "${MATRIX_B_URL}" "${BOB_TOKEN}")"
+alice_since="$(initial_sync_token "${MATRIX_A_URL}" "${ALICE_TOKEN}")"
+
+marker_b="federation-b-to-ad-${RANDOM}-$$"
 message_b="$(jq --null-input --compact-output --arg body "${marker_b}" \
 	'{msgtype: "m.text", body: $body}')"
 event_b_response="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
@@ -182,6 +217,26 @@ event_b_response="$(curl --silent --show-error --fail-with-body --cacert "${CA_C
 event_b="$(jq -er '.event_id' <<<"${event_b_response}")"
 wait_for_event "${MATRIX_A_URL}" "${ALICE_TOKEN}" "${room_id}" "${alice_since}" "${event_b}" \
 	"@bob:${SERVER_B}" "${marker_b}"
+dave_since="$(initial_sync_token "${MATRIX_D_URL}" "${DAVE_TOKEN}")"
+wait_for_event "${MATRIX_D_URL}" "${DAVE_TOKEN}" "${room_id}" "${dave_since}" "${event_b}" \
+	"@bob:${SERVER_B}" "${marker_b}"
+
+# Org D — the second admitted partner — sends a message that both org A and org B receive, attributed
+# to @dave:org-d.fgentic.localhost. This is the multi-party leg bilateral A/B testing cannot exercise.
+bob_since="$(initial_sync_token "${MATRIX_B_URL}" "${BOB_TOKEN}")"
+alice_since="$(initial_sync_token "${MATRIX_A_URL}" "${ALICE_TOKEN}")"
+marker_d="federation-d-to-ab-${RANDOM}-$$"
+message_d="$(jq --null-input --compact-output --arg body "${marker_d}" \
+	'{msgtype: "m.text", body: $body}')"
+event_d_response="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
+	--request PUT --header "Authorization: Bearer ${DAVE_TOKEN}" \
+	--header 'Content-Type: application/json' --data "${message_d}" \
+	"${MATRIX_D_URL}/_matrix/client/v3/rooms/${encoded_room}/send/m.room.message/d-${RANDOM}-$$")"
+event_d="$(jq -er '.event_id' <<<"${event_d_response}")"
+wait_for_event "${MATRIX_A_URL}" "${ALICE_TOKEN}" "${room_id}" "${alice_since}" "${event_d}" \
+	"@dave:${SERVER_D}" "${marker_d}"
+wait_for_event "${MATRIX_B_URL}" "${BOB_TOKEN}" "${room_id}" "${bob_since}" "${event_d}" \
+	"@dave:${SERVER_D}" "${marker_d}"
 
 # The drop callback intentionally splits the local DAG. Keep the denied event as the final event
 # in a throwaway room so this proof cannot poison the bidirectional acceptance room above.
@@ -234,7 +289,7 @@ jq -e '.room_version == "12" and ."m.federate" == false' <<<"${local_creation}" 
 	|| die "default room version or explicit local-only federation policy was not enforced"
 
 for session in "${MATRIX_A_URL}|${ALICE_TOKEN}" "${MATRIX_B_URL}|${BOB_TOKEN}" \
-	"${MATRIX_C_URL}|${CHARLIE_TOKEN}"; do
+	"${MATRIX_D_URL}|${DAVE_TOKEN}" "${MATRIX_C_URL}|${CHARLIE_TOKEN}"; do
 	matrix_url="${session%%|*}"
 	token="${session#*|}"
 	curl --silent --show-error --cacert "${CA_CERT}" --request POST \
@@ -243,19 +298,22 @@ for session in "${MATRIX_A_URL}|${ALICE_TOKEN}" "${MATRIX_B_URL}|${BOB_TOKEN}" \
 done
 ALICE_TOKEN=""
 BOB_TOKEN=""
+DAVE_TOKEN=""
 CHARLIE_TOKEN=""
 
 cat <<EOF
 
-Federation proof passed without a provider connection.
+Multi-party federation proof passed without a provider connection.
 A2A org B:    verified JWT -> signed docs-qa -> deterministic model reply
-A2A quota:    3,000-token reservation accepted, second reservation rejected
+A2A quota B:  3,000-token reservation accepted, second reservation rejected
+A2A quota D:  independent per-azp reservation exhausts at org D's distinct budget (429, org-d-a2a only)
 A2A metrics:  aggregate provider-reported token count increased
-Room:        ${room_id}
-A -> B:      ${event_a}
-B -> A:      ${event_b}
+Room:        ${room_id} (three admitted orgs)
+A -> B, D:   ${event_a}
+B -> A, D:   ${event_b}
+D -> A, B:   ${event_d}
 Policy ${POLICY_PROBE_MODE}: ${policy_event_id} (${policy_outcome})
-C rejected:  join and signed federation sends
+C rejected:  join and signed federation sends to A, B, and D
 Local-only:  ${local_room_id} (default room version 12)
-Homeservers: ${SERVER_A}, ${SERVER_B}; denied control ${SERVER_C}
+Homeservers: ${SERVER_A}, ${SERVER_B}, ${SERVER_D}; denied control ${SERVER_C}
 EOF

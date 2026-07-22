@@ -32,9 +32,10 @@ yq -o=json '.' "${REGISTRY}" >"${REGISTRY_JSON}"
 jq -e '
   (.["$schema"] == "./partners.schema.json") and
   (.version == 1) and
-  (.lab | (keys | sort) == ["a2a_max_budget_units", "a2a_quota_units_per_minute"]) and
+  (.lab | (keys | sort) == ["a2a_max_budget_units", "a2a_quota_units_per_minute", "a2a_second_quota_units_per_minute"]) and
   (.lab.a2a_max_budget_units | type == "number" and . >= 1) and
   (.lab.a2a_quota_units_per_minute | type == "number" and . >= 1) and
+  (.lab.a2a_second_quota_units_per_minute | type == "number" and . >= 1) and
   ((keys | sort) == ["$schema", "lab", "partners", "version"]) and
   (.partners | type == "array" and length >= 1)
 ' "${REGISTRY_JSON}" >/dev/null || fail "registry top-level schema invalid"
@@ -73,14 +74,15 @@ today="$(date -u +%Y-%m-%d)"
 expired="$(jq -r --arg today "${today}" '[.partners[] | select(has("valid_until") and .valid_until < $today) | .server_name] | join(", ")' "${REGISTRY_JSON}")"
 [ -z "${expired}" ] || fail "partner trust has expired (valid_until passed): ${expired} — renew (re-sign) or offboard before reconciling"
 
-# Exactly one host, at least one admitted, exactly one denied; server_names unique; allowlist non-empty.
+# Exactly one host, exactly two admitted (the multi-party lab's fixed first/second slots — issue #354),
+# exactly one denied; server_names unique; allowlist non-empty.
 jq -e '
   ([.partners[] | select(.role == "host")] | length == 1) and
-  ([.partners[] | select(.role == "admitted")] | length >= 1) and
+  ([.partners[] | select(.role == "admitted")] | length == 2) and
   ([.partners[] | select(.role == "denied")] | length == 1) and
   (([.partners[].server_name] | length) == ([.partners[].server_name] | unique | length)) and
   ([.partners[] | select(.allowlisted == true)] | length >= 1)
-' "${REGISTRY_JSON}" >/dev/null || fail "registry must have one host, ≥1 admitted, one denied, unique names, and a non-empty allowlist"
+' "${REGISTRY_JSON}" >/dev/null || fail "registry must have one host, exactly two admitted, one denied, unique names, and a non-empty allowlist"
 
 # The host exports the AgentCard/route; every admitted partner is an authorized A2A consumer. The a2a
 # object is closed per role: EXACTLY its role's key set (no unknown fields — additionalProperties:false)
@@ -116,14 +118,20 @@ jq -e '
   ([.partners[] | select(.role == "denied") | has("a2a")] | all(. == false))
 ' "${REGISTRY_JSON}" >/dev/null || fail "an a2a block has an unknown field, a missing required field, the wrong role/shape, or an invalid AgentCard key rotation set (empty, duplicate, or pinned-and-revoked kid)"
 
-# Pull the canonical identities the planes are checked against.
+# Pull the canonical identities the planes are checked against. Two admitted partners (issue #354),
+# in registry document order: the first (org B) also hosts the shared federation IdP; the second (org D).
 host_name="$(jq -r '.partners[] | select(.role == "host") | .server_name' "${REGISTRY_JSON}")"
-admitted_name="$(jq -r '.partners[] | select(.role == "admitted") | .server_name' "${REGISTRY_JSON}")"
+jq -r '.partners[] | select(.role == "admitted") | .server_name' "${REGISTRY_JSON}" >"${WORK_DIR}/admitted-names"
+mapfile -t admitted_names <"${WORK_DIR}/admitted-names"
+[ "${#admitted_names[@]}" -eq 2 ] || fail "registry must define exactly two admitted partners (fixed lab slots)"
+admitted_name="${admitted_names[0]}"
+second_admitted_name="${admitted_names[1]}"
 denied_name="$(jq -r '.partners[] | select(.role == "denied") | .server_name' "${REGISTRY_JSON}")"
-azp="$(jq -r '.partners[] | select(.role == "admitted") | .a2a.azp' "${REGISTRY_JSON}")"
-issuer="$(jq -r '.partners[] | select(.role == "admitted") | .a2a.issuer' "${REGISTRY_JSON}")"
-jwks_path="$(jq -r '.partners[] | select(.role == "admitted") | .a2a.jwks_path' "${REGISTRY_JSON}")"
-audience="$(jq -r '.partners[] | select(.role == "admitted") | .a2a.audience' "${REGISTRY_JSON}")"
+jq -r '.partners[] | select(.role == "admitted") | .a2a.azp' "${REGISTRY_JSON}" >"${WORK_DIR}/admitted-azps"
+mapfile -t admitted_azps <"${WORK_DIR}/admitted-azps"
+# All admitted consumers share ONE federation IdP: the same issuer/jwks/audience, one JWT provider.
+jwks_path="$(jq -r '.partners[] | select(.role == "admitted") | .a2a.jwks_path' "${REGISTRY_JSON}" | sort -u)"
+audience="$(jq -r '.partners[] | select(.role == "admitted") | .a2a.audience' "${REGISTRY_JSON}" | sort -u)"
 route_host="$(jq -r '.partners[] | select(.role == "host") | .a2a.route_host' "${REGISTRY_JSON}")"
 agent_path="$(jq -r '.partners[] | select(.role == "host") | .a2a.agent_path' "${REGISTRY_JSON}")"
 provider_org="$(jq -r '.partners[] | select(.role == "host") | .a2a.provider_organization' "${REGISTRY_JSON}")"
@@ -131,9 +139,31 @@ card_key_id="$(jq -r '.partners[] | select(.role == "host") | .a2a.card_key_id' 
 receipt_key_id="$(jq -r '.partners[] | select(.role == "host") | .a2a.usage_receipt_key_id' "${REGISTRY_JSON}")"
 max_budget="$(jq -r '.lab.a2a_max_budget_units' "${REGISTRY_JSON}")"
 quota_per_minute="$(jq -r '.lab.a2a_quota_units_per_minute' "${REGISTRY_JSON}")"
-# The admitted issuer host must equal the admitted server_name under id. (D6-safe cross-plane binding).
+second_quota_per_minute="$(jq -r '.lab.a2a_second_quota_units_per_minute' "${REGISTRY_JSON}")"
+
+# 1b. D6-safe shared-IdP issuer binding (issue #354). The multi-party lab has more than one admitted
+# A2A consumer, but ONE shared federation IdP (the first admitted partner, org B, hosts it). Relaxing the
+# old per-partner `issuer == id.<self>` binding stays D6-safe by construction:
+#   * every admitted consumer's issuer must be BYTE-IDENTICAL — there is exactly one shared broker;
+#   * that shared issuer must be an EXACT member of the set { https://id.<X>/realms/fgentic-federation :
+#     X is a registered admitted partner } — a whole-line fixed-string match (grep -Fxq), so no wildcard,
+#     substring, suffix, or normalized-host value can pass;
+#   * the issuer host is therefore always an EXACT FQDN of a trust-registry admitted partner, never a
+#     localpart. The `azp` (not the issuer) distinguishes each consumer, so no cross-org spend is possible.
+jq -r '.partners[] | select(.role == "admitted") | .a2a.issuer' "${REGISTRY_JSON}" | sort -u >"${WORK_DIR}/admitted-issuers"
+mapfile -t admitted_issuers <"${WORK_DIR}/admitted-issuers"
+[ "${#admitted_issuers[@]}" -eq 1 ] \
+	|| fail "admitted A2A consumers must share exactly one federation IdP issuer (found ${#admitted_issuers[@]})"
+issuer="${admitted_issuers[0]}"
+expected_issuer_set="$(jq -r '.partners[] | select(.role == "admitted") | "https://id." + .server_name + "/realms/fgentic-federation"' "${REGISTRY_JSON}")"
+grep -Fxq "${issuer}" <<<"${expected_issuer_set}" \
+	|| fail "shared federation issuer '${issuer}' is not the exact id.<server_name> of a registered admitted partner (D6)"
+# The single shared issuer/jwks/audience must be well-formed and singular (one JWT provider validates all).
+[ -n "${jwks_path}" ] && [[ "${jwks_path}" != *$'\n'* ]] || fail "admitted consumers do not share a single jwks_path"
+[ -n "${audience}" ] && [[ "${audience}" != *$'\n'* ]] || fail "admitted consumers do not share a single audience"
+# The shared IdP host is the FIRST admitted partner (org B). Bind the templated issuer to its slot below.
 [ "${issuer}" = "https://id.${admitted_name}/realms/fgentic-federation" ] \
-	|| fail "registry admitted issuer '${issuer}' does not resolve to the admitted server_name"
+	|| fail "the shared federation IdP must be hosted by the first admitted partner '${admitted_name}'"
 
 # 2. Deterministic render: re-render into a scratch mirror and require byte-identical committed artifacts.
 bash "${SCRIPT_ROOT}/scripts/fed-registry-render.sh" --registry "${REGISTRY}" --out-root "${WORK_DIR}/render" >/dev/null
@@ -202,7 +232,8 @@ fi
 # 3. Plane 1 — Synapse federation_domain_whitelist. platform-settings is registry-rendered (step 2), so
 #    the whitelist entries are substitution vars; assert each homeserver's list is EXACTLY the expected
 #    registry-derived set (not merely present/absent) so an extra literal domain cannot broaden trust
-#    undetected. A and B trust {host, admitted}; the denied control server C trusts all three.
+#    undetected. The admitted homeservers A, B, and D each trust {host, admitted, admitted}; the denied
+#    control server C trusts all four (host + both admitted + itself) but is admitted by none of them.
 extract_whitelist() {
 	# Emit the '- <entry>' items directly under federation_domain_whitelist: (stop at the next key),
 	# sorted, one per line — the entries are Flux vars like ${server_name} inside the embedded config.
@@ -212,25 +243,26 @@ extract_whitelist() {
 		collecting { collecting = 0 }
 	' "$@" | LC_ALL=C sort
 }
-expected_ab="$(printf '%s\n' '${federation_partner_server_name}' '${server_name}' | LC_ALL=C sort)"
-expected_c="$(printf '%s\n' '${federation_denied_server_name}' '${federation_partner_server_name}' '${server_name}' | LC_ALL=C sort)"
-for env in a b; do
+expected_admitted="$(printf '%s\n' '${federation_partner_server_name}' '${federation_second_partner_server_name}' '${server_name}' | LC_ALL=C sort)"
+expected_c="$(printf '%s\n' '${federation_denied_server_name}' '${federation_partner_server_name}' '${federation_second_partner_server_name}' '${server_name}' | LC_ALL=C sort)"
+for env in a b d; do
 	actual="$(extract_whitelist "${FED_TREE}/infra/federation/matrix-${env}/"*.yaml)"
 	[ -n "${actual}" ] || fail "matrix-${env}: federation_domain_whitelist not found"
-	[ "${actual}" = "${expected_ab}" ] \
-		|| fail "matrix-${env} whitelist is not exactly {host, admitted} — an unregistered domain would broaden trust"
+	[ "${actual}" = "${expected_admitted}" ] \
+		|| fail "matrix-${env} whitelist is not exactly {host, admitted, admitted} — an unregistered domain would broaden trust"
 done
 actual_c="$(extract_whitelist "${FED_TREE}/infra/federation/matrix-c/helmrelease.yaml")"
-[ "${actual_c}" = "${expected_c}" ] || fail "matrix-c whitelist is not exactly {host, admitted, denied}"
+[ "${actual_c}" = "${expected_c}" ] || fail "matrix-c whitelist is not exactly {host, admitted, admitted, denied}"
 
-# 4. Plane 2 — room m.room.server_acl seed. allow == the admitted set (host + admitted), deny empty, and
-#    the seed's SERVER_A/B/C literals equal the registry host/admitted/denied.
+# 4. Plane 2 — room m.room.server_acl seed. allow == the admitted set (host + both admitted), deny empty,
+#    and the seed's SERVER_A/B/C/D literals equal the registry host/admitted/second-admitted/denied.
 seed_acl="${FED_TREE}/scripts/lib/federation-matrix.sh"
-grep -Fq 'allow: [$a, $b], deny: [], allow_ip_literals: false' "${seed_acl}" \
-	|| fail "server_acl seed must be allow:[host,admitted] deny:[] allow_ip_literals:false"
+grep -Fq 'allow: [$a, $b, $d], deny: [], allow_ip_literals: false' "${seed_acl}" \
+	|| fail "server_acl seed must be allow:[host,admitted,admitted] deny:[] allow_ip_literals:false"
 seed_env="${FED_TREE}/scripts/seed-federation.sh"
 grep -Fxq "readonly SERVER_A=\"${host_name}\"" "${seed_env}" || fail "seed SERVER_A must equal the registry host"
 grep -Fxq "readonly SERVER_B=\"${admitted_name}\"" "${seed_env}" || fail "seed SERVER_B must equal the registry admitted partner"
+grep -Fxq "readonly SERVER_D=\"${second_admitted_name}\"" "${seed_env}" || fail "seed SERVER_D must equal the registry second admitted partner"
 grep -Fxq "readonly SERVER_C=\"${denied_name}\"" "${seed_env}" || fail "seed SERVER_C must equal the registry denied server"
 
 # 5. Plane 3 — callback policy.json. allowed_servers == the sorted allowlisted set (also rendered, step 2).
@@ -256,22 +288,38 @@ grep -Fq "${receipt_key_id}" "${signing}" || fail "signer default usage-receipt 
 # 7. Plane 5 — A2A azp / issuer / quota descriptors across policies.yaml, rate-limit.yaml, usage-receipt.yaml,
 #    and the Keycloak client. The azp is the literal partner client id; issuer/jwks/audience/budget bind too.
 policies="${FED_TREE}/infra/federation/delegation/policies.yaml"
-# The manifest templates the issuer host with ${federation_partner_server_name}; resolve the registry
-# issuer back to that templated form so the comparison is byte-exact against the committed manifest.
+rate_limit="${FED_TREE}/infra/federation/delegation/rate-limit.yaml"
+keycloak_realm="${FED_TREE}/infra/federation/delegation/keycloak/kustomization.yaml"
+# The manifest templates the shared IdP issuer host with ${federation_partner_server_name} (the first
+# admitted partner hosts it); resolve the registry issuer back to that templated form for a byte-exact match.
 templated_issuer="${issuer/${admitted_name}/\$\{federation_partner_server_name\}}"
-grep -Fq "jwt.azp == \"${azp}\"" "${policies}" || fail "policies.yaml azp != registry azp"
-grep -Fq "issuer: ${templated_issuer}" "${policies}" || fail "policies.yaml issuer does not bind to the admitted partner"
+grep -Fq "issuer: ${templated_issuer}" "${policies}" || fail "policies.yaml issuer does not bind to the shared federation IdP"
 grep -Fq "jwksPath: ${jwks_path}" "${policies}" || fail "policies.yaml jwksPath != registry jwks_path"
 grep -Fq -- "- ${audience}" "${policies}" || fail "policies.yaml audience != registry audience"
 grep -Fq 'budget.maxTokens <= ${federation_a2a_max_budget_units}' "${policies}" \
 	|| fail "policies.yaml maxTokens ceiling must use the rendered budget var"
-grep -Fq 'requests_per_unit: ${federation_a2a_quota_budget_units_per_minute}' "${FED_TREE}/infra/federation/delegation/rate-limit.yaml" \
-	|| fail "rate-limit.yaml quota must use the rendered quota var"
-grep -Fq -- "--azp=${azp}" "${FED_TREE}/infra/federation/delegation/usage-receipt.yaml" \
-	|| fail "usage-receipt azp != registry azp"
-grep -Fq "\"clientId\": \"${azp}\"" "${FED_TREE}/infra/federation/delegation/keycloak/kustomization.yaml" \
-	|| fail "keycloak client id != registry azp"
-: "${max_budget}" "${quota_per_minute}" # rendered into platform-settings (step 2), enforced above
+# Every admitted consumer's azp must be an authorized principal in the CEL authorization and a client in
+# the shared realm. `azp` (not the issuer) distinguishes the consumer, so the shared IdP stays D6-safe.
+for consumer_azp in "${admitted_azps[@]}"; do
+	grep -Fq "jwt.azp == \"${consumer_azp}\"" "${policies}" \
+		|| fail "policies.yaml authorization omits admitted azp ${consumer_azp}"
+	grep -Fq "\"clientId\": \"${consumer_azp}\"" "${keycloak_realm}" \
+		|| fail "keycloak realm omits admitted client ${consumer_azp}"
+done
+# The first admitted partner (org B) is the sole seller-receipt consumer; the second admitted consumer
+# (org D) proves its independent per-azp reservation at its DISTINCT lower budget without a billable
+# completion, so it never mints a receipt and the usage-receipt signer stays single-azp and correct.
+grep -Fq -- "--azp=${admitted_azps[0]}" "${FED_TREE}/infra/federation/delegation/usage-receipt.yaml" \
+	|| fail "usage-receipt azp != the first admitted (seller-receipt) consumer"
+# Rate-limit: the default per-azp reservation budget plus the second admitted consumer's DISTINCT budget on
+# its OWN keyed counter (D7/D8 independence). The override descriptor keys the second admitted azp exactly.
+grep -Fq 'requests_per_unit: ${federation_a2a_quota_budget_units_per_minute}' "${rate_limit}" \
+	|| fail "rate-limit.yaml default quota must use the rendered quota var"
+grep -Fq 'requests_per_unit: ${federation_second_a2a_quota_budget_units_per_minute}' "${rate_limit}" \
+	|| fail "rate-limit.yaml second-consumer quota must use the rendered second quota var"
+grep -Fq "value: ${admitted_azps[1]}" "${rate_limit}" \
+	|| fail "rate-limit.yaml second-consumer override must key the second admitted azp"
+: "${max_budget}" "${quota_per_minute}" "${second_quota_per_minute}" # rendered into platform-settings (step 2)
 
 # 8. Deny-by-default survives rendering: the denied control server (and any denied name) must appear in NONE
 #    of the derived enforcement planes — the delegation dir and the callback policy.

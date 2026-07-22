@@ -232,8 +232,8 @@ assert_static_contract() {
 			| yq -r '.[].metadata.name' | sort
 	)"
 	federation_namespace_count="$(wc -l <<<"${federation_namespaces}" | tr -d ' ')"
-	[[ "${federation_namespace_count}" -eq 16 ]] \
-		|| fail "expected the shared and federation namespace sources to own sixteen namespaces"
+	[[ "${federation_namespace_count}" -eq 17 ]] \
+		|| fail "expected the shared and federation namespace sources to own seventeen namespaces"
 	repository_namespaces="$(
 		yq eval-all -o=json '[select(.kind == "Namespace")]' \
 			"${NAMESPACE_FILE}" "${FEDERATION_NAMESPACE_FILE}" "${ACTIVITYPUB_NAMESPACE_FILE}" \
@@ -241,8 +241,8 @@ assert_static_contract() {
 			| yq -r '.[].metadata.name' | sort
 	)"
 	repository_namespace_count="$(wc -l <<<"${repository_namespaces}" | tr -d ' ')"
-	[[ "${repository_namespace_count}" -eq 18 ]] \
-		|| fail "expected all eighteen repository-owned namespaces to be quota-managed"
+	[[ "${repository_namespace_count}" -eq 19 ]] \
+		|| fail "expected all nineteen repository-owned namespaces to be quota-managed"
 	repository_quota_namespaces="$(
 		yq eval-all -o=json \
 			'[select(.kind == "ResourceQuota" and .metadata.name == "compute-budget")]' \
@@ -347,8 +347,8 @@ assert_static_contract() {
 		sorted_managed_namespaces <<<"${federation_rendered}"
 	)"
 	effective_namespace_count="$(wc -l <<<"${effective_namespaces}" | tr -d ' ')"
-	[[ "${effective_namespace_count}" -eq 12 ]] \
-		|| fail "the effective federation overlay must own exactly twelve namespaces"
+	[[ "${effective_namespace_count}" -eq 13 ]] \
+		|| fail "the effective federation overlay must own exactly thirteen namespaces"
 	effective_quota_namespaces="$(
 		sorted_names ResourceQuota <<<"${federation_rendered}"
 	)"

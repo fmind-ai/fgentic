@@ -20,6 +20,8 @@ from fgentic_federation_policy import FederationPolicyModule, ModuleConfig, Poli
 
 SERVER_A = "org-a.fgentic.localhost"
 SERVER_B = "org-b.fgentic.localhost"
+# Second admitted partner in the multi-party lab (issue #354).
+SERVER_D = "org-d.fgentic.localhost"
 ROOM_ID = "!federated:org-a.fgentic.localhost"
 EVENT_ID = "$event-from-b"
 
@@ -622,7 +624,7 @@ def test_canonical_repository_policy_is_valid() -> None:
 
     policy = Policy.parse(path.read_bytes())
 
-    assert policy.allowed_servers == frozenset({SERVER_A, SERVER_B})
+    assert policy.allowed_servers == frozenset({SERVER_A, SERVER_B, SERVER_D})
     assert policy.allowed_event_types == frozenset(
         {
             "m.room.create",

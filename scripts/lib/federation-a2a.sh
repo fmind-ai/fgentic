@@ -394,4 +394,39 @@ verify_cross_org_delegation() {
 	after_receipt="$(usage_receipt_archive_count)"
 	[ "${after_receipt}" -eq "$((after_denials + 1))" ] \
 		|| die "authorized terminal delegation or quota denial changed the receipt archive unexpectedly"
+
+	verify_org_d_independent_reservation "${after_receipt}"
+}
+
+# Second admitted A2A consumer org D (issue #354). Proves its per-`azp` reservation is INDEPENDENT of
+# org B's and exhausts at org D's OWN distinct, lower budget — one member can never consume another's
+# (D7/D8), and reservations are not consumption. Org D authenticates through the SAME shared federation
+# IdP as org B (issuer id.org-b), distinguished only by its verified azp `org-d-a2a`.
+verify_org_d_independent_reservation() {
+	local baseline_receipts="$1"
+	local org_d_secret document before_tokens after_tokens after_receipts
+	org_d_secret="$(bootstrap_secret_value org-d-a2a-client-secret)"
+	client_credentials_token org-d-a2a "${org_d_secret}" ORG_D_A2A_TOKEN
+	org_d_secret=""
+	before_tokens="$(agentgateway_token_total)"
+
+	# The SAME 3000-unit reservation org B ACCEPTED above is refused for org-d-a2a on org D's FRESH
+	# per-`azp` counter, because org D's distinct per-minute budget (2000) is lower. A shared budget would
+	# have accepted org D's first 3000; a distinct 429 proves separate, independent per-`azp` reservations.
+	document="$(a2a_document 3000)"
+	expect_a2a_status org-d-independent-reservation 429 "${ORG_D_A2A_TOKEN}" "${document}"
+	# A reservation just above org D's ceiling is refused while org B accepted 3000 (> org D's 2000):
+	# the two admitted consumers hold DISTINCT reservation ceilings on separate azp-keyed counters.
+	document="$(a2a_document 2001)"
+	expect_a2a_status org-d-distinct-budget 429 "${ORG_D_A2A_TOKEN}" "${document}"
+
+	# No cross-org spend: org D's refusals invoked no model, so the aggregate token metric is unchanged
+	# (reservations are NOT consumption — D7/D8), and org D minted no seller receipt (org B stays the sole
+	# receipt consumer; org D exercises only the reservation boundary, so nothing is misattributed to org B).
+	after_tokens="$(agentgateway_token_total)"
+	[ "${after_tokens}" = "${before_tokens}" ] \
+		|| die "org D reservation denial leaked model-token consumption (reservations must not be spend)"
+	after_receipts="$(usage_receipt_archive_count)"
+	[ "${after_receipts}" -eq "${baseline_receipts}" ] \
+		|| die "org D reservation denial changed the receipt archive (org D must mint no receipt)"
 }

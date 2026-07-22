@@ -45,6 +45,8 @@ spec:
             - matrix.${server_name}
             - ${federation_partner_server_name}
             - matrix.${federation_partner_server_name}
+            - ${federation_second_partner_server_name}
+            - matrix.${federation_second_partner_server_name}
             - ${federation_denied_server_name}
             - matrix.${federation_denied_server_name}
       # The public CA certificate is provisioned cluster-locally in every Matrix namespace.
@@ -68,6 +70,7 @@ spec:
             federation_domain_whitelist:
               - ${server_name}
               - ${federation_partner_server_name}
+              - ${federation_second_partner_server_name}
               - ${federation_denied_server_name}
             federation_custom_ca_list:
               - /etc/fgentic-ca/ca.crt

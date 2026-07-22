@@ -32,13 +32,14 @@ check_federation_policy() {
 	done
 	assert_yq \
 		'.default_room_version == "12" and
-    (.federation_domain_whitelist | length) == 2 and
+    (.federation_domain_whitelist | length) == 3 and
     .federation_domain_whitelist[0] == "${server_name}" and
     .federation_domain_whitelist[1] == "${federation_partner_server_name}" and
+    .federation_domain_whitelist[2] == "${federation_second_partner_server_name}" and
     (.trusted_key_servers | length) == 1 and
     .trusted_key_servers[0].server_name == "${federation_partner_server_name}"' \
 		"${WORK_DIR}/homeserver-a-config.yaml" \
-		'homeserver A does not have an exact A/B domain allowlist, room v12 default, and B key notary'
+		'homeserver A does not have an exact A/B/D domain allowlist, room v12 default, and B key notary'
 	if rg --fixed-strings '${federation_denied_server_name}' \
 		"${WORK_DIR}/homeserver-a-config.yaml" >/dev/null; then
 		fail 'homeserver A federation allowlist includes denied homeserver C'
@@ -70,6 +71,7 @@ check_federation_policy() {
 
 	kubectl kustomize "${MATRIX_B_LAYER}" >"${WORK_DIR}/matrix-b.yaml"
 	kubectl kustomize "${MATRIX_C_LAYER}" >"${WORK_DIR}/matrix-c.yaml"
+	kubectl kustomize "${MATRIX_D_LAYER}" >"${WORK_DIR}/matrix-d.yaml"
 	kubectl kustomize "${NAMESPACE_COMPONENT}" >"${WORK_DIR}/namespaces.yaml"
 	kubectl kustomize "${POSTGRES_COMPONENT}" >"${WORK_DIR}/postgres.yaml"
 
@@ -85,9 +87,9 @@ check_federation_policy() {
 		"${WORK_DIR}/matrix-b.yaml" 'homeserver B does not receive the reloadable versioned policy'
 
 	jq -e --arg a 'org-a.fgentic.localhost' --arg b 'org-b.fgentic.localhost' \
-		--arg blocked 'com.fgentic.blocked' '
+		--arg d 'org-d.fgentic.localhost' --arg blocked 'com.fgentic.blocked' '
   keys == ["allowed_event_types", "allowed_servers", "invite_rule", "version"] and
-  .version == 1 and .allowed_servers == [$a, $b] and
+  .version == 1 and .allowed_servers == [$a, $b, $d] and
   .invite_rule == "allow_from_allowed_servers" and
   (.allowed_event_types | index($blocked)) == null and
   (["m.room.create", "m.room.join_rules", "m.room.member", "m.room.message",
@@ -121,6 +123,12 @@ check_federation_policy() {
     .metadata.labels."pod-security.kubernetes.io/audit" == "restricted" and
     .metadata.labels."pod-security.kubernetes.io/warn" == "restricted"' \
 		"${WORK_DIR}/namespaces.yaml" 'matrix-c is not owned by the namespace layer with PSS labels'
+	assert_yq \
+		'select(.kind == "Namespace" and .metadata.name == "matrix-d") |
+    .metadata.labels."pod-security.kubernetes.io/enforce" == "baseline" and
+    .metadata.labels."pod-security.kubernetes.io/audit" == "restricted" and
+    .metadata.labels."pod-security.kubernetes.io/warn" == "restricted"' \
+		"${WORK_DIR}/namespaces.yaml" 'matrix-d is not owned by the namespace layer with PSS labels'
 
 	assert_yq \
 		'select(.kind == "HelmRelease" and .metadata.name == "matrix-stack-b") |
@@ -174,13 +182,14 @@ check_federation_policy() {
 	done
 	assert_yq \
 		'.default_room_version == "12" and
-    (.federation_domain_whitelist | length) == 2 and
+    (.federation_domain_whitelist | length) == 3 and
     .federation_domain_whitelist[0] == "${server_name}" and
     .federation_domain_whitelist[1] == "${federation_partner_server_name}" and
+    .federation_domain_whitelist[2] == "${federation_second_partner_server_name}" and
     (.trusted_key_servers | length) == 1 and
     .trusted_key_servers[0].server_name == "${server_name}"' \
 		"${WORK_DIR}/homeserver-b-config.yaml" \
-		'homeserver B does not have an exact A/B domain allowlist, room v12 default, and A key notary'
+		'homeserver B does not have an exact A/B/D domain allowlist, room v12 default, and A key notary'
 	if rg --fixed-strings '${federation_denied_server_name}' \
 		"${WORK_DIR}/homeserver-b-config.yaml" >/dev/null; then
 		fail 'homeserver B federation allowlist includes denied homeserver C'
@@ -236,10 +245,11 @@ check_federation_policy() {
 ' "${WORK_DIR}/matrix-c.yaml" >"${WORK_DIR}/homeserver-c-config.yaml"
 	assert_yq \
 		'.default_room_version == "12" and
-    (.federation_domain_whitelist | length) == 3 and
+    (.federation_domain_whitelist | length) == 4 and
     .federation_domain_whitelist[0] == "${server_name}" and
     .federation_domain_whitelist[1] == "${federation_partner_server_name}" and
-    .federation_domain_whitelist[2] == "${federation_denied_server_name}" and
+    .federation_domain_whitelist[2] == "${federation_second_partner_server_name}" and
+    .federation_domain_whitelist[3] == "${federation_denied_server_name}" and
     (.trusted_key_servers | length) == 1 and
     .trusted_key_servers[0].server_name == "${server_name}"' \
 		"${WORK_DIR}/homeserver-c-config.yaml" \
@@ -281,6 +291,18 @@ check_federation_policy() {
     .spec.template == "template0"' \
 		"${WORK_DIR}/postgres.yaml" 'homeserver C does not have a C-locale, role-scoped CNPG database'
 
+	assert_yq \
+		'select(.kind == "Database" and .spec.name == "synapse_d") |
+    .metadata.name == "synapse-d" and
+    .metadata.namespace == "postgres" and
+    .spec.cluster.name == "platform-pg" and
+    .spec.owner == "synapse_d" and
+    .spec.encoding == "UTF8" and
+    .spec.localeCollate == "C" and
+    .spec.localeCType == "C" and
+    .spec.template == "template0"' \
+		"${WORK_DIR}/postgres.yaml" 'homeserver D does not have a C-locale, role-scoped CNPG database'
+
 	yq --unwrapScalar '.patches[]?.patch' \
 		"${POSTGRES_COMPONENT}/kustomization.yaml" >"${WORK_DIR}/postgres-patches.yaml"
 	for contract in \
@@ -288,12 +310,15 @@ check_federation_policy() {
 		'name: pg-synapse-b' \
 		'name: synapse_c' \
 		'name: pg-synapse-c' \
+		'name: synapse_d' \
+		'name: pg-synapse-d' \
 		'hostssl synapse_b synapse_b all scram-sha-256' \
 		'hostssl synapse_c synapse_c all scram-sha-256' \
+		'hostssl synapse_d synapse_d all scram-sha-256' \
 		'hostssl all all all reject' \
 		'hostnossl all all all reject'; do
 		rg --fixed-strings "${contract}" "${WORK_DIR}/postgres-patches.yaml" >/dev/null \
-			|| fail "homeserver B database boundary omits ${contract}"
+			|| fail "homeserver B/D database boundary omits ${contract}"
 	done
 
 	assert_yq \
@@ -383,5 +408,109 @@ check_federation_policy() {
     ([.spec.rules[].backendRefs[] |
       select(.name == "ess-well-known" and .port == 8010)] | length) == 1' \
 		"${WORK_DIR}/matrix-c.yaml" 'homeserver C well-known delegation route is incomplete'
+
+	# Homeserver D — the second admitted partner (issue #354). It is a policy-ENFORCING participant like
+	# org B (it mounts the immutable callback module + reloadable policy and enforces the {A,B,D} whitelist),
+	# but it does NOT host the shared Keycloak IdP, so its Gateway mirrors org C's apex+Synapse listeners only.
+	assert_yq \
+		'select(.kind == "HelmRelease" and .metadata.name == "matrix-stack-d") |
+    .metadata.namespace == "matrix-d" and
+    .spec.releaseName == "ess" and
+    .spec.values.serverName == "${federation_second_partner_server_name}" and
+    .spec.values.synapse.postgres.host == "platform-pg-rw.postgres.svc.cluster.local" and
+    .spec.values.synapse.postgres.user == "synapse_d" and
+    .spec.values.synapse.postgres.database == "synapse_d" and
+    .spec.values.synapse.postgres.sslMode == "require" and
+    .spec.values.synapse.postgres.password.secret == "pg-synapse-d" and
+    .spec.values.matrixAuthenticationService.enabled == false and
+    .spec.values.elementWeb.enabled == false and
+    .spec.values.elementAdmin.enabled == false and
+    .spec.values.matrixRTC.enabled == false and
+    .spec.values.wellKnownDelegation.enabled == true and
+    .spec.values.postgres.enabled == false and
+    ([.spec.values.synapse.hostAliases[] |
+      select(.ip == "${federation_gateway_ip}") | .hostnames[]] |
+      contains(["${server_name}", "matrix.${server_name}",
+        "${federation_partner_server_name}", "matrix.${federation_partner_server_name}",
+        "${federation_second_partner_server_name}", "matrix.${federation_second_partner_server_name}",
+        "${federation_denied_server_name}", "matrix.${federation_denied_server_name}"])) and
+    ([.spec.values.synapse.extraVolumes[] |
+      select(.configMap.name == "fgentic-local-ca")] | length) == 1 and
+    ([.spec.values.synapse.extraVolumeMounts[] |
+      select(.mountPath == "/etc/fgentic-ca" and .readOnly == true)] | length) == 1' \
+		"${WORK_DIR}/matrix-d.yaml" 'homeserver D is not a minimal, locally trusted Synapse-only ESS release'
+	yq --unwrapScalar '
+  select(.kind == "HelmRelease" and .metadata.name == "matrix-stack-d") |
+  .spec.values.synapse.additional."10-federation".config
+' "${WORK_DIR}/matrix-d.yaml" >"${WORK_DIR}/homeserver-d-config.yaml"
+	assert_yq \
+		'.default_room_version == "12" and
+    (.federation_domain_whitelist | length) == 3 and
+    .federation_domain_whitelist[0] == "${server_name}" and
+    .federation_domain_whitelist[1] == "${federation_partner_server_name}" and
+    .federation_domain_whitelist[2] == "${federation_second_partner_server_name}" and
+    (.trusted_key_servers | length) == 1 and
+    .trusted_key_servers[0].server_name == "${server_name}"' \
+		"${WORK_DIR}/homeserver-d-config.yaml" \
+		'homeserver D does not have an exact A/B/D domain allowlist, room v12 default, and A key notary'
+	if rg --fixed-strings '${federation_denied_server_name}' \
+		"${WORK_DIR}/homeserver-d-config.yaml" >/dev/null; then
+		fail 'homeserver D federation allowlist includes denied homeserver C'
+	fi
+	assert_yq \
+		'select(.kind == "HelmRelease" and .metadata.name == "matrix-stack-d") |
+    ([.spec.values.synapse.extraVolumes[] | select(
+      .configMap.name == "fgentic-synapse-federation-policy-v1" or
+      .configMap.name == "fgentic-federation-policy")] | length) == 2 and
+    ([.spec.values.synapse.extraVolumeMounts[] | select(
+      .mountPath == "/opt/fgentic/synapse-modules" or
+      .mountPath == "/etc/fgentic/federation-policy")] | length) == 2 and
+    ([.spec.values.synapse.extraEnv[] | select(
+      .name == "PYTHONPATH" and .value == "/opt/fgentic/synapse-modules")] | length) == 1' \
+		"${WORK_DIR}/matrix-d.yaml" 'homeserver D policy source, data, or Python path is not mounted'
+	assert_yq \
+		'select(.kind == "ConfigMap" and .metadata.name == "fgentic-federation-policy") |
+    .metadata.namespace == "matrix-d" and
+    (.data."policy.json" | from_json | .version == 1)' \
+		"${WORK_DIR}/matrix-d.yaml" 'homeserver D does not receive the reloadable versioned policy'
+	assert_yq \
+		'select(.kind == "Certificate" and .metadata.name == "matrix-d-tls") |
+    .metadata.namespace == "gateway" and
+    .spec.secretName == "matrix-d-tls" and
+    .spec.issuerRef.kind == "ClusterIssuer" and
+    .spec.issuerRef.name == "${cluster_issuer}" and
+    (.spec.dnsNames | contains(["${federation_second_partner_server_name}",
+      "matrix.${federation_second_partner_server_name}"]))' \
+		"${WORK_DIR}/matrix-d.yaml" 'homeserver D does not have a local-CA leaf certificate'
+	assert_yq \
+		'select(.kind == "Gateway" and .metadata.name == "federation-d") |
+    .metadata.namespace == "gateway" and
+    .spec.gatewayClassName == "traefik" and
+    ([.spec.listeners[] | select(.protocol == "HTTPS") | .hostname] |
+      contains(["${federation_second_partner_server_name}",
+        "matrix.${federation_second_partner_server_name}"])) and
+    ([.spec.listeners[].tls.certificateRefs[] | select(.name == "matrix-d-tls")] |
+      length) == 2 and
+    ([.spec.listeners[] | select(
+      .allowedRoutes.namespaces.from == "Selector" and
+      .allowedRoutes.namespaces.selector.matchLabels."kubernetes.io/metadata.name" == "matrix-d"
+    )] | length) == 2' \
+		"${WORK_DIR}/matrix-d.yaml" 'homeserver D has no local-CA TLS Gateway for apex and Synapse'
+	assert_yq \
+		'select(.kind == "HTTPRoute" and .metadata.name == "synapse-d") |
+    .metadata.namespace == "matrix-d" and
+    .spec.parentRefs[0].name == "federation-d" and
+    (.spec.hostnames | contains(["matrix.${federation_second_partner_server_name}"])) and
+    ([.spec.rules[].backendRefs[] |
+      select(.name == "ess-synapse" and .port == 8008)] | length) == 1' \
+		"${WORK_DIR}/matrix-d.yaml" 'homeserver D Synapse route is incomplete'
+	assert_yq \
+		'select(.kind == "HTTPRoute" and .metadata.name == "well-known-d") |
+    .metadata.namespace == "matrix-d" and
+    .spec.parentRefs[0].name == "federation-d" and
+    (.spec.hostnames | contains(["${federation_second_partner_server_name}"])) and
+    ([.spec.rules[].backendRefs[] |
+      select(.name == "ess-well-known" and .port == 8010)] | length) == 1' \
+		"${WORK_DIR}/matrix-d.yaml" 'homeserver D well-known delegation route is incomplete'
 
 }

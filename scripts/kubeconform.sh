@@ -61,8 +61,10 @@ done <<<"${settings_env}"
 # Federation-only manifests introduce overlay-scoped substitutions that intentionally do not
 # belong in production settings. Export their unreachable fixture values for the raw schema pass;
 # the effective org-a/org-b/org-c releases are rendered separately through the recursive overlay.
-for key in federation_partner_server_name federation_denied_server_name federation_gateway_ip \
+for key in federation_partner_server_name federation_second_partner_server_name \
+	federation_denied_server_name federation_gateway_ip \
 	federation_a2a_max_budget_units federation_a2a_quota_budget_units_per_minute \
+	federation_second_a2a_quota_budget_units_per_minute \
 	demo_bridge_tag; do
 	value="$(yq -er ".data.${key}" clusters/federation/platform-settings.yaml)"
 	export "${key}=${value}"
@@ -193,7 +195,8 @@ federation_render="$(flux build kustomization cluster-overlay-validation \
 for homeserver in \
 	'matrix matrix-stack' \
 	'matrix-b matrix-stack-b' \
-	'matrix-c matrix-stack-c'; do
+	'matrix-c matrix-stack-c' \
+	'matrix-d matrix-stack-d'; do
 	read -r namespace release <<<"${homeserver}"
 	yq -e "select(.kind == \"HelmRelease\" and .metadata.namespace == \"${namespace}\" and
     .metadata.name == \"${release}\") | .spec.values" <<<"${federation_render}" \

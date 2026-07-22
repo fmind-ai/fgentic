@@ -57,6 +57,35 @@ patches:
                 ]
               },
               {
+                "clientId": "org-d-a2a",
+                "name": "Authorized org-D A2A consumer (second admitted consumer, issue #354)",
+                "enabled": true,
+                "clientAuthenticatorType": "client-secret",
+                "secret": "$${ORG_D_A2A_CLIENT_SECRET}",
+                "protocol": "openid-connect",
+                "publicClient": false,
+                "bearerOnly": false,
+                "standardFlowEnabled": false,
+                "implicitFlowEnabled": false,
+                "directAccessGrantsEnabled": false,
+                "serviceAccountsEnabled": true,
+                "frontchannelLogout": false,
+                "protocolMappers": [
+                  {
+                    "name": "fgentic-a2a-audience",
+                    "protocol": "openid-connect",
+                    "protocolMapper": "oidc-audience-mapper",
+                    "consentRequired": false,
+                    "config": {
+                      "included.client.audience": "fgentic-a2a",
+                      "id.token.claim": "false",
+                      "access.token.claim": "true",
+                      "introspection.token.claim": "true"
+                    }
+                  }
+                ]
+              },
+              {
                 "clientId": "untrusted-a2a",
                 "name": "Valid audience but unauthorized A2A consumer",
                 "enabled": true,

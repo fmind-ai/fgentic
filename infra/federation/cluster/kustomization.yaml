@@ -5,6 +5,7 @@ kind: Component
 resources:
   - matrix-b-flux.yaml
   - matrix-c-flux.yaml
+  - matrix-d-flux.yaml
 patches:
   - target:
       group: kustomize.toolkit.fluxcd.io

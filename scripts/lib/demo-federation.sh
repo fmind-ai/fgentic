@@ -381,11 +381,11 @@ create_federation_secrets() {
 		--output json 2>/dev/null || printf '{}')"
 	# Preserve existing lab identities while making upgrades self-healing when a new homeserver is
 	# added to an already running, ownership-labelled cluster.
-	for key in pg-synapse pg-synapse-b pg-synapse-c pg-keycloak pg-kagent \
+	for key in pg-synapse pg-synapse-b pg-synapse-d pg-synapse-c pg-keycloak pg-kagent \
 		pg-knowledge-owner pg-knowledge-retrieval \
-		alice-password bob-password charlie-password keycloak-admin-password \
+		alice-password bob-password dave-password charlie-password keycloak-admin-password \
 		fgentic-client-secret fgentic-alice-password fgentic-bob-password \
-		org-b-a2a-client-secret untrusted-a2a-client-secret \
+		org-b-a2a-client-secret org-d-a2a-client-secret untrusted-a2a-client-secret \
 		wrong-audience-a2a-client-secret; do
 		value="$(jq -r --arg key "${key}" '.data[$key] // "" | @base64d' \
 			<<<"${bootstrap_json}")"
@@ -405,13 +405,14 @@ create_federation_secrets() {
 	bootstrap_json=""
 	value=""
 
-	local pg_synapse pg_synapse_b pg_synapse_c pg_keycloak pg_kagent
+	local pg_synapse pg_synapse_b pg_synapse_d pg_synapse_c pg_keycloak pg_kagent
 	local pg_knowledge_owner pg_knowledge_retrieval namespace ca_configmap
 	local keycloak_admin_password fgentic_client_secret fgentic_alice_password
-	local fgentic_bob_password org_b_a2a_client_secret untrusted_a2a_client_secret
-	local wrong_audience_a2a_client_secret
+	local fgentic_bob_password org_b_a2a_client_secret org_d_a2a_client_secret
+	local untrusted_a2a_client_secret wrong_audience_a2a_client_secret
 	pg_synapse="$(bootstrap_secret_value pg-synapse)"
 	pg_synapse_b="$(bootstrap_secret_value pg-synapse-b)"
+	pg_synapse_d="$(bootstrap_secret_value pg-synapse-d)"
 	pg_synapse_c="$(bootstrap_secret_value pg-synapse-c)"
 	pg_keycloak="$(bootstrap_secret_value pg-keycloak)"
 	pg_kagent="$(bootstrap_secret_value pg-kagent)"
@@ -425,6 +426,10 @@ create_federation_secrets() {
 		--from-literal=username=synapse_b --from-literal=password="${pg_synapse_b}"
 	apply_secret matrix-b pg-synapse-b --type=kubernetes.io/basic-auth \
 		--from-literal=username=synapse_b --from-literal=password="${pg_synapse_b}"
+	apply_secret postgres pg-synapse-d --type=kubernetes.io/basic-auth \
+		--from-literal=username=synapse_d --from-literal=password="${pg_synapse_d}"
+	apply_secret matrix-d pg-synapse-d --type=kubernetes.io/basic-auth \
+		--from-literal=username=synapse_d --from-literal=password="${pg_synapse_d}"
 	apply_secret postgres pg-synapse-c --type=kubernetes.io/basic-auth \
 		--from-literal=username=synapse_c --from-literal=password="${pg_synapse_c}"
 	apply_secret matrix-c pg-synapse-c --type=kubernetes.io/basic-auth \
@@ -450,6 +455,7 @@ create_federation_secrets() {
 	fgentic_alice_password="$(bootstrap_secret_value fgentic-alice-password)"
 	fgentic_bob_password="$(bootstrap_secret_value fgentic-bob-password)"
 	org_b_a2a_client_secret="$(bootstrap_secret_value org-b-a2a-client-secret)"
+	org_d_a2a_client_secret="$(bootstrap_secret_value org-d-a2a-client-secret)"
 	untrusted_a2a_client_secret="$(bootstrap_secret_value untrusted-a2a-client-secret)"
 	wrong_audience_a2a_client_secret="$(bootstrap_secret_value wrong-audience-a2a-client-secret)"
 	apply_secret keycloak keycloak-credentials \
@@ -459,12 +465,13 @@ create_federation_secrets() {
 		--from-literal=FGENTIC_ALICE_PASSWORD="${fgentic_alice_password}" \
 		--from-literal=FGENTIC_BOB_PASSWORD="${fgentic_bob_password}" \
 		--from-literal=ORG_B_A2A_CLIENT_SECRET="${org_b_a2a_client_secret}" \
+		--from-literal=ORG_D_A2A_CLIENT_SECRET="${org_d_a2a_client_secret}" \
 		--from-literal=UNTRUSTED_A2A_CLIENT_SECRET="${untrusted_a2a_client_secret}" \
 		--from-literal=WRONG_AUDIENCE_A2A_CLIENT_SECRET="${wrong_audience_a2a_client_secret}"
 
 	# Only the public root is mirrored into the homeserver namespaces. The CA key remains in
 	# cert-manager, and both runtime and config-check pods mount this ConfigMap read-only.
-	for namespace in matrix matrix-b matrix-c; do
+	for namespace in matrix matrix-b matrix-d matrix-c; do
 		ca_configmap="$(kubectl --namespace "${namespace}" create configmap fgentic-local-ca \
 			--from-file="ca.crt=${ca_cert}" \
 			--dry-run=client --output=yaml)"
