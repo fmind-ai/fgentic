@@ -106,6 +106,72 @@ check_federation_signing() {
 		"${WORK_DIR}/tamper-output.txt" >/dev/null; then
 		fail 'AgentCard verifier logged tampered card content'
 	fi
+
+	# Zero-downtime AgentCard key-rotation rehearsal (#352 Tasks 2/5), fully offline. Sign the SAME prepared
+	# card under an overlap (`-next`) and a retired (`-prev`) kid (the primary was already signed above), then
+	# drive the merged bridge verifier (agentcardjws.VerifySet, #920/#939) through the exact outcomes the
+	# fed:up acceptance (verify_agent_card_rotation) asserts: mid-overlap both pinned kids verify, the retired
+	# kid is refused fail-closed once revoked while the promoted kid still verifies, and a tampered card is
+	# still refused — all content-free. This de-risks the runtime proof without a cluster.
+	local rotation_primary=fgentic-org-a-docs-qa-v1
+	local rotation_overlap="${rotation_primary}-next"
+	local rotation_revoked="${rotation_primary}-prev"
+	openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+		-out "${WORK_DIR}/rotation-overlap-private.pem" 2>/dev/null
+	openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+		-out "${WORK_DIR}/rotation-revoked-private.pem" 2>/dev/null
+	chmod 600 "${WORK_DIR}/rotation-overlap-private.pem" "${WORK_DIR}/rotation-revoked-private.pem"
+	"${AGENT_CARD_SIGNER}" sign --input "${WORK_DIR}/unsigned-agent-card.json" \
+		--private-key "${WORK_DIR}/rotation-overlap-private.pem" --key-id "${rotation_overlap}" \
+		--output "${WORK_DIR}/rotation-overlap-bundle.json"
+	"${AGENT_CARD_SIGNER}" sign --input "${WORK_DIR}/unsigned-agent-card.json" \
+		--private-key "${WORK_DIR}/rotation-revoked-private.pem" --key-id "${rotation_revoked}" \
+		--output "${WORK_DIR}/rotation-revoked-bundle.json"
+	jq --join-output --compact-output '.agentCard' "${WORK_DIR}/rotation-overlap-bundle.json" \
+		>"${WORK_DIR}/rotation-overlap-card.json"
+	jq --join-output --compact-output '.publicJwk' "${WORK_DIR}/rotation-overlap-bundle.json" \
+		>"${WORK_DIR}/rotation-overlap-jwk.json"
+	jq --join-output --compact-output '.agentCard' "${WORK_DIR}/rotation-revoked-bundle.json" \
+		>"${WORK_DIR}/rotation-revoked-card.json"
+	# (a) mid-overlap: the primary and overlap cards both verify against the pinned set {primary, overlap}.
+	"${AGENT_CARD_SIGNER}" verify --input "${WORK_DIR}/signed-agent-card.json" \
+		--public-key "${WORK_DIR}/agent-card-public-jwk.json" --key-id "${rotation_primary}" \
+		--additional-key "${rotation_overlap}=${WORK_DIR}/rotation-overlap-jwk.json" \
+		|| fail 'rotation rehearsal: primary card did not verify mid-overlap'
+	"${AGENT_CARD_SIGNER}" verify --input "${WORK_DIR}/rotation-overlap-card.json" \
+		--public-key "${WORK_DIR}/agent-card-public-jwk.json" --key-id "${rotation_primary}" \
+		--additional-key "${rotation_overlap}=${WORK_DIR}/rotation-overlap-jwk.json" \
+		|| fail 'rotation rehearsal: overlap card did not verify mid-overlap'
+	# (b) after revocation: the retired-kid card is refused fail-closed; the promoted kid still verifies.
+	if "${AGENT_CARD_SIGNER}" verify --input "${WORK_DIR}/rotation-revoked-card.json" \
+		--public-key "${WORK_DIR}/agent-card-public-jwk.json" --key-id "${rotation_primary}" \
+		--additional-key "${rotation_overlap}=${WORK_DIR}/rotation-overlap-jwk.json" \
+		--revoked-key-id "${rotation_revoked}" \
+		>"${WORK_DIR}/rotation-revoked-output.txt" 2>&1; then
+		fail 'rotation rehearsal: a revoked kid was accepted'
+	fi
+	if rg --fixed-strings 'fgentic-documentation' "${WORK_DIR}/rotation-revoked-output.txt" >/dev/null; then
+		fail 'rotation rehearsal: revoked verification logged card content'
+	fi
+	"${AGENT_CARD_SIGNER}" verify --input "${WORK_DIR}/rotation-overlap-card.json" \
+		--public-key "${WORK_DIR}/agent-card-public-jwk.json" --key-id "${rotation_primary}" \
+		--additional-key "${rotation_overlap}=${WORK_DIR}/rotation-overlap-jwk.json" \
+		--revoked-key-id "${rotation_revoked}" \
+		|| fail 'rotation rehearsal: promoted kid did not verify after revocation'
+	# (c) an unrevoked but tampered card is still refused and never logs its mutated body.
+	jq '.description = "rotation-tamper-must-not-be-logged"' "${WORK_DIR}/signed-agent-card.json" \
+		>"${WORK_DIR}/rotation-tampered-card.json"
+	if "${AGENT_CARD_SIGNER}" verify --input "${WORK_DIR}/rotation-tampered-card.json" \
+		--public-key "${WORK_DIR}/agent-card-public-jwk.json" --key-id "${rotation_primary}" \
+		--additional-key "${rotation_overlap}=${WORK_DIR}/rotation-overlap-jwk.json" \
+		>"${WORK_DIR}/rotation-tamper-output.txt" 2>&1; then
+		fail 'rotation rehearsal: a tampered card was accepted'
+	fi
+	if rg --fixed-strings 'rotation-tamper-must-not-be-logged' \
+		"${WORK_DIR}/rotation-tamper-output.txt" >/dev/null; then
+		fail 'rotation rehearsal: tampered verification logged card content'
+	fi
+
 	for private_suffix in pem key; do
 		git -C "${ROOT_DIR}" check-ignore --quiet --no-index \
 			"${ROOT_DIR}/do-not-create-agent-card-test.${private_suffix}" \
@@ -136,6 +202,11 @@ check_federation_signing() {
 		'--patch-file /dev/stdin' \
 		'sign_federation_agent_card_snapshot' \
 		'federation AgentCard contains an unresolved substitution before signing' \
+		'prepare_federation_agent_card_rotation' \
+		'sign_agent_card_snapshot_variant' \
+		'AGENT_CARD_OVERLAP_KEY_ID="${AGENT_CARD_KEY_ID}-next"' \
+		'AGENT_CARD_REVOKED_KEY_ID="${AGENT_CARD_KEY_ID}-prev"' \
+		'agent-card-keys.json=${AGENT_CARD_ROTATION_KEYS_FILE}' \
 		'publish_federation_agent_card_artifacts' \
 		'agent-card-private-key=${AGENT_CARD_PRIVATE_KEY}' \
 		'agent-card.json=${AGENT_CARD_PUBLIC_FILE}' \

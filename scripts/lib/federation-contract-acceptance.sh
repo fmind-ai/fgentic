@@ -14,6 +14,11 @@ check_federation_acceptance() {
 		'A2A_URL="https://a2a.${SERVER_A}"' \
 		'IDP_B_URL="https://id.${SERVER_B}"' \
 		'verify_public_agent_card' \
+		'verify_agent_card_rotation' \
+		'--additional-key "${overlap_kid}=${overlap_jwk}"' \
+		'--revoked-key-id "${revoked_kid}"' \
+		'revoked-kid AgentCard was accepted after revocation' \
+		'tampered AgentCard was accepted mid-overlap' \
 		'public AgentCard bytes differ from the signed bootstrap artifact' \
 		'.securitySchemes.orgBOIDC.openIdConnectSecurityScheme.openIdConnectUrl' \
 		'org-B OIDC discovery contract is inconsistent' \
@@ -98,7 +103,7 @@ check_federation_acceptance() {
 		'.errcode == "M_NOT_FOUND"' \
 		'wait_for_remote_policy_event' \
 		'allowed on A after Flux policy reconcile'; do
-		rg --fixed-strings "${contract}" "${LIFECYCLE}" "${SEED_SOURCES[@]}" >/dev/null \
+		rg --fixed-strings -- "${contract}" "${LIFECYCLE}" "${SEED_SOURCES[@]}" >/dev/null \
 			|| fail "federation acceptance proof omits ${contract}"
 	done
 	quota_line="$(rg --line-number --fixed-strings \

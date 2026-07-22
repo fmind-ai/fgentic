@@ -163,6 +163,62 @@ prepare_federation_agent_card_key() {
 	configmap_json=""
 	encoded_private_key=""
 	encoded_receipt_key=""
+
+	prepare_federation_agent_card_rotation
+}
+
+prepare_federation_agent_card_rotation() {
+	# Zero-downtime AgentCard signing-key rotation overlay for the disposable lab (#352 Task 2). Rotation
+	# is modelled as a REGISTRY change (#941): the host declares an overlap window `card_additional_key_ids`
+	# and a `card_revoked_key_ids` signal, which fed-registry-render.sh derives into the exact bridge
+	# cardIdentity shape (keyID + additionalKeys[].keyID + revokedKeyIDs, #920). The committed lab registry
+	# stays single-key (so every other rendered plane is byte-identical — check:fed-registry gate 2a), so the
+	# lab derives the rotation kids by the same `-next`/`-prev` convention that gate uses and mints a distinct
+	# ephemeral signing key per kid. Disabled (unset) leaves the single-key path below byte-identical to today:
+	# neither an extra key nor an extra ConfigMap entry is produced.
+	AGENT_CARD_ROTATION_KEYS_FILE=""
+	AGENT_CARD_OVERLAP_KEY_ID=""
+	AGENT_CARD_OVERLAP_PRIVATE_KEY=""
+	AGENT_CARD_REVOKED_KEY_ID=""
+	AGENT_CARD_REVOKED_PRIVATE_KEY=""
+	[ "${FEDERATION_AGENT_CARD_ROTATION:-no}" = yes ] || return 0
+
+	AGENT_CARD_OVERLAP_KEY_ID="${AGENT_CARD_KEY_ID}-next"
+	AGENT_CARD_REVOKED_KEY_ID="${AGENT_CARD_KEY_ID}-prev"
+	AGENT_CARD_OVERLAP_PRIVATE_KEY="${WORK_DIR}/agent-card-overlap-private-key.pem"
+	AGENT_CARD_REVOKED_PRIVATE_KEY="${WORK_DIR}/agent-card-revoked-private-key.pem"
+	openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+		-out "${AGENT_CARD_OVERLAP_PRIVATE_KEY}" 2>/dev/null
+	openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 \
+		-out "${AGENT_CARD_REVOKED_PRIVATE_KEY}" 2>/dev/null
+	chmod 600 "${AGENT_CARD_OVERLAP_PRIVATE_KEY}" "${AGENT_CARD_REVOKED_PRIVATE_KEY}"
+
+	# The derived cardIdentity set the acceptance pins against. Identical shape to what
+	# scripts/fed-registry-render.sh writes for a host declaring the same overlap+revocation fields
+	# (proven offline by check:fed-registry); the retired `-prev` kid stays disjoint from the pinned set.
+	AGENT_CARD_ROTATION_KEYS_FILE="${WORK_DIR}/agent-card-keys.json"
+	jq --null-input \
+		--arg primary "${AGENT_CARD_KEY_ID}" \
+		--arg overlap "${AGENT_CARD_OVERLAP_KEY_ID}" \
+		--arg revoked "${AGENT_CARD_REVOKED_KEY_ID}" '
+      {keyID: $primary, additionalKeys: [{keyID: $overlap}], revokedKeyIDs: [$revoked]}
+    ' >"${AGENT_CARD_ROTATION_KEYS_FILE}"
+}
+
+sign_agent_card_snapshot_variant() {
+	# Sign the SAME fully-prepared (substituted + receipt-injected) template under an additional kid so the
+	# overlap card carries identical content to the served primary card, differing only by its signature.
+	local template="$1" private_key="$2" key_id="$3" out_card="$4" out_jwk="$5"
+	local bundle="${WORK_DIR}/agent-card-variant-${key_id}-bundle.json"
+	"${ROOT_DIR}/scripts/sign-agent-card.sh" sign \
+		--input "${template}" --private-key "${private_key}" \
+		--key-id "${key_id}" --output "${bundle}"
+	jq --exit-status --join-output --compact-output \
+		'.agentCard | select(type == "object")' "${bundle}" >"${out_card}"
+	jq --exit-status --join-output --compact-output \
+		'.publicJwk | select(type == "object" and has("d") == false)' "${bundle}" >"${out_jwk}"
+	"${ROOT_DIR}/scripts/sign-agent-card.sh" verify \
+		--input "${out_card}" --public-key "${out_jwk}" --key-id "${key_id}"
 }
 
 sign_federation_agent_card_snapshot() {
@@ -238,6 +294,23 @@ sign_federation_agent_card_snapshot() {
 			|| die "refusing to replace the independently pinnable usage-receipt public JWK"
 	fi
 
+	# Rotation overlap (#352 Task 2): also sign the identical prepared card under the overlap (`-next`) and
+	# retired (`-prev`) kids. Only the primary card is served (substituted into policies.yaml below); these
+	# additional cards ride the evidence ConfigMap so the acceptance can prove overlap verification and the
+	# fail-closed revocation refusal. The served single-key artifact stays byte-identical when disabled.
+	if [ "${FEDERATION_AGENT_CARD_ROTATION:-no}" = yes ]; then
+		AGENT_CARD_OVERLAP_PUBLIC_FILE="${WORK_DIR}/agent-card-overlap.json"
+		AGENT_CARD_OVERLAP_JWK_FILE="${WORK_DIR}/public-jwk-overlap.json"
+		AGENT_CARD_REVOKED_PUBLIC_FILE="${WORK_DIR}/agent-card-revoked.json"
+		AGENT_CARD_REVOKED_JWK_FILE="${WORK_DIR}/public-jwk-revoked.json"
+		sign_agent_card_snapshot_variant "${template}" "${AGENT_CARD_OVERLAP_PRIVATE_KEY}" \
+			"${AGENT_CARD_OVERLAP_KEY_ID}" \
+			"${AGENT_CARD_OVERLAP_PUBLIC_FILE}" "${AGENT_CARD_OVERLAP_JWK_FILE}"
+		sign_agent_card_snapshot_variant "${template}" "${AGENT_CARD_REVOKED_PRIVATE_KEY}" \
+			"${AGENT_CARD_REVOKED_KEY_ID}" \
+			"${AGENT_CARD_REVOKED_PUBLIC_FILE}" "${AGENT_CARD_REVOKED_JWK_FILE}"
+	fi
+
 	signed_card="$(<"${AGENT_CARD_PUBLIC_FILE}")"
 	SIGNED_CARD_JSON="${signed_card}" CARD_MARKER="${FEDERATION_AGENT_CARD_MARKER}" \
 		yq --inplace \
@@ -252,11 +325,25 @@ publish_federation_agent_card_artifacts() {
 	# These are the exact public bytes served by the snapshot policy. The ConfigMap is evidence
 	# for the acceptance test and a convenient public-key distribution point, never key storage.
 	local configmap_manifest
+	local -a artifacts=(
+		--from-file="agent-card.json=${AGENT_CARD_PUBLIC_FILE}"
+		--from-file="public-jwk.json=${AGENT_CARD_JWK_FILE}"
+		--from-file="usage-receipt-public-jwk.json=${USAGE_RECEIPT_JWK_FILE}"
+	)
+	# Rotation overlap evidence (#352 Task 2), additive: the derived cardIdentity set plus the overlap and
+	# retired-kid cards and their public JWKs. Absent when rotation is disabled, so the ConfigMap keeps its
+	# exact today-single-key contents.
+	if [ "${FEDERATION_AGENT_CARD_ROTATION:-no}" = yes ]; then
+		artifacts+=(
+			--from-file="agent-card-keys.json=${AGENT_CARD_ROTATION_KEYS_FILE}"
+			--from-file="agent-card-overlap.json=${AGENT_CARD_OVERLAP_PUBLIC_FILE}"
+			--from-file="public-jwk-overlap.json=${AGENT_CARD_OVERLAP_JWK_FILE}"
+			--from-file="agent-card-revoked.json=${AGENT_CARD_REVOKED_PUBLIC_FILE}"
+			--from-file="public-jwk-revoked.json=${AGENT_CARD_REVOKED_JWK_FILE}"
+		)
+	fi
 	configmap_manifest="$(kubectl --namespace agentgateway-system create configmap \
-		"${FEDERATION_AGENT_CARD_CONFIGMAP}" \
-		--from-file="agent-card.json=${AGENT_CARD_PUBLIC_FILE}" \
-		--from-file="public-jwk.json=${AGENT_CARD_JWK_FILE}" \
-		--from-file="usage-receipt-public-jwk.json=${USAGE_RECEIPT_JWK_FILE}" \
+		"${FEDERATION_AGENT_CARD_CONFIGMAP}" "${artifacts[@]}" \
 		--dry-run=client --output=yaml)"
 	printf '%s\n' "${configmap_manifest}" | kubectl apply --filename - >/dev/null
 }
