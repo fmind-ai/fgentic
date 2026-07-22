@@ -26,6 +26,16 @@ spec:
       tag: "0.1.0" # CI overwrites with sha-<git>@sha256:<digest> once the image is published
     config:
       serverName: ${server_name}
+    # Durable inbox activity ledger + async delegation queue (#321). MANDATORY with the policy border
+    # on (the chart fails closed otherwise): it dedups at-least-once federation redelivery so a retry
+    # cannot double-charge an LLM invocation. DATABASE_URL is wired from this Secret, whose scoped
+    # `activitypub` CNPG role + database are composed into platform-pg per profile (demo:
+    # infra/postgres/components/activitypub via clusters/demo). Credential from the cluster-only demo
+    # secret path (scripts/lib/demo-secrets.sh) or, for a production enablement, its own SOPS Secret.
+    database:
+      enabled: true
+      secretName: activitypub-agent-gateway-db
+      key: url
     # The federation policy border (issue #211) is ON: the ../component Component projects the
     # fgentic-activitypub-policy ConfigMap this mounts and hot-reloads. Inbound activities must pass
     # HTTP-Signature verification and the allowlist before any A2A call.

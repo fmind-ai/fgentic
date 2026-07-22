@@ -126,6 +126,10 @@ patches:
         name: postgres
         namespace: flux-system
       spec:
+        # Demo reconciles the ActivityPub gateway (issue #489), so its scoped role + Database compose
+        # into platform-pg here. local/gcp omit this component, keeping their CNPG render unchanged.
+        components:
+          - components/activitypub
         dependsOn:
           - name: controllers
           - name: platform-secrets

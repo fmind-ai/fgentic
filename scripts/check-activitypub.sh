@@ -56,13 +56,16 @@ fi
 if yq -e 'select(.kind == "NetworkPolicy")' "${chart_render}" >/dev/null 2>&1; then
 	fail "chart NetworkPolicy must be disabled in the deploy values (the deploy unit ships its own)"
 fi
-# The signed border and cross-transport identity must stay ON for the reconciled gateway.
+# The signed border and cross-transport identity must stay ON for the reconciled gateway, and — with
+# the border on — the chart fails closed unless the durable activity store (DATABASE_URL) is wired
+# (#321 duplicate-spend/dedup). A rendered Deployment therefore already proves database.enabled.
 assert_yq \
 	'select(.kind == "Deployment") |
 	 ([.spec.template.spec.containers[0].env[] | select(.name == "POLICY_PATH")] | length) == 1 and
+	 ([.spec.template.spec.containers[0].env[] | select(.name == "DATABASE_URL")] | length) == 1 and
 	 ([.spec.template.spec.volumes[] | select(.name == "signing-key")] | length) == 1 and
 	 ([.spec.template.spec.volumes[] | select(.name == "identity-key")] | length) == 1' \
-	"${chart_render}" "reconciled gateway lost its border/integrity/identity wiring"
+	"${chart_render}" "reconciled gateway lost its border/integrity/identity/durable-store wiring"
 
 # --- 2. The standalone default-deny NetworkPolicy ----------------------------------------------
 np="${DEPLOY_DIR}/networkpolicy.yaml"
@@ -73,8 +76,8 @@ assert_yq \
 	  .spec.podSelector.matchLabels."app.kubernetes.io/name" == "activitypub-agent-gateway" and
 	  ([.spec.ingress[].from[].namespaceSelector.matchLabels."kubernetes.io/metadata.name"] | sort | join(",")) == "gateway,monitoring" and
 	  ([.spec.ingress[].ports[].port] | sort | join(",")) == "8480,9090" and
-	  ([.spec.egress[].to[].namespaceSelector.matchLabels."kubernetes.io/metadata.name"] | sort | join(",")) == "agentgateway-system,kube-system" and
-	  ([.spec.egress[].ports[].port] | sort | join(",")) == "53,53,8080")' \
+	  ([.spec.egress[].to[].namespaceSelector.matchLabels."kubernetes.io/metadata.name"] | sort | join(",")) == "agentgateway-system,kube-system,postgres" and
+	  ([.spec.egress[].ports[].port] | sort | join(",")) == "53,53,5432,8080")' \
 	"${np}" "AP default-deny NetworkPolicy lost its scoped ingress/egress boundary"
 # Fail-closed by construction: no rule may open the public internet or an unscoped destination.
 if yq -e 'select(.kind == "NetworkPolicy") | .spec.egress[].to[] | select(has("ipBlock"))' \
@@ -120,6 +123,47 @@ assert_yq \
 	 ([.spec.postBuild.substituteFrom[].name] | any(. == "platform-settings"))' \
 	"${ap_flux}" "demo activitypub Flux Kustomization drifted (path/deps/matrix-independence/podMonitor)"
 
+# The demo overlay must also compose the opt-in Postgres tenant into the shared CNPG cluster, so the
+# durable activity store the border requires has a scoped role + database. local/gcp must not.
+demo_postgres_flux="${WORK_DIR}/demo-postgres-flux.yaml"
+yq eval 'select(.kind == "Kustomization" and .metadata.name == "postgres")' \
+	"${demo_render}" >"${demo_postgres_flux}"
+assert_yq \
+	'([.spec.components[]] | any(. == "components/activitypub"))' \
+	"${demo_postgres_flux}" "demo postgres layer must compose the activitypub Postgres tenant component"
+
+# The component itself must add exactly one scoped login role, its per-tenant TLS HBA row, and the
+# retained Database — mirroring the bridge/kagent pattern (own database + scoped role). Build it inside
+# the canonical Postgres layer through Flux, exactly as an overlay composes it.
+pg_fixture="${WORK_DIR}/pg-flux.yaml"
+printf '%s\n' \
+	'apiVersion: kustomize.toolkit.fluxcd.io/v1' \
+	'kind: Kustomization' \
+	'metadata: {name: postgres-activitypub-test, namespace: flux-system}' \
+	'spec:' \
+	'  interval: 30m' \
+	'  path: ./infra/postgres' \
+	'  components:' \
+	'    - components/activitypub' \
+	'  sourceRef: {kind: GitRepository, name: flux-system}' >"${pg_fixture}"
+pg_render="${WORK_DIR}/pg.yaml"
+(
+	cd "${ROOT_DIR}"
+	flux build kustomization postgres-activitypub-test \
+		--path infra/postgres \
+		--kustomization-file "${pg_fixture}" \
+		--dry-run --in-memory-build
+) >"${pg_render}"
+assert_yq \
+	'select(.kind == "Cluster" and .metadata.name == "platform-pg") |
+	 ([.spec.managed.roles[] | select(.name == "activitypub" and .login == true and .passwordSecret.name == "pg-activitypub")] | length) == 1 and
+	 ([.spec.postgresql.pg_hba[] | select(. == "hostssl activitypub activitypub all scram-sha-256")] | length) == 1' \
+	"${pg_render}" "activitypub Postgres role/HBA contract drifted"
+assert_yq \
+	'select(.kind == "Database" and .metadata.name == "activitypub") |
+	 (.spec.cluster.name == "platform-pg" and .spec.owner == "activitypub" and .spec.databaseReclaimPolicy == "retain")' \
+	"${pg_render}" "activitypub CNPG Database contract drifted"
+
 # local, gcp, and base must keep the gateway absent (renders unchanged by this issue).
 for entrypoint in base local gcp; do
 	entry_render="${WORK_DIR}/${entrypoint}.yaml"
@@ -147,10 +191,14 @@ done
 grep -q 'create_activitypub_secrets' "${ROOT_DIR}/scripts/lib/demo-secrets.sh" \
 	|| fail "demo secret path does not provision the ActivityPub gateway keys"
 for secret in activitypub-agent-gateway-identity-key activitypub-agent-gateway-signing-key \
-	activitypub-agent-gateway-credential; do
+	activitypub-agent-gateway-credential activitypub-agent-gateway-db pg-activitypub; do
 	grep -q "${secret}" "${ROOT_DIR}/scripts/lib/demo-secrets.sh" \
 		|| fail "demo secret path is missing ${secret}"
 done
+# The namespace-local DATABASE_URL must reuse the CNPG role password (same-password contract).
+grep -Eq 'url=postgres://activitypub:.*@platform-pg-rw[.]postgres' \
+	"${ROOT_DIR}/scripts/lib/demo-secrets.sh" \
+	|| fail "demo DB credential must build DATABASE_URL from the CNPG pg-activitypub password"
 # The SOPS templates remain examples only; no real encrypted AP key may enter a cluster secret dir.
 for template in identity signing; do
 	[ -f "${ROOT_DIR}/infra/secrets/activitypub-agent-gateway-${template}-key.sops.yaml.example" ] \

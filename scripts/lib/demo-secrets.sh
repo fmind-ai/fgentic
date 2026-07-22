@@ -135,7 +135,7 @@ create_ephemeral_secrets() {
 	local bootstrap_json generated_value key key_spec patch_data patch_document value_length
 	local -a bootstrap_arguments=()
 	local -a bootstrap_key_specs=(
-		pg-synapse:24 pg-mas:24 pg-bridge:24 pg-kagent:24
+		pg-synapse:24 pg-mas:24 pg-bridge:24 pg-kagent:24 pg-activitypub:24
 		pg-knowledge-owner:24 pg-knowledge-retrieval:24
 		as-token:32 hs-token:32 a2a-key:32 mcp-platform-helper-key:32
 		mas-admin-client:32 demo-password:24
@@ -176,6 +176,7 @@ create_ephemeral_secrets() {
 	PG_MAS="$(bootstrap_secret_value pg-mas)"
 	PG_BRIDGE="$(bootstrap_secret_value pg-bridge)"
 	PG_KAGENT="$(bootstrap_secret_value pg-kagent)"
+	PG_ACTIVITYPUB="$(bootstrap_secret_value pg-activitypub)"
 	PG_KNOWLEDGE_OWNER="$(bootstrap_secret_value pg-knowledge-owner)"
 	PG_KNOWLEDGE_RETRIEVAL="$(bootstrap_secret_value pg-knowledge-retrieval)"
 	AS_TOKEN="$(bootstrap_secret_value as-token)"
@@ -195,6 +196,8 @@ create_ephemeral_secrets() {
 		--from-literal=username=bridge --from-literal=password="${PG_BRIDGE}"
 	apply_secret postgres pg-kagent --type=kubernetes.io/basic-auth \
 		--from-literal=username=kagent --from-literal=password="${PG_KAGENT}"
+	apply_secret postgres pg-activitypub --type=kubernetes.io/basic-auth \
+		--from-literal=username=activitypub --from-literal=password="${PG_ACTIVITYPUB}"
 	apply_secret postgres pg-knowledge-owner --type=kubernetes.io/basic-auth \
 		--from-literal=username=knowledge_owner --from-literal=password="${PG_KNOWLEDGE_OWNER}"
 	apply_secret postgres pg-knowledge-retrieval --type=kubernetes.io/basic-auth \
@@ -272,7 +275,7 @@ EOF
 # PEM keys are persisted in the bootstrap Secret so a retained cluster keeps a stable did:key anchor
 # across restarts; the A2A workload credential proves the gateway is the caller to agentgateway.
 create_activitypub_secrets() {
-	local ap_identity ap_signing ap_token
+	local ap_identity ap_signing ap_token ap_db_password
 	ap_identity="$(bootstrap_secret_value ap-identity-key)"
 	if [ -z "${ap_identity}" ]; then
 		local ap_identity_key ap_signing_key ap_a2a_key ap_patch_document ap_patch_data
@@ -300,4 +303,10 @@ create_activitypub_secrets() {
 		--from-literal="ed25519.pem=${ap_signing}"
 	apply_secret activitypub activitypub-agent-gateway-credential \
 		--from-literal="token=${ap_token}"
+
+	# Namespace-local DATABASE_URL for the durable inbox activity ledger (#321). Same password as the
+	# matching CNPG pg-activitypub Secret, mirroring the bridge's matrix-a2a-bridge-db credential.
+	ap_db_password="$(bootstrap_secret_value pg-activitypub)"
+	apply_secret activitypub activitypub-agent-gateway-db \
+		--from-literal="url=postgres://activitypub:${ap_db_password}@platform-pg-rw.postgres.svc.cluster.local:5432/activitypub?sslmode=require"
 }

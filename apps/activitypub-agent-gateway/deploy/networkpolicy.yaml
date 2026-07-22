@@ -6,9 +6,10 @@
 #
 # Ingress: only the Gateway (Traefik, namespace `gateway`) may reach the public AP listener, and only
 #   Prometheus (namespace `monitoring`) may scrape the never-public metrics port.
-# Egress: DNS, plus the agentgateway proxy — the sole A2A/LLM chokepoint (kagent is reached THROUGH
-#   it, never directly). No public-internet egress: the public AP border stays gated on every profile,
-#   and outbound federation delivery to an in-cluster demo peer is added by the runtime interop harness.
+# Egress: DNS; the shared CloudNativePG cluster (durable inbox activity ledger / dedup, #321); and the
+#   agentgateway proxy — the sole A2A/LLM chokepoint (kagent is reached THROUGH it, never directly). No
+#   public-internet egress: the public AP border stays gated on every profile, and outbound federation
+#   delivery to an in-cluster demo peer is added by the runtime interop harness.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -52,6 +53,14 @@ spec:
           port: 53
         - protocol: TCP
           port: 53
+    # The durable inbox activity ledger and async delegation queue (#321) in the shared CNPG cluster.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: postgres
+      ports:
+        - protocol: TCP
+          port: 5432
     # The A2A path: agentgateway is the LLM-credential chokepoint. kagent sits behind it and is never
     # dialed directly from here.
     - to:
