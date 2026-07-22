@@ -298,6 +298,11 @@ _ADMIN_ROUTES: Final = (
     _AdminRoute(
         "POST", re.compile(r"^/_synapse/admin/v1/room/(?P<target>[^/?]+)/media/quarantine$"), "media_quarantine"
     ),
+    # Legacy alias served by the SAME QuarantineMediaInRoom servlet in Synapse v1.155.0 (a second PATTERN
+    # `/quarantine_media/<room_id>` under the admin_patterns() `^/_synapse/admin/v1` prefix, "kept around
+    # for legacy reasons" per the source). A quarantine issued via this deprecated URL maps to the same
+    # media_quarantine class with a bounded <room_id> target, so it is never a silent capture gap.
+    _AdminRoute("POST", re.compile(r"^/_synapse/admin/v1/quarantine_media/(?P<target>[^/?]+)$"), "media_quarantine"),
     _AdminRoute(
         "POST", re.compile(r"^/_synapse/admin/v1/user/(?P<target>[^/?]+)/media/quarantine$"), "media_quarantine"
     ),
@@ -359,6 +364,9 @@ def _outcome_from_status(status: int) -> str:
 
 def _match_admin_route(method: str, path: str) -> tuple[str, str] | None:
     """Map a pinned admin route to `(action_class, target)`, or ``None`` if this stream does not audit it."""
+    # Every pattern is `$`-anchored, so a path carrying a query string (`…?foo=bar`) matches nothing and
+    # safely emits no record — erring toward skip-not-leak. These admin endpoints take JSON bodies, not
+    # query params, so a real audited mutation never carries one; a query-bearing variant is not a mutation.
     for route in _ADMIN_ROUTES:
         if route.method != method:
             continue

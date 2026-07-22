@@ -129,6 +129,14 @@ def test_no_forbidden_value_leaks_into_the_record() -> None:
             "media_quarantine",
             "!r:fgentic.localhost",
         ),
+        # Legacy alias on the same v1.155.0 QuarantineMediaInRoom servlet: emits one media_quarantine
+        # record (bounded <room_id> target), never a silent capture gap.
+        (
+            "POST",
+            "/_synapse/admin/v1/quarantine_media/!r:fgentic.localhost",
+            "media_quarantine",
+            "!r:fgentic.localhost",
+        ),
         (
             "POST",
             "/_synapse/admin/v1/user/@bob:fgentic.localhost/media/quarantine",
