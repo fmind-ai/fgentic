@@ -8,6 +8,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -92,6 +93,217 @@ func TestSignAndSilentVerifyCommands(t *testing.T) {
 	}
 	if strings.Contains(stderr.String(), secretPromptSentinel) {
 		t.Fatalf("verify error exposed card content: %s", stderr.String())
+	}
+}
+
+// signCardForTest signs the shared fixture card under keyID and writes the signed card and its public
+// JWK to the temp directory, returning their paths — the tool's own sign path builds the bundle exactly
+// as #920's tests do, so overlap/revocation verification is exercised against real ES256 signatures.
+func signCardForTest(t *testing.T, directory, keyID string) (signedPath, publicKeyPath string) {
+	t.Helper()
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	bundle, err := agentcardjws.Sign(commandTestCard(t), key, keyID)
+	if err != nil {
+		t.Fatalf("Sign %q: %v", keyID, err)
+	}
+	signedPath = filepath.Join(directory, keyID+".signed.json")
+	publicKeyPath = filepath.Join(directory, keyID+".public-jwk.json")
+	if err := os.WriteFile(signedPath, bundle.AgentCard, 0o600); err != nil {
+		t.Fatalf("WriteFile signed card: %v", err)
+	}
+	if err := os.WriteFile(publicKeyPath, bundle.PublicJWK, 0o600); err != nil {
+		t.Fatalf("WriteFile public JWK: %v", err)
+	}
+	return signedPath, publicKeyPath
+}
+
+func TestVerifyBackwardCompatibleSingleKey(t *testing.T) {
+	directory := t.TempDir()
+	signedPath, publicKeyPath := signCardForTest(t, directory, "old-key")
+	var stderr bytes.Buffer
+	exitCode := execute([]string{
+		"verify",
+		"--input", signedPath,
+		"--public-key", publicKeyPath,
+		"--key-id", "old-key",
+	}, strings.NewReader("unused"), &stderr)
+	if exitCode != 0 {
+		t.Fatalf("single-key verify exit = %d, stderr = %q", exitCode, stderr.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("successful verify emitted stderr: %q", stderr.String())
+	}
+}
+
+func TestVerifyOverlapAcceptsEitherPinnedKey(t *testing.T) {
+	directory := t.TempDir()
+	oldSignedPath, oldPublicKeyPath := signCardForTest(t, directory, "old-key")
+	newSignedPath, newPublicKeyPath := signCardForTest(t, directory, "new-key")
+	// During the overlap window both the retiring key and its replacement are pinned; a card signed under
+	// EITHER kid must verify. The card under the non-primary key exercises the additional-key path.
+	for _, testCase := range []struct {
+		name       string
+		signedPath string
+	}{
+		{name: "card under primary key", signedPath: oldSignedPath},
+		{name: "card under additional key", signedPath: newSignedPath},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			err := run([]string{
+				"verify",
+				"--input", testCase.signedPath,
+				"--public-key", oldPublicKeyPath,
+				"--key-id", "old-key",
+				"--additional-key", "new-key=" + newPublicKeyPath,
+			}, strings.NewReader("unused"))
+			if err != nil {
+				t.Fatalf("overlap verify: %v", err)
+			}
+		})
+	}
+}
+
+func TestVerifyRevocationFailsClosedButNewKeySucceeds(t *testing.T) {
+	directory := t.TempDir()
+	oldSignedPath, _ := signCardForTest(t, directory, "old-key")
+	newSignedPath, newPublicKeyPath := signCardForTest(t, directory, "new-key")
+	// After promotion, the retired kid is dropped from the pin set and revoked; a card offered only under
+	// it is refused with the distinct revoked reason, while a card under the promoted key still verifies.
+	err := run([]string{
+		"verify",
+		"--input", oldSignedPath,
+		"--public-key", newPublicKeyPath,
+		"--key-id", "new-key",
+		"--revoked-key-id", "old-key",
+	}, strings.NewReader("unused"))
+	if err == nil {
+		t.Fatal("verify accepted a card signed only under a revoked key ID")
+	}
+	if !errors.Is(err, agentcardjws.ErrRevokedKeyID) {
+		t.Fatalf("revoked card error = %v, want ErrRevokedKeyID", err)
+	}
+	if err := run([]string{
+		"verify",
+		"--input", newSignedPath,
+		"--public-key", newPublicKeyPath,
+		"--key-id", "new-key",
+		"--revoked-key-id", "old-key",
+	}, strings.NewReader("unused")); err != nil {
+		t.Fatalf("promoted-key verify: %v", err)
+	}
+}
+
+func TestVerifyRejectsPinnedAndRevokedKeyID(t *testing.T) {
+	directory := t.TempDir()
+	signedPath, publicKeyPath := signCardForTest(t, directory, "old-key")
+	// A kid can never be both pinned and revoked: VerifySet fails closed on the contradiction.
+	err := run([]string{
+		"verify",
+		"--input", signedPath,
+		"--public-key", publicKeyPath,
+		"--key-id", "old-key",
+		"--revoked-key-id", "old-key",
+	}, strings.NewReader("unused"))
+	if err == nil || !strings.Contains(err.Error(), "revoked") {
+		t.Fatalf("pinned-and-revoked verify error = %v", err)
+	}
+}
+
+func TestVerifyUnrevokedTamperedCardFails(t *testing.T) {
+	directory := t.TempDir()
+	signedPath, publicKeyPath := signCardForTest(t, directory, "new-key")
+	signed, err := os.ReadFile(signedPath)
+	if err != nil {
+		t.Fatalf("ReadFile signed card: %v", err)
+	}
+	var tampered map[string]any
+	if err := json.Unmarshal(signed, &tampered); err != nil {
+		t.Fatalf("Unmarshal signed card: %v", err)
+	}
+	tampered["name"] = "tampered"
+	tamperedJSON, err := json.Marshal(tampered)
+	if err != nil {
+		t.Fatalf("Marshal tampered card: %v", err)
+	}
+	if err := os.WriteFile(signedPath, tamperedJSON, 0o600); err != nil {
+		t.Fatalf("WriteFile tampered card: %v", err)
+	}
+	// A tampered card under a pinned, non-revoked kid must still fail — overlap must not widen acceptance.
+	err = run([]string{
+		"verify",
+		"--input", signedPath,
+		"--public-key", publicKeyPath,
+		"--key-id", "new-key",
+	}, strings.NewReader("unused"))
+	if err == nil {
+		t.Fatal("verify accepted a tampered card")
+	}
+	if errors.Is(err, agentcardjws.ErrRevokedKeyID) {
+		t.Fatalf("tampered card misreported as revoked: %v", err)
+	}
+}
+
+func TestVerifyRejectsMalformedAdditionalKey(t *testing.T) {
+	directory := t.TempDir()
+	signedPath, publicKeyPath := signCardForTest(t, directory, "old-key")
+	// additionalKeyList.Set must reject any value that is not a non-empty kid=path pair rather than
+	// panicking or silently accepting an unusable pin.
+	for _, malformed := range []string{
+		"no-separator",      // missing '='
+		"=" + publicKeyPath, // empty kid
+		"new-key=",          // empty path
+		"new-key=-",         // stdin path, not a file
+	} {
+		t.Run(malformed, func(t *testing.T) {
+			err := run([]string{
+				"verify",
+				"--input", signedPath,
+				"--public-key", publicKeyPath,
+				"--key-id", "old-key",
+				"--additional-key", malformed,
+			}, strings.NewReader("unused"))
+			if err == nil {
+				t.Fatalf("verify accepted malformed additional key %q", malformed)
+			}
+			if !strings.Contains(err.Error(), "additional key must be formatted as kid=path") &&
+				!strings.Contains(err.Error(), "additional key path must be a file path") {
+				t.Fatalf("malformed additional key %q error = %v", malformed, err)
+			}
+		})
+	}
+}
+
+func TestVerifyRejectsDuplicateKeyID(t *testing.T) {
+	directory := t.TempDir()
+	signedPath, publicKeyPath := signCardForTest(t, directory, "old-key")
+	_, otherPublicKeyPath := signCardForTest(t, directory, "new-key")
+	// The seenKeyIDs guard rejects a pin set that names one kid twice, whether it collides with the
+	// primary key or with an earlier additional key.
+	for _, testCase := range []struct {
+		name           string
+		additionalKeys []string
+	}{
+		{name: "duplicates primary key", additionalKeys: []string{"old-key=" + publicKeyPath}},
+		{name: "two additional keys share a kid", additionalKeys: []string{"new-key=" + otherPublicKeyPath, "new-key=" + otherPublicKeyPath}},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			args := []string{
+				"verify",
+				"--input", signedPath,
+				"--public-key", publicKeyPath,
+				"--key-id", "old-key",
+			}
+			for _, additionalKey := range testCase.additionalKeys {
+				args = append(args, "--additional-key", additionalKey)
+			}
+			err := run(args, strings.NewReader("unused"))
+			if err == nil || !strings.Contains(err.Error(), "duplicate pinned key ID") {
+				t.Fatalf("duplicate key ID error = %v", err)
+			}
+		})
 	}
 }
 

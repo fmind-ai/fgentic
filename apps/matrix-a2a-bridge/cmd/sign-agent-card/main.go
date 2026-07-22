@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/agentcardjws"
 )
@@ -105,8 +106,16 @@ func runVerify(args []string) error {
 	flags := flag.NewFlagSet("verify", flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	inputPath := flags.String("input", "", "signed AgentCard JSON path")
-	publicKeyPath := flags.String("public-key", "", "public P-256 JWK JSON path")
-	keyID := flags.String("key-id", "", "expected protected JWS key ID")
+	publicKeyPath := flags.String("public-key", "", "primary public P-256 JWK JSON path")
+	keyID := flags.String("key-id", "", "expected protected JWS key ID for the primary key")
+	// Overlap and revocation use repeatable flags rather than a manifest file: one flag per value mirrors
+	// the existing single-value flag style, keeps the tool dependency-free, and binds each overlap key's
+	// kid to its own public-JWK path exactly as the primary -key-id/-public-key pair does — matching the
+	// per-key additionalKeys shape #920 added to the bridge config.
+	var additionalKeys additionalKeyList
+	var revokedKeyIDs revokedKeyIDList
+	flags.Var(&additionalKeys, "additional-key", "overlap-window pinned key as kid=publicJWKpath (repeatable)")
+	flags.Var(&revokedKeyIDs, "revoked-key-id", "retired key ID refused even if cryptographically valid (repeatable)")
 	if err := flags.Parse(args); err != nil {
 		return fmt.Errorf("parse verify flags: %w", err)
 	}
@@ -124,14 +133,32 @@ func runVerify(args []string) error {
 	if err != nil {
 		return err
 	}
-	jwk, err := readBoundedFile(*publicKeyPath, maxKeyBytes, "public JWK")
+	// Pin the primary key plus any overlap keys (#352): a card verifies if its kid matches ANY non-revoked
+	// pinned key. Duplicate key IDs are rejected so a pin set never names one kid with two public keys.
+	pins := make([]agentcardjws.PinnedKey, 0, 1+len(additionalKeys))
+	seenKeyIDs := make(map[string]struct{}, 1+len(additionalKeys))
+	primaryKey, err := loadPinnedKey(*publicKeyPath, *keyID)
 	if err != nil {
 		return err
 	}
-	key, err := agentcardjws.ParsePublicJWK(jwk, *keyID, agentcardjws.RequirePublicJWKMetadata)
-	if err != nil {
-		return err
+	pins = append(pins, primaryKey)
+	seenKeyIDs[*keyID] = struct{}{}
+	for _, binding := range additionalKeys {
+		if _, duplicate := seenKeyIDs[binding.keyID]; duplicate {
+			return fmt.Errorf("duplicate pinned key ID %q", binding.keyID)
+		}
+		additionalKey, err := loadPinnedKey(binding.path, binding.keyID)
+		if err != nil {
+			return err
+		}
+		pins = append(pins, additionalKey)
+		seenKeyIDs[binding.keyID] = struct{}{}
 	}
+	revoked := make(map[string]bool, len(revokedKeyIDs))
+	for _, revokedKeyID := range revokedKeyIDs {
+		revoked[revokedKeyID] = true
+	}
+
 	document, err := agentcardjws.Parse(card)
 	if err != nil {
 		return err
@@ -139,7 +166,68 @@ func runVerify(args []string) error {
 	if _, err := document.Card(); err != nil {
 		return err
 	}
-	return agentcardjws.Verify(document, key, *keyID)
+	// VerifySet fails closed if a pinned key ID is also revoked and refuses a card offered only under a
+	// revoked kid with ErrRevokedKeyID; the single-key invocation (no overlap/revoked flags) reduces to
+	// the original Verify behavior byte-for-byte.
+	return agentcardjws.VerifySet(document, pins, revoked)
+}
+
+// loadPinnedKey reads a public JWK file and parses it into a pinned key for keyID, requiring the full
+// JWK metadata that `sign` emits — the same strict contract the single-key verify path has always used.
+func loadPinnedKey(publicKeyPath, keyID string) (agentcardjws.PinnedKey, error) {
+	jwk, err := readBoundedFile(publicKeyPath, maxKeyBytes, "public JWK")
+	if err != nil {
+		return agentcardjws.PinnedKey{}, err
+	}
+	key, err := agentcardjws.ParsePublicJWK(jwk, keyID, agentcardjws.RequirePublicJWKMetadata)
+	if err != nil {
+		return agentcardjws.PinnedKey{}, err
+	}
+	return agentcardjws.PinnedKey{KeyID: keyID, Key: key}, nil
+}
+
+// keyBinding is one kid=path overlap key parsed from a repeatable -additional-key flag.
+type keyBinding struct {
+	keyID string
+	path  string
+}
+
+// additionalKeyList collects repeatable -additional-key "kid=path" values for the overlap window.
+type additionalKeyList []keyBinding
+
+func (l *additionalKeyList) String() string {
+	keyIDs := make([]string, len(*l))
+	for index, binding := range *l {
+		keyIDs[index] = binding.keyID
+	}
+	return strings.Join(keyIDs, ",")
+}
+
+func (l *additionalKeyList) Set(value string) error {
+	keyID, path, found := strings.Cut(value, "=")
+	if !found || keyID == "" || path == "" {
+		return fmt.Errorf("additional key must be formatted as kid=path")
+	}
+	if path == "-" {
+		return fmt.Errorf("additional key path must be a file path")
+	}
+	*l = append(*l, keyBinding{keyID: keyID, path: path})
+	return nil
+}
+
+// revokedKeyIDList collects repeatable -revoked-key-id values.
+type revokedKeyIDList []string
+
+func (l *revokedKeyIDList) String() string {
+	return strings.Join(*l, ",")
+}
+
+func (l *revokedKeyIDList) Set(value string) error {
+	if value == "" {
+		return fmt.Errorf("revoked key ID must not be empty")
+	}
+	*l = append(*l, value)
+	return nil
 }
 
 func marshalBundle(bundle agentcardjws.Bundle) ([]byte, error) {
