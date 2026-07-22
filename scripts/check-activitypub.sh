@@ -62,7 +62,9 @@ fi
 assert_yq \
 	'select(.kind == "Deployment") |
 	 ([.spec.template.spec.containers[0].env[] | select(.name == "POLICY_PATH")] | length) == 1 and
-	 ([.spec.template.spec.containers[0].env[] | select(.name == "DATABASE_URL")] | length) == 1 and
+	 ([.spec.template.spec.containers[0].env[] | select(.name == "DATABASE_URL") |
+	   select(.valueFrom.secretKeyRef.name == "activitypub-agent-gateway-db" and
+	          .valueFrom.secretKeyRef.key == "url")] | length) == 1 and
 	 ([.spec.template.spec.volumes[] | select(.name == "signing-key")] | length) == 1 and
 	 ([.spec.template.spec.volumes[] | select(.name == "identity-key")] | length) == 1' \
 	"${chart_render}" "reconciled gateway lost its border/integrity/identity/durable-store wiring"
@@ -195,10 +197,15 @@ for secret in activitypub-agent-gateway-identity-key activitypub-agent-gateway-s
 	grep -q "${secret}" "${ROOT_DIR}/scripts/lib/demo-secrets.sh" \
 		|| fail "demo secret path is missing ${secret}"
 done
-# The namespace-local DATABASE_URL must reuse the CNPG role password (same-password contract).
-grep -Eq 'url=postgres://activitypub:.*@platform-pg-rw[.]postgres' \
-	"${ROOT_DIR}/scripts/lib/demo-secrets.sh" \
-	|| fail "demo DB credential must build DATABASE_URL from the CNPG pg-activitypub password"
+# The namespace-local DATABASE_URL must reuse the CNPG role password (same-password contract). Prove
+# it statically: the URL password field is the ${ap_db_password} variable, and that variable is
+# assigned from bootstrap_secret_value pg-activitypub — the exact source the CNPG pg-activitypub role
+# Secret uses (PG_ACTIVITYPUB), so both credentials are provably equal offline without a cluster.
+demo_secrets="${ROOT_DIR}/scripts/lib/demo-secrets.sh"
+grep -qF "ap_db_password=\"\$(bootstrap_secret_value pg-activitypub)\"" "${demo_secrets}" \
+	|| fail "demo DB password must derive from bootstrap_secret_value pg-activitypub"
+grep -qF "url=postgres://activitypub:\${ap_db_password}@platform-pg-rw.postgres" "${demo_secrets}" \
+	|| fail "demo DATABASE_URL must use the pg-activitypub-derived password"
 # The SOPS templates remain examples only; no real encrypted AP key may enter a cluster secret dir.
 for template in identity signing; do
 	[ -f "${ROOT_DIR}/infra/secrets/activitypub-agent-gateway-${template}-key.sops.yaml.example" ] \
