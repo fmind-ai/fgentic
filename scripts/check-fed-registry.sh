@@ -83,9 +83,24 @@ jq -e '
   ([.partners[] | select(.role == "host") | .a2a.role] == ["exporter"]) and
   ([.partners[] | select(.role == "admitted")] | all(.a2a.role == "consumer")) and
   ([.partners[] | select(.a2a.role == "exporter") | .a2a] | all(
-    (keys | sort) == ["agent_path", "card_key_id", "provider_organization", "role", "route_host", "usage_receipt_key_id"]
+    ((["agent_path", "card_key_id", "provider_organization", "role", "route_host", "usage_receipt_key_id"] - keys) | length == 0)
+    and ((keys - ["agent_path", "card_additional_key_ids", "card_key_id", "card_revoked_key_ids", "provider_organization", "role", "route_host", "usage_receipt_key_id"]) | length == 0)
     and (.agent_path | startswith("/")) and (.provider_organization | length >= 1)
     and (.card_key_id | length >= 1) and (.usage_receipt_key_id | length >= 1) and (.route_host | length >= 1)
+    and (if has("card_additional_key_ids") then (.card_additional_key_ids | type == "array") else true end)
+    and (if has("card_revoked_key_ids") then (.card_revoked_key_ids | type == "array") else true end)
+    and (
+      # AgentCard signing-key rotation invariants (#352, Task 4): the overlap set + revocation model the
+      # bridge cardIdentity (#920). Every kid non-empty; pinned (primary + overlap) unique; revoked unique;
+      # and NO kid both pinned and revoked (revocation wins — a pinned-and-revoked kid fails closed).
+      ([.card_key_id] + (.card_additional_key_ids // [])) as $pinned
+      | (.card_revoked_key_ids // []) as $revoked
+      | ($pinned | all(type == "string" and test("\\S")))
+        and ($revoked | all(type == "string" and test("\\S")))
+        and (($pinned | length) == ($pinned | unique | length))
+        and (($revoked | length) == ($revoked | unique | length))
+        and (($pinned - ($pinned - $revoked)) | length == 0)
+    )
   )) and
   ([.partners[] | select(.a2a.role == "consumer") | .a2a] | all(
     (keys | sort) == ["audience", "azp", "issuer", "jwks_path", "role"]
@@ -93,7 +108,7 @@ jq -e '
     and (.issuer | startswith("https://")) and (.jwks_path | startswith("/"))
   )) and
   ([.partners[] | select(.role == "denied") | has("a2a")] | all(. == false))
-' "${REGISTRY_JSON}" >/dev/null || fail "an a2a block has an unknown field, a missing required field, or the wrong role/shape"
+' "${REGISTRY_JSON}" >/dev/null || fail "an a2a block has an unknown field, a missing required field, the wrong role/shape, or an invalid AgentCard key rotation set (empty, duplicate, or pinned-and-revoked kid)"
 
 # Pull the canonical identities the planes are checked against.
 host_name="$(jq -r '.partners[] | select(.role == "host") | .server_name' "${REGISTRY_JSON}")"
@@ -120,6 +135,63 @@ for rel in apps/synapse-federation-policy/policy/policy.json clusters/federation
 	diff -u "${ROOT_DIR}/${rel}" "${WORK_DIR}/render/${rel}" >/dev/null \
 		|| fail "${rel} drifted from the registry — run 'mise run fed:registry-render' (no hand-edits)"
 done
+
+# 2b. AgentCard signing-key rotation model (#352, Task 4) is strictly ADDITIVE. A single-key host (today)
+#     writes NO agent-card-keys.json, so the committed tree stays byte-identical; only a host that declares
+#     an overlap window or a revocation materializes the derived cardIdentity (#920). Prove all four here,
+#     purely offline: absent-fields render unchanged, a valid rotation renders the exact set deterministically,
+#     and a bad rotation (duplicate or pinned-and-revoked kid) fails the renderer CLOSED.
+readonly CARD_KEYS_REL="infra/federation/delegation/agent-card-keys.json"
+# (a) Absent = unchanged: the real registry has no rotation fields, so the derived artifact must not exist.
+[ ! -e "${ROOT_DIR}/${CARD_KEYS_REL}" ] \
+	|| fail "committed ${CARD_KEYS_REL} exists but no host declares a rotation set — the model must stay additive"
+[ ! -e "${WORK_DIR}/render/${CARD_KEYS_REL}" ] \
+	|| fail "renderer emitted ${CARD_KEYS_REL} for a single-key host — absent rotation fields must render nothing"
+# Inject an overlap window + a revocation onto the host into a fixture registry (reusing every existing
+# name/budget so policy.json + platform-settings render identically — only the card-key model differs).
+readonly PRIMARY_KID="${card_key_id}"
+readonly OVERLAP_KID="${card_key_id}-next"
+readonly REVOKED_KID="${card_key_id}-prev"
+fixture_registry() { # $1=out $2=additional-json $3=revoked-json
+	ADD="$2" REV="$3" yq '
+	  (.partners[] | select(.role == "host").a2a) +=
+	    {"card_additional_key_ids": (strenv(ADD) | fromjson), "card_revoked_key_ids": (strenv(REV) | fromjson)}
+	' "${REGISTRY}" >"$1"
+}
+# (b) Valid rotation renders the exact bridge cardIdentity shape, deterministically (rendered twice, diffed).
+valid_fixture="${WORK_DIR}/registry-rotation-valid.yaml"
+fixture_registry "${valid_fixture}" "[\"${OVERLAP_KID}\"]" "[\"${REVOKED_KID}\"]"
+bash "${ROOT_DIR}/scripts/fed-registry-render.sh" --registry "${valid_fixture}" --out-root "${WORK_DIR}/rot1" >/dev/null
+bash "${ROOT_DIR}/scripts/fed-registry-render.sh" --registry "${valid_fixture}" --out-root "${WORK_DIR}/rot2" >/dev/null
+diff -u "${WORK_DIR}/rot1/${CARD_KEYS_REL}" "${WORK_DIR}/rot2/${CARD_KEYS_REL}" >/dev/null \
+	|| fail "AgentCard rotation render is non-deterministic"
+jq -e --arg p "${PRIMARY_KID}" --arg a "${OVERLAP_KID}" --arg r "${REVOKED_KID}" '
+	. == {keyID: $p, additionalKeys: [{keyID: $a}], revokedKeyIDs: [$r]}
+' "${WORK_DIR}/rot1/${CARD_KEYS_REL}" >/dev/null \
+	|| fail "rendered ${CARD_KEYS_REL} does not match the derived overlap+revocation cardIdentity"
+# The additive render must not perturb the existing planes even when a rotation set is present.
+for rel in apps/synapse-federation-policy/policy/policy.json clusters/federation/platform-settings.yaml; do
+	diff -u "${ROOT_DIR}/${rel}" "${WORK_DIR}/rot1/${rel}" >/dev/null \
+		|| fail "a rotation set perturbed ${rel} — the AgentCard key model must be additive"
+done
+# (c) Fail-closed: a duplicate kid (overlap == primary) and a pinned-and-revoked kid must each be rejected.
+dup_fixture="${WORK_DIR}/registry-rotation-dup.yaml"
+fixture_registry "${dup_fixture}" "[\"${PRIMARY_KID}\"]" "[]"
+if bash "${ROOT_DIR}/scripts/fed-registry-render.sh" --registry "${dup_fixture}" --out-root "${WORK_DIR}/rotdup" >/dev/null 2>&1; then
+	fail "renderer accepted a duplicate AgentCard signing kid (overlap == primary)"
+fi
+conflict_fixture="${WORK_DIR}/registry-rotation-conflict.yaml"
+fixture_registry "${conflict_fixture}" "[\"${OVERLAP_KID}\"]" "[\"${PRIMARY_KID}\"]"
+if bash "${ROOT_DIR}/scripts/fed-registry-render.sh" --registry "${conflict_fixture}" --out-root "${WORK_DIR}/rotconflict" >/dev/null 2>&1; then
+	fail "renderer accepted a pinned-and-revoked AgentCard signing kid (revocation must win, fail closed)"
+fi
+
+# (d) A whitespace-only kid is not a real key ID and must fail closed, same as an empty one (#352 Task 4).
+ws_fixture="${WORK_DIR}/registry-rotation-ws.yaml"
+fixture_registry "${ws_fixture}" "[\"  \"]" "[]"
+if bash "${ROOT_DIR}/scripts/fed-registry-render.sh" --registry "${ws_fixture}" --out-root "${WORK_DIR}/rotws" >/dev/null 2>&1; then
+	fail "renderer accepted a whitespace-only AgentCard signing kid"
+fi
 
 # 3. Plane 1 — Synapse federation_domain_whitelist. platform-settings is registry-rendered (step 2), so
 #    the whitelist entries are substitution vars; assert each homeserver's list is EXACTLY the expected

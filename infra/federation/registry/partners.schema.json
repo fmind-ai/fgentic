@@ -82,6 +82,18 @@
             "agent_path": { "type": "string", "pattern": "^/" },
             "provider_organization": { "type": "string", "minLength": 1 },
             "card_key_id": { "type": "string", "minLength": 1 },
+            "card_additional_key_ids": {
+              "description": "Zero-downtime AgentCard signing-key rotation overlap window (#352, Task 4). Optional set of ADDITIONAL currently-valid signing key IDs; a card verifies under card_key_id OR any of these (the primary stays authoritative). Each kid is unique, non-empty, distinct from card_key_id, and MUST NOT appear in card_revoked_key_ids — revocation wins, and a pinned-and-revoked kid fails check:fed-registry closed. Maps to the bridge cardIdentity.additionalKeys[].keyID (#920); the signer lifecycle serves the matching public JWKs. Absent = today's single-key behavior.",
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1, "pattern": "\\S" }
+            },
+            "card_revoked_key_ids": {
+              "description": "AgentCard signing-key revocation signal (#352, Task 4). Optional set of RETIRED signing key IDs; a card offered under one is refused deterministically (fail-closed) even if cryptographically valid. Each kid is unique and non-empty; a revoked kid must not also be pinned as card_key_id or in card_additional_key_ids. Maps to the bridge cardIdentity.revokedKeyIDs (#920). Absent = nothing revoked.",
+              "type": "array",
+              "uniqueItems": true,
+              "items": { "type": "string", "minLength": 1, "pattern": "\\S" }
+            },
             "usage_receipt_key_id": { "type": "string", "minLength": 1 }
           }
         },
