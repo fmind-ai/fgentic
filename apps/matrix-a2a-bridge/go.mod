@@ -1,6 +1,6 @@
 module github.com/fmind-ai/matrix-a2a-bridge
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/a2aproject/a2a-go/v2 v2.3.1

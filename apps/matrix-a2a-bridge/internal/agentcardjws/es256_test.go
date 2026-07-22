@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"encoding/pem"
 	"errors"
-	"math/big"
 	"strings"
 	"testing"
 
@@ -75,7 +74,16 @@ func TestParseP256PrivateKeyPEM(t *testing.T) {
 				if err != nil {
 					t.Fatalf("ParseP256PrivateKeyPEM: %v", err)
 				}
-				if key.D.Cmp(p256.D) != 0 {
+				// Compare the raw scalar via PrivateKey.Bytes (Go 1.26 deprecated the D big.Int).
+				got, err := key.Bytes()
+				if err != nil {
+					t.Fatalf("parsed key.Bytes: %v", err)
+				}
+				want, err := p256.Bytes()
+				if err != nil {
+					t.Fatalf("expected key.Bytes: %v", err)
+				}
+				if !bytes.Equal(got, want) {
 					t.Fatal("parsed private scalar differs")
 				}
 				return
@@ -173,8 +181,11 @@ func TestSignRejectsExistingSignaturesAndInvalidKey(t *testing.T) {
 		t.Fatalf("Sign existing signatures error = %v", err)
 	}
 
+	// Graft a different key's public point onto this scalar so the pair is on-curve but
+	// inconsistent (Go 1.26 deprecated mutating the raw X coordinate); Sign must reject it via the
+	// private-key public-point round-trip check.
 	key := testPrivateKey(t)
-	key.X = new(big.Int).Add(key.X, big.NewInt(1))
+	key.PublicKey = testPrivateKey(t).PublicKey
 	if _, err := Sign(testCardJSON(t), key, "card-key"); err == nil || !strings.Contains(err.Error(), "public") {
 		t.Fatalf("Sign inconsistent key error = %v", err)
 	}
