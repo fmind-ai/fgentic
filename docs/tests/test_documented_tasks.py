@@ -23,21 +23,21 @@ _MISE_APP_RUN = re.compile(
 type TaskViolation = tuple[str, str]
 
 
-def _task_vocabulary(mise_config: Path) -> set[str]:
-    """Return every task name and alias from one config without invoking mise."""
+def _task_definitions(mise_config: Path) -> dict[str, set[str]]:
+    """Return task names and aliases from one config without invoking mise."""
     configuration = tomllib.loads(mise_config.read_text(encoding="utf-8"))
     tasks = configuration.get("tasks")
     if not isinstance(tasks, Mapping):
         msg = f"{mise_config}: missing TOML task table"
         raise TypeError(msg)
 
-    vocabulary: set[str] = set()
+    definitions: dict[str, set[str]] = {}
     for name, definition in tasks.items():
         if not isinstance(name, str):
             msg = f"{mise_config}: task names must be strings"
             raise TypeError(msg)
-        vocabulary.add(name)
         if not isinstance(definition, Mapping) or "alias" not in definition:
+            definitions[name] = set()
             continue
         alias = definition["alias"]
         if isinstance(alias, str):
@@ -51,8 +51,14 @@ def _task_vocabulary(mise_config: Path) -> set[str]:
         if not aliases or any(not value.strip() for value in aliases):
             msg = f"{mise_config}: task {name!r} aliases must be a nonblank string or list of nonblank strings"
             raise TypeError(msg)
-        vocabulary.update(aliases)
-    return vocabulary
+        definitions[name] = set(aliases)
+    return definitions
+
+
+def _task_vocabulary(mise_config: Path) -> set[str]:
+    """Return every task name and alias from one config."""
+    definitions = _task_definitions(mise_config)
+    return set(definitions).union(*(aliases for aliases in definitions.values()))
 
 
 def _documented_tasks(markdown: str) -> set[str]:
@@ -111,13 +117,14 @@ def _effective_task_vocabulary(
     if not working_directory.is_dir():
         return None, "working directory does not exist"
 
-    vocabulary = _task_vocabulary(mise_config)
+    definitions = _task_definitions(mise_config)
     current = repository
     for part in working_directory.relative_to(repository).parts:
         current /= part
         nested_config = current / "mise.toml"
         if nested_config.is_file():
-            vocabulary.update(_task_vocabulary(nested_config))
+            definitions.update(_task_definitions(nested_config))
+    vocabulary = set(definitions).union(*(aliases for aliases in definitions.values()))
     return vocabulary, None
 
 
@@ -186,19 +193,39 @@ App-local commands inherit root tasks (`mise --cd apps/example run check`) and u
             mise_config.write_text(
                 '[tasks.check]\nrun = "true"\n\n'
                 '[tasks.test]\nalias = "t"\nrun = "true"\n\n'
-                '[tasks.deploy]\nalias = ["d", "ship"]\nrun = "true"\n',
+                '[tasks.deploy]\nalias = ["d", "ship"]\nrun = "true"\n\n'
+                '[tasks.replaced]\nalias = "old-alias"\nrun = "true"\n',
                 encoding="utf-8",
             )
             app = repository_root / "apps/example"
             app.mkdir(parents=True)
             (app / "mise.toml").write_text(
-                '[tasks.app-only]\nalias = "ship-app"\nrun = "true"\n',
+                '[tasks.app-only]\nalias = "ship-app"\nrun = "true"\n\n[tasks.replaced]\nrun = "true"\n',
                 encoding="utf-8",
             )
             source = repository_root / "README.md"
             source.write_text(markdown, encoding="utf-8")
 
             self.assertEqual(_task_violations((source,), mise_config, repository_root), [])
+
+    def test_app_override_replaces_parent_aliases(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            mise_config = repository_root / "mise.toml"
+            mise_config.write_text(
+                '[tasks.replaced]\nalias = "old-alias"\nrun = "true"\n',
+                encoding="utf-8",
+            )
+            app = repository_root / "apps/example"
+            app.mkdir(parents=True)
+            (app / "mise.toml").write_text('[tasks.replaced]\nrun = "true"\n', encoding="utf-8")
+            source = repository_root / "README.md"
+            source.write_text("Run `mise --cd apps/example run old-alias`.\n", encoding="utf-8")
+
+            self.assertEqual(
+                _task_violations((source,), mise_config, repository_root),
+                [("README.md", "mise --cd apps/example run old-alias")],
+            )
 
     def test_discovers_agent_skills_and_reports_stale_skill_tasks(self) -> None:
         message = r"documented mise task drift:\n  \.agents/skills/example/SKILL\.md: mise run missing"
