@@ -7,11 +7,12 @@
 // cross-check that the shipped CEL and the governed decision model agree.
 //
 // cel-go approximates agentgateway's Rust CEL for these simple expressions (int compare, map index,
-// ternary, &&, string startsWith/endsWith). The one deliberate divergence is asserted explicitly:
-// agentgateway returns null for a missing header key while cel-go raises a no-such-key error. Both
-// are fail-closed (deny) under a public ceiling, which is the only ceiling this harness uses for the
-// truly-missing-header fixture; the fully-populated ladder fixtures (including an unknown class
-// value) carry the inversion-detection guarantee.
+// ternary, &&, string startsWith/endsWith). On a MISSING header key both engines error on the lookup
+// (verified against the real agentgateway v1.3.1 via test:model-residency --runtime — it returns 403,
+// not the "ranks as regulated" admit an earlier model assumed), and Require denies on a CEL error, so
+// an absent header is fail-closed DENIED under every ceiling. Only a PRESENT-but-unknown value falls
+// through the ladder to the regulated rank. The fully-populated ladder fixtures (including an unknown
+// class value and both missing-header ceilings) carry the inversion-detection guarantee.
 package main
 
 import (
@@ -198,6 +199,12 @@ func matrix() []fixture {
 		// Fail-closed ceiling: an unknown/unsubstituted ceiling collapses to public.
 		{"regulated denied under unknown ceiling", bridgeWorkload, kagentPath, "POST", &reg, unset, false, false},
 		{"public served under unknown ceiling", bridgeWorkload, kagentPath, "POST", &pub, unset, true, false},
+		// Absent header key: the shipped CEL errors on the missing lookup (verified against the real
+		// agentgateway v1.3.1 via test:model-residency --runtime), which Require denies under EVERY
+		// ceiling — strictly more fail-closed than a "ranks as regulated" model. A header-less request
+		// has bypassed the bridge's classification, so denying it is correct (D11). (nil class => absent.)
+		{"missing header denied under regulated ceiling", bridgeWorkload, kagentPath, "POST", nil, reg, false, false},
+		{"missing header denied under public ceiling", bridgeWorkload, kagentPath, "POST", nil, pub, false, false},
 		// Combined-policy gating proves the fold covers the workload rule too.
 		{"wrong workload denied", "intruder", kagentPath, "POST", &pub, pub, false, false},
 		{"wrong namespace path denied", bridgeWorkload, "/api/a2a/other/docs-qa", "POST", &pub, pub, false, false},
@@ -260,6 +267,6 @@ func assertMissingHeaderErrors(expression string) error {
 	}
 	// A missing header is fail-closed in both engines under a public ceiling: cel-go errors (-> deny
 	// here), agentgateway returns null -> ranks regulated -> denied under public.
-	fmt.Printf("  %-52s deny (cel-go no-such-key; agentgateway null) OK\n", "missing header under public ceiling")
+	fmt.Printf("  %-52s deny (both engines error on the absent key) OK\n", "missing header under public ceiling")
 	return nil
 }
