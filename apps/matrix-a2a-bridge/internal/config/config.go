@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"log/slog"
+	"strconv"
 	"strings"
 	"time"
 
@@ -121,6 +122,22 @@ type Config struct {
 	RoomRateBurst       int     `env:"ROOM_RATE_BURST" envDefault:"10"`
 	// RateLimitBucketCapacity independently caps each sender/room invocation/notice bucket map.
 	RateLimitBucketCapacity int `env:"RATE_LIMIT_BUCKET_CAPACITY" envDefault:"4096"`
+
+	// Per-room token budgets (#99) are a hard cap on cumulative model-token spend per room per period,
+	// layered ON TOP of the per-sender/per-room invocation rate limits and agentgateway token metering
+	// (never a replacement — D7/D8). Usage is metered bridge-side from each completed delegation's exact
+	// kagent token total (docs/audit.md §157); agentgateway's aggregate GenAI metrics cannot attribute
+	// per room. When a room's period usage reaches its budget the bridge refuses new invocations with a
+	// content-safe in-room notice until the window resets.
+	//
+	// RoomTokenBudget is the default token ceiling applied to every room; 0 (the default) means
+	// unlimited, preserving the prior no-budget behavior. RoomTokenBudgetPeriod is the rolling window
+	// after which a room's accumulated usage resets. RoomTokenBudgetOverrides sets per-room ceilings as
+	// `!room:server=limit` entries (limit 0 = explicitly unlimited for that room), overriding the
+	// default; it is the per-room granularity of the feature until a room->team mapping exists.
+	RoomTokenBudget          int           `env:"ROOM_TOKEN_BUDGET" envDefault:"0"`
+	RoomTokenBudgetPeriod    time.Duration `env:"ROOM_TOKEN_BUDGET_PERIOD" envDefault:"24h"`
+	RoomTokenBudgetOverrides []string      `env:"ROOM_TOKEN_BUDGET_OVERRIDES" envSeparator:","`
 
 	// CancelModeratorPowerLevel is the room power level a member who did NOT start a delegation must
 	// hold to cancel it by reacting to its placeholder (❌). The original delegating sender may always
@@ -278,6 +295,9 @@ func (c Config) validate() error {
 	if c.RateLimitBucketCapacity < 1 {
 		return fmt.Errorf("RATE_LIMIT_BUCKET_CAPACITY must be >= 1")
 	}
+	if err := c.validateRoomTokenBudgets(); err != nil {
+		return err
+	}
 	if c.CancelModeratorPowerLevel < 0 {
 		return fmt.Errorf("CANCEL_MODERATOR_POWER_LEVEL must be >= 0")
 	}
@@ -305,6 +325,52 @@ func (c Config) validate() error {
 		return fmt.Errorf("LOG_FORMAT %q must be %q or %q", c.LogFormat, LogFormatJSON, LogFormatText)
 	}
 	return nil
+}
+
+// validateRoomTokenBudgets fails fast on an inconsistent per-room token budget policy (#99). A
+// negative default or period is rejected; a positive default with a zero/negative period is rejected
+// so a configured budget always has a real reset window. Each override must be `!room:server=limit`
+// with a Matrix room ID and a non-negative integer, and no room may appear twice.
+func (c Config) validateRoomTokenBudgets() error {
+	if c.RoomTokenBudget < 0 {
+		return fmt.Errorf("ROOM_TOKEN_BUDGET must be >= 0")
+	}
+	if c.RoomTokenBudgetPeriod <= 0 && (c.RoomTokenBudget > 0 || len(c.RoomTokenBudgetOverrides) > 0) {
+		return fmt.Errorf("ROOM_TOKEN_BUDGET_PERIOD must be positive when a room token budget is configured")
+	}
+	_, err := c.RoomTokenBudgetMap()
+	return err
+}
+
+// RoomTokenBudgetMap parses the per-room override entries into room ID -> token ceiling. validate()
+// has already accepted the entries, so callers can rely on the parse; it is re-run there to fail
+// fast at startup. An empty configuration yields an empty map and the default budget applies to
+// every room.
+func (c Config) RoomTokenBudgetMap() (map[string]int, error) {
+	overrides := make(map[string]int, len(c.RoomTokenBudgetOverrides))
+	for _, entry := range c.RoomTokenBudgetOverrides {
+		entry = strings.TrimSpace(entry)
+		if entry == "" {
+			continue
+		}
+		room, limit, ok := strings.Cut(entry, "=")
+		room = strings.TrimSpace(room)
+		if !ok || room == "" {
+			return nil, fmt.Errorf("ROOM_TOKEN_BUDGET_OVERRIDES entry %q must be !room:server=limit", entry)
+		}
+		if !strings.HasPrefix(room, "!") || !strings.Contains(room, ":") {
+			return nil, fmt.Errorf("ROOM_TOKEN_BUDGET_OVERRIDES room %q must be a Matrix room ID (!opaque:server)", room)
+		}
+		value, err := strconv.Atoi(strings.TrimSpace(limit))
+		if err != nil || value < 0 {
+			return nil, fmt.Errorf("ROOM_TOKEN_BUDGET_OVERRIDES limit for %q must be a non-negative integer", room)
+		}
+		if _, seen := overrides[room]; seen {
+			return nil, fmt.Errorf("ROOM_TOKEN_BUDGET_OVERRIDES room %q is configured more than once", room)
+		}
+		overrides[room] = value
+	}
+	return overrides, nil
 }
 
 // validateReplyScan rejects an invalid or inconsistent reply-scan policy fail-fast (#343). Both

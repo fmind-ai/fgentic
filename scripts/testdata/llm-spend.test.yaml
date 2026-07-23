@@ -18,8 +18,8 @@ tests:
               description: >-
                 More than 100000 model tokens were consumed in 15 minutes through agentgateway
                 across all providers and models. Check for mention storms, agent loops, or a
-                misbehaving automation (bridge rate limits and this global token budget bound the
-                current blast radius; per-room budgets are tracked in issue #99).
+                misbehaving automation (bridge rate limits, per-room token budgets, and this
+                global token budget bound the current blast radius; per-room budgets are issue #99).
     promql_expr_test:
       - expr: system_model_token_type:agentgateway_gen_ai_client_token_usage_sum:increase15m
         eval_time: 20m
@@ -42,11 +42,34 @@ tests:
               description: >-
                 More than 100000 model tokens were consumed in 15 minutes through agentgateway
                 across all providers and models. Check for mention storms, agent loops, or a
-                misbehaving automation (bridge rate limits and this global token budget bound the
-                current blast radius; per-room budgets are tracked in issue #99).
+                misbehaving automation (bridge rate limits, per-room token budgets, and this
+                global token budget bound the current blast radius; per-room budgets are issue #99).
     promql_expr_test:
       - expr: system_model_token_type:agentgateway_gen_ai_client_token_usage_sum:increase15m
         eval_time: 20m
         exp_samples:
           - labels: 'system_model_token_type:agentgateway_gen_ai_client_token_usage_sum:increase15m{gen_ai_system="openai",gen_ai_request_model="mistral-small-latest",gen_ai_token_type="output"}'
             value: 150000
+  - name: a room reaching its token budget fires the exhaustion alert
+    interval: 1m
+    input_series:
+      # The bridge increments this counter once when a room is refused for hitting its budget; a flat
+      # series after that point still shows a positive 15m increase across the step where it rose.
+      - series: "fgentic_room_token_budget_exhaustions_total"
+        values: "0 0 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1"
+    alert_rule_test:
+      - eval_time: 20m
+        alertname: RoomTokenBudgetExhausted
+        exp_alerts: []
+      - eval_time: 8m
+        alertname: RoomTokenBudgetExhausted
+        exp_alerts:
+          - exp_labels:
+              severity: info
+            exp_annotations:
+              summary: A room reached its per-period token budget
+              description: >-
+                At least one room was refused an agent invocation in the last 15 minutes because it
+                reached its configured per-period token budget (#99). This is the intended hard cap,
+                not an outage. Identify the room from the bridge audit log (audit_schema
+                fgentic.room_token_budget.v1) and raise its budget only if the spend is expected.

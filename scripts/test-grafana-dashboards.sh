@@ -112,6 +112,7 @@ assert_query "${bridge_dashboard}" "Queue depth" "fgentic_queue_depth"
 assert_query "${bridge_dashboard}" "In-flight delegations" "fgentic_inflight_delegations"
 assert_query "${bridge_dashboard}" "Rate-limit rejections" 'outcome="rate_limited"'
 assert_query "${bridge_dashboard}" "Deduplicated events" "fgentic_dedup_skips_total"
+assert_query "${bridge_dashboard}" "Room token-budget exhaustions" "fgentic_room_token_budget_exhaustions_total"
 assert_only_reviewed_labels "${bridge_dashboard}"
 
 assert_dashboard "${llm_dashboard}" "Fgentic — LLM Token & Cost Guard" "fgentic-llm-token-cost"

@@ -2,6 +2,7 @@ package a2aclient
 
 import (
 	"context"
+	"math"
 	"net/http"
 	"reflect"
 	"testing"
@@ -137,6 +138,31 @@ func TestToResult(t *testing.T) {
 			},
 		},
 		{
+			name: "completed task carries kagent token usage (#99)",
+			in: &a2a.Task{
+				ID:        "task-usage",
+				ContextID: "ctx-usage",
+				Status:    a2a.TaskStatus{State: a2a.TaskStateCompleted},
+				Metadata: map[string]any{
+					"kagent_usage_metadata": map[string]any{
+						"promptTokenCount":     float64(10),
+						"candidatesTokenCount": float64(2),
+						"totalTokenCount":      float64(12),
+					},
+				},
+				Artifacts: []*a2a.Artifact{
+					{Parts: a2a.ContentParts{a2a.NewTextPart("answer")}},
+				},
+			},
+			want: Result{
+				Text:        "answer",
+				ContextID:   "ctx-usage",
+				TaskID:      "task-usage",
+				Terminal:    true,
+				TotalTokens: 12,
+			},
+		},
+		{
 			name: "empty artifacts fall back to status message",
 			in: &a2a.Task{
 				ContextID: "ctx-2",
@@ -196,6 +222,34 @@ func TestToResult(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := toResult(tt.in); !reflect.DeepEqual(got, tt.want) {
 				t.Errorf("toResult() = %+v, want %+v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestKagentTotalTokens(t *testing.T) {
+	usage := func(total any) map[string]any {
+		return map[string]any{"kagent_usage_metadata": map[string]any{"totalTokenCount": total}}
+	}
+	tests := []struct {
+		name     string
+		metadata map[string]any
+		want     int
+	}{
+		{name: "nil metadata is not attributable", metadata: nil, want: 0},
+		{name: "missing usage key", metadata: map[string]any{"kagent_app_name": "x"}, want: 0},
+		{name: "usage present", metadata: usage(float64(42)), want: 42},
+		{name: "zero total is not attributable", metadata: usage(float64(0)), want: 0},
+		{name: "negative total is rejected", metadata: usage(float64(-5)), want: 0},
+		{name: "NaN total is rejected", metadata: usage(math.NaN()), want: 0},
+		{name: "inf total is rejected", metadata: usage(math.Inf(1)), want: 0},
+		{name: "wrong type total is ignored", metadata: usage("12"), want: 0},
+		{name: "over-range total saturates", metadata: usage(math.MaxFloat64), want: math.MaxInt},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := kagentTotalTokens(tt.metadata); got != tt.want {
+				t.Errorf("kagentTotalTokens() = %d, want %d", got, tt.want)
 			}
 		})
 	}
