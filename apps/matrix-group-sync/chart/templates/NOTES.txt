@@ -1,0 +1,17 @@
+matrix-group-sync {{ .Chart.AppVersion }} deployed as "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Mode: {{ if .Values.config.enforce }}ENFORCE (real invites/kicks + revocation-SLO alert){{ else }}AUDIT-ONLY (diffs reported, NO Matrix mutation){{ end }}
+Access-manager: {{ .Values.config.accessManagerMXID }}
+
+Bindings:{{ range $k, $b := .Values.bindings }} {{ $b.group }} -> {{ $b.roomAlias }}{{ end }}
+
+Checklist:
+  1. This is a SECURITY-SENSITIVE reconciler. It holds ONLY a scoped access-manager Matrix token and
+     a Keycloak client-credentials READ secret — never a Synapse-admin or MAS admin credential.
+  2. Roll out AUDIT-ONLY first (config.enforce=false). Adopt each room only after the access-manager
+     owns its invite/kick/ban controls and current membership has human review (docs/adr/0009).
+  3. Alerts: matrix_group_sync_reconcile_stalled (directory stalled 2 intervals) and
+     matrix_group_sync_revocation_slo_breach (a revoke unapplied past the 2-minute SLO).
+
+Health:  kubectl -n {{ .Release.Namespace }} port-forward deploy/{{ include "matrix-group-sync.fullname" . }} {{ .Values.config.metricsPort }}
+         curl localhost:{{ .Values.config.metricsPort }}/healthz

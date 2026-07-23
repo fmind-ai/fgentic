@@ -1,0 +1,108 @@
+replicaCount: 1 # single reconciler; cross-cycle stall/SLO state is in-memory. The chart rejects >1.
+terminationGracePeriodSeconds: 30
+
+image:
+  repository: ghcr.io/fmind-ai/matrix-group-sync
+  pullPolicy: IfNotPresent
+  tag: "" # set by CI to an immutable digest; defaults to .Chart.AppVersion
+
+# --- Reconciler configuration (rendered into the Deployment env) ---
+config:
+  serverName: fgentic.fmind.ai # the Matrix homeserver server_name; overridden per cluster (${server_name})
+  # The scoped access-manager Matrix identity that creates and owns every managed room. It must be a
+  # full MXID on serverName. It is NOT a Synapse-admin account: it only has room-creator power in the
+  # rooms it owns.
+  accessManagerMXID: "@access-manager:fgentic.fmind.ai"
+  ghostPrefix: agent- # bridge-owned agent ghosts are never invited or revoked by IdP groups
+  matrixHomeserverURL: http://ess-synapse.matrix.svc.cluster.local:8008
+  keycloak:
+    baseURL: http://keycloak.keycloak.svc.cluster.local:8080
+    realm: fgentic
+    clientID: matrix-group-sync
+    pageSize: 100 # a complete, successful paginated read is required before any mutation
+  # AUDIT-ONLY by default: compute and report diffs with NO Matrix mutation and NO revocation-SLO
+  # alert. Flip to true only after reviewed room adoption (docs/adr/0009 rollout gate).
+  enforce: false
+  reconcileInterval: 60s
+  revocationSLO: 2m # ordinary revocation must apply within this window (enforce mode)
+  missedIntervalAlert: 2 # raise the stall alert after this many consecutive incomplete/ambiguous cycles
+  requestTimeout: 30s
+  shutdownTimeout: 20s
+  metricsPort: 9090 # serves /metrics, /healthz, /readyz — never public
+  logLevel: info
+  logFormat: json
+
+# The git-declared, exact Keycloak-group -> managed-room bindings (docs/adr/0009). Rendered into a
+# ConfigMap the reconciler reads. One binding = one access bundle. EMPTY here so the chart installs
+# standalone; a deployment declares its real bindings. `agents` records the ghosts each room is bound
+# to (audit + bridge authorization).
+bindings: {}
+# Example:
+#   platform:
+#     group: /fgentic/agent-access/platform
+#     roomAlias: "#agent-platform:fgentic.fmind.ai"
+#     agents: [agent-k8s, agent-helm]
+
+# Narrowly-scoped credentials, mounted as files (never in the process environment). The Matrix token
+# is the access-manager's normal client access token; the Keycloak secret authenticates a
+# client-credentials READ client. Neither is a Synapse-admin or MAS admin credential.
+secrets:
+  matrix:
+    secretName: matrix-group-sync-matrix-token
+    key: access_token
+  keycloak:
+    secretName: matrix-group-sync-keycloak-client
+    key: client_secret
+
+service:
+  # A headless service for PodMonitor discovery only; there is no request-serving surface.
+  type: ClusterIP
+  port: 9090
+
+serviceAccount:
+  create: true
+  automountServiceAccountToken: false
+
+# Default-deny NetworkPolicy. Ingress is allowed ONLY from monitoring (metrics scrape). Egress is
+# allowed ONLY to DNS, the homeserver namespace (Synapse), and the IdP namespace (Keycloak) — the
+# reconciler talks to nothing else. Validate enforcement on a policy-enforcing CNI.
+networkPolicy:
+  enabled: true
+  ingressNamespaces:
+    - monitoring
+  dnsNamespace: kube-system
+  egressNamespaces:
+    - matrix # Synapse (the access-manager's normal client API)
+    - keycloak # the IdP directory read
+
+metrics:
+  podMonitor:
+    enabled: false # needs the monitoring.coreos.com CRDs; enabled by the platform deploy values
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 65532 # distroless:nonroot
+  runAsGroup: 65532
+  fsGroup: 65532
+  seccompProfile:
+    type: RuntimeDefault
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop:
+      - ALL
+
+resources:
+  requests:
+    cpu: 25m
+    memory: 48Mi
+  limits:
+    cpu: 200m
+    memory: 128Mi
+
+revisionHistoryLimit: 3
+nodeSelector: {}
+tolerations: []
+affinity: {}

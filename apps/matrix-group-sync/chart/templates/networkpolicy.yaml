@@ -1,0 +1,46 @@
+{{- if .Values.networkPolicy.enabled -}}
+# Default-deny: the reconciler accepts ingress ONLY from monitoring (metrics scrape) and egresses
+# ONLY to DNS, the homeserver namespace (Synapse), and the IdP namespace (Keycloak). kagent, the
+# model path, and the public internet are all unreachable — it is an internal control-plane worker.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ include "matrix-group-sync.fullname" . }}
+  labels:
+    {{- include "matrix-group-sync.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchLabels:
+      {{- include "matrix-group-sync.selectorLabels" . | nindent 6 }}
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        {{- range .Values.networkPolicy.ingressNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.config.metricsPort }}
+  egress:
+    # DNS resolution.
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ .Values.networkPolicy.dnsNamespace }}
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Synapse (client API) + Keycloak (directory read) namespaces.
+    - to:
+        {{- range .Values.networkPolicy.egressNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+{{- end }}

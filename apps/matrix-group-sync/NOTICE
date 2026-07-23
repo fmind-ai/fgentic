@@ -1,0 +1,21 @@
+matrix-group-sync
+Copyright 2026 Médéric Hurier (Fmind)
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE at
+the repository root).
+
+This app is a self-contained GitOps reconciler that materializes authoritative
+IdP-group membership into managed Matrix room membership through a narrowly scoped
+access-manager Matrix client identity (docs/adr/0009-agent-authorization-model.md).
+It is deliberately NOT bundled into apps/matrix-a2a-bridge.
+
+It embeds the following third-party components, all under permissive licenses:
+
+  - maunium.net/go/mautrix              MPL-2.0
+  - github.com/caarlos0/env             MIT
+  - github.com/prometheus/client_golang Apache-2.0
+  - gopkg.in/yaml.v3                    MIT / Apache-2.0
+
+No AGPL dependency is present. Never add one. The Matrix client uses only normal
+Client-Server API endpoints (resolve alias, room state, profile lookup, invite,
+kick, ban); it holds no Synapse-admin or MAS admin credential.

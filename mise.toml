@@ -57,6 +57,7 @@ description = "Install all application toolchains and locked environments"
 run = [
   "mise run install:bridge",
   "mise run install:gateway",
+  "mise run install:groupsync",
   "mise run install:policy",
 ]
 
@@ -67,6 +68,10 @@ run = "mise --cd apps/matrix-a2a-bridge install"
 [tasks."install:gateway"]
 description = "Install the ActivityPub agent gateway toolchain"
 run = "mise --cd apps/activitypub-agent-gateway install"
+
+[tasks."install:groupsync"]
+description = "Install the matrix-group-sync reconciler toolchain"
+run = "mise --cd apps/matrix-group-sync install"
 
 [tasks."install:policy"]
 description = "Install the Synapse policy toolchain and locked environment"
@@ -104,6 +109,7 @@ depends = [
   "format:knowledge-ingestion",
   "format:app",
   "format:gateway",
+  "format:groupsync",
   "format:policy",
 ]
 
@@ -152,6 +158,11 @@ run = "mise run format"
 [tasks."format:gateway"]
 description = "Format the ActivityPub agent gateway"
 dir = "apps/activitypub-agent-gateway"
+run = "mise run format"
+
+[tasks."format:groupsync"]
+description = "Format the matrix-group-sync reconciler"
+dir = "apps/matrix-group-sync"
 run = "mise run format"
 
 [tasks."format:policy"]
@@ -217,6 +228,7 @@ depends = [
   "check:zizmor",
   "check:app",
   "check:gateway",
+  "check:groupsync",
   "check:policy",
 ]
 
@@ -571,6 +583,11 @@ description = "Run the ActivityPub agent gateway static checks"
 dir = "apps/activitypub-agent-gateway"
 run = "mise run check"
 
+[tasks."check:groupsync"]
+description = "Run the matrix-group-sync reconciler static checks"
+dir = "apps/matrix-group-sync"
+run = "mise run check"
+
 [tasks."check:policy"]
 description = "Run the Synapse federation policy static checks"
 dir = "apps/synapse-federation-policy"
@@ -586,6 +603,11 @@ description = "Run the ActivityPub agent gateway test suite"
 dir = "apps/activitypub-agent-gateway"
 run = "mise run test"
 
+[tasks."test:groupsync"]
+description = "Run the matrix-group-sync reconciler test suite"
+dir = "apps/matrix-group-sync"
+run = "mise run test"
+
 [tasks."test:policy"]
 description = "Run the Synapse federation policy unit suite"
 dir = "apps/synapse-federation-policy"
@@ -597,6 +619,7 @@ description = "Run deterministic application, Agent golden, and pinned external-
 depends = [
   "test:app",
   "test:gateway",
+  "test:groupsync",
   "test:policy",
   "test:knowledge-ingestion",
   "test:mautrix-bridges",
@@ -668,7 +691,7 @@ run = "mise run eval:golden"
 [tasks.build]
 alias = "b"
 description = "Build all application artifacts"
-depends = ["build:bridge", "build:gateway", "build:policy"]
+depends = ["build:bridge", "build:gateway", "build:groupsync", "build:policy"]
 
 [tasks."build:bridge"]
 description = "Build the production bridge image"
@@ -678,6 +701,11 @@ run = "mise run build:image"
 [tasks."build:gateway"]
 description = "Build the production ActivityPub agent gateway image"
 dir = "apps/activitypub-agent-gateway"
+run = "mise run build:image"
+
+[tasks."build:groupsync"]
+description = "Build the production matrix-group-sync reconciler image"
+dir = "apps/matrix-group-sync"
 run = "mise run build:image"
 
 [tasks."build:policy"]
