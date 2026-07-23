@@ -49,7 +49,7 @@ jobs:
         with:
           version: 2026.7.11 # pin: keep the toolchain on the known-good mise (see ci.yml)
           cache: false # release inputs must not depend on a mutable Actions cache
-          install_args: yq trivy helm
+          install_args: yq trivy helm rg dprint # rg + dprint back scripts/gen-bom.sh (BOM regen after the digest pin)
       - name: Set lower-case registry path
         env:
           REPOSITORY_OWNER: ${{ github.repository_owner }}
@@ -214,6 +214,10 @@ jobs:
               del(.spec.chart) |
               .spec.values.image.tag = strenv(IMAGE_TAG))' \
             apps/matrix-a2a-bridge/deploy/helmrelease.yaml
+          # Regenerate the adopter BOM so the newly pinned bridge image digest stays consistent with
+          # release/bom.yaml; otherwise check:bom (the #188 drift gate) goes red on main and on every
+          # PR that merges with it (issues #984/#986).
+          mise exec -- bash scripts/gen-bom.sh
       - name: Commit the digest (Flux picks it up)
         if: github.ref == 'refs/heads/main'
         env:
@@ -222,13 +226,14 @@ jobs:
           IMAGE_TAG: sha-${{ github.sha }}@${{ steps.build.outputs.digest }}
         run: |
           manifest=apps/matrix-a2a-bridge/deploy/helmrelease.yaml
+          bom=release/bom.yaml
           attempts=5
 
           # Keep checkout credentials out of earlier build artifacts; authorize git only here.
           gh auth setup-git --hostname github.com
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add "$manifest"
+          git add "$manifest" "$bom"
           git diff --cached --quiet && exit 0
           git commit -m "chore(bridge): pin image sha-${GITHUB_SHA::7} [skip ci]"
 
@@ -236,14 +241,16 @@ jobs:
             git fetch origin main
             if ! git rebase origin/main; then
               conflicts=$(git diff --name-only --diff-filter=U)
-              if [ "$conflicts" != "$manifest" ]; then
-                echo "Digest-pin rebase has an unexpected conflict: $conflicts" >&2
+              # Only the two CI-owned files (the digest manifest and its derived BOM) may conflict —
+              # a queued digest publisher updated them first. Any other conflicted path is unexpected.
+              if [ -z "$conflicts" ] || printf '%s\n' "$conflicts" | grep -qvxF -e "$manifest" -e "$bom"; then
+                echo "Digest-pin rebase has an unexpected conflict: ${conflicts:-<none>}" >&2
                 git rebase --abort
                 exit 1
               fi
 
-              # A queued digest publisher may have updated this CI-owned line first. Reapply
-              # this build's immutable digest; never resolve unrelated conflicts automatically.
+              # Reapply this build's immutable digest to the manifest, then regenerate the BOM from it
+              # so both derived files are internally consistent; never resolve unrelated conflicts.
               git restore --source=REBASE_HEAD --worktree "$manifest"
               mise exec -- yq -i \
                 'with(select(.kind == "OCIRepository");
@@ -260,7 +267,8 @@ jobs:
                   del(.spec.chart) |
                   .spec.values.image.tag = strenv(IMAGE_TAG))' \
                 "$manifest"
-              git add "$manifest"
+              mise exec -- bash scripts/gen-bom.sh
+              git add "$manifest" "$bom"
               if git diff --cached --quiet; then
                 git rebase --skip
               else
