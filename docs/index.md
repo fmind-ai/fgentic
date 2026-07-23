@@ -47,6 +47,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 - [Delegation Attribution Audit](audit.md) - proving who invoked which agent, when, over which model path
 - [Retention and Data-Subject Erasure](retention.md) - finite Matrix policy, store-by-store limits, and the honest MAS-to-Synapse workflow
 - [Ketesa Administrator Console](admin-console.md) - opt-in deployment, authorization acceptance, five operator tasks, and zero-footprint removal
+- [Moderation Stack](moderation.md) - opt-in Draupnir policy-list bot, shared policy room, power-level ordering, and reported-events review
 - [Slack Interop Walkthrough](interop-slack.md) - enabling the opt-in mautrix-slack unit
 - [Bridge Performance Evidence](performance.md) - dated load-sanity evidence for §12.5
 - [Hosted Coding Agents](hosted-agents.md) - configure Claude Code web and Codex Cloud sessions to work one pre-assigned issue end-to-end

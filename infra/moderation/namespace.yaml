@@ -1,0 +1,15 @@
+# Draupnir is an optional, opt-in Matrix moderation bot. Its namespace exists only while the
+# moderation profile is composed into a cluster; removing the opt-in Flux Kustomization lets Flux
+# prune it completely. Restricted PSS, managed labels, image-policy enforcement, and the small
+# quota profile mirror the other opt-in workloads (infra/admin).
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: moderation
+  labels:
+    fgentic.dev/managed: "true"
+    fgentic.dev/image-policy: enforce
+    fgentic.dev/quota-profile: small
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted

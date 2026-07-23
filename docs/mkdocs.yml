@@ -110,6 +110,7 @@ nav:
       - Attribution audit: audit.md
       - Retention and erasure: retention.md
       - Administrator console: admin-console.md
+      - Moderation stack: moderation.md
       - Slack walkthrough: interop-slack.md
       - Performance evidence: performance.md
       - Hosted coding agents: hosted-agents.md

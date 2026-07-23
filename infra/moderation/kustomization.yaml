@@ -1,0 +1,12 @@
+# Optional Draupnir moderation layer. It is NOT referenced by clusters/base — the only way to
+# reconcile it is the opt-in infra/moderation/cluster component, which adds the Flux Kustomization
+# below. Default local/gcp/demo/federation renders therefore contain zero moderation resources.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - namespace.yaml
+  - resource-quotas.yaml
+  - configmap.yaml
+  - deployment.yaml
+  - service.yaml
+  - networkpolicy.yaml

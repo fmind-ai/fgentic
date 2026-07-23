@@ -1,0 +1,25 @@
+# Optional server-side invite/event filtering via maunium's synapse-http-antispam (MIT) module,
+# wired into ESS through Synapse `additional` config. Compose it into the matrix Flux Kustomization
+# `components` list (like the bridge registrations) ONLY together with infra/moderation and after
+# meeting two prerequisites documented in docs/moderation.md:
+#   1. The `synapse_http_antispam` module must be importable by Synapse. ESS ships the unmodified
+#      upstream Synapse image without it, so the module is referenced upstream and never vendored
+#      into this repo; the operator supplies it on Synapse's Python path.
+#   2. Draupnir's web listener + shared authorization must be enabled on the bot side.
+# The module fragment (base_url + shared authorization + enabled callbacks) is delivered as a SOPS
+# Secret so the authorization token never lands in git — matching the MAS 10-upstream-oidc pattern.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+patches:
+  - target:
+      group: helm.toolkit.fluxcd.io
+      version: v2
+      kind: HelmRelease
+      name: matrix-stack
+      namespace: matrix
+    patch: |
+      - op: add
+        path: /spec/values/synapse/additional/30-http-antispam
+        value:
+          configSecret: draupnir-antispam-module
+          configSecretKey: module.yaml

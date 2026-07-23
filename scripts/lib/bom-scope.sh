@@ -58,6 +58,7 @@ readonly BOM_EXCLUDED=(
 	"infra/knowledge/*|disabled-by-default knowledge-ingestion profile"
 	"infra/models/*|optional self-hosted model runtimes; the reference selects the vertex provider (no in-repo pin)"
 	"infra/bridges/*|disabled-by-default external mautrix bridge profiles"
+	"infra/moderation/*|disabled-by-default Draupnir policy-list moderation profile"
 	"infra/mcp-catalog/*|MCP governance catalog metadata; its kustomization renders no workloads (check:mcp-governance)"
 	"infra/agentgateway/mcp-surface.pin.json|MCP surface governance pin, not a reconciled workload (mirrors the in-scope kagent tools digest)"
 	"infra/postgres/components/*|opt-in Postgres components (knowledge ingestion), not composed by the reference overlay"

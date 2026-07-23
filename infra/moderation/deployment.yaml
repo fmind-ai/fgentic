@@ -1,0 +1,107 @@
+# Draupnir v3.1.0 (the active Mjolnir successor), the policy-list enforcement bot. The image is
+# referenced upstream at an immutable multi-arch index digest and is NEVER mirrored into a project
+# registry (AFL-3.0 + Apache-2.0 standalone service; its code is never vendored). Verified with
+# `docker buildx imagetools inspect ghcr.io/the-draupnir-project/draupnir:v3.1.0` on 2026-07-23.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: draupnir
+  namespace: moderation
+  labels:
+    app.kubernetes.io/name: draupnir
+    app.kubernetes.io/version: 3.1.0
+spec:
+  replicas: 1
+  # A single bot holds one Matrix session; a second replica would double-act on every event.
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: draupnir
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: draupnir
+        app.kubernetes.io/version: 3.1.0
+      annotations:
+        # Roll the pod when the substituted server_name changes the mounted config.
+        fgentic.dev/config-server-name: ${server_name}
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        # The upstream image ships a `node` user at uid/gid 1000 but declares no USER, so it would
+        # run as root. Pin the published numeric identity so kubelet can enforce runAsNonRoot, and
+        # set fsGroup so the emptyDir data volume is writable for the SQLite backing store.
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: draupnir
+          image: ghcr.io/the-draupnir-project/draupnir:v3.1.0@sha256:d164288b426e55db56d5c7784b6aaafcf7f1613a6fc08c33245e6459406d0ac2
+          imagePullPolicy: IfNotPresent
+          # Entrypoint is ./draupnir-entrypoint.sh; `bot` selects single-bot mode. The access token
+          # is read from the mounted Secret file, keeping it out of config and process arguments.
+          args:
+            - bot
+            - --access-token-path
+            - /run/secrets/draupnir/access-token
+          ports:
+            - name: healthz
+              containerPort: 8080
+              protocol: TCP
+            - name: web
+              containerPort: 8082
+              protocol: TCP
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            periodSeconds: 10
+            timeoutSeconds: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: healthz
+            failureThreshold: 6
+            periodSeconds: 30
+            timeoutSeconds: 3
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            # Writable state root (SQLite backing store under /data/storage). node-config also reads
+            # /data/config; the config file is layered in below via subPath.
+            - name: data
+              mountPath: /data
+            - name: config
+              mountPath: /data/config/production.yaml
+              subPath: production.yaml
+              readOnly: true
+            - name: access-token
+              mountPath: /run/secrets/draupnir
+              readOnly: true
+      volumes:
+        - name: data
+          emptyDir:
+            sizeLimit: 512Mi
+        - name: config
+          configMap:
+            name: draupnir-config
+        - name: access-token
+          secret:
+            secretName: draupnir
+            items:
+              - key: access-token
+                path: access-token

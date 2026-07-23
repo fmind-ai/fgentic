@@ -45,7 +45,7 @@ case "${FORCE}" in
 esac
 case "${SECRET_SET}" in
 	all | rotatable | appservice | a2a | mcp | db-core | keycloak-db | knowledge-db | \
-		knowledge-ingestion | \
+		knowledge-ingestion | moderation | \
 		provider | bootstrap | slack | telegram | break-glass) ;;
 	*)
 		echo "error: unsupported internal secret set: ${SECRET_SET}" >&2
@@ -63,7 +63,7 @@ want() {
 	# Optional layers are generated only when explicitly selected. A normal production bootstrap
 	# must not create dormant workload credentials or imply that the layer is enabled.
 	if [ "${set}" = "slack" ] || [ "${set}" = "telegram" ] || [ "${set}" = "knowledge-ingestion" ] \
-		|| [ "${set}" = "break-glass" ]; then
+		|| [ "${set}" = "moderation" ] || [ "${set}" = "break-glass" ]; then
 		[ "${SECRET_SET}" = "${set}" ]
 		return
 	fi
@@ -801,6 +801,51 @@ ${TELEGRAM_REGISTRATION_INDENTED}
 EOF
 	)"
 	emit mautrix-telegram.sops.yaml "${TELEGRAM_SECRETS}"
+fi
+
+if want moderation; then
+	# The Draupnir bot's Matrix access token cannot be minted here — it is a login artifact of the
+	# @moderation-bot account (provisioned with a MAS registration token, see docs/moderation.md).
+	# Emit a clearly-marked placeholder the operator replaces with `sops` after logging the bot in.
+	# The antispam shared authorization can be random because both sides only need it to match; when
+	# the optional antispam component is enabled, copy this value into Draupnir's web config too.
+	DRAUPNIR_ANTISPAM_AUTHORIZATION="${DRAUPNIR_ANTISPAM_AUTHORIZATION:-$(openssl rand -hex 32)}"
+	MODERATION_SECRETS="$(
+		cat <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: draupnir
+  namespace: moderation
+type: Opaque
+stringData:
+  access-token: REPLACE_WITH_DRAUPNIR_ACCESS_TOKEN
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: draupnir-antispam-module
+  namespace: matrix
+type: Opaque
+stringData:
+  module.yaml: |
+    modules:
+      - module: synapse_http_antispam.HTTPAntispam
+        config:
+          base_url: http://draupnir.moderation.svc.cluster.local:8082
+          authorization: ${DRAUPNIR_ANTISPAM_AUTHORIZATION}
+          do_ping: true
+          enabled_callbacks:
+            - user_may_invite
+            - user_may_join_room
+            - check_event_for_spam
+          fail_open:
+            user_may_invite: true
+            user_may_join_room: true
+            check_event_for_spam: true
+EOF
+	)"
+	emit draupnir.sops.yaml "${MODERATION_SECRETS}"
 fi
 
 sync_kustomization
