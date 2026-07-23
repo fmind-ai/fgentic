@@ -14,9 +14,11 @@ Decision issue: [#491](https://github.com/fmind-ai/fgentic/issues/491)
 
 Fgentic's shell layer is executable product infrastructure, not incidental glue. It renders and inspects manifests, drives disposable acceptance environments, enforces ownership before teardown, and preserves crash-recovery receipts. Go could provide typed Kubernetes objects, table-driven subtests, coverage, structured failure names, and controlled parallelism. The built-in [`testing` subtest model](https://go.dev/blog/subtests) supports those benefits directly; a Kubernetes runtime port could use the typed [`controller-runtime` client](https://pkg.go.dev/sigs.k8s.io/controller-runtime/pkg/client) instead of parsing `kubectl` output.
 
-The acute static-analysis gap has changed since this question was filed. [#490](https://github.com/fmind-ai/fgentic/issues/490) made shfmt and ShellCheck warning-free gates for every owned script, and #550 owns the remaining explicit info/style allowlist. Rewriting 10,000 lines while that cheaper control is still settling would combine language migration, test-runner migration, and acceptance-boundary changes in one high-risk program.
+The acute static-analysis gap had changed by the evidence snapshot. [#490](https://github.com/fmind-ai/fgentic/issues/490) made shfmt and ShellCheck warning-free gates for every owned script, and [#550](https://github.com/fmind-ai/fgentic/issues/550) was then burning down the remaining explicit info/style allowlist. Rewriting 10,000 lines while that cheaper control was still settling would have combined language migration, test-runner migration, and acceptance-boundary changes in one high-risk program.
 
 This ADR therefore measures the current repository before deciding. The evidence snapshot is commit `b90c1bd` on 2026-07-18. Counts use physical lines, visible commits and `git log --numstat` churn, and shfmt's Bash AST; command sites count call expressions whose executable is exactly `kubectl`, `jq`, or `yq`, excluding dependency checks and comments.
+
+Post-decision update (2026-07-18, after the evidence snapshot): [#550](https://github.com/fmind-ai/fgentic/issues/550) completed the allowlist burn-down through [PR #665](https://github.com/fmind-ai/fgentic/pull/665). `mise run check:shell` now runs default ShellCheck over every owned script with no exclusions. This closes the immediate static-analysis debt; it does not satisfy a pilot trigger or change the decision below.
 
 ## Evidence
 
@@ -54,7 +56,7 @@ This shape is coherent, but it adds another Go module and Kubernetes dependency 
 
 ### Keep the current rigs with measured revisit triggers
 
-This preserves known behavior, task names, operator `bash -x` debugging, and the single shell helper dialect while #550 burns down the remaining lint debt. It accepts weak subtest and coverage signals until repository evidence justifies one bounded experiment.
+This preserves known behavior, task names, operator `bash -x` debugging, and the single shell helper dialect with the completed no-exclusion ShellCheck gate. It accepts weak subtest and coverage signals until repository evidence justifies one bounded experiment.
 
 ## Decision
 
@@ -96,4 +98,4 @@ Do not create a general Go acceptance-helper package for the first pilot. If two
 
 These are planning ranges, not delivery estimates: a Bats granularity pilot is 16–32 agent-hours; the MCP Go pilot is 40–80 agent-hours including Docker parity and review; all six rigs are at least 240–480 agent-hours before runtime-owner scheduling. `demo-cluster.sh` alone plausibly consumes 80–160 hours because interruption and destructive cleanup states must be exercised. Every port temporarily doubles a gate that runs on all PRs and creates regression risk at exactly the boundary used to detect regressions.
 
-The accepted cost is continued shell maintenance and weak coverage accounting. The benefit is no broad rewrite, stable operator diagnostics, preserved `bash -x` incident fluency, and a measurable threshold before adding a new module and helper system. #550 remains the immediate improvement path; a future pilot supplies before/after LOC, wall-clock, and failure-quality evidence rather than assuming them.
+The accepted cost is continued shell maintenance and weak coverage accounting. The benefit is no broad rewrite, stable operator diagnostics, preserved `bash -x` incident fluency, and a measurable threshold before adding a new module and helper system. The immediate #550 improvement path is complete; a future pilot supplies before/after LOC, wall-clock, and failure-quality evidence rather than assuming them.
