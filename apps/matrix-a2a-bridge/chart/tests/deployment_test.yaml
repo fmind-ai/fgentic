@@ -62,6 +62,14 @@ tests:
           path: spec.template.spec.containers[0].env[?(@.name == "RATE_LIMIT_BUCKET_CAPACITY")].value
           value: "4096"
       - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "ROOM_TOKEN_BUDGET")].value
+          value: "0"
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "ROOM_TOKEN_BUDGET_PERIOD")].value
+          value: 24h
+      - notExists:
+          path: spec.template.spec.containers[0].env[?(@.name == "ROOM_TOKEN_BUDGET_OVERRIDES")]
+      - equal:
           path: spec.template.spec.containers[0].env[?(@.name == "APPSERVICE_TRANSACTION_MAX_BYTES")].value
           value: "16777216"
       - equal:
@@ -91,6 +99,23 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].env[?(@.name == "CONVERSATION_SWEEP_INTERVAL")].value
           value: 1h
+  - it: renders a bounded room token budget and exact room overrides
+    set:
+      config.roomTokenBudget: 2
+      config.roomTokenBudgetPeriod: 1h
+      config.roomTokenBudgetOverrides:
+        - "!vip:fgentic.fmind.ai=10"
+        - "!free:fgentic.fmind.ai=0"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "ROOM_TOKEN_BUDGET")].value
+          value: "2"
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "ROOM_TOKEN_BUDGET_PERIOD")].value
+          value: 1h
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "ROOM_TOKEN_BUDGET_OVERRIDES")].value
+          value: "!vip:fgentic.fmind.ai=10,!free:fgentic.fmind.ai=0"
   - it: renders the exact managed-room access manager identity
     set:
       config.accessManagerMXID: "@room-manager:fgentic.fmind.ai"
