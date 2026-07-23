@@ -7,6 +7,7 @@ import hashlib
 import io
 import json
 import tarfile
+import traceback
 from collections.abc import Mapping
 from typing import Any, cast
 
@@ -63,6 +64,19 @@ def status_for(raw: bytes, *, revision: str = "main@sha1:0123456789abcdef") -> g
         url=ARTIFACT_URL,
         size=len(raw),
     )
+
+
+def assert_content_free_rejection(raw: bytes, hostile: str) -> None:
+    with pytest.raises(git_markdown.ConnectorError) as caught:
+        git_markdown.GitMarkdownConnector.from_artifact(
+            connector_id="git-markdown",
+            status=status_for(raw),
+            artifact=raw,
+        )
+
+    rendered = "".join(traceback.format_exception(caught.value))
+    assert hostile not in str(caught.value)
+    assert hostile not in rendered
 
 
 def build_connector(
@@ -486,6 +500,103 @@ def test_connector_rejects_git_lfs_pointer_instead_of_indexing_it() -> None:
 def test_connector_rejects_ambiguous_uppercase_markdown_suffix() -> None:
     with pytest.raises(git_markdown.ConnectorError, match=r"lowercase \.md suffix"):
         build_connector({"docs/source.MD": b"# Source\n"})
+
+
+def test_artifact_rejection_diagnostics_do_not_reflect_source_controlled_values() -> None:
+    hostile = "private-partner-redacted"
+    base = {
+        git_markdown.ACL_MANIFEST_PATH: json.dumps(manifest()).encode(),
+        "docs/source.md": b"# Source\n",
+    }
+
+    special = tarfile.TarInfo(f"docs/{hostile}.md")
+    special.type = tarfile.SYMTYPE
+    special.linkname = "docs/source.md"
+    duplicate_manifest = (
+        json.dumps(manifest())
+        .encode()
+        .replace(
+            b'"corpus":',
+            f'"{hostile}":1,"{hostile}":2,"corpus":'.encode(),
+        )
+    )
+    unknown_manifest = manifest()
+    unknown_manifest[hostile] = "secret"
+
+    hostile_artifacts = (
+        hostile.encode(),
+        artifact_bytes({**base, f"docs/{hostile}/../escape.md": b"unsafe"}),
+        artifact_bytes({**base, f"docs/{hostile}\udcff.md": b"unsafe"}),
+        artifact_bytes({**base, f"docs/{hostile}.md": b"# First\n", f"DOCS/{hostile.upper()}.MD": b"# Second\n"}),
+        artifact_bytes(base, extra=[(special, None)]),
+        artifact_bytes({**base, f"docs/{hostile}.md": b"\xff"}),
+        artifact_bytes(
+            {
+                **base,
+                f"docs/{hostile}.md": (
+                    b"version https://git-lfs.github.com/spec/v1\n"
+                    b"oid sha256:0123456789abcdef0123456789abcdef"
+                    b"0123456789abcdef0123456789abcdef\n"
+                    b"size 123\n"
+                ),
+            }
+        ),
+        artifact_bytes({**base, f"docs/{hostile}.MD": b"# Source\n"}),
+        artifact_bytes(
+            {
+                git_markdown.ACL_MANIFEST_PATH: json.dumps(unknown_manifest).encode(),
+                "docs/source.md": b"# Source\n",
+            }
+        ),
+        artifact_bytes(
+            {
+                git_markdown.ACL_MANIFEST_PATH: duplicate_manifest,
+                "docs/source.md": b"# Source\n",
+            }
+        ),
+        artifact_bytes(
+            {
+                git_markdown.ACL_MANIFEST_PATH: json.dumps(manifest(principal=f"@alice:[{hostile}]")).encode(),
+                "docs/source.md": b"# Source\n",
+            }
+        ),
+    )
+
+    for raw in hostile_artifacts:
+        assert_content_free_rejection(raw, hostile)
+
+
+def test_artifact_status_rejection_does_not_reflect_invalid_authority() -> None:
+    hostile = "private-partner-redacted"
+    raw = artifact_bytes(
+        {
+            git_markdown.ACL_MANIFEST_PATH: json.dumps(manifest()).encode(),
+            "docs/source.md": b"# Source\n",
+        }
+    )
+    status = status_for(raw)
+    unsafe_urls = (
+        status.url.replace("/gitrepository/", f":{hostile}/gitrepository/"),
+        f"http://{hostile}\uff0fexample/gitrepository/flux-system/flux-system/latest.tar.gz",
+    )
+
+    for unsafe_url in unsafe_urls:
+        unsafe_status = git_markdown.ArtifactStatus(
+            revision=status.revision,
+            digest=status.digest,
+            url=unsafe_url,
+            size=status.size,
+        )
+        with pytest.raises(git_markdown.ConnectorError) as caught:
+            git_markdown.GitMarkdownConnector.from_artifact(
+                connector_id="git-markdown",
+                status=unsafe_status,
+                artifact=raw,
+            )
+
+        rendered = "".join(traceback.format_exception(caught.value))
+        assert hostile not in str(caught.value)
+        assert hostile not in rendered
 
 
 @pytest.mark.parametrize(

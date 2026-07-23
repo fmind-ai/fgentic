@@ -13,7 +13,7 @@ from dataclasses import dataclass
 from io import BytesIO
 from pathlib import PurePosixPath
 from typing import Protocol, cast
-from urllib.parse import urlsplit
+from urllib.parse import SplitResult, urlsplit
 
 ACL_MANIFEST_PATH = ".fgentic/knowledge-acl.json"
 ACL_SCHEMA_VERSION = 1
@@ -221,20 +221,20 @@ class GitMarkdownConnector:
         for path in source_paths:
             content = files[path]
             if not 1 <= len(content) <= MAX_SOURCE_BYTES:
-                raise ConnectorError(f"source {path} must contain between 1 and {MAX_SOURCE_BYTES} bytes")
+                raise ConnectorError(f"source must contain between 1 and {MAX_SOURCE_BYTES} bytes")
             total_source_bytes += len(content)
             if total_source_bytes > MAX_TOTAL_SOURCE_BYTES:
                 raise ConnectorError(f"selected sources exceed {MAX_TOTAL_SOURCE_BYTES} bytes")
-            _validate_markdown(content, path=path)
+            _validate_markdown(content)
 
             source_id = _clean_text(
                 f"{corpus}/{normalized_connector_id}/{path}",
-                name=f"source ID for {path}",
+                name="source ID",
                 max_bytes=512,
             )
             locator = _clean_text(
                 f"git:{repository_identity}#{path}",
-                name=f"source locator for {path}",
+                name="source locator",
                 max_bytes=2048,
             )
             content_digest = _digest(content)
@@ -454,7 +454,7 @@ def _validate_status(status: ArtifactStatus) -> ArtifactStatus:
     revision = _clean_text(status.revision, name="artifact revision", max_bytes=255)
     digest = _validated_digest(status.digest, name="artifact digest")
     url = _clean_text(status.url, name="artifact URL", max_bytes=2048)
-    parsed = urlsplit(url)
+    parsed = _split_url(url)
     if (
         parsed.scheme != "http"
         or parsed.hostname is None
@@ -472,14 +472,14 @@ def _validate_status(status: ArtifactStatus) -> ArtifactStatus:
 
 
 def _repository_identity(url: str) -> str:
-    parsed = urlsplit(url)
+    parsed = _split_url(url)
     hostname = parsed.hostname
     if hostname is None or hostname.rstrip(".") != "source-controller.flux-system.svc.cluster.local":
         raise ConnectorError("artifact URL must belong to the in-cluster Flux source-controller")
     try:
         port = parsed.port
-    except ValueError as error:
-        raise ConnectorError("artifact URL contains an invalid source-controller port") from error
+    except ValueError:
+        raise ConnectorError("artifact URL contains an invalid source-controller port") from None
     if port not in {None, 80} or "%" in parsed.path:
         raise ConnectorError("artifact URL must use the canonical Flux source-controller address")
     parts = parsed.path.split("/")
@@ -489,6 +489,13 @@ def _repository_identity(url: str) -> str:
     name = _dns_label(parts[3], name="artifact GitRepository name")
     _clean_text(parts[4], name="artifact filename", max_bytes=255)
     return f"{namespace}/{name}"
+
+
+def _split_url(url: str) -> SplitResult:
+    try:
+        return urlsplit(url)
+    except ValueError:
+        raise ConnectorError("artifact URL is invalid") from None
 
 
 def _read_archive(raw: bytes) -> dict[str, bytes]:
@@ -506,7 +513,7 @@ def _read_archive(raw: bytes) -> dict[str, bytes]:
                 name = _archive_path(member.name, is_directory=member.isdir())
                 folded = name.casefold()
                 if name in names or folded in folded_names:
-                    raise ConnectorError(f"artifact contains a duplicate or case-colliding path: {name}")
+                    raise ConnectorError("artifact contains a duplicate or case-colliding path")
                 names.add(name)
                 folded_names.add(folded)
 
@@ -517,23 +524,23 @@ def _read_archive(raw: bytes) -> dict[str, bytes]:
                     # carries unrelated compatibility symlinks, but ambiguity under the selected
                     # docs/ and ACL-manifest boundaries remains a hard failure.
                     if _is_connector_owned_path(name):
-                        raise ConnectorError(f"artifact contains a link or special entry: {name}")
+                        raise ConnectorError("artifact contains a link or special entry under a connector-owned path")
                     continue
                 total_bytes += member.size
                 if member.size < 0 or total_bytes > MAX_ARCHIVE_BYTES:
                     raise ConnectorError(f"artifact expands beyond {MAX_ARCHIVE_BYTES} bytes")
                 handle = archive.extractfile(member)
                 if handle is None:
-                    raise ConnectorError(f"artifact entry cannot be read: {name}")
+                    raise ConnectorError("artifact entry cannot be read")
                 content = handle.read(member.size + 1)
                 if len(content) != member.size:
-                    raise ConnectorError(f"artifact entry is truncated or changed while read: {name}")
+                    raise ConnectorError("artifact entry is truncated or changed while read")
                 files[name] = content
             if entry_count == 0:
                 raise ConnectorError("artifact must contain at least one entry")
             return files
-    except (OSError, EOFError, tarfile.TarError) as error:
-        raise ConnectorError(f"artifact is not a valid bounded tar.gz archive: {error}") from error
+    except (OSError, EOFError, tarfile.TarError):
+        raise ConnectorError("artifact is not a valid bounded tar.gz archive") from None
 
 
 def _archive_path(value: str, *, is_directory: bool) -> str:
@@ -546,7 +553,7 @@ def _archive_path(value: str, *, is_directory: bool) -> str:
     if is_directory:
         canonical.add(f"{normalized}/")
     if path.is_absolute() or raw not in canonical or any(part in {"", ".", ".."} for part in path.parts):
-        raise ConnectorError(f"artifact path must be a canonical contained relative path: {raw}")
+        raise ConnectorError("artifact path must be a canonical contained relative path")
     return normalized
 
 
@@ -560,8 +567,8 @@ def _load_manifest(raw: bytes) -> dict[str, object]:
         raise ConnectorError(f"ACL manifest must contain between 1 and {MAX_MANIFEST_BYTES} bytes")
     try:
         document = json.loads(raw.decode("utf-8"), object_pairs_hook=_strict_object, parse_constant=_reject_constant)
-    except (RecursionError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
-        raise ConnectorError(f"ACL manifest must be strict UTF-8 JSON: {error}") from error
+    except (RecursionError, UnicodeDecodeError, ValueError, json.JSONDecodeError):
+        raise ConnectorError("ACL manifest must be strict UTF-8 JSON") from None
     manifest = _expect_object(
         document,
         name="manifest",
@@ -612,21 +619,21 @@ def _reference_markdown_paths(files: Mapping[str, bytes]) -> tuple[str, ...]:
         if len(path.parts) < 2 or path.parts[0] != "docs" or path.suffix.casefold() != ".md":
             continue
         if path.suffix != ".md":
-            raise ConnectorError(f"repository Markdown path must use the lowercase .md suffix: {raw}")
+            raise ConnectorError("repository Markdown path must use the lowercase .md suffix")
         paths.append(raw)
     if len(paths) > MAX_SOURCES:
         raise ConnectorError(f"artifact contains more than {MAX_SOURCES} docs/**/*.md sources")
     return tuple(sorted(paths))
 
 
-def _validate_markdown(content: bytes, *, path: str) -> None:
+def _validate_markdown(content: bytes) -> None:
     try:
         text = content.decode("utf-8")
-    except UnicodeDecodeError as error:
-        raise ConnectorError(f"source {path} must be valid UTF-8 Markdown") from error
+    except UnicodeDecodeError:
+        raise ConnectorError("source must be valid UTF-8 Markdown") from None
     first_line = text.splitlines()[0] if text else ""
     if first_line == LFS_POINTER_VERSION:
-        raise ConnectorError(f"source {path} is a Git LFS pointer, not document content")
+        raise ConnectorError("source is a Git LFS pointer, not document content")
 
 
 def _principal(value: object, *, name: str) -> Principal:
@@ -698,8 +705,8 @@ def _full_mxid(value: object, *, name: str) -> str:
         try:
             if ipaddress.ip_address(host).version != 6:
                 raise ConnectorError(f"{name} has an invalid IPv6 server name")
-        except ValueError as error:
-            raise ConnectorError(f"{name} has an invalid IPv6 server name") from error
+        except ValueError:
+            raise ConnectorError(f"{name} has an invalid IPv6 server name") from None
     else:
         if server_name.count(":") == 1:
             host, port = server_name.rsplit(":", 1)
@@ -745,12 +752,16 @@ def _validated_digest(value: object, *, name: str) -> str:
 def _clean_text(value: object, *, name: str, max_bytes: int) -> str:
     if not isinstance(value, str):
         raise ConnectorError(f"{name} must be a string")
-    normalized = unicodedata.normalize("NFC", value)
+    try:
+        normalized = unicodedata.normalize("NFC", value)
+        encoded = normalized.encode()
+    except UnicodeError:
+        raise ConnectorError(f"{name} must be valid Unicode text") from None
     if normalized != value:
         raise ConnectorError(f"{name} must already use NFC normalization")
     if not normalized or normalized != normalized.strip():
         raise ConnectorError(f"{name} must be non-empty with no surrounding whitespace")
-    if len(normalized.encode()) > max_bytes:
+    if len(encoded) > max_bytes:
         raise ConnectorError(f"{name} exceeds {max_bytes} UTF-8 bytes")
     if any(unicodedata.category(character).startswith("C") for character in normalized):
         raise ConnectorError(f"{name} contains a control or format character")
@@ -772,7 +783,7 @@ def _expect_object(
     if missing:
         raise ConnectorError(f"{name} is missing required fields: {', '.join(sorted(missing))}")
     if unknown:
-        raise ConnectorError(f"{name} has unknown fields: {', '.join(sorted(unknown))}")
+        raise ConnectorError(f"{name} has unknown fields")
     return cast(dict[str, object], value)
 
 
@@ -790,13 +801,13 @@ def _strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     result: dict[str, object] = {}
     for key, value in pairs:
         if key in result:
-            raise ConnectorError(f"JSON object contains duplicate key: {key}")
+            raise ConnectorError("JSON object contains a duplicate key")
         result[key] = value
     return result
 
 
-def _reject_constant(value: str) -> object:
-    raise ConnectorError(f"JSON constant is not permitted: {value}")
+def _reject_constant(_value: str) -> object:
+    raise ConnectorError("JSON constant is not permitted")
 
 
 def _canonical_json(value: object) -> bytes:
