@@ -1,0 +1,9 @@
+# Select this component from a cluster overlay ONLY after generating that environment's moderation
+# SOPS secret (scripts/gen-secrets.sh <server_name> <env> with FGENTIC_SECRET_SET=moderation) and
+# provisioning the Draupnir bot account (docs/moderation.md). It adds the Draupnir Flux
+# Kustomization and nothing else; the synapse-http-antispam wiring is a separate, additional opt-in
+# (infra/moderation/antispam). Every moderation declaration stays inside infra/moderation/.
+apiVersion: kustomize.config.k8s.io/v1alpha1
+kind: Component
+resources:
+  - flux-kustomization.yaml

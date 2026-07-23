@@ -1,0 +1,22 @@
+# ClusterIP only (the admission policy forbids anything but ClusterIP/ExternalName here). healthz
+# is for probes; web carries the opt-in synapse-http-antispam callback from Synapse.
+apiVersion: v1
+kind: Service
+metadata:
+  name: draupnir
+  namespace: moderation
+  labels:
+    app.kubernetes.io/name: draupnir
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: draupnir
+  ports:
+    - name: healthz
+      port: 8080
+      targetPort: healthz
+      protocol: TCP
+    - name: web
+      port: 8082
+      targetPort: web
+      protocol: TCP

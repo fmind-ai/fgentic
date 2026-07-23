@@ -1,0 +1,94 @@
+# Draupnir v3.1.0 bot configuration. node-config loads this file from NODE_CONFIG_DIR
+# (=/data/config, set in the image) as the production layer, so it is self-contained. The Matrix
+# access token is NOT stored here: it is mounted as a file and passed with --access-token-path
+# (deployment.yaml), keeping the only real credential in a SOPS Secret. ${server_name} is filled
+# by Flux post-build substitution, so the same manifest works on every cluster.
+#
+# Draupnir bot mode keeps its state in Matrix account data plus a local SQLite room-state backing
+# store under dataPath (/data/storage) — it has NO PostgreSQL dependency (verified against the
+# v3.1.0 default config), so this component deliberately adds no CNPG role/database. The writable
+# /data volume is an emptyDir; the SQLite store is a startup-speed cache that re-syncs from the
+# homeserver, and the authoritative policy lists live server-side in Matrix policy rooms.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: draupnir-config
+  namespace: moderation
+data:
+  production.yaml: |
+    # Client-server API of the local homeserver, reached in-cluster through ESS Synapse.
+    homeserverUrl: "http://ess-synapse.matrix.svc.cluster.local:8008"
+    # Endpoint used to fetch report-related events; the in-cluster Synapse serves both.
+    rawHomeserverUrl: "http://ess-synapse.matrix.svc.cluster.local:8008"
+    # accessToken is deliberately omitted here: it is supplied only via --access-token-path from a
+    # mounted SOPS Secret, so no credential (or credential-shaped placeholder) lives in this
+    # ConfigMap. This is Draupnir's documented secret-management path.
+    pantalaimon:
+      use: false
+    # Agent rooms are unencrypted by policy (ADR 0008); the bot needs no crypto layer.
+    experimentalRustCrypto: false
+    dataPath: "/data/storage"
+    # Only accept invites from members of the management room — no open invite surface.
+    autojoinOnlyIfManager: true
+    recordIgnoredInvites: false
+    # Operators command the bot from this room. Everyone in it fully controls Draupnir, so it is
+    # invite-only and human-operator-only. It is distinct from the shared #fgentic-policy list.
+    managementRoom: "#fgentic-moderation:${server_name}"
+    logLevel: "INFO"
+    verifyPermissionsOnStartup: true
+    # Enforce policy for real (not a dry run).
+    noop: false
+    # Server ACLs are how a ban propagates to a federated room's view — keep them enabled.
+    disableServerACL: false
+    automaticallyRedactForReasons:
+      - "spam"
+      - "advertising"
+    # Protected rooms are managed with commands (!draupnir rooms add), never auto-adopted, so a
+    # watched policy list cannot silently pull unrelated joined rooms under enforcement.
+    protectAllJoinedRooms: false
+    backgroundDelayMS: 500
+    admin:
+      # Never let the bot take over local accounts to self-promote; power stays operator-granted.
+      enableMakeRoomAdminCommand: false
+    commands:
+      allowNoPrefix: false
+      symbolPrefixes:
+        - "!"
+      additionalPrefixes:
+        - "draupnir"
+      ban:
+        defaultReasons:
+          - "spam"
+          - "brigading"
+          - "harassment"
+          - "disagreement"
+    protections:
+      wordlist:
+        words: []
+        minutesBeforeTrusting: 20
+    # SQLite room-state cache for fast restarts; safe to lose (re-synced from the homeserver).
+    roomStateBackingStore:
+      enabled: true
+    health:
+      healthz:
+        enabled: true
+        port: 8080
+        address: "0.0.0.0"
+        endpoint: "/healthz"
+        healthyStatus: 200
+        unhealthyStatus: 418
+    # Web APIs are OFF by default. The synapse-http-antispam endpoint is opt-in and only meaningful
+    # alongside the infra/moderation/antispam component; enabling it also requires providing the
+    # matching shared authorization through a Secret (see docs/moderation.md), never in this file.
+    web:
+      enabled: false
+      port: 8082
+      address: "0.0.0.0"
+      abuseReporting:
+        enabled: false
+      synapseHTTPAntispam:
+        # The shared authorization token is intentionally NOT stored here. Enabling antispam means
+        # delivering Draupnir's config (with the matching authorization) through a Secret instead.
+        enabled: false
+    pollReports: false
+    displayReports: true
