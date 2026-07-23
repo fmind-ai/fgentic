@@ -212,6 +212,7 @@ depends = [
   "check:identity",
   "check:agents",
   "check:agent-new",
+  "check:agent-retire",
   "check:demo",
   "check:federation",
   "check:fed-registry",
@@ -285,6 +286,10 @@ run = "bash scripts/test-agent-readiness.sh"
 [tasks."check:agent-new"]
 description = "Validate deterministic Agent scaffolding and its effective offline renders"
 run = "bash scripts/test-new-agent.sh"
+
+[tasks."check:agent-retire"]
+description = "Offline contract test for the ownership-guarded agent-retire residual-state sweep"
+run = "bash scripts/test-agent-retire.sh"
 
 [tasks."check:model-catalog"]
 description = "Validate governed model metadata and every tracked provider/model selection"
