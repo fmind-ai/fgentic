@@ -17,7 +17,9 @@ type AppInventoryViolation = tuple[str, str]
 
 def _self_contained_apps(repository_root: Path) -> tuple[str, ...]:
     """Return app directories that own a checked-in mise config."""
-    return tuple(sorted(config.parent.name for config in (repository_root / "apps").glob("*/mise.toml")))
+    return tuple(
+        sorted(config.parent.name for config in (repository_root / "apps").glob("*/mise.toml") if config.is_file())
+    )
 
 
 def _mentions_app(markdown: str, app: str) -> bool:
@@ -65,6 +67,7 @@ class PublicAppInventoryTest(TestCase):
                 app_root = repository_root / f"apps/{app}"
                 app_root.mkdir(parents=True)
                 (app_root / "mise.toml").touch()
+            (repository_root / "apps/not-an-app/mise.toml").mkdir(parents=True)
 
             readme = repository_root / "README.md"
             readme.write_text("Apps: app-one.\n", encoding="utf-8")
