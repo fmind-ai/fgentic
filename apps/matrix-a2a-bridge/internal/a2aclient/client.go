@@ -244,6 +244,7 @@ type Client struct {
 	localHTTPClient  *http.Client
 	remoteHTTPClient *http.Client
 	localResolver    *agentcard.Resolver
+	fediverseBroker  *fediverseBroker
 
 	mu           sync.RWMutex
 	cache        map[string]cachedTarget
@@ -329,6 +330,14 @@ func (c *Client) send(
 ) (Result, error) {
 	if messageID == "" {
 		return Result{}, fmt.Errorf("prepare a2a SendMessage for %s: %w", target.String(), ErrMessageIDRequired)
+	}
+	if target.IsFediverse() {
+		c.mu.RLock()
+		cached := c.cache[target.ID()]
+		c.mu.RUnlock()
+		if cached.ready && cached.fediverse != nil && cached.fediverse.Transport == brokerTransportActivityPub {
+			return c.sendActivityPub(ctx, target, cached.fediverse, messageID, text, contextID, taskID, files)
+		}
 	}
 	client, err := c.clientFor(ctx, target)
 	if err != nil {
@@ -427,6 +436,9 @@ func (c *Client) ResolveAgentCard(ctx context.Context, target Target) (*a2a.Agen
 	if !target.valid() {
 		return nil, fmt.Errorf("resolve agent card: invalid target")
 	}
+	if target.IsFediverse() {
+		return c.resolveFediverseAgentCard(ctx, target)
+	}
 	if target.IsRemote() {
 		return c.resolveRemoteAgentCard(ctx, target)
 	}
@@ -454,7 +466,8 @@ func (c *Client) IsReady(target Target) bool {
 	c.mu.RLock()
 	cached := c.cache[target.ID()]
 	c.mu.RUnlock()
-	return cached.ready && cached.client != nil
+	return cached.ready && (cached.client != nil ||
+		(cached.fediverse != nil && cached.fediverse.Transport == brokerTransportActivityPub))
 }
 
 // clientFor resolves (and caches) an SDK client for a target by fetching its AgentCard. Local cards

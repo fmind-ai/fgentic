@@ -92,6 +92,44 @@ func TestLoadAgents(t *testing.T) {
 	}
 }
 
+func TestLoadAgentsAcceptsPinnedAcctTarget(t *testing.T) {
+	path := writeTemp(t, `schemaVersion: 1
+agents:
+  agent-peer:
+    acct: acct:agent@peer.example.com
+    timeout: 12s
+    tokenBudget: 8192
+    cardIdentity:
+      name: Partner Helper
+      organization: Partner Corp
+      keyID: partner-2026
+      publicKey:
+        kty: EC
+        crv: P-256
+        x: axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY
+        y: T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU
+    activityPubIdentity:
+      actorID: https://peer.example.com/users/agent
+      verificationMethod: https://peer.example.com/users/agent#ed25519-key
+      publicKeyMultibase: z6MkiTBz1yKqA2nB3cD4eF5gH6iJ7kL8mN9pQ2rS3tU4vW5x
+      proofMaxAge: 24h
+`)
+	agents, err := LoadAgents(path)
+	if err != nil {
+		t.Fatalf("LoadAgents: %v", err)
+	}
+	ref, ok := agents.Lookup("agent-peer")
+	if !ok {
+		t.Fatal("agent-peer not found")
+	}
+	if !ref.Target().IsRemote() || !ref.Target().IsFediverse() || ref.Path() != "acct:agent@peer.example.com" {
+		t.Fatalf("target = %q, remote = %v, fediverse = %v", ref.Path(), ref.Target().IsRemote(), ref.Target().IsFediverse())
+	}
+	if ref.Timeout() != 12*time.Second || ref.Name != "Partner Helper" {
+		t.Fatalf("timeout = %s, name = %q", ref.Timeout(), ref.Name)
+	}
+}
+
 func TestLoadAgentsRejectsInvalidConfig(t *testing.T) {
 	tests := []struct {
 		name    string

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -81,6 +82,38 @@ func TestAgentsSchemaConversationRetentionIsLocalOnly(t *testing.T) {
 	remote := []byte("schemaVersion: 1\nagents:\n  agent-remote: {url: https://partner.example/a2a, maxSessionAge: 168h}\n")
 	if err := schema.Validate(yamlInstance(t, remote)); err == nil {
 		t.Fatal("schema accepted maxSessionAge on a remote target")
+	}
+}
+
+func TestAgentsSchemaAcctTargetRequiresBothProtocolPins(t *testing.T) {
+	schema := compileAgentsSchema(t)
+	base := `schemaVersion: 1
+agents:
+  agent-peer:
+    acct: acct:agent@peer.example.com
+    timeout: 12s
+    tokenBudget: 8192
+    cardIdentity:
+      name: Partner
+      organization: Partner Corp
+      keyID: k1
+      publicKey: {kty: EC, crv: P-256, x: axfR8uEsQkf4vOblY6RA8ncDfYEt6zOg9KE5RdiYwpY, y: T-NC4v4af5uO5-tKfA-eFivOM1drMV7Oy7ZAaDe_UfU}
+    activityPubIdentity:
+      actorID: https://peer.example.com/users/agent
+      verificationMethod: https://peer.example.com/users/agent#ed25519-key
+      publicKeyMultibase: z6MkiTBz1yKqA2nB3cD4eF5gH6iJ7kL8mN9pQ2rS3tU4vW5x
+      proofMaxAge: 24h
+`
+	if err := schema.Validate(yamlInstance(t, []byte(base))); err != nil {
+		t.Fatalf("valid acct target rejected: %v", err)
+	}
+	withoutAP := strings.Replace(base, "    activityPubIdentity:\n      actorID: https://peer.example.com/users/agent\n      verificationMethod: https://peer.example.com/users/agent#ed25519-key\n      publicKeyMultibase: z6MkiTBz1yKqA2nB3cD4eF5gH6iJ7kL8mN9pQ2rS3tU4vW5x\n      proofMaxAge: 24h\n", "", 1)
+	if err := schema.Validate(yamlInstance(t, []byte(withoutAP))); err == nil {
+		t.Fatal("schema accepted acct target without ActivityPub identity pin")
+	}
+	withMTLS := base + "    mtls: {clientCertFile: /c, clientKeyFile: /k}\n"
+	if err := schema.Validate(yamlInstance(t, []byte(withMTLS))); err == nil {
+		t.Fatal("schema accepted pre-discovery mTLS on acct target")
 	}
 }
 

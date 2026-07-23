@@ -59,6 +59,10 @@ type Config struct {
 	// A2AAPIKey authenticates this bridge workload at agentgateway. It is deliberately separate
 	// from X-User-Id, which carries Matrix attribution but is not a caller credential.
 	A2AAPIKey string `env:"A2A_API_KEY"`
+	// FediverseBrokerURL/Token address the ActivityPub gateway's private ClusterIP side port. They
+	// are optional until an agents.yaml mapping uses acct:, and never replace A2A_API_KEY.
+	FediverseBrokerURL   string `env:"FEDIVERSE_BROKER_URL"`
+	FediverseBrokerToken string `env:"FEDIVERSE_BROKER_TOKEN"`
 	// KagentAPIURL is the internal controller origin used only for verified local-session deletion.
 	KagentAPIURL string `env:"KAGENT_API_URL" envDefault:"http://kagent-controller.kagent.svc.cluster.local:8083"`
 	// ConversationSweepInterval bounds how quickly configured maxSessionAge policies take effect.
@@ -225,6 +229,9 @@ func (c Config) validate() error {
 	}
 	if c.A2ABaseURL == "" {
 		return fmt.Errorf("A2A_BASE_URL must not be empty")
+	}
+	if (c.FediverseBrokerURL == "") != (c.FediverseBrokerToken == "") {
+		return fmt.Errorf("FEDIVERSE_BROKER_URL and FEDIVERSE_BROKER_TOKEN must be configured together")
 	}
 	if c.ListenPort < 1 || c.ListenPort > 65535 {
 		return fmt.Errorf("LISTEN_PORT %d out of range 1-65535", c.ListenPort)

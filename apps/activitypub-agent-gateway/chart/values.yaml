@@ -123,6 +123,17 @@ httpSignature:
   secretName: activitypub-agent-gateway-signing-key
   secretKey: rsa.pem
 
+# Private Matrix bridge broker (#220): resolves pinned acct: identities, upgrades to a verified A2A
+# route when advertised, and otherwise delivers a FEP-8b32 + HTTP-signed Create(Note). The endpoint
+# rides the internal metrics port and is never selected by the public HTTPRoute. Enabling it requires
+# integrity.enabled and the RSA HTTP-signature key above. The bearer token is SOPS-managed.
+fediverseBroker:
+  enabled: false
+  secretName: activitypub-agent-gateway-broker
+  secretKey: token
+  fromNamespaces:
+    - bridge
+
 # FEP-c390 cross-transport identity (issue #218). When enabled, each actor attaches a
 # VerifiableIdentityStatement bound to a P-256 did:key and its AgentCard publishes the matching JWK,
 # so a verifier confirms both federation faces share one sovereign key that survives a domain move.

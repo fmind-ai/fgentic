@@ -153,7 +153,7 @@ func run() error {
 	// Outbound federation (issues #217, #219): group fan-out and the agent status feed share one
 	// dedicated RSA HTTP-signature key and follower store. The Ed25519 key above remains scoped to
 	// long-lived object proofs. Config validation guarantees both keys and the border are present.
-	if cfg.GroupsPath != "" || cfg.StatusFeedEnabled {
+	if cfg.GroupsPath != "" || cfg.StatusFeedEnabled || cfg.FediverseBrokerToken != "" {
 		httpSigner, loadErr := httpsig.LoadRSAPrivateKeyFromFile(cfg.HTTPSignatureKeyPath)
 		if loadErr != nil {
 			return loadErr
@@ -190,6 +190,13 @@ func run() error {
 	}
 	metricsMux := http.NewServeMux()
 	metricsMux.Handle("GET /metrics", promhttp.HandlerFor(reg, promhttp.HandlerOpts{}))
+	if cfg.FediverseBrokerToken != "" {
+		if err := gateway.UseFediverseBroker(cfg.FediverseBrokerToken, &http.Client{Timeout: cfg.RequestTimeout}); err != nil {
+			return err
+		}
+		metricsMux.Handle("/internal/v1/fediverse/", gateway.FediverseBrokerHandler())
+		log.Info("Matrix-to-Fediverse broker ENABLED on internal listener")
+	}
 	if cfg.StatusFeedEnabled {
 		// The Alertmanager receiver rides the INTERNAL metrics server, never the public AP surface.
 		metricsMux.HandleFunc("POST /alerts", gateway.AlertsHandler())
