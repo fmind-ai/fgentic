@@ -103,6 +103,13 @@ def _display_path(path: Path, repository_root: Path) -> str:
         return path.as_posix()
 
 
+def _root_config_escape_reason(mise_config: Path, repository_root: Path) -> str | None:
+    """Reject a root config whose resolved contents are not checked in."""
+    if mise_config.resolve().is_relative_to(repository_root.resolve()):
+        return None
+    return "root mise config escapes the repository"
+
+
 def _effective_task_vocabulary(
     directory: str,
     mise_config: Path,
@@ -122,8 +129,9 @@ def _effective_task_vocabulary(
     if not working_directory.is_dir():
         return None, "working directory does not exist"
 
-    if not mise_config.resolve().is_relative_to(repository):
-        return None, "root mise config escapes the repository"
+    root_reason = _root_config_escape_reason(mise_config, repository)
+    if root_reason is not None:
+        return None, root_reason
     definitions = _task_definitions(mise_config)
     current = repository
     for part in working_directory.relative_to(repository).parts:
@@ -144,7 +152,8 @@ def _task_violations(
     repository_root: Path,
 ) -> list[TaskViolation]:
     """Return missing sources and unresolved root or app-local tasks."""
-    root_vocabulary = _task_vocabulary(mise_config)
+    root_reason = _root_config_escape_reason(mise_config, repository_root)
+    root_vocabulary = set() if root_reason is not None else _task_vocabulary(mise_config)
     violations: list[TaskViolation] = []
     for source in sources:
         source_name = _display_path(source, repository_root)
@@ -152,8 +161,12 @@ def _task_violations(
             violations.append((source_name, "(source)"))
             continue
         markdown = source.read_text(encoding="utf-8")
-        missing = sorted(_documented_tasks(markdown) - root_vocabulary)
-        violations.extend((source_name, f"mise run {task}") for task in missing)
+        for task in sorted(_documented_tasks(markdown)):
+            command = f"mise run {task}"
+            if root_reason is not None:
+                violations.append((source_name, f"{command} ({root_reason})"))
+            elif task not in root_vocabulary:
+                violations.append((source_name, command))
         for directory, task, command in sorted(_documented_app_tasks(markdown)):
             vocabulary, reason = _effective_task_vocabulary(directory, mise_config, repository_root)
             if reason is not None:
@@ -348,6 +361,26 @@ App-local commands inherit root tasks (`mise --cd apps/example run check`) and u
                         "README.md",
                         "mise --cd=apps/example run external "
                         "(mise config apps/example/mise.toml escapes the repository)",
+                    ),
+                ],
+            )
+
+    def test_rejects_root_mise_config_symlinks_outside_repository(self) -> None:
+        with TemporaryDirectory() as temporary, TemporaryDirectory() as external:
+            repository_root = Path(temporary)
+            external_config = Path(external) / "mise.toml"
+            external_config.write_text('[tasks.external]\nrun = "true"\n', encoding="utf-8")
+            mise_config = repository_root / "mise.toml"
+            mise_config.symlink_to(external_config)
+            source = repository_root / "README.md"
+            source.write_text("Run `mise run external`.\n", encoding="utf-8")
+
+            self.assertEqual(
+                _task_violations((source,), mise_config, repository_root),
+                [
+                    (
+                        "README.md",
+                        "mise run external (root mise config escapes the repository)",
                     ),
                 ],
             )
