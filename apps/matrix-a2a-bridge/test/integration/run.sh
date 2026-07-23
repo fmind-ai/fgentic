@@ -117,6 +117,8 @@ diagnose() {
   if [[ "${SCENARIO}" == "crash-recovery" ]]; then
     print_crash_fault_state
     print_crash_delegation_state
+  fi
+  if [[ "${SCENARIO}" == "crash-recovery" || "${SCENARIO}" == "model-outage" ]]; then
     kubectl --request-timeout=5s --namespace "${NAMESPACE}" logs deployment/fault-proxy --all-containers --tail=200 || true
   fi
   kubectl --request-timeout=5s --namespace "${PLAIN_AGENT_NAMESPACE}" logs deployment/plain-a2a-agent --all-containers --tail=200 || true
@@ -526,21 +528,6 @@ wait_for_driver_phase() {
   return 1
 }
 
-disrupt_model_outage() {
-  echo "==> Scaling the model backend to zero for the outage window"
-  wait_for_driver_phase model_outage_phase await_outage 120
-  kubectl --request-timeout=10s --namespace "${PLAIN_AGENT_NAMESPACE}" \
-    scale deployment/plain-a2a-agent --replicas=0
-  kubectl --request-timeout=65s --namespace "${PLAIN_AGENT_NAMESPACE}" wait \
-    --for=delete pod --selector app.kubernetes.io/name=plain-a2a-agent --timeout=60s
-  echo "==> Restoring the model backend"
-  wait_for_driver_phase model_outage_phase await_recovery 180
-  kubectl --request-timeout=10s --namespace "${PLAIN_AGENT_NAMESPACE}" \
-    scale deployment/plain-a2a-agent --replicas=1
-  kubectl --request-timeout=125s --namespace "${PLAIN_AGENT_NAMESPACE}" \
-    rollout status deployment/plain-a2a-agent --timeout=120s
-}
-
 disrupt_synapse_restart() {
   echo "==> Restarting Synapse while a task is mid-poll"
   wait_for_driver_phase synapse_restart_phase task_polling 120
@@ -691,7 +678,7 @@ if kubectl get namespace kagent >/dev/null 2>&1; then
 fi
 
 echo "==> Starting real bridge and standalone SDK-backed A2A agent"
-if [[ "${SCENARIO}" == "crash-recovery" ]]; then
+if [[ "${SCENARIO}" == "crash-recovery" || "${SCENARIO}" == "model-outage" ]]; then
   kubectl apply --filename "${SCRIPT_DIR}/crash-recovery-fault-proxy.yaml"
   kubectl --namespace "${NAMESPACE}" rollout status deployment/fault-proxy --timeout=60s
 fi
@@ -727,9 +714,6 @@ fi
 if [[ "${SCENARIO}" == "crash-recovery" ]]; then
   echo "==> Injecting twelve hard bridge process failures"
   disrupt_crash_recovery
-fi
-if [[ "${SCENARIO}" == "model-outage" ]]; then
-  disrupt_model_outage
 fi
 if [[ "${SCENARIO}" == "synapse-restart" ]]; then
   disrupt_synapse_restart

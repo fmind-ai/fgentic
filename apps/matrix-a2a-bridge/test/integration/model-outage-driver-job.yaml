@@ -37,6 +37,8 @@ spec:
               value: http://bridge:9090/metrics
             - name: A2A_STUB_URL
               value: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080
+            - name: FAULT_PROXY_URL
+              value: http://fault-proxy:8081
             - name: MATRIX_SERVER_NAME
               value: integration.test
             - name: BRIDGE_HS_TOKEN
