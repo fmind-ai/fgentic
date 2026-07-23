@@ -208,6 +208,7 @@ depends = [
   "check:identity-audit",
   "check:trivy-operator",
   "check:secret-rotation",
+  "check:break-glass",
   "check:supply-chain",
   "check:identity",
   "check:agents",
@@ -451,6 +452,10 @@ run = "bash scripts/test-trivy-operator.sh"
 [tasks."check:secret-rotation"]
 description = "Test selective SOPS rotation and cross-consumer invariants with offline fixtures"
 run = "bash scripts/test-rotate-secrets.sh"
+
+[tasks."check:break-glass"]
+description = "Prove the fail-closed default posture of the disabled-by-default break-glass recovery credential"
+run = "bash scripts/test-break-glass.sh"
 
 [tasks."check:supply-chain"]
 description = "Validate signed OCI bootstrap/active invariants and CD attestation controls"

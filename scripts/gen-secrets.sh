@@ -46,7 +46,7 @@ esac
 case "${SECRET_SET}" in
 	all | rotatable | appservice | a2a | mcp | db-core | keycloak-db | knowledge-db | \
 		knowledge-ingestion | \
-		provider | bootstrap | slack | telegram) ;;
+		provider | bootstrap | slack | telegram | break-glass) ;;
 	*)
 		echo "error: unsupported internal secret set: ${SECRET_SET}" >&2
 		exit 2
@@ -62,7 +62,8 @@ want() {
 	local set="$1"
 	# Optional layers are generated only when explicitly selected. A normal production bootstrap
 	# must not create dormant workload credentials or imply that the layer is enabled.
-	if [ "${set}" = "slack" ] || [ "${set}" = "telegram" ] || [ "${set}" = "knowledge-ingestion" ]; then
+	if [ "${set}" = "slack" ] || [ "${set}" = "telegram" ] || [ "${set}" = "knowledge-ingestion" ] \
+		|| [ "${set}" = "break-glass" ]; then
 		[ "${SECRET_SET}" = "${set}" ]
 		return
 	fi
@@ -159,14 +160,21 @@ emit_once() { # emit_once <file> <content>: bootstrap data must never rotate imp
 
 sync_kustomization() {
 	local LC_ALL=C
-	local file kustomization tmp
+	local file kustomization tmp base
 	local -a secret_files=()
 	# An explicit resource inventory keeps an empty reference environment buildable while ensuring
 	# newly generated ciphertext is actually reconciled. The list contains filenames only; no
 	# decrypted material or provider values cross this boundary.
 	for file in "${DIR}"/*.sops.yaml; do
 		[ -e "${file}" ] || continue
-		secret_files+=("$(basename "${file}")")
+		base="$(basename "${file}")"
+		# The break-glass recovery credential (issue #467) is consumed out-of-band during a
+		# deliberate window (sops -d -> MAS Admin API / mas-cli manage), never mounted by a workload.
+		# It must NOT be globbed into the Flux-reconciled inventory, or Flux would decrypt it into an
+		# always-standing, unmounted recovery Secret in etcd -- a standing superuser the SSO-only
+		# posture forbids. It stays SOPS ciphertext in clusters/<env>/secrets/ only.
+		[ "${base}" = "break-glass-recovery.sops.yaml" ] && continue
+		secret_files+=("${base}")
 	done
 
 	kustomization="${DIR}/kustomization.yaml"
@@ -214,6 +222,7 @@ KEYCLOAK_ADMIN_PASSWORD="${KEYCLOAK_ADMIN_PASSWORD:-$(openssl rand -hex 24)}"
 FGENTIC_CLIENT_SECRET="${FGENTIC_CLIENT_SECRET:-$(openssl rand -hex 32)}"
 FGENTIC_ALICE_PASSWORD="${FGENTIC_ALICE_PASSWORD:-$(openssl rand -hex 24)}"
 FGENTIC_BOB_PASSWORD="${FGENTIC_BOB_PASSWORD:-$(openssl rand -hex 24)}"
+BREAK_GLASS_RECOVERY_PASSWORD="${BREAK_GLASS_RECOVERY_PASSWORD:-$(openssl rand -hex 24)}"
 
 if want db-core; then
 	PG_ROLES="$(
@@ -517,6 +526,35 @@ stringData:
 EOF
 	)"
 	emit_once keycloak-bootstrap.sops.yaml "${KEYCLOAK_BOOTSTRAP}"
+fi
+
+# Optional break-glass recovery credential (issue #467): a pre-provisioned local recovery admin for
+# MAS-plane administration when the upstream IdP (Keycloak) is unreachable and every SSO login is
+# locked out. Absent by default — emitted only with FGENTIC_SECRET_SET=break-glass, never by `all`
+# or a `rotatable` sweep — so a normal SSO-first bootstrap ships no standing superuser and nothing
+# plaintext in git. Written with emit_once because, once this password provisions the live MAS
+# recovery account during a break-glass window, it becomes that account's source of truth; silently
+# regenerating it (via --force or a bulk rotation) would drift the sealed value from the live
+# account — exactly the keycloak-bootstrap hazard. Rotation is therefore deliberate and live-first
+# (change the MAS account, then re-seal); rotate-secrets.sh does not sweep it, matching the Keycloak
+# admin/demo-user bootstrap precedent. "Disabled by default" is layered and enforced elsewhere: the
+# secret is absent, `mas_local_login_enabled` stays "false" on SSO-only clusters, and the account is
+# not provisioned or enabled until the deliberate, audited GitOps flip. See docs/identity.md.
+if want break-glass; then
+	BREAK_GLASS_RECOVERY="$(
+		cat <<EOF
+apiVersion: v1
+kind: Secret
+metadata:
+  name: break-glass-recovery
+  namespace: matrix
+type: kubernetes.io/basic-auth
+stringData:
+  username: break-glass
+  password: ${BREAK_GLASS_RECOVERY_PASSWORD}
+EOF
+	)"
+	emit_once break-glass-recovery.sops.yaml "${BREAK_GLASS_RECOVERY}"
 fi
 
 if want provider && [ -n "${MODEL_SECRET_FILE}" ]; then
