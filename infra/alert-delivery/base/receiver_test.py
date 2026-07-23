@@ -8,6 +8,7 @@ discipline of the canary's probe_test.py.
 
 from __future__ import annotations
 
+import errno
 import http.server
 import json
 import socket
@@ -105,9 +106,39 @@ def _raw_status(
         connection.settimeout(2)
         connection.sendall(request)
         if shutdown_write:
-            connection.shutdown(socket.SHUT_WR)
+            try:
+                connection.shutdown(socket.SHUT_WR)
+            except OSError as error:
+                # A fast rejection can close the peer after buffering its response but before this
+                # half-close. The response remains readable; every other socket failure is real.
+                if error.errno != errno.ENOTCONN:
+                    raise
         status_line = connection.makefile("rb").readline()
     return int(status_line.split()[1])
+
+
+def test_raw_status_tolerates_only_peer_closed_shutdown() -> None:
+    server = cast(receiver._BoundedThreadingHTTPServer, mock.Mock(server_address=("127.0.0.1", 1)))
+    connection = mock.MagicMock(spec=socket.socket)
+    connection.__enter__.return_value = connection
+    connection.makefile.return_value.readline.return_value = b"HTTP/1.1 400 Bad Request\r\n"
+
+    connection.shutdown.side_effect = OSError(errno.ENOTCONN, "peer already closed")
+    with mock.patch.object(socket, "create_connection", return_value=connection):
+        assert _raw_status(server, b"complete request") == 400
+    connection.makefile.assert_called_once_with("rb")
+
+    connection.reset_mock()
+    connection.shutdown.side_effect = OSError(errno.EBADF, "unexpected bad descriptor")
+    with mock.patch.object(socket, "create_connection", return_value=connection):
+        try:
+            _raw_status(server, b"complete request")
+        except OSError as error:
+            assert error.errno == errno.EBADF
+        else:
+            raise AssertionError("unexpected shutdown errors must propagate")
+    connection.makefile.assert_not_called()
+    print("ok: raw status tolerates only peer-closed shutdown")
 
 
 def test_webhook_rejects_invalid_framing_and_oversized_body() -> None:
@@ -392,6 +423,7 @@ if __name__ == "__main__":
     test_render_tolerates_malformed_alert()
     test_txn_id_is_stable_but_time_bucketed()
     test_safe_label_summary_excludes_content()
+    test_raw_status_tolerates_only_peer_closed_shutdown()
     test_webhook_rejects_invalid_framing_and_oversized_body()
     test_request_headers_are_bounded()
     test_slow_headers_release_all_request_slots()
