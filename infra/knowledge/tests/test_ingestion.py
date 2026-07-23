@@ -743,6 +743,7 @@ class EmbeddingHandler(BaseHTTPRequestHandler):
     reverse_response = False
     token_count = 1
     tokenize_override: ClassVar[dict[str, object] | bytes | None] = None
+    response_framing: ClassVar[str] = "content-length"
     response_byte_delay = 0.0
 
     def _write_body(self, body: bytes) -> None:
@@ -781,8 +782,33 @@ class EmbeddingHandler(BaseHTTPRequestHandler):
                 ).encode()
             self.send_response(200)
             self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(body)))
+            framing = type(self).response_framing
+            if framing == "content-length":
+                self.send_header("Content-Length", str(len(body)))
+            elif framing == "duplicate-content-length":
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Content-Length", str(len(body)))
+            elif framing == "content-length-and-transfer-encoding":
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Transfer-Encoding", "chunked")
+            elif framing == "invalid-content-length":
+                self.send_header("Content-Length", "invalid")
+            elif framing == "oversized-content-length":
+                self.send_header("Content-Length", str(ingestion.MAX_TOKENIZE_RESPONSE_BYTES + 1))
+            elif framing == "huge-content-length":
+                self.send_header("Content-Length", "9" * 5000)
+            elif framing == "incomplete-content-length":
+                self.send_header("Content-Length", str(len(body) + 1))
+            elif framing == "unsupported-transfer-encoding":
+                self.send_header("Transfer-Encoding", "gzip")
+            elif framing == "chunked":
+                self.send_header("Transfer-Encoding", "chunked")
+            else:
+                raise AssertionError(f"unknown response framing: {framing}")
             self.end_headers()
+            if framing == "chunked":
+                self._write_body(f"{len(body):x}\r\n".encode() + body + b"\r\n0\r\n\r\n")
+                return
             self._write_body(body)
             return
         assert self.path == "/v1/embeddings"
@@ -824,6 +850,7 @@ def embedding_server() -> Iterator[str]:
     EmbeddingHandler.reverse_response = False
     EmbeddingHandler.token_count = 1
     EmbeddingHandler.tokenize_override = None
+    EmbeddingHandler.response_framing = "content-length"
     EmbeddingHandler.response_byte_delay = 0
     server = ThreadingHTTPServer(("127.0.0.1", 0), EmbeddingHandler)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -1058,6 +1085,89 @@ def test_embedding_plan_rejects_tokenizer_contract_drift_before_embedding(
 
     assert EmbeddingHandler.calls == []
     assert not output_path.exists()
+
+
+@pytest.mark.parametrize(
+    ("framing", "message"),
+    [
+        ("duplicate-content-length", "ambiguous response framing"),
+        ("content-length-and-transfer-encoding", "ambiguous response framing"),
+        ("invalid-content-length", "invalid response framing"),
+        ("oversized-content-length", "response exceeds 262144 bytes"),
+        ("huge-content-length", "response exceeds 262144 bytes"),
+        ("incomplete-content-length", "incomplete response body"),
+        ("unsupported-transfer-encoding", "unsupported response framing"),
+    ],
+)
+def test_tokenizer_response_rejects_ambiguous_or_invalid_framing(
+    framing: str,
+    message: str,
+) -> None:
+    with embedding_server() as url:
+        EmbeddingHandler.response_framing = framing
+        with pytest.raises(ingestion.IngestionError, match=message):
+            ingestion._preflight_tokenize(
+                url,
+                model=ingestion.EMBEDDING_MODEL,
+                content="framing",
+                timeout_seconds=1,
+                allow_loopback=True,
+                authorization=None,
+            )
+
+    assert EmbeddingHandler.calls == []
+
+
+def test_tokenizer_response_accepts_exact_chunked_framing() -> None:
+    with embedding_server() as url:
+        EmbeddingHandler.response_framing = "chunked"
+        ingestion._preflight_tokenize(
+            url,
+            model=ingestion.EMBEDDING_MODEL,
+            content="chunked",
+            timeout_seconds=1,
+            allow_loopback=True,
+            authorization=None,
+        )
+
+    assert EmbeddingHandler.tokenize_calls == ["chunked"]
+    assert EmbeddingHandler.calls == []
+
+
+@pytest.mark.parametrize(
+    ("response", "message"),
+    [
+        pytest.param(
+            b'{"nested":' + b"[" * 10_000 + b"]" * 10_000 + b"}",
+            "invalid JSON",
+            id="recursive",
+        ),
+        pytest.param(b"[]", "non-object JSON document", id="non-object"),
+        pytest.param(
+            b'{"hostile-body-key":1,"hostile-body-key":2}',
+            "invalid JSON",
+            id="duplicate-key",
+        ),
+    ],
+)
+def test_tokenizer_response_rejects_invalid_json_without_echoing_content(
+    response: bytes,
+    message: str,
+) -> None:
+    with embedding_server() as url:
+        EmbeddingHandler.tokenize_override = response
+        with pytest.raises(ingestion.IngestionError, match=message) as error:
+            ingestion._preflight_tokenize(
+                url,
+                model=ingestion.EMBEDDING_MODEL,
+                content="json",
+                timeout_seconds=1,
+                allow_loopback=True,
+                authorization=None,
+            )
+
+    assert "hostile-body-key" not in str(error.value)
+    assert EmbeddingHandler.calls == []
 
 
 def test_tokenizer_response_obeys_one_absolute_deadline() -> None:

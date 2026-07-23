@@ -1259,6 +1259,34 @@ def _resolve_endpoint_addresses(
     return tuple(addresses)
 
 
+def _declared_response_length(
+    response: http.client.HTTPResponse,
+    *,
+    max_response_bytes: int,
+    operation: str,
+) -> int | None:
+    content_lengths = response.headers.get_all("Content-Length", [])
+    transfer_encodings = response.headers.get_all("Transfer-Encoding", [])
+    if content_lengths and transfer_encodings:
+        raise IngestionError(f"{operation} backend returned ambiguous response framing")
+    if content_lengths:
+        if len(content_lengths) != 1:
+            raise IngestionError(f"{operation} backend returned ambiguous response framing")
+        raw_length = content_lengths[0].strip()
+        if not raw_length.isascii() or not raw_length.isdecimal():
+            raise IngestionError(f"{operation} backend returned invalid response framing")
+        normalized_length = raw_length.lstrip("0") or "0"
+        if len(normalized_length) > len(str(max_response_bytes)):
+            raise IngestionError(f"{operation} response exceeds {max_response_bytes} bytes")
+        declared_length = int(normalized_length)
+        if declared_length > max_response_bytes:
+            raise IngestionError(f"{operation} response exceeds {max_response_bytes} bytes")
+        return declared_length
+    if transfer_encodings and (len(transfer_encodings) != 1 or transfer_encodings[0].strip().lower() != "chunked"):
+        raise IngestionError(f"{operation} backend returned unsupported response framing")
+    return None
+
+
 def _post_bounded_json(
     endpoint: EmbeddingsEndpoint,
     *,
@@ -1269,7 +1297,7 @@ def _post_bounded_json(
     timeout_seconds: float,
     authorization: str | None,
     operation: str,
-) -> object:
+) -> dict[str, object]:
     if len(body) > max_request_bytes:
         raise IngestionError(f"{operation} request exceeds {max_request_bytes} bytes")
     started_at = time.monotonic()
@@ -1307,6 +1335,11 @@ def _post_bounded_json(
     try:
         connection.request("POST", path, body=body, headers=headers)
         response = connection.getresponse()
+        declared_length = _declared_response_length(
+            response,
+            max_response_bytes=max_response_bytes,
+            operation=operation,
+        )
         content_type = response.getheader("Content-Type", "").split(";", 1)[0].strip().lower()
         raw_buffer = bytearray()
         while len(raw_buffer) <= max_response_bytes:
@@ -1331,14 +1364,19 @@ def _post_bounded_json(
         raise IngestionError(f"{operation} backend returned a non-JSON content type")
     if len(raw) > max_response_bytes:
         raise IngestionError(f"{operation} response exceeds {max_response_bytes} bytes")
+    if declared_length is not None and len(raw) != declared_length:
+        raise IngestionError(f"{operation} backend returned an incomplete response body")
     try:
-        return json.loads(
+        document = json.loads(
             raw.decode("utf-8"),
             object_pairs_hook=_strict_object,
             parse_constant=_reject_json_constant,
         )
-    except (UnicodeDecodeError, json.JSONDecodeError) as error:
+    except (RecursionError, UnicodeDecodeError, ValueError) as error:
         raise IngestionError(f"{operation} backend returned invalid JSON") from error
+    if not isinstance(document, dict):
+        raise IngestionError(f"{operation} backend returned a non-object JSON document")
+    return cast(dict[str, object], document)
 
 
 def _preflight_tokenize(
