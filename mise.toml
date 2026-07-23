@@ -210,6 +210,7 @@ depends = [
   "check:secret-rotation",
   "check:break-glass",
   "check:supply-chain",
+  "check:bom",
   "check:identity",
   "check:agents",
   "check:agent-new",
@@ -460,6 +461,10 @@ run = "bash scripts/test-break-glass.sh"
 [tasks."check:supply-chain"]
 description = "Validate signed OCI bootstrap/active invariants and CD attestation controls"
 run = "bash scripts/check-supply-chain.sh"
+
+[tasks."check:bom"]
+description = "Verify the adopter release BOM matches the reference profile and every repo pin is classified"
+run = "bash scripts/check-bom.sh"
 
 [tasks."check:identity"]
 description = "Assert the Keycloak↔MAS OIDC backchannel-logout wiring (client config, provider, egress)"
