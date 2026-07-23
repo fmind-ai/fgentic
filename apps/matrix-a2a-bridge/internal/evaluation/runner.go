@@ -106,7 +106,7 @@ func (r *Runner) Run(ctx context.Context, config RunConfig, scenarios []Scenario
 		if err := validateObservedModel(config.Model, usage.Identity); err != nil {
 			return ProfileRun{}, fmt.Errorf("scenario %s: %w", scenario.ID, err)
 		}
-		score, judgeScores, err := r.scoreScenario(policyCtx, config, judgeApproved, scenario, answer)
+		score, judgeScores, faithfulness, err := r.scoreScenario(policyCtx, config, judgeApproved, scenario, answer)
 		if err != nil {
 			return ProfileRun{}, fmt.Errorf("score scenario %s: %w", scenario.ID, err)
 		}
@@ -118,6 +118,7 @@ func (r *Runner) Run(ctx context.Context, config RunConfig, scenarios []Scenario
 			ScenarioID: scenario.ID, Agent: scenario.Agent, Prompt: scenario.Prompt,
 			Rubric: scenario.Rubric, Answer: answer, LatencyMilliseconds: latency.Milliseconds(),
 			Usage: usage, EstimatedCost: cost, Score: score, JudgeScores: judgeScores,
+			Faithfulness: faithfulness,
 		})
 	}
 	run.CompletedAt = time.Now().UTC()
@@ -188,26 +189,65 @@ func (r *Runner) scoreScenario(
 	judgeApproved bool,
 	scenario Scenario,
 	answer string,
-) (Score, *JudgeScores, error) {
+) (Score, *JudgeScores, *FaithfulnessResult, error) {
+	// Citation faithfulness runs in the same guarded lane as groundedness: only when the sovereign judge
+	// lane is approved (self-hosted model), so corpus text never leaves the cluster. It is independent
+	// of the rubric kind — any corpus-cited answer is checked, not just optional-judge scenarios.
+	var faithfulness *FaithfulnessResult
+	if scenario.Citations != nil && judgeApproved {
+		result, err := r.scoreFaithfulness(ctx, config, *scenario.Citations)
+		if err != nil {
+			return Score{}, nil, nil, fmt.Errorf("faithfulness: %w", err)
+		}
+		faithfulness = &result
+	}
 	if scenario.Rubric.Kind != RubricOptionalLLMJudge || !judgeApproved {
 		score, err := ScoreAnswer(answer, scenario.Rubric)
-		return score, nil, err
+		return score, nil, faithfulness, err
 	}
 	judgeCtx, cancel := context.WithTimeout(ctx, config.ScenarioTimeout)
 	defer cancel()
 	raw, err := r.callAgent(judgeCtx, config.Judge.Agent, judgePrompt(scenario.Rubric.Description, scenario.Prompt, answer), config.PollInterval)
 	if err != nil {
-		return Score{}, nil, fmt.Errorf("judge call: %w", err)
+		return Score{}, nil, nil, fmt.Errorf("judge call: %w", err)
 	}
 	result, parseErr := ParseJudgeResult(raw)
 	if parseErr != nil {
 		// Fail closed with a payload-free reason; the parse detail is logged, never recorded.
 		r.log.Warn("judge output failed strict validation", "scenario", scenario.ID, "error", parseErr)
 		fail := 0.0
-		return Score{Verdict: VerdictFail, Points: &fail, Reason: "judge output failed strict validation"}, nil, nil
+		return Score{Verdict: VerdictFail, Points: &fail, Reason: "judge output failed strict validation"}, nil, faithfulness, nil
 	}
 	scores := result.Scores()
-	return result.Score(config.Judge.Thresholds), &scores, nil
+	return result.Score(config.Judge.Thresholds), &scores, faithfulness, nil
+}
+
+// scoreFaithfulness runs the citation-faithfulness check for a scenario's corpus-cited answer over the
+// sovereign judge lane, mirroring the groundedness lane's egress exactly: each claim and its cited
+// chunk text reach only the local judge Agent through agentgateway (r.callAgent), never an external
+// provider. It is invoked only from the judge-approved path, so no corpus text can leave the cluster.
+// A judge transport failure aborts the run; a malformed judgment fails that claim closed (unsupported).
+func (r *Runner) scoreFaithfulness(ctx context.Context, config RunConfig, answer CitedAnswer) (FaithfulnessResult, error) {
+	if err := answer.Validate(); err != nil {
+		return FaithfulnessResult{}, err
+	}
+	judge := func(judgeCtx context.Context, claimText string, chunkTexts []string) (EntailmentResult, error) {
+		callCtx, cancel := context.WithTimeout(judgeCtx, config.ScenarioTimeout)
+		defer cancel()
+		raw, err := r.callAgent(callCtx, config.Judge.Agent, entailmentPrompt(claimText, chunkTexts), config.PollInterval)
+		if err != nil {
+			return EntailmentResult{}, fmt.Errorf("entailment judge call: %w", err)
+		}
+		result, parseErr := ParseEntailmentResult(raw)
+		if parseErr != nil {
+			// Fail closed: a malformed judgment is scored "unsupported", never "supported". The parse
+			// detail is logged content-free and never becomes a verdict or recorded evidence.
+			r.log.Warn("entailment judge output failed strict validation", "error", parseErr)
+			return EntailmentResult{Entailed: false, Rationale: "unparseable"}, nil
+		}
+		return result, nil
+	}
+	return ScoreFaithfulness(ctx, judge, answer)
 }
 
 // callAgent submits one prompt to a local kagent agent over A2A and returns its terminal text answer,

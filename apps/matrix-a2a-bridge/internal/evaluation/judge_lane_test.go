@@ -63,7 +63,7 @@ func TestJudgeLaneScoresApprovedSovereignScenario(t *testing.T) {
 	config, model := sovereignJudgeConfig()
 	config.ScenarioTimeout = 1 // positive so WithTimeout is valid
 
-	score, scores, err := runner.scoreScenario(t.Context(), config, config.Judge.ApprovedFor(model), judgeScenario(), "the pod is CrashLooping; restart it")
+	score, scores, _, err := runner.scoreScenario(t.Context(), config, config.Judge.ApprovedFor(model), judgeScenario(), "the pod is CrashLooping; restart it")
 	if err != nil {
 		t.Fatalf("scoreScenario: %v", err)
 	}
@@ -84,7 +84,7 @@ func TestJudgeLaneFailsClosedOnMalformedOutput(t *testing.T) {
 	config, model := sovereignJudgeConfig()
 	config.ScenarioTimeout = 1
 
-	score, scores, err := runner.scoreScenario(t.Context(), config, config.Judge.ApprovedFor(model), judgeScenario(), "some answer")
+	score, scores, _, err := runner.scoreScenario(t.Context(), config, config.Judge.ApprovedFor(model), judgeScenario(), "some answer")
 	if err != nil {
 		t.Fatalf("malformed judge output must fail the scenario, not the run: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestJudgeLaneTransportErrorAbortsRun(t *testing.T) {
 	config, model := sovereignJudgeConfig()
 	config.ScenarioTimeout = 1
 
-	_, _, err := runner.scoreScenario(t.Context(), config, config.Judge.ApprovedFor(model), judgeScenario(), "answer")
+	_, _, _, err := runner.scoreScenario(t.Context(), config, config.Judge.ApprovedFor(model), judgeScenario(), "answer")
 	if err == nil {
 		t.Fatal("a judge transport failure must abort the run")
 	}
@@ -116,7 +116,7 @@ func TestJudgeLaneBlockedForExternalProvider(t *testing.T) {
 	external := modelcatalog.Model{Profile: "vertex", Name: "gemini", Residency: modelcatalog.ResidencyGlobal}
 	config.Model = external
 
-	score, scores, err := runner.scoreScenario(t.Context(), config, config.Judge.ApprovedFor(external), judgeScenario(), "answer")
+	score, scores, _, err := runner.scoreScenario(t.Context(), config, config.Judge.ApprovedFor(external), judgeScenario(), "answer")
 	if err != nil {
 		t.Fatalf("scoreScenario: %v", err)
 	}
