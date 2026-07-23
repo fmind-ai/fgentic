@@ -433,10 +433,59 @@ func TestPowerLevelDriftBlocksGrants(t *testing.T) {
 
 func TestPowerDriftDetectsWeakAccessManager(t *testing.T) {
 	state := managedRoom(nil)
+	// A NON-creator access-manager relies on an EXPLICIT power level; drop it below the thresholds.
+	state.Creator = "@other:fgentic.localhost"
 	state.Power.Users[accessMgr] = 40 // below the 50 thresholds → cannot enforce
 	r := newReconciler(t, &fakeDir{snap: snapshot()}, &fakeRooms{}, true, nil)
 	if !r.powerDrift(state) {
-		t.Fatalf("an access-manager below the action thresholds must count as drift")
+		t.Fatalf("a non-creator access-manager below the action thresholds must count as drift")
+	}
+}
+
+func TestCreatorImplicitPowerNotDrift(t *testing.T) {
+	// A pristine room v12: the access-manager is the creator and is OMITTED from power_levels.users,
+	// holding implicit privileged power. This must NOT be read as drift, so grants proceed.
+	dir := &fakeDir{snap: snapshot(directory.Member{Sub: "s1", Localpart: "alice"})}
+	state := managedRoom(nil)            // Creator is accessMgr
+	delete(state.Power.Users, accessMgr) // absent from the users map, as a real v12 room may leave it
+	rooms := &fakeRooms{
+		aliases: map[string]string{roomAlias: roomID},
+		states:  map[string]matrix.RoomState{roomID: state},
+	}
+	r := newReconciler(t, dir, rooms, true, nil)
+	res := r.Reconcile(context.Background())
+	if res.Plans[0].GrantsBlocked {
+		t.Fatalf("a room-v12 creator with implicit power must not be read as drift")
+	}
+	if len(rooms.invited) != 1 || rooms.invited[0].mxid != mxidOf("alice") {
+		t.Fatalf("grants must proceed for a creator-owned room, got %v", rooms.invited)
+	}
+}
+
+func TestAdditionalCreatorIsDrift(t *testing.T) {
+	// A non-access-manager additional creator holds implicit privileged power → drift, blocks grants.
+	state := managedRoom(nil)
+	state.AdditionalCreators = []string{"@intruder:fgentic.localhost"}
+	r := newReconciler(t, &fakeDir{snap: snapshot()}, &fakeRooms{}, true, nil)
+	if !r.powerDrift(state) {
+		t.Fatalf("an additional creator other than the access-manager must count as drift")
+	}
+}
+
+func TestGhostLocalpartNeverGranted(t *testing.T) {
+	// An IdP member whose matrix_localpart lands in the reserved ghost namespace must not be invited.
+	dir := &fakeDir{snap: snapshot(directory.Member{Sub: "s1", Localpart: "agent-x"})}
+	rooms := &fakeRooms{
+		aliases: map[string]string{roomAlias: roomID},
+		states:  map[string]matrix.RoomState{roomID: managedRoom(nil)},
+	}
+	r := newReconciler(t, dir, rooms, true, nil)
+	res := r.Reconcile(context.Background())
+	if len(rooms.invited) != 0 {
+		t.Fatalf("a ghost-namespace localpart must never be granted, got %v", rooms.invited)
+	}
+	if len(res.Plans[0].Grants) != 0 {
+		t.Fatalf("a ghost-namespace localpart must not appear in the desired grant set, got %v", res.Plans[0].Grants)
 	}
 }
 

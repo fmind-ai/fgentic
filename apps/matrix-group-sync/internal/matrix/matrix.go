@@ -34,12 +34,16 @@ type PowerLevels struct {
 
 // RoomState is the managed room's current authorization-relevant state. Creator is the sender of the
 // m.room.create event (the room-v12 creator), which must equal the access-manager for a managed room.
+// AdditionalCreators are the room-v12 `additional_creators`, each of whom ALSO holds implicit
+// privileged power even when absent from the power_levels users map; any creator other than the
+// access-manager is power drift.
 type RoomState struct {
-	RoomID  string
-	Version string
-	Creator string
-	Members map[string]Membership
-	Power   PowerLevels
+	RoomID             string
+	Version            string
+	Creator            string
+	AdditionalCreators []string
+	Members            map[string]Membership
+	Power              PowerLevels
 }
 
 // RoomManager is the normal-client Matrix surface the reconciler drives. Every method is a standard

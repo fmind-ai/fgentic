@@ -48,8 +48,13 @@ func (c *Client) RoomState(ctx context.Context, roomID string) (RoomState, error
 		// Room v12: the creator is the m.room.create sender. The deprecated content Creator field is
 		// only consulted for older rooms, which the reconciler rejects as unmanaged anyway.
 		out.Creator = create.Sender.String()
-		if cc := create.Content.AsCreate(); cc != nil && cc.RoomVersion != "" {
-			out.Version = string(cc.RoomVersion)
+		if cc := create.Content.AsCreate(); cc != nil {
+			if cc.RoomVersion != "" {
+				out.Version = string(cc.RoomVersion)
+			}
+			for _, ac := range cc.AdditionalCreators {
+				out.AdditionalCreators = append(out.AdditionalCreators, ac.String())
+			}
 		}
 	}
 	if pl := stateEvent(stateMap, event.StatePowerLevels); pl != nil {

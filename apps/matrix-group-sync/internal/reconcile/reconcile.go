@@ -34,6 +34,7 @@ const (
 	grantAudit            = "audit"
 	grantNoAccount        = "skipped_no_account"
 	grantInvalidLocalpart = "skipped_invalid_localpart"
+	grantGhostNamespace   = "skipped_ghost_namespace"
 	grantBlockedRoom      = "blocked_room"
 	grantFailed           = "failed"
 )
@@ -276,6 +277,15 @@ func (r *Reconciler) desiredMXIDs(members []directory.Member) []string {
 		if err != nil {
 			continue // invalid localpart already counted globally; never guess an identity
 		}
+		if mxid.IsLocalGhost(id, r.opts.GhostPrefix, r.opts.ServerName) {
+			// An IdP member whose localpart lands in the bridge-exclusive `@<prefix>*` ghost
+			// namespace must NEVER be invited: ghosts are placed by the bridge, and inviting a human
+			// into that namespace would collide with a platform-owned identity. The revoke path
+			// already skips ghosts (managedActual); this keeps grants symmetric and fail-closed.
+			r.log.Warn("skipping grant for a localpart in the reserved ghost namespace", "mxid", id)
+			r.metrics.Grant(grantGhostNamespace)
+			continue
+		}
 		if _, dup := seen[id]; dup {
 			continue
 		}
@@ -368,14 +378,25 @@ func (r *Reconciler) applyRevoke(ctx context.Context, roomID, group, target stri
 // access-manager must outrank every action threshold, the invite/kick/ban thresholds must be above
 // 0 so a level-0 human cannot perform them, users_default must be 0, and no non-ghost, non-manager
 // user may hold power above 0 (docs/adr/0009).
+//
+// Room-v12 creator semantics are load-bearing here: the creator (and any additional_creators) holds
+// IMPLICIT privileged power and is legitimately OMITTED from the power_levels users map. The
+// access-manager creates and owns these rooms, so when it is the creator its power is sufficient
+// even without an explicit entry — reading a defaulted level-0 for an absent creator would falsely
+// trip drift and block every grant. Conversely, any creator OTHER than the access-manager holds
+// implicit power it should not have, which IS drift.
 func (r *Reconciler) powerDrift(state matrix.RoomState) bool {
 	pl := state.Power
-	amLevel := pl.UsersDefault
-	if lvl, ok := pl.Users[r.opts.AccessManagerMXID]; ok {
-		amLevel = lvl
-	}
-	if amLevel < pl.Invite || amLevel < pl.Kick || amLevel < pl.Ban || amLevel < pl.StateDefault {
-		return true
+	amIsCreator := state.Creator == r.opts.AccessManagerMXID
+	if !amIsCreator {
+		// A non-creator access-manager must hold explicit power meeting every action threshold.
+		amLevel := pl.UsersDefault
+		if lvl, ok := pl.Users[r.opts.AccessManagerMXID]; ok {
+			amLevel = lvl
+		}
+		if amLevel < pl.Invite || amLevel < pl.Kick || amLevel < pl.Ban || amLevel < pl.StateDefault {
+			return true
+		}
 	}
 	if pl.Invite <= 0 || pl.Kick <= 0 || pl.Ban <= 0 {
 		return true
@@ -391,6 +412,12 @@ func (r *Reconciler) powerDrift(state matrix.RoomState) bool {
 			continue
 		}
 		if level > 0 {
+			return true
+		}
+	}
+	// Any additional creator other than the access-manager holds implicit privileged power.
+	for _, creator := range state.AdditionalCreators {
+		if creator != r.opts.AccessManagerMXID {
 			return true
 		}
 	}
