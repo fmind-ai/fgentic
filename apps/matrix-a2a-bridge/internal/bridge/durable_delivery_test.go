@@ -69,22 +69,22 @@ func TestDurableMatrixOutboxUsesStableDistinctTransactionIDs(t *testing.T) {
 	replyTxn := state.MatrixTransactionIDFor(jobID, "reply")
 	placeholderTxn := state.MatrixTransactionIDFor(jobID, "placeholder")
 	editTxn := state.MatrixTransactionIDFor(jobID, "edit")
-	first, err := b.sendDurableNotice(t.Context(), intent, evt, "done", replyTxn)
+	first, err := b.sendDurableNotice(t.Context(), intent, evt, "done", replyTxn, nil)
 	if err != nil {
 		t.Fatalf("send durable reply: %v", err)
 	}
-	replayed, err := b.sendDurableNotice(t.Context(), intent, evt, "done", replyTxn)
+	replayed, err := b.sendDurableNotice(t.Context(), intent, evt, "done", replyTxn, nil)
 	if err != nil {
 		t.Fatalf("replay durable reply: %v", err)
 	}
 	if replayed != first {
 		t.Fatalf("replayed event ID = %q, want %q", replayed, first)
 	}
-	placeholder, err := b.sendDurableNotice(t.Context(), intent, evt, workingText, placeholderTxn)
+	placeholder, err := b.sendDurableNotice(t.Context(), intent, evt, workingText, placeholderTxn, nil)
 	if err != nil {
 		t.Fatalf("send durable placeholder: %v", err)
 	}
-	if _, err := b.editDurableNotice(t.Context(), intent, evt.RoomID, placeholder, "done", editTxn); err != nil {
+	if _, err := b.editDurableNotice(t.Context(), intent, evt.RoomID, placeholder, "done", editTxn, nil); err != nil {
 		t.Fatalf("edit durable placeholder: %v", err)
 	}
 

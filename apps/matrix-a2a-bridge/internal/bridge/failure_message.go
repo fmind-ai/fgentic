@@ -76,11 +76,15 @@ func (b *Bridge) postFailureReply(
 	sender senderIdentity,
 	agent, reason string,
 	timeout time.Duration,
+	outcome, taskID string,
 ) id.EventID {
 	if !b.allowNotice(sender, evt.RoomID, agent) {
 		return ""
 	}
-	return b.postReply(ctx, intent, evt, failureMessage(reason, agent, timeout))
+	// A terminal failure notice carries the versioned result block (#167): counterpart tooling reads
+	// the outcome structurally, not from the localized copy.
+	return b.postReplyResult(ctx, intent, evt, failureMessage(reason, agent, timeout),
+		b.newResultMetadata(agent, outcome, taskID))
 }
 
 // postFailureForTarget is the pre-dispatch variant used before a ghost intent has been prepared.
@@ -89,7 +93,7 @@ func (b *Bridge) postFailureForTarget(
 	ctx context.Context,
 	evt *event.Event,
 	sender senderIdentity,
-	agent, reason string,
+	agent, reason, outcome string,
 ) {
 	if !b.allowNotice(sender, evt.RoomID, agent) {
 		return
@@ -109,7 +113,9 @@ func (b *Bridge) postFailureForTarget(
 		b.log.Error("ensure failure-notice ghost joined", "ghost", agent, "room", evt.RoomID, "err", err)
 		return
 	}
-	b.postReply(ctx, intent, evt, failureMessage(reason, agent, 0))
+	// Pre-dispatch refusal: terminal, but no A2A task was ever minted, so the block's task_id is empty.
+	b.postReplyResult(ctx, intent, evt, failureMessage(reason, agent, 0),
+		b.newResultMetadata(agent, outcome, ""))
 }
 
 // editFailureReply applies the same notice budget to a terminal edit of a working placeholder.
@@ -122,9 +128,12 @@ func (b *Bridge) editFailureReply(
 	sender senderIdentity,
 	agent, reason string,
 	timeout time.Duration,
+	outcome, taskID string,
 ) {
 	if !b.allowNotice(sender, roomID, agent) {
 		return
 	}
-	b.editReply(ctx, intent, roomID, placeholder, failureMessage(reason, agent, timeout))
+	// A terminal failure that replaces a working placeholder still carries the versioned result block.
+	b.editReplyResult(ctx, intent, roomID, placeholder, failureMessage(reason, agent, timeout),
+		b.newResultMetadata(agent, outcome, taskID))
 }
