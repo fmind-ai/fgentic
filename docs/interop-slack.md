@@ -115,7 +115,7 @@ Use synthetic, non-sensitive content and a read-only/no-tool agent for the first
 
 ## Screenshot evidence
 
-Screenshots are acceptance artifacts, not source files. Attach redacted captures to issue #48 or its pull request only after the real test succeeds:
+Screenshots are acceptance artifacts, not source files. Issue #48 / PR #105 delivered this source walkthrough while live external-provider acceptance stayed deferred, and is now closed — do not route new evidence there. Attach redacted captures to the dedicated live-acceptance issue or PR opened for the provider exercise, only after the real test succeeds; until those exact artifacts exist, live Slack interoperability remains unproven:
 
 1. Slack channel: synthetic request nonce, immutable user/member detail visible separately, and returned agent reply/thread.
 1. Element portal: matching nonce, Slack ghost MXID, agent ghost MXID, and reply relation.
