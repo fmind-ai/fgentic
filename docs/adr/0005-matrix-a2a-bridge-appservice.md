@@ -10,7 +10,7 @@ Status: Accepted
 
 ## Context
 
-The one novel component is the **bridge** that stitches Matrix to A2A. mautrix/go (`v0.28.1`, import `maunium.net/go/mautrix`; the framework behind Beeper and every mautrix bridge) offers two framings, and the choice is load-bearing:
+The one novel component is the **bridge** that stitches Matrix to A2A. mautrix/go (`v0.29.0`, import `maunium.net/go/mautrix`; the framework behind Beeper and every mautrix bridge) offers two framings, and the choice is load-bearing:
 
 1. **`bridgev2`** — models a _foreign network mirrored into Matrix portals_ (logins, portals, remote-user puppets). Purpose-built for "bring Slack/Telegram _into_ Matrix."
 1. **The plain `appservice` package** — namespace registration, event transport, and multi-ghost puppeting, with no assumption of a foreign network.
@@ -19,7 +19,7 @@ For **native human+agent rooms there is no foreign network to portal** — the a
 
 ## Decision
 
-Build the bridge as a single Go binary on the **`mautrix/go` `appservice` package** (`v0.28.1`), **not** `bridgev2`. It:
+Build the bridge as a single Go binary on the **`mautrix/go` `appservice` package** (`v0.29.0`), **not** `bridgev2`. It:
 
 1. Owns the **exclusive `@agent-.*` ghost namespace** plus the `@a2a-bridge:fgentic.fmind.ai` bot, declared in the appservice `registration.yaml`.
 1. Receives events via `PUT /_matrix/app/v1/transactions`; the `EventProcessor` dispatches `event.EventMessage`, reads `evt.Content.AsMessage().Mentions.UserIDs`, and matches the `@agent-.*` regex — with a **plaintext-body fallback** for clients that omit `m.mentions`.
