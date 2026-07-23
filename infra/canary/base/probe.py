@@ -16,6 +16,7 @@ CronJob schedule.
 
 from __future__ import annotations
 
+import http.client
 import json
 import os
 import secrets
@@ -24,12 +25,15 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from typing import Any, Never
 
 # Terminal ghost replies that must NOT count as a successful delegation (mirrors the reply contract
 # in scripts/lib/demo-reply.jq): warning/blocked/working placeholders and the empty-content notice.
 _UNSUCCESSFUL_PREFIXES = ("⚠️", "\U0001f6d1")  # ⚠️, 🛑
 _UNSUCCESSFUL_BODIES = ("⏳ working on it…", "(the agent returned no content)")
 _PROVENANCE_BANNER = "--- BEGIN FGENTIC BRIDGE PROVENANCE ---"
+_MAX_RESPONSE_BYTES = 262_144
+_MAX_REPLY_STATE = 32
 
 
 def _env(name: str) -> str:
@@ -39,7 +43,7 @@ def _env(name: str) -> str:
     return value
 
 
-def _fail(message: str) -> "None":
+def _fail(message: str) -> Never:
     print(f"canary: {message}", file=sys.stderr)
     raise SystemExit(1)
 
@@ -51,12 +55,43 @@ def _request(method: str, url: str, token: str | None, body: dict | None) -> dic
     if token:
         request.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:  # noqa: S310 (in-cluster HTTP)
-            return json.loads(response.read() or b"{}")
+        with urllib.request.urlopen(request, timeout=15) as response:
+            content_lengths = response.headers.get_all("Content-Length", [])
+            if len(content_lengths) > 1 or (
+                content_lengths
+                and (
+                    not content_lengths[0].isascii()
+                    or not content_lengths[0].isdecimal()
+                    or bool(response.headers.get_all("Transfer-Encoding", []))
+                )
+            ):
+                _fail(f"{method} Matrix response has invalid framing")
+
+            declared_length: int | None = None
+            if content_lengths:
+                normalized_length = content_lengths[0].lstrip("0") or "0"
+                if len(normalized_length) > len(str(_MAX_RESPONSE_BYTES)):
+                    _fail(f"{method} Matrix response exceeds {_MAX_RESPONSE_BYTES} bytes")
+                declared_length = int(normalized_length)
+                if declared_length > _MAX_RESPONSE_BYTES:
+                    _fail(f"{method} Matrix response exceeds {_MAX_RESPONSE_BYTES} bytes")
+
+            raw = response.read(_MAX_RESPONSE_BYTES + 1)
+            if len(raw) > _MAX_RESPONSE_BYTES:
+                _fail(f"{method} Matrix response exceeds {_MAX_RESPONSE_BYTES} bytes")
+            if declared_length is not None and len(raw) != declared_length:
+                _fail(f"{method} Matrix response is incomplete")
+            try:
+                payload = json.loads(raw or b"{}")
+            except (RecursionError, ValueError):
+                _fail(f"{method} Matrix response contains invalid JSON")
+            if not isinstance(payload, dict):
+                _fail(f"{method} Matrix response is not an object")
+            return payload
     except urllib.error.HTTPError as error:  # 4xx/5xx from Synapse
-        _fail(f"{method} {url} failed: HTTP {error.code}")
-    except (urllib.error.URLError, TimeoutError, ValueError) as error:
-        _fail(f"{method} {url} failed: {error}")
+        _fail(f"{method} Matrix request failed: HTTP {error.code}")
+    except (http.client.HTTPException, urllib.error.URLError, TimeoutError, ValueError) as error:
+        _fail(f"{method} Matrix request failed: {type(error).__name__}")
     return {}  # unreachable; _fail raises
 
 
@@ -66,6 +101,48 @@ def _successful_body(body: object) -> bool:
     if body.startswith(_UNSUCCESSFUL_PREFIXES) or body.startswith(_PROVENANCE_BANNER):
         return False
     return body not in _UNSUCCESSFUL_BODIES
+
+
+class _ReplyTracker:
+    def __init__(self, ghost: str, probe_event: str) -> None:
+        self._ghost = ghost
+        self._probe_event = probe_event
+        self._replies: dict[str, bool] = {}
+
+    def _reserve(self, event_id: str) -> None:
+        if event_id in self._replies:
+            return
+        if len(self._replies) >= _MAX_REPLY_STATE:
+            _fail(f"reply correlation state exceeds {_MAX_REPLY_STATE} events")
+
+    def observe(self, events: list[Any]) -> bool:
+        for event in events:
+            if not isinstance(event, dict) or event.get("sender") != self._ghost:
+                continue
+            content = event.get("content", {})
+            if not isinstance(content, dict) or content.get("msgtype") != "m.notice":
+                continue
+            relates = content.get("m.relates_to", {})
+            if not isinstance(relates, dict):
+                continue
+
+            if relates.get("rel_type") == "m.replace":
+                target = relates.get("event_id")
+                new_content = content.get("m.new_content", {})
+                new_body = new_content.get("body") if isinstance(new_content, dict) else None
+                if isinstance(target, str) and target in self._replies:
+                    self._replies[target] = _successful_body(new_body)
+                continue
+
+            in_reply_to = relates.get("m.in_reply_to", {})
+            if not isinstance(in_reply_to, dict) or in_reply_to.get("event_id") != self._probe_event:
+                continue
+            event_id = event.get("event_id")
+            if not isinstance(event_id, str) or not event_id:
+                continue
+            self._reserve(event_id)
+            self._replies[event_id] = _successful_body(content.get("body"))
+        return any(self._replies.values())
 
 
 def _reply_succeeded(events: list[dict], ghost: str, probe_event: str) -> bool:
@@ -78,29 +155,26 @@ def _reply_succeeded(events: list[dict], ghost: str, probe_event: str) -> bool:
     `m.in_reply_to == probe_event` and the authoritative body is the latest edit targeting that
     reply's own event id, falling back to the reply body for the fast synchronous case.
     """
-    replies: dict[str, object] = {}  # reply event id -> reply body (may be a placeholder)
-    edits: dict[str, object] = {}  # edited event id -> latest m.new_content body (last wins)
-    for event in events:
-        if event.get("sender") != ghost:
-            continue
-        content = event.get("content", {})
-        if content.get("msgtype") != "m.notice":
-            continue
-        relates = content.get("m.relates_to", {})
-        if relates.get("rel_type") == "m.replace":
-            target = relates.get("event_id")
-            new_body = content.get("m.new_content", {}).get("body")
-            if isinstance(target, str):
-                edits[target] = new_body
-        if relates.get("m.in_reply_to", {}).get("event_id") == probe_event:
-            event_id = event.get("event_id")
-            if isinstance(event_id, str) and event_id:
-                replies[event_id] = content.get("body")
-    for reply_id, reply_body in replies.items():
-        effective = edits.get(reply_id, reply_body)  # latest edit wins, else the reply itself
-        if _successful_body(effective):
-            return True
-    return False
+    return _ReplyTracker(ghost, probe_event).observe(events)
+
+
+def _timeline(sync: dict, room_id: str) -> list[Any]:
+    rooms = sync.get("rooms", {})
+    if not isinstance(rooms, dict):
+        _fail("sync response rooms is not an object")
+    joined = rooms.get("join", {})
+    if not isinstance(joined, dict):
+        _fail("sync response joined rooms is not an object")
+    room = joined.get(room_id, {})
+    if not isinstance(room, dict):
+        _fail("sync response canary room is not an object")
+    timeline = room.get("timeline", {})
+    if not isinstance(timeline, dict):
+        _fail("sync response timeline is not an object")
+    events = timeline.get("events", [])
+    if not isinstance(events, list):
+        _fail("sync response events is not a list")
+    return events
 
 
 def main() -> int:
@@ -130,9 +204,7 @@ def main() -> int:
         _fail("login did not return an access token")
 
     # Establish a sync cursor BEFORE sending, so we only match replies to this probe.
-    since = _request(
-        "GET", f"{homeserver}/_matrix/client/v3/sync?timeout=0", token, None
-    ).get("next_batch")
+    since = _request("GET", f"{homeserver}/_matrix/client/v3/sync?timeout=0", token, None).get("next_batch")
     if not isinstance(since, str) or not since:
         _fail("initial sync did not return a batch cursor")
 
@@ -153,9 +225,8 @@ def main() -> int:
     if not isinstance(probe_event, str) or not probe_event:
         _fail("sending the canary mention did not return an event id")
 
-    # Accumulate the ghost's messages across sync batches: the placeholder reply and its later
-    # m.replace edit often land in different syncs.
-    ghost_events: list[dict] = []
+    # Retain only bounded reply ids and success bits across batches; never accumulate event bodies.
+    replies = _ReplyTracker(ghost, probe_event)
     deadline = time.monotonic() + deadline_seconds
     while time.monotonic() < deadline:
         encoded_since = urllib.parse.quote(since, safe="")
@@ -165,16 +236,16 @@ def main() -> int:
             token,
             None,
         )
-        since = sync.get("next_batch", since)
-        timeline = (
-            sync.get("rooms", {}).get("join", {}).get(room_id, {}).get("timeline", {}).get("events", [])
-        )
-        ghost_events.extend(
+        next_batch = sync.get("next_batch")
+        if not isinstance(next_batch, str) or not next_batch:
+            _fail("sync response did not return a batch cursor")
+        since = next_batch
+        events = [
             event
-            for event in timeline
-            if event.get("type") == "m.room.message" and event.get("sender") == ghost
-        )
-        if _reply_succeeded(ghost_events, ghost, probe_event):
+            for event in _timeline(sync, room_id)
+            if isinstance(event, dict) and event.get("type") == "m.room.message"
+        ]
+        if replies.observe(events):
             print(f"canary: delegation round-trip ok (nonce {nonce})")
             return 0
 
