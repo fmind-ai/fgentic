@@ -74,6 +74,7 @@ type agentConfig struct {
 	Namespace   *string `yaml:"namespace,omitempty"`
 	Name        *string `yaml:"name,omitempty"`
 	URL         *string `yaml:"url,omitempty"`
+	Acct        *string `yaml:"acct,omitempty"`
 	Description string  `yaml:"description,omitempty"`
 	AvatarURL   string  `yaml:"avatarURL,omitempty"`
 	// Stage gates blast radius (#128): `dev` agents are invocable only in the bridge's configured
@@ -92,6 +93,9 @@ type agentConfig struct {
 	Timeout      *time.Duration      `yaml:"timeout,omitempty"`
 	TokenBudget  *uint64             `yaml:"tokenBudget,omitempty"`
 	CardIdentity *cardIdentityConfig `yaml:"cardIdentity,omitempty"`
+	// ActivityPubIdentity pins the actor proof used only when an acct mapping has no A2A
+	// implementation. A2A upgrade remains independently gated by CardIdentity.
+	ActivityPubIdentity *activityPubIdentityConfig `yaml:"activityPubIdentity,omitempty"`
 	// Extensions lists additional A2A extension URIs to activate on top of the always-on
 	// token-budget contract, and doubles as the allowlist of `required: true` card extensions the
 	// bridge will accept (docs/bridge.md §6). Remote targets only.
@@ -139,6 +143,13 @@ type cardIdentityConfig struct {
 type cardKeyConfig struct {
 	KeyID     string             `yaml:"keyID"`
 	PublicKey *ecPublicKeyConfig `yaml:"publicKey"`
+}
+
+type activityPubIdentityConfig struct {
+	ActorID            string         `yaml:"actorID"`
+	VerificationMethod string         `yaml:"verificationMethod"`
+	PublicKeyMultibase string         `yaml:"publicKeyMultibase"`
+	ProofMaxAge        *time.Duration `yaml:"proofMaxAge"`
 }
 
 // ecPublicKeyConfig intentionally accepts only the public RFC 7517 members needed for ES256.
@@ -304,10 +315,19 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 	}
 
 	hasLocal := cfg.Namespace != nil || cfg.Name != nil
-	hasRemote := cfg.URL != nil
-	if hasLocal == hasRemote {
-		return nil, fmt.Errorf("agent %q: exactly one target form is required: namespace+name or url", ghost)
+	hasURL := cfg.URL != nil
+	hasAcct := cfg.Acct != nil
+	remoteForms := 0
+	if hasURL {
+		remoteForms++
 	}
+	if hasAcct {
+		remoteForms++
+	}
+	if (hasLocal && remoteForms != 0) || (!hasLocal && remoteForms != 1) {
+		return nil, fmt.Errorf("agent %q: exactly one target form is required: namespace+name, url, or acct", ghost)
+	}
+	hasRemote := remoteForms == 1
 	if hasRemote && cfg.DataClassification != nil {
 		return nil, fmt.Errorf("agent %q: dataClassification is only valid for a local target", ghost)
 	}
@@ -335,8 +355,8 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 		if namespace == "" || name == "" {
 			return nil, fmt.Errorf("agent %q: both namespace and name are required for a local target", ghost)
 		}
-		if cfg.Timeout != nil || cfg.TokenBudget != nil || cfg.CardIdentity != nil || len(cfg.Extensions) > 0 || cfg.MaxCost != nil || cfg.AllowMedia != nil || cfg.MTLS != nil {
-			return nil, fmt.Errorf("agent %q: timeout, tokenBudget, cardIdentity, extensions, maxCost, allowMedia, and mtls are only valid for a url target", ghost)
+		if cfg.Timeout != nil || cfg.TokenBudget != nil || cfg.CardIdentity != nil || cfg.ActivityPubIdentity != nil || len(cfg.Extensions) > 0 || cfg.MaxCost != nil || cfg.AllowMedia != nil || cfg.MTLS != nil {
+			return nil, fmt.Errorf("agent %q: timeout, tokenBudget, cardIdentity, activityPubIdentity, extensions, maxCost, allowMedia, and mtls are only valid for a url target or acct target", ghost)
 		}
 		ref.target, err = a2aclient.NewLocalTarget(fmt.Sprintf("/api/a2a/%s/%s", namespace, name))
 		if cfg.MaxSessionAge != nil {
@@ -349,7 +369,14 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 		if cfg.MaxSessionAge != nil {
 			return nil, fmt.Errorf("agent %q: maxSessionAge is only valid for a local target", ghost)
 		}
-		ref.target, ref.timeout, err = compileRemoteTarget(cfg)
+		if hasURL {
+			if cfg.ActivityPubIdentity != nil {
+				return nil, fmt.Errorf("agent %q: activityPubIdentity is only valid for an acct target", ghost)
+			}
+			ref.target, ref.timeout, err = compileRemoteTarget(cfg)
+		} else {
+			ref.target, ref.timeout, err = compileFediverseTarget(cfg)
+		}
 		if cfg.MaxCost != nil {
 			if *cfg.MaxCost == 0 {
 				return nil, fmt.Errorf("agent %q: maxCost must be positive when set", ghost)
@@ -417,7 +444,7 @@ func compileStage(ghost string, cfg *agentConfig) (bool, error) {
 }
 
 func compileRemoteTarget(cfg *agentConfig) (a2aclient.Target, time.Duration, error) {
-	if cfg.Namespace != nil || cfg.Name != nil {
+	if cfg.Namespace != nil || cfg.Name != nil || cfg.Acct != nil {
 		return a2aclient.Target{}, 0, fmt.Errorf("url target must not define namespace or name")
 	}
 	rawURL := configuredString(cfg.URL)
@@ -436,6 +463,42 @@ func compileRemoteTarget(cfg *agentConfig) (a2aclient.Target, time.Duration, err
 		return a2aclient.Target{}, 0, err
 	}
 	target, err := a2aclient.NewRemoteTarget(rawURL, identity, *cfg.TokenBudget, cfg.Extensions, opts...)
+	if err != nil {
+		return a2aclient.Target{}, 0, err
+	}
+	return target, *cfg.Timeout, nil
+}
+
+func compileFediverseTarget(cfg *agentConfig) (a2aclient.Target, time.Duration, error) {
+	if cfg.Namespace != nil || cfg.Name != nil || cfg.URL != nil {
+		return a2aclient.Target{}, 0, fmt.Errorf("acct target must not define namespace, name, or url")
+	}
+	if cfg.MTLS != nil {
+		return a2aclient.Target{}, 0, fmt.Errorf("acct target cannot configure mtls before endpoint discovery")
+	}
+	if cfg.Timeout == nil || *cfg.Timeout <= 0 {
+		return a2aclient.Target{}, 0, fmt.Errorf("acct target timeout must be positive")
+	}
+	if cfg.TokenBudget == nil || *cfg.TokenBudget == 0 {
+		return a2aclient.Target{}, 0, fmt.Errorf("acct target tokenBudget must be positive")
+	}
+	card, err := compileCardIdentity(cfg.CardIdentity)
+	if err != nil {
+		return a2aclient.Target{}, 0, err
+	}
+	if cfg.ActivityPubIdentity == nil {
+		return a2aclient.Target{}, 0, fmt.Errorf("acct target activityPubIdentity is required")
+	}
+	if cfg.ActivityPubIdentity.ProofMaxAge == nil {
+		return a2aclient.Target{}, 0, fmt.Errorf("acct target activityPubIdentity.proofMaxAge is required")
+	}
+	activityPub := a2aclient.ActivityPubIdentity{
+		ActorID:            cfg.ActivityPubIdentity.ActorID,
+		VerificationMethod: cfg.ActivityPubIdentity.VerificationMethod,
+		PublicKeyMultibase: cfg.ActivityPubIdentity.PublicKeyMultibase,
+		ProofMaxAge:        *cfg.ActivityPubIdentity.ProofMaxAge,
+	}
+	target, err := a2aclient.NewFediverseTarget(configuredString(cfg.Acct), card, activityPub, *cfg.TokenBudget, cfg.Extensions)
 	if err != nil {
 		return a2aclient.Target{}, 0, err
 	}

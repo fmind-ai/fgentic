@@ -98,6 +98,15 @@ a2aAuthentication:
   secretName: a2a-bridge-credential
   key: token
 
+# Private acct: discovery/delivery broker in the ActivityPub gateway (#220). Disabled until an
+# acct mapping is configured. The shared SOPS Secret contains the same bearer token mounted into
+# both workloads; the local A2A_API_KEY is never sent to this broker or any remote organization.
+fediverseBroker:
+  enabled: false
+  url: http://activitypub-agent-gateway.activitypub-agent-gateway.svc.cluster.local:9090
+  secretName: activitypub-agent-gateway-broker
+  secretKey: token
+
 # Anchored full-MXID namespaces owned by external bridges. Matching senders require an explicit
 # per-agent allowedSenders match even though their MXID is local. Network names are low-cardinality
 # audit values; patterns use one trailing localpart '*' and an exact homeserver.

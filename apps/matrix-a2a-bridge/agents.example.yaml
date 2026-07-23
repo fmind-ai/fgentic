@@ -14,8 +14,8 @@ bridgedOrigins:
 # Ghost -> A2A agent routing map, and the bridge's authorization allowlist: only ghosts listed
 # here can be invoked. Key = the agent ghost local-part (@agent-k8s -> "agent-k8s"). A local
 # value uses the kagent Agent's namespace + name, resolving to
-# <A2A_BASE_URL>/api/a2a/<namespace>/<name>. A remote value instead uses an exact url plus the
-# signed-card trust, timeout, and token-budget fields shown in the commented example below.
+# <A2A_BASE_URL>/api/a2a/<namespace>/<name>. A remote value uses either an exact url or a strict
+# acct: handle plus the protocol-specific trust, timeout, and token-budget fields below.
 #
 # Sender policy (SPEC §4 F6) — per agent, optional:
 #   allowedServers: extra homeservers whose users may invoke the agent (the bridge's own
@@ -121,5 +121,30 @@ agents:
   #     revokedKeyIDs:
   #       - partner-reviewer-2026-04
   #   description: Reviews documents through the partner's governed A2A endpoint.
+  #   allowedServers: [partner.example]
+  #   allowedSenders: ["@alice:fgentic.fmind.ai"]
+
+  # A handle mapping resolves WebFinger through the private ActivityPub gateway broker. A2A wins
+  # when the actor advertises it, but still requires cardIdentity. AP fallback independently
+  # requires a fresh FEP-8b32 actor proof under activityPubIdentity. proofMaxAge is explicit so a
+  # stale signed actor document cannot remain trusted indefinitely. No local A2A_API_KEY is sent.
+  # agent-partner-handle:
+  #   acct: acct:agent@partner.example
+  #   timeout: 30s
+  #   tokenBudget: 4096
+  #   cardIdentity:
+  #     name: Partner reviewer
+  #     organization: Partner Example
+  #     keyID: partner-reviewer-2026-07
+  #     publicKey:
+  #       kty: EC
+  #       crv: P-256
+  #       x: <base64url-x-coordinate>
+  #       y: <base64url-y-coordinate>
+  #   activityPubIdentity:
+  #     actorID: https://partner.example/users/agent
+  #     verificationMethod: https://partner.example/users/agent#ed25519-key
+  #     publicKeyMultibase: <ed25519-multikey>
+  #     proofMaxAge: 24h
   #   allowedServers: [partner.example]
   #   allowedSenders: ["@alice:fgentic.fmind.ai"]

@@ -16,6 +16,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/agentcardjws"
 )
@@ -33,6 +34,7 @@ type targetKind uint8
 const (
 	targetKindLocal targetKind = iota + 1
 	targetKindRemote
+	targetKindFediverse
 )
 
 // CardIdentity is the operator-pinned identity a remote signed AgentCard must match.
@@ -57,12 +59,22 @@ type CardKey struct {
 	PublicKeyJWK string
 }
 
+// ActivityPubIdentity is the exact operator pin required before an acct mapping may use its
+// ActivityPub fallback. A broker verifies the actor's FEP-8b32 proof under this Ed25519 Multikey.
+type ActivityPubIdentity struct {
+	ActorID            string
+	VerificationMethod string
+	PublicKeyMultibase string
+	ProofMaxAge        time.Duration
+}
+
 // Target is an immutable, validated A2A routing target. Local targets are paths relative to
 // Client's configured A2A base URL. Remote targets bind one exact endpoint to a pinned card
 // identity and a per-request token budget.
 type Target struct {
 	kind                 targetKind
 	address              string
+	cardURL              string // optional discovery-provided Signed AgentCard URL (#220)
 	expectedName         string
 	expectedOrganization string
 	expectedKeyID        string      // primary/active key ID, surfaced in the card_key_id audit field
@@ -72,6 +84,8 @@ type Target struct {
 	extensions           []string // sorted, deduped operator-configured extras (excludes token-budget)
 	identityFingerprint  [sha256.Size]byte
 	tls                  *remoteTLS // client-cert material for A2A v1.0 mTLS; nil when unconfigured (#244)
+	publicOnly           bool       // discovery-derived routes reject special-use addresses at dial time
+	activityPubIdentity  ActivityPubIdentity
 	id                   string
 }
 
@@ -224,6 +238,47 @@ func NewRemoteTarget(rawURL string, identity CardIdentity, tokenBudget uint64, e
 	}, nil
 }
 
+// NewFediverseTarget validates an acct handle plus independent A2A and ActivityPub trust pins. The
+// private broker resolves WebFinger and chooses the transport; no network discovery occurs here.
+func NewFediverseTarget(handle string, card CardIdentity, activityPub ActivityPubIdentity, tokenBudget uint64, extensions []string) (Target, error) {
+	canonical, err := normalizeAcctHandle(handle)
+	if err != nil {
+		return Target{}, err
+	}
+	if _, err := NormalizeRemoteURL(activityPub.ActorID); err != nil || !strings.HasPrefix(activityPub.ActorID, "https://") {
+		return Target{}, fmt.Errorf("ActivityPub actor ID must be a canonical https URL")
+	}
+	if !strings.HasPrefix(activityPub.VerificationMethod, activityPub.ActorID+"#") {
+		return Target{}, fmt.Errorf("ActivityPub verificationMethod must be a fragment of actorID")
+	}
+	if !multikeyRE.MatchString(activityPub.PublicKeyMultibase) {
+		return Target{}, fmt.Errorf("ActivityPub publicKeyMultibase must be a base58btc Multikey")
+	}
+	if activityPub.ProofMaxAge < time.Second || activityPub.ProofMaxAge > 30*24*time.Hour {
+		return Target{}, fmt.Errorf("ActivityPub proofMaxAge must be between 1s and 720h")
+	}
+	// Reuse the remote constructor as the single validator for the Signed AgentCard identity,
+	// token budget, and extension contract. The placeholder URL is never dialed.
+	validated, err := NewRemoteTarget(activityPub.ActorID, card, tokenBudget, extensions)
+	if err != nil {
+		return Target{}, err
+	}
+	fingerprintInput := strings.Join([]string{
+		"fediverse", canonical, activityPub.ActorID, activityPub.VerificationMethod,
+		activityPub.PublicKeyMultibase, activityPub.ProofMaxAge.String(), hex.EncodeToString(validated.identityFingerprint[:]),
+	}, "\x00")
+	fingerprint := sha256.Sum256([]byte(fingerprintInput))
+	idInput := fmt.Sprintf("%x\x00%d\x00%s", fingerprint, tokenBudget, strings.Join(validated.extensions, "\x1f"))
+	id := sha256.Sum256([]byte(idInput))
+	validated.kind = targetKindFediverse
+	validated.address = canonical
+	validated.cardURL = ""
+	validated.activityPubIdentity = activityPub
+	validated.identityFingerprint = fingerprint
+	validated.id = "fediverse:" + hex.EncodeToString(id[:])
+	return validated, nil
+}
+
 // normalizeExtensionURIs validates operator-configured extra extension URIs: each must be an
 // absolute https URI, listed at most once, and must not restate the always-on token-budget base
 // contract. The result is sorted so the target ID stays stable regardless of config ordering.
@@ -265,8 +320,11 @@ func (t Target) String() string {
 
 // IsRemote reports whether this target requires a verified signed AgentCard before use.
 func (t Target) IsRemote() bool {
-	return t.kind == targetKindRemote
+	return t.kind == targetKindRemote || t.kind == targetKindFediverse
 }
+
+// IsFediverse reports whether this target discovers A2A or ActivityPub through the private broker.
+func (t Target) IsFediverse() bool { return t.kind == targetKindFediverse }
 
 // ID returns a stable, opaque cache and mapping identity. Remote token-budget changes produce a
 // new ID, while IdentityFingerprint remains stable.
@@ -332,7 +390,67 @@ func (t Target) clientTLSConfig() *tls.Config {
 }
 
 func (t Target) valid() bool {
-	return t.id != "" && (t.kind == targetKindLocal || t.kind == targetKindRemote)
+	return t.id != "" && (t.kind == targetKindLocal || t.kind == targetKindRemote || t.kind == targetKindFediverse)
+}
+
+func (t Target) resolvedRemote(endpoint, cardURL string) (Target, error) {
+	if !t.IsFediverse() {
+		return Target{}, fmt.Errorf("target is not a fediverse mapping")
+	}
+	endpoint, err := NormalizeRemoteURL(endpoint)
+	if err != nil {
+		return Target{}, err
+	}
+	cardURL, err = NormalizeRemoteURL(cardURL)
+	if err != nil || !strings.HasPrefix(cardURL, "https://") {
+		return Target{}, fmt.Errorf("discovered AgentCard URL must be canonical https")
+	}
+	resolved := t
+	resolved.kind = targetKindRemote
+	resolved.address = endpoint
+	resolved.cardURL = cardURL
+	resolved.publicOnly = true
+	resolved.activityPubIdentity = ActivityPubIdentity{}
+	fingerprint := sha256.Sum256([]byte(fmt.Sprintf("%x\x00%s\x00%s", t.identityFingerprint, endpoint, cardURL)))
+	resolved.identityFingerprint = fingerprint
+	id := sha256.Sum256([]byte(fmt.Sprintf("%x\x00%d\x00%s", fingerprint, t.tokenBudget, strings.Join(t.extensions, "\x1f"))))
+	resolved.id = "remote:" + hex.EncodeToString(id[:])
+	return resolved, nil
+}
+
+func normalizeAcctHandle(raw string) (string, error) {
+	if raw == "" || raw != strings.TrimSpace(raw) || !strings.HasPrefix(raw, "acct:") {
+		return "", fmt.Errorf("fediverse handle must use acct:<local>@<domain>")
+	}
+	rest := strings.TrimPrefix(raw, "acct:")
+	local, domain, ok := strings.Cut(rest, "@")
+	if !ok || local == "" || domain == "" || strings.Contains(domain, "@") || !strings.Contains(domain, ".") {
+		return "", fmt.Errorf("fediverse handle must use acct:<local>@<domain>")
+	}
+	if local != url.PathEscape(local) || strings.ContainsAny(local, "/:#? ") {
+		return "", fmt.Errorf("fediverse handle localpart is invalid")
+	}
+	if domain != strings.ToLower(domain) || !validAcctDomain(domain) {
+		return "", fmt.Errorf("fediverse handle domain must be a lowercase canonical hostname")
+	}
+	return raw, nil
+}
+
+func validAcctDomain(domain string) bool {
+	if len(domain) > 253 || !strings.Contains(domain, ".") {
+		return false
+	}
+	for label := range strings.SplitSeq(domain, ".") {
+		if len(label) == 0 || len(label) > 63 || label[0] == '-' || label[len(label)-1] == '-' {
+			return false
+		}
+		for _, char := range label {
+			if (char < 'a' || char > 'z') && (char < '0' || char > '9') && char != '-' {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // pinnedKeys reconstructs the currently-valid ES256 public keys (primary + overlap) for card
@@ -490,4 +608,7 @@ func isAllowedCleartextHost(host string) bool {
 	return true
 }
 
-var kubernetesDNSLabelRE = regexp.MustCompile(`^[a-z](?:[-a-z0-9]*[a-z0-9])?$`)
+var (
+	kubernetesDNSLabelRE = regexp.MustCompile(`^[a-z](?:[-a-z0-9]*[a-z0-9])?$`)
+	multikeyRE           = regexp.MustCompile(`^z[1-9A-HJ-NP-Za-km-z]{40,60}$`)
+)

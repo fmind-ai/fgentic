@@ -81,7 +81,20 @@ func TestValidateRejectsBadInput(t *testing.T) {
 		"empty fragment":    func(c *Config) { c.IntegrityKeyFragment = "" },
 		"fragment hash":     func(c *Config) { c.IntegrityKeyFragment = "key#extra" },
 		"inbound no pol":    func(c *Config) { c.IntegrityRequireInbound = true; c.PolicyPath = "" },
-		"budget no pol":     func(c *Config) { c.BudgetEnabled = true; c.PolicyPath = "" },
+		"broker padded": func(c *Config) {
+			c.FediverseBrokerToken = " token"
+			c.IntegrityKeyPath = "/k"
+			c.HTTPSignatureKeyPath = "/h"
+		},
+		"broker no object key": func(c *Config) {
+			c.FediverseBrokerToken = "token"
+			c.HTTPSignatureKeyPath = "/h"
+		},
+		"broker no http key": func(c *Config) {
+			c.FediverseBrokerToken = "token"
+			c.IntegrityKeyPath = "/k"
+		},
+		"budget no pol": func(c *Config) { c.BudgetEnabled = true; c.PolicyPath = "" },
 		"budget window": func(c *Config) {
 			c.BudgetEnabled = true
 			c.PolicyPath = "/p"

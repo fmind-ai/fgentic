@@ -1,7 +1,6 @@
 {{- if .Values.networkPolicy.enabled -}}
-# Only the Gateway (Traefik) and monitoring namespaces may reach the gateway: Traefik fronts the
-# single exact public AP route, monitoring scrapes /metrics. Egress is left open so the gateway can
-# reach the homeserver-independent A2A path (agentgateway/kagent).
+# Only the Gateway (Traefik) and monitoring namespaces may reach the normal listeners. When the
+# private broker is enabled, its explicit source namespaces gain only the internal side port.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -26,4 +25,15 @@ spec:
           port: {{ .Values.config.listenPort }}
         - protocol: TCP
           port: {{ .Values.config.metricsPort }}
+    {{- if .Values.fediverseBroker.enabled }}
+    - from:
+        {{- range .Values.fediverseBroker.fromNamespaces }}
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: {{ . }}
+        {{- end }}
+      ports:
+        - protocol: TCP
+          port: {{ .Values.config.metricsPort }}
+    {{- end }}
 {{- end }}

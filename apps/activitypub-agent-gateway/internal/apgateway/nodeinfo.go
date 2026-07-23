@@ -104,6 +104,32 @@ func (g *Gateway) handleInstanceActor(w http.ResponseWriter, _ *http.Request) {
 		"url":               id,
 		"implements":        implementedProtocols(),
 	}
+	contexts := actor["@context"].([]any)
+	if g.signer != nil {
+		contexts = append(contexts, integrity.DataIntegrityContext, "https://w3id.org/security/multikey/v1")
+		actor["assertionMethod"] = []any{map[string]any{
+			"id":                 g.signer.VerificationMethod(id),
+			"type":               "Multikey",
+			"controller":         id,
+			"publicKeyMultibase": g.signer.PublicKeyMultibase(),
+		}}
+	}
+	if g.httpPublicKeyPEM != "" {
+		contexts = append(contexts, "https://w3id.org/security/v1")
+		actor["publicKey"] = map[string]any{
+			"id":           id + "#main-key",
+			"owner":        id,
+			"publicKeyPem": g.httpPublicKeyPEM,
+		}
+	}
+	actor["@context"] = contexts
+	if g.signer != nil {
+		if err := g.signer.SignActivity(actor, id); err != nil {
+			g.log.Error("sign instance actor", "error", err)
+			http.Error(w, "internal error", http.StatusInternalServerError)
+			return
+		}
+	}
 	data, err := json.Marshal(actor)
 	if err != nil {
 		http.Error(w, "internal error", http.StatusInternalServerError)

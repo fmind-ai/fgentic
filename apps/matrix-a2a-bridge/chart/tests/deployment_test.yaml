@@ -189,6 +189,35 @@ tests:
     asserts:
       - notExists:
           path: spec.template.spec.containers[0].env[?(@.name == "A2A_API_KEY")]
+  - it: keeps the private fediverse broker disabled by default
+    asserts:
+      - notExists:
+          path: spec.template.spec.containers[0].env[?(@.name == "FEDIVERSE_BROKER_URL")]
+      - notExists:
+          path: spec.template.spec.containers[0].env[?(@.name == "FEDIVERSE_BROKER_TOKEN")]
+  - it: reads the private fediverse broker token from its dedicated secret
+    set:
+      fediverseBroker.enabled: true
+      fediverseBroker.url: http://ap-gateway.activitypub.svc.cluster.local:9090
+      fediverseBroker.secretName: broker-test
+      fediverseBroker.secretKey: credential
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "FEDIVERSE_BROKER_URL")].value
+          value: http://ap-gateway.activitypub.svc.cluster.local:9090
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "FEDIVERSE_BROKER_TOKEN")].valueFrom.secretKeyRef.name
+          value: broker-test
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "FEDIVERSE_BROKER_TOKEN")].valueFrom.secretKeyRef.key
+          value: credential
+  - it: rejects a broker without a ClusterIP URL
+    set:
+      fediverseBroker.enabled: true
+      fediverseBroker.url: ""
+    asserts:
+      - failedTemplate:
+          errorMessage: fediverseBroker.enabled needs a ClusterIP broker URL
   - it: keeps tracing disabled without an OTLP endpoint
     asserts:
       - notExists:
