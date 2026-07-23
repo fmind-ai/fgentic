@@ -97,6 +97,10 @@ nav:
       - Stability contract: stability.md
   - Operations:
       - Production installation: production.md
+      - Release and upgrade contract: releases.md
+      - Upgrade notes:
+          - Template: upgrades/TEMPLATE.md
+          - Unreleased: upgrades/unreleased.md
       - Day-2 handbook: operations-handbook.md
       - Demo recording: demo-recording.md
       - Cost dashboards: cost-dashboards.md
