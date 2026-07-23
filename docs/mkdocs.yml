@@ -98,6 +98,7 @@ nav:
   - Operations:
       - Production installation: production.md
       - Release and upgrade contract: releases.md
+      - Air-gapped installation: airgap.md
       - Upgrade notes:
           - Template: upgrades/TEMPLATE.md
           - Unreleased: upgrades/unreleased.md

@@ -208,6 +208,7 @@ depends = [
   "check:identity-audit",
   "check:trivy-operator",
   "check:secret-rotation",
+  "check:mirror-artifacts",
   "check:break-glass",
   "check:supply-chain",
   "check:bom",
@@ -457,6 +458,10 @@ run = "bash scripts/test-rotate-secrets.sh"
 [tasks."check:break-glass"]
 description = "Prove the fail-closed default posture of the disabled-by-default break-glass recovery credential"
 run = "bash scripts/test-break-glass.sh"
+
+[tasks."check:mirror-artifacts"]
+description = "Offline contract test for the BOM-driven air-gap artifact mirror (digest-preserving, fail-closed)"
+run = "bash scripts/test-mirror-artifacts.sh"
 
 [tasks."check:supply-chain"]
 description = "Validate signed OCI bootstrap/active invariants and CD attestation controls"
