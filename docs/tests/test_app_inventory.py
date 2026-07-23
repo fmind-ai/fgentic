@@ -72,6 +72,10 @@ class PublicAppInventoryTest(TestCase):
             readme = repository_root / "README.md"
             readme.write_text("Apps: app-one.\n", encoding="utf-8")
 
-            message = r"public app inventory drift:\n  README\.md: missing app-two"
-            with self.assertRaisesRegex(AssertionError, message):
+            with self.assertRaises(AssertionError) as raised:
                 _require_complete_app_inventories(repository_root, ("README.md",))
+
+            self.assertEqual(
+                str(raised.exception),
+                "public app inventory drift:\n  README.md: missing app-two",
+            )
