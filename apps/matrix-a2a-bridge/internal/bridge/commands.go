@@ -180,7 +180,7 @@ func unknownCommandAgentText() string {
 	return "No invocable agent with that name is available. Run !agents to list agents you may use."
 }
 
-func (b *Bridge) budgetText(senderID id.UserID, roomID id.RoomID) string {
+func (b *Bridge) budgetText(ctx context.Context, senderID id.UserID, roomID id.RoomID) string {
 	b.agentConfigMu.RLock()
 	defer b.agentConfigMu.RUnlock()
 
@@ -216,6 +216,9 @@ func (b *Bridge) budgetText(senderID id.UserID, roomID id.RoomID) string {
 	hidden := 0
 	for _, entry := range b.agents.Entries() {
 		if !entry.Ref.AllowsSender(sender, b.cfg.ServerName) {
+			continue
+		}
+		if b.roomAdmission(ctx, entry.Ref, entry.Ghost, roomID) != "" {
 			continue
 		}
 		if visible == maxBudgetAgents {

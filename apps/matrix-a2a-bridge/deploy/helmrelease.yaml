@@ -44,6 +44,7 @@ spec:
       tag: sha-975d9ecda84a3024bf2dbd17613ea7200f76990b@sha256:67d7fc46909ccd239c4ada479c10c01b47872274ae171fab1f643744868438db # v0.1.0 build; CI re-pins on the next bridge change to main
     config:
       serverName: ${server_name}
+      accessManagerMXID: "@alice:${server_name}"
       agentCardRefreshInterval: 5m
       deadManSwitchDelay: ${bridge_dead_man_switch_delay}
       otelEndpoint: http://otel-collector.monitoring.svc.cluster.local:4318
@@ -52,16 +53,22 @@ spec:
       agent-platform-helper:
         stage: prod
         dataClassification: public
+        allowedRooms:
+          - "#lobby:${server_name}"
         allowedSenders:
           - "@alice:${server_name}"
       agent-docs-qa:
         stage: prod
         dataClassification: public
+        allowedRooms:
+          - "#lobby:${server_name}"
         allowedSenders:
           - "@alice:${server_name}"
       agent-scribe:
         stage: prod
         dataClassification: public
+        allowedRooms:
+          - "#lobby:${server_name}"
         allowedSenders:
           - "@alice:${server_name}"
     metrics:

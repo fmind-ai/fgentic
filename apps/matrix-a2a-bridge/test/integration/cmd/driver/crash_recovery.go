@@ -66,7 +66,7 @@ func (f fixture) runCrashRecovery(ctx context.Context) error {
 		return err
 	}
 	ghost := "@" + ghostLocalpart + ":" + f.server
-	roomID, err := f.createRoom(ctx, sess.AccessToken)
+	roomID, err := f.createRoom(ctx, sess.AccessToken, "crash-recovery")
 	if err != nil {
 		return err
 	}

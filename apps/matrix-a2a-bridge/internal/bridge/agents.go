@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -30,7 +31,10 @@ import (
 
 const agentsSchemaVersion = 1
 
-var sha256HexRE = regexp.MustCompile(`^[0-9a-f]{64}$`)
+var (
+	sha256HexRE        = regexp.MustCompile(`^[0-9a-f]{64}$`)
+	domainlessRoomIDRE = regexp.MustCompile(`^![A-Za-z0-9_-]{43}$`)
+)
 
 // AgentRef identifies one immutable local or remote A2A target and carries the per-agent sender
 // policy (SPEC §4 F6): which homeservers and which users may invoke it. The bridge's own server
@@ -48,6 +52,10 @@ type AgentRef struct {
 	// AllowedSenders restricts invocation to matching user IDs (glob with '*', e.g.
 	// "@ops-*:partner.example"). Empty means: any user on an allowed server.
 	AllowedSenders []string `yaml:"allowedSenders,omitempty"`
+	// AllowedRooms is the exact managed-room set in which this ghost may be invoked. Entries are
+	// room IDs or local room aliases; aliases are resolved to their current room ID before admission.
+	// Empty is deny-by-default everywhere.
+	AllowedRooms []string `yaml:"allowedRooms,omitempty"`
 	// DataClassification is the highest-sensitivity room content this mapping may receive. Omission
 	// fails closed to regulated; current public sample agents declare public explicitly.
 	DataClassification modelcatalog.Classification `yaml:"dataClassification"`
@@ -60,6 +68,8 @@ type AgentRef struct {
 	dev             bool          // stage:dev — invocable only in configured staging rooms (#128)
 	allowMedia      bool          // remote opt-in to move file bytes across the org boundary (#115)
 	maxSessionAge   time.Duration // local conversation retention; zero disables automatic expiry
+	allowedRoomIDs  map[id.RoomID]struct{}
+	allowedAliases  []id.RoomAlias
 	mappingID       string
 	routeID         string // mapping fingerprint without the local Agent contract pin
 	legacyMappingID string // pre-classification fingerprint accepted only by mappings without a contract pin
@@ -116,6 +126,7 @@ type agentConfig struct {
 
 	AllowedServers []string `yaml:"allowedServers,omitempty"`
 	AllowedSenders []string `yaml:"allowedSenders,omitempty"`
+	AllowedRooms   []string `yaml:"allowedRooms,omitempty"`
 }
 
 // mtlsConfig references the client-certificate material for a remote mTLS mapping (#244). Paths point
@@ -303,6 +314,61 @@ func (a *AgentRef) compileSenders(ghost string) error {
 	return nil
 }
 
+// compileRooms parses the exact room policy once at the configuration boundary. Room aliases are
+// restricted to this deployment's local homeserver later during admission, where ServerName is
+// available; remote aliases would delegate authorization to another organization's directory.
+func (a *AgentRef) compileRooms(ghost string) error {
+	a.allowedRoomIDs = make(map[id.RoomID]struct{}, len(a.AllowedRooms))
+	a.allowedAliases = make([]id.RoomAlias, 0, len(a.AllowedRooms))
+	seen := make(map[string]struct{}, len(a.AllowedRooms))
+	for _, room := range a.AllowedRooms {
+		if room == "" || strings.TrimSpace(room) != room {
+			return fmt.Errorf("agent %q: allowedRooms entries must be non-empty without surrounding whitespace", ghost)
+		}
+		if _, duplicate := seen[room]; duplicate {
+			return fmt.Errorf("agent %q: duplicate allowedRooms entry %q", ghost, room)
+		}
+		seen[room] = struct{}{}
+		if err := validateMatrixRoomReference(room); err != nil {
+			return fmt.Errorf("agent %q: invalid allowedRooms entry %q: %w", ghost, room, err)
+		}
+		switch room[0] {
+		case '!':
+			a.allowedRoomIDs[id.RoomID(room)] = struct{}{}
+		case '#':
+			a.allowedAliases = append(a.allowedAliases, id.RoomAlias(room))
+		}
+	}
+	return nil
+}
+
+func validateMatrixRoomReference(room string) error {
+	if len(room) < 2 || len(room) > 255 || (room[0] != '!' && room[0] != '#') {
+		return fmt.Errorf("must be a Matrix room ID or alias")
+	}
+	separator := strings.IndexByte(room, ':')
+	if room[0] == '!' && separator == -1 {
+		// Room v12 replaces the legacy domain component with the unpadded URL-safe
+		// base64 SHA-256 hash of the create event. Membership checks later prove that
+		// this opaque identifier names a room visible to the homeserver.
+		if !domainlessRoomIDRE.MatchString(room) {
+			return fmt.Errorf("domainless room ID must contain an unpadded URL-safe base64 SHA-256 hash")
+		}
+		decoded, err := base64.RawURLEncoding.Strict().DecodeString(room[1:])
+		if err != nil || len(decoded) != sha256.Size {
+			return fmt.Errorf("domainless room ID must contain an unpadded URL-safe base64 SHA-256 hash")
+		}
+		return nil
+	}
+	if separator < 2 || separator == len(room)-1 {
+		return fmt.Errorf("must contain a non-empty localpart and server name")
+	}
+	if !id.ValidateServerName(room[separator+1:]) {
+		return fmt.Errorf("invalid server name")
+	}
+	return nil
+}
+
 func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("agent %q: target configuration must not be null", ghost)
@@ -348,6 +414,7 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 		AvatarURL:          cfg.AvatarURL,
 		AllowedServers:     append([]string(nil), cfg.AllowedServers...),
 		AllowedSenders:     append([]string(nil), cfg.AllowedSenders...),
+		AllowedRooms:       append([]string(nil), cfg.AllowedRooms...),
 		DataClassification: classification,
 	}
 
@@ -396,6 +463,9 @@ func compileAgent(ghost string, cfg *agentConfig) (*AgentRef, error) {
 		return nil, err
 	}
 	if err := ref.compileSenders(ghost); err != nil {
+		return nil, err
+	}
+	if err := ref.compileRooms(ghost); err != nil {
 		return nil, err
 	}
 	if cfg.AgentContractSHA256 != nil {
@@ -645,8 +715,10 @@ func legacyMappingID(
 func agentVersionID(ghost string, ref *AgentRef, origins []bridgedOriginRule) (string, error) {
 	allowedServers := append([]string(nil), ref.AllowedServers...)
 	allowedSenders := append([]string(nil), ref.AllowedSenders...)
+	allowedRooms := append([]string(nil), ref.AllowedRooms...)
 	sort.Strings(allowedServers)
 	sort.Strings(allowedSenders)
+	sort.Strings(allowedRooms)
 	bridgedOrigins := make([]string, 0, len(origins))
 	for _, rule := range origins {
 		bridgedOrigins = append(bridgedOrigins, rule.origin.network+"\x00"+rule.pattern)
@@ -660,6 +732,7 @@ func agentVersionID(ghost string, ref *AgentRef, origins []bridgedOriginRule) (s
 		AvatarURL      string   `json:"avatar_url"`
 		AllowedServers []string `json:"allowed_servers"`
 		AllowedSenders []string `json:"allowed_senders"`
+		AllowedRooms   []string `json:"allowed_rooms"`
 		BridgedOrigins []string `json:"bridged_origins"`
 		MaxSessionAge  string   `json:"max_session_age"`
 	}{
@@ -671,6 +744,7 @@ func agentVersionID(ghost string, ref *AgentRef, origins []bridgedOriginRule) (s
 		AvatarURL:      ref.AvatarURL,
 		AllowedServers: allowedServers,
 		AllowedSenders: allowedSenders,
+		AllowedRooms:   allowedRooms,
 		BridgedOrigins: bridgedOrigins,
 		MaxSessionAge:  ref.maxSessionAge.String(),
 	}
@@ -710,6 +784,7 @@ type AgentEntry struct {
 //	    name: k8s-agent
 //	    description: Startup fallback while the AgentCard is unavailable
 //	    avatarURL: mxc://fgentic.fmind.ai/media-id # optional existing Matrix media
+//	    allowedRooms: ["!managed:fgentic.fmind.ai"] # exact IDs or local bootstrap aliases
 //	    allowedServers: [partner.example]        # optional; own server always allowed
 //	    allowedSenders: ["@ops-*:partner.example"] # optional; empty = anyone on allowed servers
 func LoadAgents(path string) (*AgentMap, error) {

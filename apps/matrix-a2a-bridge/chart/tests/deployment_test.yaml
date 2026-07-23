@@ -91,6 +91,13 @@ tests:
       - equal:
           path: spec.template.spec.containers[0].env[?(@.name == "CONVERSATION_SWEEP_INTERVAL")].value
           value: 1h
+  - it: renders the exact managed-room access manager identity
+    set:
+      config.accessManagerMXID: "@room-manager:fgentic.fmind.ai"
+    asserts:
+      - equal:
+          path: spec.template.spec.containers[0].env[?(@.name == "ACCESS_MANAGER_MXID")].value
+          value: "@room-manager:fgentic.fmind.ai"
   - it: keeps the delayed-event dead-man switch opt-in
     asserts:
       - equal:

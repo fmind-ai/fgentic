@@ -34,15 +34,34 @@ data:
       agent-integration:
         namespace: kagent
         name: integration-agent
+        allowedRooms: &managedRooms
+          - "#availability:integration.test"
+          - "#absent-ghost:integration.test"
+          - "#bridge-integration:integration.test"
+          - "#crash-recovery:integration.test"
+          - "#dead-man:integration.test"
+          - "#load-0:integration.test"
+          - "#load-1:integration.test"
+          - "#load-2:integration.test"
+          - "#load-3:integration.test"
+          - "#load-4:integration.test"
+          - "#load-5:integration.test"
+          - "#load-6:integration.test"
+          - "#load-7:integration.test"
+          - "#load-8:integration.test"
+          - "#load-9:integration.test"
+          - "#unauthorized-invite:integration.test"
       # Available (same served agent) but sender-denied, so the !agents directory must exclude it.
       agent-restricted:
         namespace: kagent
         name: integration-agent
+        allowedRooms: *managedRooms
         allowedSenders: ["@nobody:integration.test"]
       agent-plain:
         url: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080/api/a2a/remote-agent
         timeout: 5s
         tokenBudget: 4096
+        allowedRooms: *managedRooms
         cardIdentity:
           name: Fgentic plain a2a-go agent
           organization: Fgentic runtime-independence fixture

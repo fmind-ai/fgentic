@@ -31,7 +31,7 @@ func (f fixture) runSynapseRestart(ctx context.Context) error {
 		return err
 	}
 	ghost := "@" + ghostLocalpart + ":" + f.server
-	roomID, err := f.createRoom(ctx, sess.AccessToken)
+	roomID, err := f.createRoom(ctx, sess.AccessToken, "synapse-restart")
 	if err != nil {
 		return err
 	}

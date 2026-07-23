@@ -73,6 +73,24 @@ func TestAgentsSchemaStage(t *testing.T) {
 	}
 }
 
+func TestAgentsSchemaAllowedRooms(t *testing.T) {
+	schema := compileAgentsSchema(t)
+	valid := []byte("schemaVersion: 1\nagents:\n  agent-local:\n    namespace: kagent\n    name: k8s\n    allowedRooms: ['!managed:example.org', '!zXHs5QUbsdmsiRf0fEfZDdKFl6HfFcAXQoFJ9ZBM_ow', '#bootstrap:example.org']\n")
+	if err := schema.Validate(yamlInstance(t, valid)); err != nil {
+		t.Fatalf("valid allowedRooms rejected: %v", err)
+	}
+	for name, document := range map[string][]byte{
+		"duplicate": []byte("schemaVersion: 1\nagents:\n  agent-local: {namespace: kagent, name: k8s, allowedRooms: ['!a:example.org', '!a:example.org']}\n"),
+		"selector":  []byte("schemaVersion: 1\nagents:\n  agent-local: {namespace: kagent, name: k8s, allowedRooms: ['#space-*']}\n"),
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := schema.Validate(yamlInstance(t, document)); err == nil {
+				t.Fatal("schema accepted invalid allowedRooms")
+			}
+		})
+	}
+}
+
 func TestAgentsSchemaConversationRetentionIsLocalOnly(t *testing.T) {
 	schema := compileAgentsSchema(t)
 	local := []byte("schemaVersion: 1\nagents:\n  agent-local: {namespace: kagent, name: k8s, maxSessionAge: 168h}\n")

@@ -40,7 +40,7 @@ func (f fixture) runModelOutage(ctx context.Context) error {
 		return err
 	}
 	ghost := "@" + ghostLocalpart + ":" + f.server
-	roomID, err := f.createRoom(ctx, sess.AccessToken)
+	roomID, err := f.createRoom(ctx, sess.AccessToken, "model-outage")
 	if err != nil {
 		return err
 	}

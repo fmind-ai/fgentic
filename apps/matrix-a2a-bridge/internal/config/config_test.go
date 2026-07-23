@@ -31,6 +31,9 @@ func TestLoadDefaults(t *testing.T) {
 	if cfg.GhostPrefix != "agent-" {
 		t.Errorf("GhostPrefix = %q, want agent-", cfg.GhostPrefix)
 	}
+	if cfg.AccessManagerMXID != "@alice:fgentic.fmind.ai" {
+		t.Errorf("AccessManagerMXID = %q, want local Alice default", cfg.AccessManagerMXID)
+	}
 	if cfg.AgentsReloadInterval != 5*time.Second {
 		t.Errorf("AgentsReloadInterval = %s, want 5s", cfg.AgentsReloadInterval)
 	}
@@ -73,6 +76,7 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("DEAD_MAN_SWITCH_DELAY", "5m")
 	t.Setenv("SHUTDOWN_TIMEOUT", "15s")
 	t.Setenv("GHOST_PREFIX", "bot-")
+	t.Setenv("ACCESS_MANAGER_MXID", "@room-manager:example.org")
 	t.Setenv("AGENTS_RELOAD_INTERVAL", "2s")
 	t.Setenv("AGENT_CARD_REFRESH_INTERVAL", "30s")
 	t.Setenv("WELCOME_ENABLED", "false")
@@ -108,6 +112,9 @@ func TestLoadOverrides(t *testing.T) {
 	if cfg.GhostPrefix != "bot-" {
 		t.Errorf("GhostPrefix = %q, want bot-", cfg.GhostPrefix)
 	}
+	if cfg.AccessManagerMXID != "@room-manager:example.org" {
+		t.Errorf("AccessManagerMXID = %q", cfg.AccessManagerMXID)
+	}
 	if cfg.A2AAPIKey != "test-workload-key" {
 		t.Errorf("A2AAPIKey was not loaded")
 	}
@@ -140,6 +147,13 @@ func TestValidateRejectsBadPort(t *testing.T) {
 	t.Setenv("LISTEN_PORT", "70000")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error for out-of-range LISTEN_PORT, got nil")
+	}
+}
+
+func TestValidateRejectsForeignAccessManager(t *testing.T) {
+	t.Setenv("ACCESS_MANAGER_MXID", "@room-manager:partner.example")
+	if _, err := Load(); err == nil || !strings.Contains(err.Error(), "must belong to SERVER_NAME") {
+		t.Fatalf("foreign access manager error = %v", err)
 	}
 }
 

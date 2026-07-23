@@ -21,6 +21,7 @@ import (
 	"github.com/a2aproject/a2a-go/v2/a2asrv/taskstore"
 	"github.com/prometheus/client_golang/prometheus"
 	dto "github.com/prometheus/client_model/go"
+	"maunium.net/go/mautrix"
 	"maunium.net/go/mautrix/appservice"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
@@ -115,21 +116,23 @@ func testBridge(t *testing.T) *Bridge {
 	agents, err := LoadAgents(writeTemp(t, `bridgedOrigins:
   slack: ["@slack_*:fgentic.fmind.ai"]
 agents:
-  agent-k8s: {namespace: kagent, name: k8s-agent}
+  agent-k8s: {namespace: kagent, name: k8s-agent, allowedRooms: ["!room:fgentic.fmind.ai"]}
   agent-locked:
     namespace: kagent
     name: locked-agent
+    allowedRooms: ["!room:fgentic.fmind.ai"]
     allowedSenders: ["@admin:fgentic.fmind.ai"]
   agent-slack:
     namespace: kagent
     name: slack-agent
+    allowedRooms: ["!room:fgentic.fmind.ai"]
     allowedSenders: ["@slack_*:fgentic.fmind.ai"]
 `))
 	if err != nil {
 		t.Fatalf("LoadAgents: %v", err)
 	}
 	cfg := config.Config{
-		ServerName: ownServer, GhostPrefix: "agent-", Concurrency: 1,
+		ServerName: ownServer, GhostPrefix: "agent-", AccessManagerMXID: "@alice:" + ownServer, Concurrency: 1,
 		RoomQueueCapacity: 32, GlobalQueueCapacity: 256,
 		SenderRatePerMinute: 60, SenderRateBurst: 10, RoomRatePerMinute: 60, RoomRateBurst: 10,
 		RateLimitBucketCapacity:  testRateLimitBucketCapacity,
@@ -138,10 +141,30 @@ agents:
 		AgentCardRefreshInterval: time.Hour,
 		InputWaitTimeout:         time.Minute,
 	}
-	as := &appservice.AppService{Registration: &appservice.Registration{SenderLocalpart: "a2a-bridge"}}
+	stateStore := mautrix.NewMemoryStateStore().(appservice.StateStore)
+	for _, ghost := range []string{"agent-k8s", "agent-locked", "agent-slack"} {
+		if err := stateStore.SetMembership(
+			t.Context(), "!room:"+ownServer, id.NewUserID(ghost, ownServer), event.MembershipJoin,
+		); err != nil {
+			t.Fatalf("seed %s membership: %v", ghost, err)
+		}
+	}
+	as := &appservice.AppService{
+		Registration: &appservice.Registration{SenderLocalpart: "a2a-bridge"},
+		StateStore:   stateStore,
+	}
 	b := New(cfg, as, agents, nil, state.NewMemory(), slog.Default())
 	b.runCtx = t.Context() // delegations run under the process context; canceled when the test ends
 	return b
+}
+
+func joinGhostForTest(t *testing.T, b *Bridge, roomID id.RoomID, ghost string) {
+	t.Helper()
+	if err := b.as.StateStore.SetMembership(
+		t.Context(), roomID, id.NewUserID(ghost, ownServer), event.MembershipJoin,
+	); err != nil {
+		t.Fatalf("seed %s membership: %v", ghost, err)
+	}
 }
 
 func msgEvent(sender id.UserID, body string, mentions ...id.UserID) (*event.Event, *event.MessageEventContent) {
@@ -555,6 +578,7 @@ func TestQueuedDelegationReauthorizesAfterAgentReload(t *testing.T) {
   agent-k8s:
     namespace: kagent
     name: k8s-agent
+    allowedRooms: ["!room:fgentic.fmind.ai"]
     allowedSenders: ["@admin:fgentic.fmind.ai"]
 `,
 			wantReason: "sender_policy_rejected",
@@ -565,6 +589,7 @@ func TestQueuedDelegationReauthorizesAfterAgentReload(t *testing.T) {
   agent-k8s:
     namespace: kagent
     name: replacement-agent
+    allowedRooms: ["!room:fgentic.fmind.ai"]
 `,
 			wantReason: "agent_mapping_changed",
 		},
@@ -632,7 +657,7 @@ func TestQueuedBridgedSenderCannotBeDowngradedByOriginReload(t *testing.T) {
 
 	b.HandleMessage(t.Context(), evt)
 	reloaded, err := LoadAgents(writeTemp(t, `agents:
-  agent-k8s: {namespace: kagent, name: k8s-agent}
+  agent-k8s: {namespace: kagent, name: k8s-agent, allowedRooms: ["!room:fgentic.fmind.ai"]}
 `))
 	if err != nil {
 		t.Fatalf("LoadAgents reloaded origin policy: %v", err)
@@ -668,6 +693,7 @@ agents:
   agent-k8s:
     namespace: kagent
     name: k8s-agent
+    allowedRooms: ["!room:fgentic.fmind.ai"]
     allowedSenders: ["@slack_*:fgentic.fmind.ai"]
 `, network)))
 		if err != nil {
@@ -1018,6 +1044,7 @@ agents:
   agent-k8s:
     namespace: kagent
     name: k8s-agent
+    allowedRooms: ["!room:fgentic.fmind.ai"]
     allowedSenders: ["@slack_*:fgentic.fmind.ai"]
 `))
 	if err != nil {
@@ -1770,6 +1797,12 @@ func TestDispatchRefusesRemoteOverBudgetQuoteBeforeAdmission(t *testing.T) {
 			b.agents = agents
 			b.client = client
 			b.profiles = newProfileStore(agents.Entries())
+			remoteGhost := id.NewUserID("agent-remote", ownServer)
+			if err := b.as.StateStore.SetMembership(
+				t.Context(), "!room:"+ownServer, remoteGhost, event.MembershipJoin,
+			); err != nil {
+				t.Fatalf("SetMembership: %v", err)
+			}
 			var output strings.Builder
 			setBridgeLogOutput(b, &output)
 
@@ -1799,8 +1832,8 @@ func TestDispatchEnforcesStagingRoomBoundary(t *testing.T) {
 	stagingRoom := id.RoomID("!staging:" + ownServer)
 	otherRoom := id.RoomID("!prod:" + ownServer)
 	agents, err := LoadAgents(writeTemp(t, `agents:
-  agent-dev: {namespace: kagent, name: dev-agent, stage: dev}
-  agent-prod: {namespace: kagent, name: prod-agent, stage: prod}
+  agent-dev: {namespace: kagent, name: dev-agent, stage: dev, allowedRooms: ["!staging:fgentic.fmind.ai", "!prod:fgentic.fmind.ai"]}
+  agent-prod: {namespace: kagent, name: prod-agent, stage: prod, allowedRooms: ["!staging:fgentic.fmind.ai", "!prod:fgentic.fmind.ai"]}
 `))
 	if err != nil {
 		t.Fatalf("LoadAgents: %v", err)

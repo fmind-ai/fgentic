@@ -14,6 +14,7 @@ func TestAgentDirectoryListsOnlyAgentsVisibleToSenderWithoutA2A(t *testing.T) {
 	client := &scriptedA2AClient{}
 	b, _, evt, _, recorder := pollingHarness(t, client)
 	prepareDirectoryBot(t, b, evt.RoomID)
+	joinGhostForTest(t, b, evt.RoomID, "agent-locked")
 	b.profiles.set("agent-k8s", agentProfile{
 		DisplayName: "Kubernetes Specialist",
 		Description: "Diagnoses cluster health from the live AgentCard.",
@@ -199,7 +200,7 @@ agents:
 func TestAgentDirectoryReportsNoVisibleMappings(t *testing.T) {
 	b := testBridge(t)
 	sender := id.NewUserID("mallory", "partner.example")
-	body := b.agentDirectoryText(sender)
+	body := b.agentDirectoryText(t.Context(), sender, "!room:"+ownServer)
 	if !strings.Contains(body, "No mapped agents are available") || strings.Contains(body, "@agent-") {
 		t.Fatalf("directory for denied federated sender = %q", body)
 	}
@@ -215,6 +216,7 @@ func TestAgentDirectoryMarksRemoteUnavailableWhenVerifiedFreshnessExpires(t *tes
 	b.agents = agents
 	b.client = client
 	b.profiles = newProfileStore(agents.Entries())
+	joinGhostForTest(t, b, "!room:"+ownServer, "agent-remote")
 	ref, _ := agents.Lookup("agent-remote")
 	profile := fallbackProfile(ref)
 	profile.Status = profileStatusLive
@@ -223,21 +225,21 @@ func TestAgentDirectoryMarksRemoteUnavailableWhenVerifiedFreshnessExpires(t *tes
 	b.profiles.set("agent-remote", profile)
 	sender := id.NewUserID("alice", ownServer)
 
-	if body := b.agentDirectoryText(sender); !containsAll(body, "@agent-remote:"+ownServer, "remote", "unavailable", "capabilities hidden") ||
+	if body := b.agentDirectoryText(t.Context(), sender, "!room:"+ownServer); !containsAll(body, "@agent-remote:"+ownServer, "remote", "unavailable", "capabilities hidden") ||
 		strings.Contains(body, "Stale signed purpose") || strings.Contains(body, "Stale signed capability") {
 		t.Fatalf("directory unavailable remote entry = %s", body)
 	}
-	if body := b.agentDirectoryDetailText(sender, "remote"); !containsAll(body, "Type: remote", "unavailable", "Capabilities: hidden") ||
+	if body := b.agentDirectoryDetailText(t.Context(), sender, "!room:"+ownServer, "remote"); !containsAll(body, "Type: remote", "unavailable", "Capabilities: hidden") ||
 		strings.Contains(body, "Stale signed capability") {
 		t.Fatalf("detail unavailable remote entry = %s", body)
 	}
 	client.remoteReady = true
-	if body := b.agentDirectoryText(sender); !containsAll(
+	if body := b.agentDirectoryText(t.Context(), sender, "!room:"+ownServer); !containsAll(
 		body, "@agent-remote:"+ownServer, "remote", "Stale signed purpose", "Stale signed capability",
 	) {
 		t.Fatalf("directory ready remote entry = %s", body)
 	}
-	if body := b.agentDirectoryDetailText(sender, "agent-remote"); !containsAll(
+	if body := b.agentDirectoryDetailText(t.Context(), sender, "!room:"+ownServer, "agent-remote"); !containsAll(
 		body, "Type: remote", "AgentCard live", "Stale signed purpose", "Stale signed capability",
 	) {
 		t.Fatalf("detail ready remote entry = %s", body)
@@ -248,7 +250,7 @@ func TestAgentDirectoryDetailRejectsForeignOrDeniedLookup(t *testing.T) {
 	b := testBridge(t)
 	sender := id.NewUserID("alice", ownServer)
 	for _, query := range []string{"@agent-k8s:partner.example", "agent-locked", "missing"} {
-		body := b.agentDirectoryDetailText(sender, query)
+		body := b.agentDirectoryDetailText(t.Context(), sender, "!room:"+ownServer, query)
 		if !containsAll(body, "No invocable agent named", "Run !agents") || strings.Contains(body, "Restricted Specialist") {
 			t.Errorf("detail for %q = %q", query, body)
 		}
@@ -259,7 +261,13 @@ func TestAgentDirectorySummaryBoundsAgentsAndMetadata(t *testing.T) {
 	var agentsYAML strings.Builder
 	agentsYAML.WriteString("agents:\n")
 	for index := range 25 {
-		fmt.Fprintf(&agentsYAML, "  agent-gallery-%02d: {namespace: kagent, name: gallery-%02d}\n", index, index)
+		fmt.Fprintf(
+			&agentsYAML,
+			"  agent-gallery-%02d: {namespace: kagent, name: gallery-%02d, allowedRooms: [\"!room:%s\"]}\n",
+			index,
+			index,
+			ownServer,
+		)
 	}
 	agents, err := LoadAgents(writeTemp(t, agentsYAML.String()))
 	if err != nil {
@@ -269,6 +277,7 @@ func TestAgentDirectorySummaryBoundsAgentsAndMetadata(t *testing.T) {
 	b.agents = agents
 	b.profiles = newProfileStore(agents.Entries())
 	for _, entry := range agents.Entries() {
+		joinGhostForTest(t, b, "!room:"+ownServer, entry.Ghost)
 		b.profiles.set(entry.Ghost, agentProfile{
 			DisplayName: entry.Ghost,
 			Description: strings.Repeat("long description ", 40),
@@ -276,7 +285,7 @@ func TestAgentDirectorySummaryBoundsAgentsAndMetadata(t *testing.T) {
 			Status:      profileStatusLive,
 		})
 	}
-	body := b.agentDirectoryText(id.NewUserID("alice", ownServer))
+	body := b.agentDirectoryText(t.Context(), id.NewUserID("alice", ownServer), "!room:"+ownServer)
 	if !strings.Contains(body, "… 5 more authorized agent(s)") {
 		t.Fatalf("bounded directory omitted overflow summary:\n%s", body)
 	}
@@ -287,7 +296,7 @@ func TestAgentDirectorySummaryBoundsAgentsAndMetadata(t *testing.T) {
 
 func TestAgentDirectoryForBridgedSenderListsOnlyExplicitMappings(t *testing.T) {
 	b := testBridge(t)
-	body := b.agentDirectoryText(id.NewUserID("slack_U123", ownServer))
+	body := b.agentDirectoryText(t.Context(), id.NewUserID("slack_U123", ownServer), "!room:"+ownServer)
 	if !strings.Contains(body, "@agent-slack:"+ownServer) {
 		t.Fatalf("bridged sender directory omitted explicitly allowed mapping: %q", body)
 	}

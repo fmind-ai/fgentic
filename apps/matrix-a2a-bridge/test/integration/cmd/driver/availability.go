@@ -20,7 +20,7 @@ func (f fixture) runAvailability(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	roomID, err := f.createRoom(ctx, sess.AccessToken)
+	roomID, err := f.createRoom(ctx, sess.AccessToken, "availability")
 	if err != nil {
 		return err
 	}

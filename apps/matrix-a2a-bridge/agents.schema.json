@@ -110,6 +110,15 @@
           "type": "array",
           "uniqueItems": true,
           "items": { "$ref": "#/$defs/mxidPattern" }
+        },
+        "allowedRooms": {
+          "description": "Exact managed rooms in which this ghost may be invoked. Entries are room IDs or local bootstrap aliases; an omitted or empty set denies invocation everywhere.",
+          "type": "array",
+          "uniqueItems": true,
+          "items": {
+            "type": "string",
+            "pattern": "^(![A-Za-z0-9_-]{43}|[!#][^:\\s]+:[^\\s]+)$"
+          }
         }
       },
       "oneOf": [

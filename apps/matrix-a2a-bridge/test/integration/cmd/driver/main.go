@@ -134,11 +134,72 @@ func (f fixture) runBasic(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	roomID, err := f.createRoom(ctx, sess.AccessToken)
+	ghost := "@" + ghostLocalpart + ":" + f.server
+	bot := "@" + botLocalpart + ":" + f.server
+	baseline, err := f.fetchStubStats(ctx)
 	if err != nil {
 		return err
 	}
-	ghost := "@" + ghostLocalpart + ":" + f.server
+	unauthorized, err := f.registerCredentials(ctx, "unauthorized-inviter", "unauthorized-password")
+	if err != nil {
+		return fmt.Errorf("register unauthorized inviter: %w", err)
+	}
+	unauthorizedRoom, err := f.createRoom(ctx, unauthorized.AccessToken, "unauthorized-invite")
+	if err != nil {
+		return err
+	}
+	if err := f.invite(ctx, unauthorized.AccessToken, unauthorizedRoom, ghost); err != nil {
+		return err
+	}
+	if err := f.assertNotJoined(ctx, unauthorized.AccessToken, unauthorizedRoom, ghost, 2*time.Second); err != nil {
+		return fmt.Errorf("unauthorized ghost invite: %w", err)
+	}
+
+	absentRoom, err := f.createRoom(ctx, sess.AccessToken, "absent-ghost")
+	if err != nil {
+		return err
+	}
+	if err := f.invite(ctx, sess.AccessToken, absentRoom, bot); err != nil {
+		return err
+	}
+	if err := f.waitForJoin(ctx, sess.AccessToken, absentRoom, bot); err != nil {
+		return err
+	}
+	if _, err := f.sendMessageTxn(ctx, sess.AccessToken, absentRoom, "absent-ghost-probe", messageContent{
+		Body: ghost + " absent membership must not dispatch", Mentions: mentions{UserIDs: []string{ghost}}, MsgType: "m.text",
+	}); err != nil {
+		return err
+	}
+	if err := f.assertNotJoined(ctx, sess.AccessToken, absentRoom, ghost, 2*time.Second); err != nil {
+		return fmt.Errorf("absent ghost ambient-join probe: %w", err)
+	}
+
+	unboundRoom, err := f.createRoom(ctx, sess.AccessToken, "unbound-room")
+	if err != nil {
+		return err
+	}
+	if err := f.invite(ctx, sess.AccessToken, unboundRoom, bot); err != nil {
+		return err
+	}
+	if err := f.waitForJoin(ctx, sess.AccessToken, unboundRoom, bot); err != nil {
+		return err
+	}
+	if _, err := f.sendMessageTxn(ctx, sess.AccessToken, unboundRoom, "unbound-room-probe", messageContent{
+		Body: ghost + " unbound room must not dispatch", Mentions: mentions{UserIDs: []string{ghost}}, MsgType: "m.text",
+	}); err != nil {
+		return err
+	}
+	if err := f.assertNotJoined(ctx, sess.AccessToken, unboundRoom, ghost, 2*time.Second); err != nil {
+		return fmt.Errorf("unbound-room ambient-join probe: %w", err)
+	}
+	if err := f.assertNoTotalDispatch(ctx, baseline.TotalRequests, time.Second); err != nil {
+		return fmt.Errorf("managed-room negative proofs: %w", err)
+	}
+
+	roomID, err := f.createRoom(ctx, sess.AccessToken, "bridge-integration")
+	if err != nil {
+		return err
+	}
 	if err := f.invite(ctx, sess.AccessToken, roomID, ghost); err != nil {
 		return err
 	}
@@ -152,7 +213,6 @@ func (f fixture) runBasic(ctx context.Context) error {
 
 	// Discover invocable agents via !agents (#90): the bot notice must list the allowed ghost and
 	// exclude the sender-denied mapping, and the discovered ghost then drives the mention path below.
-	bot := "@" + botLocalpart + ":" + f.server
 	if err := f.invite(ctx, sess.AccessToken, roomID, bot); err != nil {
 		return err
 	}
@@ -314,14 +374,20 @@ func (f fixture) runBasic(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("register dead-man user: %w", err)
 	}
-	deadManRoom, err := f.createRoom(ctx, deadManSession.AccessToken)
+	deadManRoom, err := f.createRoom(ctx, sess.AccessToken, "dead-man")
 	if err != nil {
 		return fmt.Errorf("create dead-man room: %w", err)
 	}
-	if err := f.invite(ctx, deadManSession.AccessToken, deadManRoom, ghost); err != nil {
+	if err := f.invite(ctx, sess.AccessToken, deadManRoom, ghost); err != nil {
 		return err
 	}
-	if err := f.waitForJoin(ctx, deadManSession.AccessToken, deadManRoom, ghost); err != nil {
+	if err := f.waitForJoin(ctx, sess.AccessToken, deadManRoom, ghost); err != nil {
+		return err
+	}
+	if err := f.invite(ctx, sess.AccessToken, deadManRoom, deadManSession.UserID); err != nil {
+		return err
+	}
+	if err := f.joinRoom(ctx, deadManSession.AccessToken, deadManRoom); err != nil {
 		return err
 	}
 	deadManEventID, err := f.sendMessageTxn(
@@ -417,13 +483,19 @@ func (f fixture) registerCredentials(ctx context.Context, user, pass string) (se
 	return sess, nil
 }
 
-func (f fixture) createRoom(ctx context.Context, token string) (string, error) {
+func (f fixture) createRoom(ctx context.Context, token, aliasLocalpart string) (string, error) {
 	status, body, err := f.request(
 		ctx,
 		http.MethodPost,
 		f.matrixURL+"/_matrix/client/v3/createRoom",
 		token,
-		map[string]any{"name": "Bridge integration", "preset": "private_chat"},
+		map[string]any{
+			"name":            "Bridge integration",
+			"preset":          "private_chat",
+			"visibility":      "private",
+			"room_version":    "12",
+			"room_alias_name": aliasLocalpart,
+		},
 	)
 	if err != nil {
 		return "", fmt.Errorf("create Matrix room: %w", err)
@@ -441,6 +513,18 @@ func (f fixture) createRoom(ctx context.Context, token string) (string, error) {
 		return "", fmt.Errorf("decode Matrix room response: room_id is empty")
 	}
 	return response.RoomID, nil
+}
+
+func (f fixture) joinRoom(ctx context.Context, token, roomID string) error {
+	endpoint := fmt.Sprintf("%s/_matrix/client/v3/rooms/%s/join", f.matrixURL, pathSegment(roomID))
+	status, body, err := f.request(ctx, http.MethodPost, endpoint, token, map[string]any{})
+	if err != nil {
+		return fmt.Errorf("join managed Matrix room: %w", err)
+	}
+	if status != http.StatusOK {
+		return fmt.Errorf("join managed Matrix room: status %d: %s", status, body)
+	}
+	return nil
 }
 
 func (f fixture) invite(ctx context.Context, token, roomID, userID string) error {
@@ -476,6 +560,31 @@ func (f fixture) waitForJoin(ctx context.Context, token, roomID, userID string) 
 			return fmt.Errorf("wait for bridge ghost %s to join room: %w", userID, err)
 		}
 	}
+}
+
+func (f fixture) assertNotJoined(ctx context.Context, token, roomID, userID string, duration time.Duration) error {
+	endpoint := fmt.Sprintf(
+		"%s/_matrix/client/v3/rooms/%s/state/m.room.member/%s",
+		f.matrixURL,
+		pathSegment(roomID),
+		pathSegment(userID),
+	)
+	deadline := time.Now().Add(duration)
+	for time.Now().Before(deadline) {
+		status, body, err := f.request(ctx, http.MethodGet, endpoint, token, nil)
+		if err == nil && status == http.StatusOK {
+			var member struct {
+				Membership string `json:"membership"`
+			}
+			if json.Unmarshal(body, &member) == nil && member.Membership == "join" {
+				return fmt.Errorf("ghost %s unexpectedly joined room", userID)
+			}
+		}
+		if err := wait(ctx, 100*time.Millisecond); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // waitForDisplayName polls the ghost's real Synapse profile until its display name matches the
@@ -786,6 +895,23 @@ func (f fixture) assertNoRemoteDispatch(ctx context.Context, expected int, durat
 		}
 		if stats.RemoteRequests != expected {
 			return fmt.Errorf("remote A2A requests = %d, want unchanged at %d", stats.RemoteRequests, expected)
+		}
+		if err := wait(ctx, 100*time.Millisecond); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (f fixture) assertNoTotalDispatch(ctx context.Context, expected int, duration time.Duration) error {
+	deadline := time.Now().Add(duration)
+	for time.Now().Before(deadline) {
+		stats, err := f.fetchStubStats(ctx)
+		if err != nil {
+			return err
+		}
+		if stats.TotalRequests != expected {
+			return fmt.Errorf("A2A requests = %d, want unchanged at %d", stats.TotalRequests, expected)
 		}
 		if err := wait(ctx, 100*time.Millisecond); err != nil {
 			return err

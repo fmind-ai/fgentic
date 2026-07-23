@@ -70,7 +70,7 @@ func (b *Bridge) executeDurableCancel(ctx context.Context, job *state.Job, contr
 	if err != nil {
 		return err
 	}
-	sender, ref, denial := b.revalidateDurableTask(*job, payload, evt)
+	sender, ref, denial := b.revalidateDurableTask(ctx, *job, payload, evt)
 	if denial != "" || job.A2ATaskID == "" {
 		if denial == "" {
 			denial = errorTaskInvalid
@@ -115,7 +115,7 @@ func (b *Bridge) executeDurableContinuation(ctx context.Context, job *state.Job,
 	if err != nil {
 		return err
 	}
-	sender, ref, denial := b.revalidateDurableTask(*job, payload, evt)
+	sender, ref, denial := b.revalidateDurableTask(ctx, *job, payload, evt)
 	if denial != "" {
 		if err := b.finishControl(ctx, *job, control, state.ControlDenied, denial, ""); err != nil {
 			return err
@@ -234,8 +234,8 @@ func (b *Bridge) projectDurableProgress(ctx context.Context, job state.Job, cont
 	}
 	content := &event.MessageEventContent{MsgType: event.MsgNotice, Body: string(control.Payload)}
 	content.RelatesTo = &event.RelatesTo{Type: event.RelThread, EventID: id.EventID(job.MatrixPlaceholderEventID)}
-	response, err := b.as.Intent(id.UserID(job.GhostMXID)).SendMessageEvent(
-		ctx, id.RoomID(job.RoomID), event.EventMessage, automatedContent(content),
+	response, err := sendMessageEvent(
+		ctx, b.as.Intent(id.UserID(job.GhostMXID)), id.RoomID(job.RoomID), event.EventMessage, automatedContent(content),
 		mautrix.ReqSendEvent{TransactionID: control.MatrixTxnID},
 	)
 	if err != nil {
@@ -255,7 +255,7 @@ func (b *Bridge) projectDurablePin(ctx context.Context, job state.Job, control s
 	roomID := id.RoomID(job.RoomID)
 	placeholder := id.EventID(job.MatrixPlaceholderEventID)
 	var current event.PinnedEventsEventContent
-	if err := intent.StateEvent(ctx, roomID, event.StatePinnedEvents, "", &current); err != nil &&
+	if err := intent.Client.StateEvent(ctx, roomID, event.StatePinnedEvents, "", &current); err != nil &&
 		!errors.Is(err, mautrix.MNotFound) {
 		return b.finishControl(ctx, job, control, state.ControlDead, "pin_state_unavailable", "")
 	}
@@ -271,8 +271,8 @@ func (b *Bridge) projectDurablePin(ctx context.Context, job state.Job, control s
 	if !changed {
 		return b.finishControl(ctx, job, control, state.ControlApplied, "", "")
 	}
-	response, err := intent.SendStateEvent(
-		ctx, roomID, event.StatePinnedEvents, "", &event.PinnedEventsEventContent{Pinned: next},
+	response, err := sendStateEvent(
+		ctx, intent, roomID, event.StatePinnedEvents, "", &event.PinnedEventsEventContent{Pinned: next},
 		mautrix.ReqSendEvent{TransactionID: control.MatrixTxnID},
 	)
 	if err != nil {
@@ -323,7 +323,7 @@ func (b *Bridge) finishAmbiguousControl(ctx context.Context, job *state.Job, con
 	if err != nil {
 		return err
 	}
-	sender, ref, _ := b.revalidateDurableTask(*job, payload, evt)
+	sender, ref, _ := b.revalidateDurableTask(ctx, *job, payload, evt)
 	notice := fmt.Sprintf("⚠️ %s requested by %s may have reached the agent; the acknowledgement was lost.",
 		strings.ReplaceAll(string(control.Kind), "_", " "), control.AuthorizedSender)
 	return b.prepareDurableNotice(
@@ -384,7 +384,7 @@ func (b *Bridge) resumeAwaitingInput(ctx context.Context, job *state.Job) error 
 	if err != nil {
 		return b.finishDurableWithoutReply(ctx, job, state.StateDead, errorInvalidPayload, err)
 	}
-	sender, ref, denial := b.revalidateDurableTask(*job, payload, evt)
+	sender, ref, denial := b.revalidateDurableTask(ctx, *job, payload, evt)
 	if denial != "" {
 		return b.denyDurableJob(ctx, job, payload, evt, ref, sender, denial)
 	}

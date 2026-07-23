@@ -186,6 +186,7 @@ func TestBudgetCommandReadsLimitsAndReservationsWithoutConsumption(t *testing.T)
 	b, _, evt, _, recorder := pollingHarness(t, client)
 	prepareDirectoryBot(t, b, evt.RoomID)
 	b.agents = agents
+	joinGhostForTest(t, b, evt.RoomID, "agent-remote")
 	clock := &limiterTestClock{now: time.Unix(1_700_000_000, 0)}
 	b.senderLimits = newLimitersWithClock(60, 3, testRateLimitBucketCapacity, clock.Now)
 	b.roomLimits = newLimitersWithClock(30, 10, testRateLimitBucketCapacity, clock.Now)

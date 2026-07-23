@@ -202,7 +202,7 @@ func loadConfigFromEnv() (loadConfig, error) {
 func (f fixture) createLoadRooms(ctx context.Context, token, ghost string, count int) ([]string, error) {
 	rooms := make([]string, 0, count)
 	for roomIndex := range count {
-		roomID, err := f.createRoom(ctx, token)
+		roomID, err := f.createRoom(ctx, token, fmt.Sprintf("load-%d", roomIndex))
 		if err != nil {
 			return nil, fmt.Errorf("create load room %d: %w", roomIndex, err)
 		}

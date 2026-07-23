@@ -764,6 +764,7 @@ agents:
   agent-k8s:
     namespace: kagent
     name: k8s-agent
+    allowedRooms: ["!room:fgentic.fmind.ai"]
     agentContractSHA256: `+originalContract+`
 `))
 	if err != nil {
@@ -781,6 +782,7 @@ agents:
   agent-k8s:
     namespace: kagent
     name: k8s-agent
+    allowedRooms: ["!room:fgentic.fmind.ai"]
     agentContractSHA256: `+strings.Repeat("a", 64)+`
 `))
 	if err != nil {
@@ -977,6 +979,7 @@ agents:
   agent-k8s:
     namespace: kagent
     name: k8s-agent
+    allowedRooms: ["!room:fgentic.fmind.ai"]
     agentContractSHA256: `+originalContract+`
 `))
 	if err != nil {
@@ -996,6 +999,7 @@ agents:
   agent-k8s:
     namespace: kagent
     name: k8s-agent
+    allowedRooms: ["!room:fgentic.fmind.ai"]
     agentContractSHA256: `+strings.Repeat("a", 64)+`
 `))
 	if err != nil {

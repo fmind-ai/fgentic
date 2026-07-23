@@ -57,8 +57,9 @@ func (c *matrixDeadManClient) Schedule(
 	// so it is a terminal outcome from the delegation's perspective: the bridge lost track of the task
 	// (#167). intent.UserID is the ghost's already-full MXID (D6), and taskID is the delegation's task.
 	meta := newResultMetadataForAgent(intent.UserID, outcomeLost, taskID)
-	resp, err := intent.SendMessageEvent(
+	resp, err := sendMessageEvent(
 		ctx,
+		intent,
 		roomID,
 		event.EventMessage,
 		automatedResultContent(content, meta),

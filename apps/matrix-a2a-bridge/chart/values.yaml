@@ -19,6 +19,8 @@ config:
   kagentAPIURL: http://kagent-controller.kagent.svc.cluster.local:8083
   conversationSweepInterval: 1h
   ghostPrefix: agent-
+  # Exact local MXID allowed to invite mapped ghosts into their declared allowedRooms.
+  accessManagerMXID: "@alice:fgentic.fmind.ai"
   requestTimeout: 60s # transport deadline for one A2A SendMessage
   taskTimeout: 10m # overall deadline when polling a long-running task (GetTask)
   # Optional Synapse delayed-event guard for long tasks. Keep disabled unless the homeserver's
@@ -129,6 +131,8 @@ agents:
     agentContractSHA256: 239cd0991f26cda8bb80bb40d1d29de5ffa64f868fb780af49d356a936cb4359
     description: Read-only diagnostics for the evaluation profile's Kubernetes namespaces.
     # avatarURL: mxc://fgentic.fmind.ai/media-id
+    allowedRooms:
+      - "#lobby:fgentic.fmind.ai"
     allowedSenders:
       - "@alice:fgentic.fmind.ai"
   agent-docs-qa:
@@ -137,6 +141,8 @@ agents:
     dataClassification: public
     agentContractSHA256: 81fe04d0099b150e2ec15d431940228ab63daf1076715d9cc119ad91fff4fa87
     description: Answers architecture and operations questions from local Fgentic documentation.
+    allowedRooms:
+      - "#lobby:fgentic.fmind.ai"
     allowedSenders:
       - "@alice:fgentic.fmind.ai"
   agent-scribe:
@@ -145,6 +151,8 @@ agents:
     dataClassification: public
     agentContractSHA256: d6a4e2405cb96d9735cb3b03199ef3f89e662ad052281968bae248a69520f924
     description: Summarizes pasted or quoted room discussion without tools.
+    allowedRooms:
+      - "#lobby:fgentic.fmind.ai"
     allowedSenders:
       - "@alice:fgentic.fmind.ai"
 

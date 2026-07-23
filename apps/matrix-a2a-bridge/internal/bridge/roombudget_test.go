@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"context"
 	"math"
 	"strings"
 	"sync"
@@ -247,7 +248,7 @@ func TestBudgetCommandShowsRoomTokenConsumption(t *testing.T) {
 	b.roomBudgets = newRoomBudgetsWithClock(1000, time.Hour, nil, testRoomBudgetCapacity, clock.Now)
 	b.recordRoomBudget(evt.RoomID, a2aclient.Result{TotalTokens: 250})
 
-	text := b.budgetText(evt.Sender, evt.RoomID)
+	text := b.budgetText(context.Background(), evt.Sender, evt.RoomID)
 	if !strings.Contains(text, "Room token budget: 250 of 1000 tokens used this period, 750 remaining") {
 		t.Fatalf("budget command missing room token consumption line:\n%s", text)
 	}

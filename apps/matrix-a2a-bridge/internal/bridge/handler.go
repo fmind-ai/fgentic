@@ -398,7 +398,7 @@ func (b *Bridge) HandleMessage(ctx context.Context, evt *event.Event) {
 		case plaintextCommandBudget:
 			if b.markEventProcessed(ctx, evt) != dedupVerdictDuplicate {
 				b.handleCommandNotice(ctx, evt, budgetCommand, func() string {
-					return b.budgetText(evt.Sender, evt.RoomID)
+					return b.budgetText(ctx, evt.Sender, evt.RoomID)
 				})
 			}
 			return
@@ -553,12 +553,9 @@ func (b *Bridge) markEventProcessed(ctx context.Context, evt *event.Event) audit
 	return dedupVerdictAccepted
 }
 
-// HandleMembership auto-accepts invites addressed to the bridge's own users (the bot and MAPPED
-// agent ghosts). A first bot invitation also owns the room's sender-filtered onboarding notice.
-// This is what activates a room: Synapse only pushes room traffic to the
-// appservice once one of its namespaced users is a member, so "invite @agent-x, then @mention
-// it" hinges on the invite being accepted. Invites for unmapped agent-like users are ignored
-// (the allowlist is the agents map — SPEC §4 D6).
+// HandleMembership accepts bot invitations and the strictly narrower managed-room ghost path.
+// A mapped ghost joins only when the configured access manager invited it into one of its exact
+// room bindings. Every other ghost invite is content-free audit evidence and no Matrix mutation.
 func (b *Bridge) HandleMembership(ctx context.Context, evt *event.Event) {
 	content := evt.Content.AsMember()
 	if content == nil || evt.StateKey == nil {
@@ -586,8 +583,17 @@ func (b *Bridge) HandleMembership(ctx context.Context, evt *event.Event) {
 		if !strings.HasPrefix(localpart, b.cfg.GhostPrefix) {
 			return
 		}
-		if _, ok := b.agents.Lookup(localpart); !ok {
+		ref, ok := b.agents.Lookup(localpart)
+		if !ok {
 			b.log.Warn("ignoring invite for unmapped ghost", "ghost", localpart, "room", evt.RoomID)
+			return
+		}
+		if evt.Sender.String() != b.cfg.AccessManagerMXID {
+			b.logManagedInvite(evt, target, outcomeDenied, "invite_sender_rejected")
+			return
+		}
+		if bound, reason := b.roomBound(ctx, ref, evt.RoomID); !bound {
+			b.logManagedInvite(evt, target, outcomeDenied, reason)
 			return
 		}
 	}
@@ -603,6 +609,8 @@ func (b *Bridge) HandleMembership(ctx context.Context, evt *event.Event) {
 	b.log.Info("accepted room invite", "user", target, "room", evt.RoomID)
 	if localpart == b.as.Registration.SenderLocalpart {
 		b.maybeWelcomeRoom(ctx, evt, intent)
+	} else {
+		b.logManagedInvite(evt, target, outcomeOK, "accepted")
 	}
 }
 
@@ -724,6 +732,10 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 	currentSender, ref, ok := b.agents.SnapshotSenderTarget(open.origin.Sender, open.localpart)
 	if !ok || !ref.SameTarget(open.ref) {
 		b.finishContinuation(ctx, reply, open, currentSender, started, "admission", "agent_mapping_changed", "the agent it was waiting on changed")
+		return
+	}
+	if reason := b.roomAdmission(ctx, ref, open.localpart, reply.RoomID); reason != "" {
+		b.finishContinuation(ctx, reply, open, currentSender, started, "room_authorization", reason, "managed room authorization changed")
 		return
 	}
 	if !ref.AllowsSender(currentSender, b.cfg.ServerName) {
@@ -905,6 +917,10 @@ func (b *Bridge) dispatchResolvedTarget(
 		b.refuseQueuedTarget(evt, boundRef, localpart, sender, dedupVerdict, "agent_mapping_changed")
 		return
 	}
+	if reason := b.roomAdmission(ctx, ref, localpart, evt.RoomID); reason != "" {
+		b.refuseRoomTarget(evt, ref, localpart, sender, dedupVerdict, reason)
+		return
+	}
 	if !ref.AllowsSender(sender, b.cfg.ServerName) {
 		if sender.isBridged() {
 			b.rejectBridgedSender(ctx, evt, ref, localpart, sender, dedupVerdict)
@@ -998,6 +1014,35 @@ func (b *Bridge) refuseQueuedTarget(
 	})
 }
 
+// refuseRoomTarget is deliberately silent in Matrix: an unbound or absent ghost is not allowed to
+// join merely to explain the refusal. The structured audit contains identifiers and fixed verdicts
+// only, never the event body or prompt.
+func (b *Bridge) refuseRoomTarget(
+	evt *event.Event,
+	ref *AgentRef,
+	localpart string,
+	sender senderIdentity,
+	dedupVerdict auditDedupVerdict,
+	reason string,
+) {
+	delegationsTotal.WithLabelValues(localpart, outcomeDenied).Inc()
+	b.log.Warn(
+		"refusing delegation outside managed room authorization",
+		"sender", evt.Sender,
+		"ghost", localpart,
+		"room", evt.RoomID,
+		"reason", reason,
+	)
+	b.logDelegationAudit(evt, ref, localpart, sender, delegationAuditResult{
+		outcome:          outcomeDenied,
+		terminalStage:    "room_authorization",
+		terminalReason:   reason,
+		dedupVerdict:     dedupVerdict,
+		rateLimitVerdict: rateLimitVerdictNotChecked,
+		a2aAttempted:     false,
+	})
+}
+
 func (b *Bridge) refuseUntrustedTarget(
 	ctx context.Context,
 	evt *event.Event,
@@ -1083,12 +1128,6 @@ func (b *Bridge) dispatchWithDedupVerdict(
 		b.log.Error("ensure ghost registered", "ghost", ghost, "err", err)
 		audit.terminalStage = "matrix_register"
 		audit.terminalReason = "matrix_registration_failed"
-		return
-	}
-	if err := intent.EnsureJoined(ctx, evt.RoomID); err != nil {
-		b.log.Error("ensure ghost joined", "ghost", ghost, "room", evt.RoomID, "err", err)
-		audit.terminalStage = "matrix_join"
-		audit.terminalReason = "matrix_join_failed"
 		return
 	}
 
@@ -1302,13 +1341,6 @@ func (b *Bridge) rejectBridgedSender(
 		audit.terminalReason = "matrix_registration_failed"
 		return
 	}
-	if err := intent.EnsureJoined(ctx, evt.RoomID); err != nil {
-		b.log.Error("ensure denied-notice ghost joined", "ghost", ghost, "room", evt.RoomID, "err", err)
-		audit.outcome = outcomeError
-		audit.terminalStage = "matrix_join"
-		audit.terminalReason = "matrix_join_failed"
-		return
-	}
 	delegationsTotal.WithLabelValues(localpart, outcomeDenied).Inc()
 	audit.replyEventID = b.postReplyResult(ctx, intent, evt, failureMessage(errorSenderPolicy, localpart, 0),
 		b.newResultMetadata(localpart, audit.outcome, audit.taskID))
@@ -1362,13 +1394,6 @@ func (b *Bridge) refuseStagedTarget(
 		audit.outcome = outcomeError
 		audit.terminalStage = "matrix_register"
 		audit.terminalReason = "matrix_registration_failed"
-		return
-	}
-	if err := intent.EnsureJoined(ctx, evt.RoomID); err != nil {
-		b.log.Error("ensure stage-denied ghost joined", "ghost", ghost, "room", evt.RoomID, "err", err)
-		audit.outcome = outcomeError
-		audit.terminalStage = "matrix_join"
-		audit.terminalReason = "matrix_join_failed"
 		return
 	}
 	delegationsTotal.WithLabelValues(localpart, outcomeDenied).Inc()
@@ -1790,7 +1815,7 @@ func (b *Bridge) postReplyResult(
 	trace.SpanFromContext(ctx).AddEvent("matrix.reply.post")
 	content := &event.MessageEventContent{MsgType: event.MsgNotice, Body: text}
 	content.SetReply(evt) // m.relates_to reply pointing at the human's original message
-	resp, err := intent.SendMessageEvent(ctx, evt.RoomID, event.EventMessage, automatedResultContent(content, meta))
+	resp, err := sendMessageEvent(ctx, intent, evt.RoomID, event.EventMessage, automatedResultContent(content, meta))
 	if err != nil {
 		b.log.Error("post reply", "room", evt.RoomID, "err", err)
 		return ""
@@ -1823,7 +1848,7 @@ func (b *Bridge) editReplyResult(
 	}
 	content := &event.MessageEventContent{MsgType: event.MsgNotice, Body: text}
 	content.SetEdit(target)
-	if _, err := intent.SendMessageEvent(ctx, roomID, event.EventMessage, automatedResultContent(content, meta)); err != nil {
+	if _, err := sendMessageEvent(ctx, intent, roomID, event.EventMessage, automatedResultContent(content, meta)); err != nil {
 		b.log.Error("edit reply", "room", roomID, "err", err)
 		return false
 	}

@@ -25,8 +25,9 @@ func (b *Bridge) sendDurableNotice(
 ) (id.EventID, error) {
 	content := &event.MessageEventContent{MsgType: event.MsgNotice, Body: text}
 	content.SetReply(evt)
-	response, err := intent.SendMessageEvent(
+	response, err := sendMessageEvent(
 		ctx,
+		intent,
 		evt.RoomID,
 		event.EventMessage,
 		automatedResultContent(content, meta),
@@ -55,8 +56,9 @@ func (b *Bridge) editDurableNotice(
 	}
 	content := &event.MessageEventContent{MsgType: event.MsgNotice, Body: text}
 	content.SetEdit(target)
-	response, err := intent.SendMessageEvent(
+	response, err := sendMessageEvent(
 		ctx,
+		intent,
 		roomID,
 		event.EventMessage,
 		automatedResultContent(content, meta),
@@ -129,8 +131,9 @@ func (b *Bridge) postDurableMediaFile(
 		Info:     &event.FileInfo{MimeType: upload.mime, Size: upload.size},
 	}
 	content.SetReply(evt)
-	response, err := intent.SendMessageEvent(
+	response, err := sendMessageEvent(
 		ctx,
+		intent,
 		evt.RoomID,
 		event.EventMessage,
 		automatedContent(content),

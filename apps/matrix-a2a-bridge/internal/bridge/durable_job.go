@@ -27,7 +27,6 @@ const (
 	errorInputRequired       = "input_required"
 	errorInvalidPayload      = "invalid_recovery_payload"
 	errorMatrixDelivery      = "matrix_delivery_failed"
-	errorMatrixJoin          = "matrix_join_failed"
 	errorMatrixRegister      = "matrix_registration_failed"
 	errorMediaDenied         = "media_input_rejected"
 	errorQuoteOverBudget     = "quote_over_budget"
@@ -181,7 +180,7 @@ func (b *Bridge) executePendingJob(ctx context.Context, job *state.Job) error {
 	if err != nil {
 		return b.finishDurableWithoutReply(ctx, job, state.StateDead, errorInvalidPayload, err)
 	}
-	sender, ref, denial := b.revalidateDurableJob(*job, evt)
+	sender, ref, denial := b.revalidateDurableJob(ctx, *job, evt)
 	if ref != nil {
 		payload.AgentVersion = ref.AgentVersion()
 		payload.AgentContract = ref.AgentContractSHA256()
@@ -213,10 +212,6 @@ func (b *Bridge) executePendingJob(ctx context.Context, job *state.Job) error {
 	if err := intent.EnsureRegistered(ctx); err != nil {
 		return b.retryOrDead(ctx, job, errorMatrixRegister, fmt.Errorf("ensure durable ghost registered: %w", err))
 	}
-	if err := intent.EnsureJoined(ctx, evt.RoomID); err != nil {
-		return b.retryOrDead(ctx, job, errorMatrixJoin, fmt.Errorf("ensure durable ghost joined: %w", err))
-	}
-
 	inboundFiles, mediaRejected, mediaOK := b.collectInboundMedia(ctx, intent, evt, ref)
 	payload.MediaIn = len(inboundFiles)
 	payload.MediaRejected = mediaRejected
@@ -263,7 +258,7 @@ func (b *Bridge) recoverPreparedJob(ctx context.Context, job *state.Job) error {
 			outcomeAmbiguous, "message_send", errorA2AAckAmbiguous, 0,
 		)
 	}
-	sender, ref, denial := b.revalidateDurableJob(*job, evt)
+	sender, ref, denial := b.revalidateDurableJob(ctx, *job, evt)
 	if denial != "" {
 		return b.denyDurableJob(ctx, job, payload, evt, ref, sender, denial)
 	}
@@ -272,10 +267,6 @@ func (b *Bridge) recoverPreparedJob(ctx context.Context, job *state.Job) error {
 	if err := intent.EnsureRegistered(ctx); err != nil {
 		return b.retryOrDead(ctx, job, errorMatrixRegister,
 			fmt.Errorf("ensure recovered durable ghost registered: %w", err))
-	}
-	if err := intent.EnsureJoined(ctx, evt.RoomID); err != nil {
-		return b.retryOrDead(ctx, job, errorMatrixJoin,
-			fmt.Errorf("ensure recovered durable ghost joined: %w", err))
 	}
 	inboundFiles, mediaRejected, mediaOK := b.collectInboundMedia(ctx, intent, evt, ref)
 	payload.MediaIn = len(inboundFiles)
@@ -410,7 +401,7 @@ func (b *Bridge) resumeKnownTask(ctx context.Context, job *state.Job) error {
 	if err != nil {
 		return b.finishDurableWithoutReply(ctx, job, state.StateDead, errorInvalidPayload, err)
 	}
-	sender, ref, denial := b.revalidateDurableTask(*job, payload, evt)
+	sender, ref, denial := b.revalidateDurableTask(ctx, *job, payload, evt)
 	if denial != "" {
 		return b.denyDurableJob(ctx, job, payload, evt, ref, sender, denial)
 	}
@@ -664,7 +655,7 @@ func (b *Bridge) deliverPendingReply(ctx context.Context, job *state.Job) error 
 	if err != nil {
 		return b.finishDurableWithoutReply(ctx, job, state.StateDead, errorInvalidPayload, err)
 	}
-	sender, ref, denial := b.revalidateDurableJob(*job, evt)
+	sender, ref, denial := b.revalidateDurableJob(ctx, *job, evt)
 	if denial != "" && payload.TerminalState == state.StateDelivered {
 		// A result already accepted from the bound target must not be redirected after a mapping change;
 		// it is still safe to project into the original room as that ghost.
@@ -773,18 +764,19 @@ func (b *Bridge) deliverPendingReply(ctx context.Context, job *state.Job) error 
 	return nil
 }
 
-func (b *Bridge) revalidateDurableJob(job state.Job, evt *event.Event) (senderIdentity, *AgentRef, string) {
-	return b.revalidateDurableTarget(job, evt, func(ref *AgentRef) bool {
+func (b *Bridge) revalidateDurableJob(ctx context.Context, job state.Job, evt *event.Event) (senderIdentity, *AgentRef, string) {
+	return b.revalidateDurableTarget(ctx, job, evt, func(ref *AgentRef) bool {
 		return ref.MatchesMappingID(job.TargetFingerprint)
 	})
 }
 
 func (b *Bridge) revalidateDurableTask(
+	ctx context.Context,
 	job state.Job,
 	payload durablePayload,
 	evt *event.Event,
 ) (senderIdentity, *AgentRef, string) {
-	return b.revalidateDurableTarget(job, evt, func(ref *AgentRef) bool {
+	return b.revalidateDurableTarget(ctx, job, evt, func(ref *AgentRef) bool {
 		if payload.TargetRouteID == "" {
 			return ref.MatchesMappingID(job.TargetFingerprint)
 		}
@@ -793,6 +785,7 @@ func (b *Bridge) revalidateDurableTask(
 }
 
 func (b *Bridge) revalidateDurableTarget(
+	ctx context.Context,
 	job state.Job,
 	evt *event.Event,
 	targetMatches func(*AgentRef) bool,
@@ -813,6 +806,9 @@ func (b *Bridge) revalidateDurableTarget(
 	}
 	if !ref.AllowsSender(sender, b.cfg.ServerName) {
 		return sender, ref, errorSenderPolicy
+	}
+	if reason := b.roomAdmission(ctx, ref, job.GhostLocalpart, evt.RoomID); reason != "" {
+		return sender, ref, reason
 	}
 	if ref.IsDev() && !b.isStagingRoom(evt.RoomID) {
 		return sender, ref, errorStagePolicy
@@ -883,6 +879,19 @@ func (b *Bridge) denyDurableJob(
 		outcome = outcomeBudgetExhausted
 	}
 	payload.Audit.RateLimit = durableRateLimitVerdict(*job)
+	if durableDenialStage(reason) == "room_authorization" {
+		// The managed-room boundary is deliberately silent. Projecting a refusal as an absent ghost
+		// would either fail or, through mautrix's convenience send path, create the membership that
+		// the untrusted message lacked. Persist terminal content-free evidence without Matrix output.
+		payload.Audit = durableTerminalAuditState{
+			Outcome: outcome, TerminalStage: "room_authorization", TerminalReason: reason,
+			A2AAttempted: payload.Audit.A2AAttempted, A2AStartedAt: payload.Audit.A2AStartedAt,
+			RateLimit: payload.Audit.RateLimit,
+		}
+		return b.finishDurableWithoutReplyWithEvidence(
+			ctx, job, state.StateDenied, reason, nil, payload, evt, ref, sender,
+		)
+	}
 	if job.MatrixPlaceholderEventID == "" && !b.allowNotice(sender, evt.RoomID, job.GhostLocalpart) {
 		payload.Audit = durableTerminalAuditState{
 			Outcome: outcome, TerminalStage: durableDenialStage(reason), TerminalReason: reason,
@@ -903,6 +912,8 @@ func durableDenialStage(reason string) string {
 		return "agent_card"
 	case errorMediaDenied:
 		return "media_admission"
+	case errorRoomBinding, errorRoomBindingUnavailable, errorGhostMembership, errorGhostMembershipStore:
+		return "room_authorization"
 	default:
 		return "admission"
 	}
@@ -1078,7 +1089,7 @@ func (b *Bridge) deadLetterDurableJob(
 	if err != nil {
 		return b.finishDurableWithoutReply(ctx, job, state.StateDead, errorInvalidPayload, err)
 	}
-	sender, ref, _ := b.revalidateDurableJob(*job, evt)
+	sender, ref, _ := b.revalidateDurableJob(ctx, *job, evt)
 	return b.prepareDurableFailureNotice(
 		ctx,
 		job,

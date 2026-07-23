@@ -39,9 +39,10 @@ func (b *Bridge) maybeWelcomeRoom(ctx context.Context, evt *event.Event, intent 
 		b.log.Info("suppressing room welcome after notice rate limit", "room", evt.RoomID)
 		return
 	}
-	content := &event.MessageEventContent{MsgType: event.MsgNotice, Body: b.roomWelcomeText(evt.Sender)}
-	response, err := intent.SendMessageEvent(
+	content := &event.MessageEventContent{MsgType: event.MsgNotice, Body: b.roomWelcomeText(ctx, evt.Sender, evt.RoomID)}
+	response, err := sendMessageEvent(
 		ctx,
+		intent,
 		evt.RoomID,
 		event.EventMessage,
 		automatedContent(content),
@@ -54,11 +55,11 @@ func (b *Bridge) maybeWelcomeRoom(ctx context.Context, evt *event.Event, intent 
 	b.log.Info("posted room welcome", "room", evt.RoomID, "event", response.EventID)
 }
 
-func (b *Bridge) roomWelcomeText(sender id.UserID) string {
+func (b *Bridge) roomWelcomeText(ctx context.Context, sender id.UserID, roomID id.RoomID) string {
 	return fmt.Sprintf(
 		"Welcome to this agent room. Messages are plaintext, so share only approved task context.\n\n%s\n\n"+
 			"Delegate with a full @mention, or use !ask <agent> <prompt>. Run !agents to refresh the sender-filtered gallery, and !budget to inspect admission availability. Clients that send leading slashes unchanged may also use /ask, /agents, and /budget.",
-		b.agentDirectoryText(sender),
+		b.agentDirectoryText(ctx, sender, roomID),
 	)
 }
 

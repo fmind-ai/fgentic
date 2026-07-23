@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/caarlos0/env/v11"
+	"maunium.net/go/mautrix/id"
 
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/replyscan"
 )
@@ -70,6 +71,10 @@ type Config struct {
 
 	// GhostPrefix is the local-part prefix for agent ghost users (@agent-k8s -> prefix "agent-").
 	GhostPrefix string `env:"GHOST_PREFIX" envDefault:"agent-"`
+	// AccessManagerMXID is the one exact local Matrix identity allowed to invite mapped ghosts into
+	// their declared rooms. It is deliberately independent from sender allowlists: invitation is a
+	// room-administration operation, not delegation authorization.
+	AccessManagerMXID string `env:"ACCESS_MANAGER_MXID"`
 
 	// DatabaseURL is the Postgres URL backing the bridge state (mautrix StateStore, per-room/agent
 	// A2A contexts, durable appservice intake, and delegation leases). Empty falls back to in-memory
@@ -214,6 +219,9 @@ func Load() (Config, error) {
 	if err := env.Parse(&c); err != nil {
 		return Config{}, fmt.Errorf("parse environment: %w", err)
 	}
+	if c.AccessManagerMXID == "" {
+		c.AccessManagerMXID = "@alice:" + c.ServerName
+	}
 	if err := c.validate(); err != nil {
 		return Config{}, fmt.Errorf("validate environment: %w", err)
 	}
@@ -241,6 +249,13 @@ func (c Config) validate() error {
 	}
 	if c.GhostPrefix == "" {
 		return fmt.Errorf("GHOST_PREFIX must not be empty")
+	}
+	_, accessManagerServer, err := id.UserID(c.AccessManagerMXID).ParseAndValidateStrict()
+	if err != nil {
+		return fmt.Errorf("ACCESS_MANAGER_MXID must be an exact Matrix user ID: %w", err)
+	}
+	if accessManagerServer != c.ServerName {
+		return fmt.Errorf("ACCESS_MANAGER_MXID must belong to SERVER_NAME %q", c.ServerName)
 	}
 	if c.AppserviceTransactionMaxBytes <= 0 {
 		return fmt.Errorf("APPSERVICE_TRANSACTION_MAX_BYTES must be positive")

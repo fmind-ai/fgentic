@@ -297,7 +297,7 @@ func (b *Bridge) postMediaFile(ctx context.Context, intent *appservice.IntentAPI
 		Info:     &event.FileInfo{MimeType: u.mime, Size: u.size},
 	}
 	content.SetReply(evt)
-	if _, err := intent.SendMessageEvent(ctx, evt.RoomID, event.EventMessage, automatedContent(content)); err != nil {
+	if _, err := sendMessageEvent(ctx, intent, evt.RoomID, event.EventMessage, automatedContent(content)); err != nil {
 		b.log.Error("post agent artifact", "room", evt.RoomID, "err", err)
 	}
 }
