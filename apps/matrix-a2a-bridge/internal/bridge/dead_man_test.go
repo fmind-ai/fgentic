@@ -22,6 +22,7 @@ type deadManSchedule struct {
 	placeholder id.EventID
 	txnID       string
 	delay       time.Duration
+	taskID      string
 }
 
 type fakeDeadManClient struct {
@@ -47,9 +48,10 @@ func (f *fakeDeadManClient) Schedule(
 	placeholder id.EventID,
 	txnID string,
 	delay time.Duration,
+	taskID string,
 ) (id.DelayID, error) {
 	f.schedules = append(f.schedules, deadManSchedule{
-		roomID: roomID, placeholder: placeholder, txnID: txnID, delay: delay,
+		roomID: roomID, placeholder: placeholder, txnID: txnID, delay: delay, taskID: taskID,
 	})
 	if f.scheduleErr != nil {
 		return "", f.scheduleErr
@@ -183,7 +185,7 @@ func TestMatrixDeadManClientUsesPinnedSynapseContract(t *testing.T) {
 		t.Fatalf("Supported = (%t, %v), want (true, nil)", supported, err)
 	}
 	delayID, err := client.Schedule(
-		t.Context(), intent, "!room:"+ownServer, "$placeholder", "dead-man-txn", 2*time.Minute,
+		t.Context(), intent, "!room:"+ownServer, "$placeholder", "dead-man-txn", 2*time.Minute, "task-dead",
 	)
 	if err != nil || delayID != "delay-1" {
 		t.Fatalf("Schedule = (%q, %v), want (delay-1, nil)", delayID, err)
@@ -211,5 +213,15 @@ func assertDelayedNoticeContent(t *testing.T, content map[string]any) {
 	reply, ok := relates["m.in_reply_to"].(map[string]any)
 	if !ok || reply["event_id"] != "$placeholder" {
 		t.Fatalf("delayed notice reply relation = %#v", relates)
+	}
+	// The homeserver-fired stale-task notice is terminal (the bridge lost the task), so it carries the
+	// versioned ai.fgentic.a2a block with outcome=lost, the full ghost MXID, and the delegation task id.
+	block, ok := content[resultMetadataKey].(map[string]any)
+	if !ok {
+		t.Fatalf("delayed notice missing %s block: %#v", resultMetadataKey, content)
+	}
+	if block["outcome"] != outcomeLost || block["agent"] != "@agent-k8s:"+ownServer ||
+		block["task_id"] != "task-dead" || int(block["v"].(float64)) != resultMetadataVersion {
+		t.Fatalf("delayed notice block = %#v", block)
 	}
 }

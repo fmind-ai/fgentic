@@ -15,6 +15,7 @@ import subprocess
 import sys
 import threading
 from pathlib import Path
+from typing import Any, ClassVar
 
 PROBE = str(Path(__file__).with_name("probe.py"))
 
@@ -73,14 +74,41 @@ def test_reply_detection_contract() -> None:
         assert not probe._reply_succeeded(
             [_reply(REPLY_EVENT, "⏳ working on it…"), _edit(REPLY_EVENT, bad)], GHOST, PROBE_EVENT
         ), f"error edit body {bad!r} must not count"
+    assert not probe._reply_succeeded(
+        [
+            _reply(REPLY_EVENT, "⏳ working on it…"),
+            _edit(REPLY_EVENT, "premature answer"),
+            _edit(REPLY_EVENT, "⚠️ final failure"),
+        ],
+        GHOST,
+        PROBE_EVENT,
+    ), "the latest edit in a sync batch must remain authoritative"
+    tracker = probe._ReplyTracker(GHOST, PROBE_EVENT)
+    assert not tracker.observe([_reply(REPLY_EVENT, "⏳ working on it…")])
+    assert tracker.observe([_edit(REPLY_EVENT, "final answer")])
     print("ok: reply-detection contract")
 
 
-class _FakeMatrix(http.server.BaseHTTPRequestHandler):
-    # timeline the ghost eventually posts (list of events); empty -> the probe times out.
-    timeline: list[dict] = []
+def test_reply_correlation_state_is_bounded() -> None:
+    tracker = probe._ReplyTracker(GHOST, PROBE_EVENT)
+    for index in range(probe._MAX_REPLY_STATE):
+        assert not tracker.observe([_reply(f"$reply-{index}", "⏳ working on it…")])
+    try:
+        tracker.observe([_reply("$overflow", "⏳ working on it…")])
+    except SystemExit:
+        pass
+    else:
+        raise AssertionError("reply state must fail closed at its fixed limit")
+    print("ok: reply correlation state is bounded")
 
-    def log_message(self, *_args) -> None:  # silence
+
+class _FakeMatrix(http.server.BaseHTTPRequestHandler):
+    # Successive ghost timelines; empty -> the probe times out.
+    timelines: ClassVar[list[list[dict]]] = []
+    sync_index = 0
+    response_mode: str | None = None
+
+    def log_message(self, format: str, *args: Any) -> None:  # silence
         pass
 
     def _send(self, payload: dict) -> None:
@@ -91,8 +119,55 @@ class _FakeMatrix(http.server.BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_hostile_login(self) -> bool:
+        if self.response_mode == "absent-length-oversized":
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(b"{" + b"x" * probe._MAX_RESPONSE_BYTES)
+        elif self.response_mode == "declared-oversized":
+            self.send_response(200)
+            self.send_header("Content-Length", str(probe._MAX_RESPONSE_BYTES + 1))
+            self.send_header("Connection", "close")
+            self.end_headers()
+        elif self.response_mode == "incomplete":
+            self.send_response(200)
+            self.send_header("Content-Length", "10")
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(b"{}")
+        elif self.response_mode == "malformed-json":
+            self.send_response(200)
+            self.send_header("Content-Length", "1")
+            self.end_headers()
+            self.wfile.write(b"{")
+        elif self.response_mode == "non-object-json":
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"[]")
+        elif self.response_mode == "recursive-json":
+            body = b'{"x":' + b"[" * 2_000 + b"0" + b"]" * 2_000 + b"}"
+            self.send_response(200)
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.response_mode == "duplicate-content-length":
+            self.send_response(200)
+            self.send_header("Content-Length", "2")
+            self.send_header("Content-Length", "2")
+            self.end_headers()
+            self.wfile.write(b"{}")
+        else:
+            return False
+        self.close_connection = True
+        return True
+
     def do_POST(self) -> None:
         self.rfile.read(int(self.headers.get("Content-Length", "0")))
+        if self.path.endswith("/login") and self._send_hostile_login():
+            return
         self._send({"access_token": "canary-token"} if self.path.endswith("/login") else {})
 
     def do_PUT(self) -> None:
@@ -101,15 +176,31 @@ class _FakeMatrix(http.server.BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:
         if "since=" not in self.path:
-            self._send({"next_batch": "s0"})  # initial cursor, no events yet
+            cursor = "attacker-secret" if self.response_mode == "hostile-cursor" else "s0"
+            self._send({"next_batch": cursor})  # initial cursor, no events yet
             return
-        events = _FakeMatrix.timeline
+        if self.response_mode == "hostile-cursor":
+            self.send_response(200)
+            self.send_header("Content-Length", "1")
+            self.end_headers()
+            self.wfile.write(b"{")
+            return
+        index = _FakeMatrix.sync_index
+        _FakeMatrix.sync_index += 1
+        events = _FakeMatrix.timelines[index] if index < len(_FakeMatrix.timelines) else []
         rooms = {"join": {ROOM: {"timeline": {"events": events}}}} if events else {}
         self._send({"next_batch": "s1", "rooms": rooms})
 
 
-def _run_probe(timeline: list[dict], deadline: str) -> int:
-    _FakeMatrix.timeline = timeline
+def _run_probe_result(
+    timelines: list[list[dict]],
+    deadline: str,
+    *,
+    response_mode: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    _FakeMatrix.timelines = timelines
+    _FakeMatrix.sync_index = 0
+    _FakeMatrix.response_mode = response_mode
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeMatrix)
     thread = threading.Thread(target=server.serve_forever, daemon=True)
     thread.start()
@@ -125,14 +216,33 @@ def _run_probe(timeline: list[dict], deadline: str) -> int:
             "CANARY_TARGET_MXID": GHOST,
             "CANARY_DEADLINE_SECONDS": deadline,
         }
-        return subprocess.run([sys.executable, PROBE], env=env, check=False).returncode
+        return subprocess.run(
+            [sys.executable, PROBE],
+            env=env,
+            check=False,
+            capture_output=True,
+            text=True,
+        )
     finally:
         server.shutdown()
+        server.server_close()
+
+
+def _run_probe(
+    timelines: list[list[dict]],
+    deadline: str,
+    *,
+    response_mode: str | None = None,
+) -> int:
+    return _run_probe_result(timelines, deadline, response_mode=response_mode).returncode
 
 
 def test_round_trip_success() -> None:
-    timeline = [_reply(REPLY_EVENT, "⏳ working on it…"), _edit(REPLY_EVENT, "final answer")]
-    assert _run_probe(timeline, "10") == 0, "probe should succeed on an edited async reply"
+    timelines = [
+        [_reply(REPLY_EVENT, "⏳ working on it…")],
+        [_edit(REPLY_EVENT, "final answer")],
+    ]
+    assert _run_probe(timelines, "10") == 0, "probe should succeed across sync batches"
     print("ok: round-trip success")
 
 
@@ -141,8 +251,33 @@ def test_round_trip_timeout() -> None:
     print("ok: round-trip timeout fails closed")
 
 
+def test_hostile_responses_fail_closed() -> None:
+    for mode in (
+        "absent-length-oversized",
+        "declared-oversized",
+        "incomplete",
+        "malformed-json",
+        "non-object-json",
+        "recursive-json",
+        "duplicate-content-length",
+    ):
+        assert _run_probe([], "1", response_mode=mode) != 0, f"{mode} must fail closed"
+    print("ok: hostile Matrix responses fail closed")
+
+
+def test_hostile_cursor_never_reaches_failure_log() -> None:
+    result = _run_probe_result([], "1", response_mode="hostile-cursor")
+    assert result.returncode != 0
+    assert "attacker-secret" not in result.stderr
+    assert "GET Matrix response contains invalid JSON" in result.stderr
+    print("ok: hostile sync cursor is excluded from failure logs")
+
+
 if __name__ == "__main__":
     test_reply_detection_contract()
+    test_reply_correlation_state_is_bounded()
     test_round_trip_success()
     test_round_trip_timeout()
+    test_hostile_responses_fail_closed()
+    test_hostile_cursor_never_reaches_failure_log()
     print("canary probe tests passed")
