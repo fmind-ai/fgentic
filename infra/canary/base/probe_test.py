@@ -117,56 +117,74 @@ def test_probe_egress_is_exactly_scoped() -> None:
         capture_output=True,
         text=True,
     )
-    policies = json.loads(rendered.stdout)
-    probe_policy = next(
-        policy
-        for policy in policies
-        if policy["kind"] == "NetworkPolicy" and policy["metadata"]["name"] == "canary-probe"
+    resources = json.loads(rendered.stdout)
+    policies = {
+        resource["metadata"]["name"]: resource["spec"]
+        for resource in resources
+        if resource["kind"] == "NetworkPolicy"
+    }
+    assert policies == {
+        "canary-default-deny": {
+            "podSelector": {},
+            "policyTypes": ["Ingress", "Egress"],
+        },
+        "canary-probe": {
+            "podSelector": {
+                "matchLabels": {"app.kubernetes.io/name": "delegation-canary"},
+            },
+            "policyTypes": ["Ingress", "Egress"],
+            "ingress": [],
+            "egress": [
+                {
+                    "to": [
+                        {
+                            "namespaceSelector": {
+                                "matchLabels": {"kubernetes.io/metadata.name": "kube-system"},
+                            },
+                            "podSelector": {
+                                "matchLabels": {"k8s-app": "kube-dns"},
+                            },
+                        }
+                    ],
+                    "ports": [
+                        {"protocol": "UDP", "port": 53},
+                        {"protocol": "TCP", "port": 53},
+                    ],
+                },
+                {
+                    "to": [
+                        {
+                            "namespaceSelector": {
+                                "matchLabels": {"kubernetes.io/metadata.name": "matrix"},
+                            },
+                            "podSelector": {
+                                "matchLabels": {
+                                    "app.kubernetes.io/name": "matrix-authentication-service",
+                                },
+                            },
+                        }
+                    ],
+                    "ports": [{"protocol": "TCP", "port": 8080}],
+                },
+                {
+                    "to": [
+                        {
+                            "namespaceSelector": {
+                                "matchLabels": {"kubernetes.io/metadata.name": "matrix"},
+                            },
+                            "podSelector": {
+                                "matchLabels": {"app.kubernetes.io/instance": "ess-haproxy"},
+                            },
+                        }
+                    ],
+                    "ports": [{"protocol": "TCP", "port": 8008}],
+                },
+            ],
+        },
+    }, (
+        "canary NetworkPolicies must stay limited to default-deny plus the exact CoreDNS, MAS, "
+        "and ESS HAProxy peers"
     )
-    assert probe_policy["spec"]["egress"] == [
-        {
-            "to": [
-                {
-                    "namespaceSelector": {
-                        "matchLabels": {"kubernetes.io/metadata.name": "kube-system"},
-                    },
-                    "podSelector": {
-                        "matchLabels": {"k8s-app": "kube-dns"},
-                    },
-                }
-            ],
-            "ports": [
-                {"protocol": "UDP", "port": 53},
-                {"protocol": "TCP", "port": 53},
-            ],
-        },
-        {
-            "to": [
-                {
-                    "namespaceSelector": {
-                        "matchLabels": {"kubernetes.io/metadata.name": "matrix"},
-                    },
-                    "podSelector": {
-                        "matchLabels": {"app.kubernetes.io/name": "matrix-authentication-service"},
-                    },
-                }
-            ],
-            "ports": [{"protocol": "TCP", "port": 8080}],
-        },
-        {
-            "to": [
-                {
-                    "namespaceSelector": {
-                        "matchLabels": {"kubernetes.io/metadata.name": "matrix"},
-                    },
-                    "podSelector": {
-                        "matchLabels": {"k8s.element.io/synapse-instance": "ess-synapse"},
-                    },
-                }
-            ],
-            "ports": [{"protocol": "TCP", "port": 8008}],
-        },
-    ], "canary egress must stay limited to DNS, MAS, and the exact ESS Synapse workload"
     print("ok: canary probe egress is exactly scoped")
 
 
