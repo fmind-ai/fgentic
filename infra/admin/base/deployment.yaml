@@ -24,6 +24,7 @@ spec:
         fgentic.dev/config-server-name: ${server_name}
     spec:
       automountServiceAccountToken: false
+      enableServiceLinks: false
       securityContext:
         runAsNonRoot: true
         # The image declares USER sws:sws. Pin its published numeric identity so kubelet can

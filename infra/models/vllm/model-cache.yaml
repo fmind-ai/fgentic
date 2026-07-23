@@ -36,6 +36,7 @@ spec:
     spec:
       serviceAccountName: vllm
       automountServiceAccountToken: false
+      enableServiceLinks: false
       restartPolicy: Never
       securityContext:
         runAsNonRoot: true

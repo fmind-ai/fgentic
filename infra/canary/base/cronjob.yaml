@@ -26,6 +26,7 @@ spec:
         spec:
           serviceAccountName: delegation-canary
           automountServiceAccountToken: false
+          enableServiceLinks: false
           restartPolicy: Never
           securityContext:
             runAsNonRoot: true
