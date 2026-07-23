@@ -16,11 +16,13 @@ PUBLIC_ENTRYPOINTS = (
 )
 _MISE_RUN = re.compile(r"\bmise[ \t]+run[ \t]+(?P<task>[A-Za-z0-9][A-Za-z0-9:_-]*)")
 _MISE_APP_RUN = re.compile(
-    r"\bmise[ \t]+--cd[ \t]+(?P<directory>[A-Za-z0-9_./-]+)"
-    r"[ \t]+run[ \t]+(?P<task>[A-Za-z0-9][A-Za-z0-9:_-]*)"
+    r"(?P<command>\bmise[ \t]+(?:(?:--cd|-C)[ \t]+|--cd=)"
+    r"(?P<quote>[\"']?)(?P<directory>[A-Za-z0-9_./-]+)(?P=quote)"
+    r"[ \t]+run[ \t]+(?P<task>[A-Za-z0-9][A-Za-z0-9:_-]*))"
 )
 
 type TaskViolation = tuple[str, str]
+type AppTaskReference = tuple[str, str, str]
 
 
 def _task_definitions(mise_config: Path) -> dict[str, set[str]]:
@@ -66,9 +68,12 @@ def _documented_tasks(markdown: str) -> set[str]:
     return {match.group("task") for match in _MISE_RUN.finditer(markdown)}
 
 
-def _documented_app_tasks(markdown: str) -> set[tuple[str, str]]:
-    """Return explicit repository-directory and task pairs."""
-    return {(match.group("directory"), match.group("task")) for match in _MISE_APP_RUN.finditer(markdown)}
+def _documented_app_tasks(markdown: str) -> set[AppTaskReference]:
+    """Return explicit directory, task, and exact-command references."""
+    return {
+        (match.group("directory"), match.group("task"), match.group("command"))
+        for match in _MISE_APP_RUN.finditer(markdown)
+    }
 
 
 def _visible_documentation(repository_root: Path) -> tuple[Path, ...]:
@@ -117,12 +122,17 @@ def _effective_task_vocabulary(
     if not working_directory.is_dir():
         return None, "working directory does not exist"
 
+    if not mise_config.resolve().is_relative_to(repository):
+        return None, "root mise config escapes the repository"
     definitions = _task_definitions(mise_config)
     current = repository
     for part in working_directory.relative_to(repository).parts:
         current /= part
         nested_config = current / "mise.toml"
         if nested_config.is_file():
+            if not nested_config.resolve().is_relative_to(repository):
+                config_name = nested_config.relative_to(repository).as_posix()
+                return None, f"mise config {config_name} escapes the repository"
             definitions.update(_task_definitions(nested_config))
     vocabulary = set(definitions).union(*(aliases for aliases in definitions.values()))
     return vocabulary, None
@@ -144,8 +154,7 @@ def _task_violations(
         markdown = source.read_text(encoding="utf-8")
         missing = sorted(_documented_tasks(markdown) - root_vocabulary)
         violations.extend((source_name, f"mise run {task}") for task in missing)
-        for directory, task in sorted(_documented_app_tasks(markdown)):
-            command = f"mise --cd {directory} run {task}"
+        for directory, task, command in sorted(_documented_app_tasks(markdown)):
             vocabulary, reason = _effective_task_vocabulary(directory, mise_config, repository_root)
             if reason is not None:
                 violations.append((source_name, f"{command} ({reason})"))
@@ -185,7 +194,8 @@ mise run t
 
 Unrelated text such as `mise tasks` is not a task invocation.
 App-local commands inherit root tasks (`mise --cd apps/example run check`) and use their local config
-(`mise --cd apps/example run ship-app`).
+(`mise --cd apps/example run ship-app`). Equivalent forms include
+`mise --cd=apps/example run ship-app` and `mise -C apps/example run ship-app`.
 """
         with TemporaryDirectory() as temporary:
             repository_root = Path(temporary)
@@ -295,7 +305,7 @@ App-local commands inherit root tasks (`mise --cd apps/example run check`) and u
             mise_config.write_text('[tasks.test]\nrun = "true"\n', encoding="utf-8")
             source = repository_root / "README.md"
             source.write_text(
-                "Run `mise --cd apps/missing run test`, `mise --cd ../outside run test`, "
+                'Run `mise --cd apps/missing run test`, `mise --cd "../outside" run test`, '
                 "or `mise --cd /tmp run test`.\n",
                 encoding="utf-8",
             )
@@ -305,7 +315,7 @@ App-local commands inherit root tasks (`mise --cd apps/example run check`) and u
                 [
                     (
                         "README.md",
-                        "mise --cd ../outside run test (working directory must not traverse parents)",
+                        'mise --cd "../outside" run test (working directory must not traverse parents)',
                     ),
                     (
                         "README.md",
@@ -314,6 +324,30 @@ App-local commands inherit root tasks (`mise --cd apps/example run check`) and u
                     (
                         "README.md",
                         "mise --cd apps/missing run test (working directory does not exist)",
+                    ),
+                ],
+            )
+
+    def test_rejects_mise_config_symlinks_outside_repository(self) -> None:
+        with TemporaryDirectory() as temporary, TemporaryDirectory() as external:
+            repository_root = Path(temporary)
+            mise_config = repository_root / "mise.toml"
+            mise_config.write_text('[tasks.check]\nrun = "true"\n', encoding="utf-8")
+            app = repository_root / "apps/example"
+            app.mkdir(parents=True)
+            external_config = Path(external) / "mise.toml"
+            external_config.write_text('[tasks.external]\nrun = "true"\n', encoding="utf-8")
+            (app / "mise.toml").symlink_to(external_config)
+            source = repository_root / "README.md"
+            source.write_text("Run `mise --cd=apps/example run external`.\n", encoding="utf-8")
+
+            self.assertEqual(
+                _task_violations((source,), mise_config, repository_root),
+                [
+                    (
+                        "README.md",
+                        "mise --cd=apps/example run external "
+                        "(mise config apps/example/mise.toml escapes the repository)",
                     ),
                 ],
             )
