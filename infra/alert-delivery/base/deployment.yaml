@@ -22,6 +22,7 @@ spec:
     spec:
       serviceAccountName: alert-receiver
       automountServiceAccountToken: false
+      enableServiceLinks: false
       securityContext:
         runAsNonRoot: true
         runAsUser: 65534

@@ -49,6 +49,7 @@ spec:
     spec:
       serviceAccountName: knowledge-embeddings
       automountServiceAccountToken: false
+      enableServiceLinks: false
       restartPolicy: Never
       securityContext:
         runAsNonRoot: true
@@ -143,6 +144,7 @@ spec:
     spec:
       serviceAccountName: knowledge-embeddings
       automountServiceAccountToken: false
+      enableServiceLinks: false
       restartPolicy: Never
       securityContext:
         runAsNonRoot: true
