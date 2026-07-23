@@ -54,21 +54,29 @@ var (
 		Name: "fgentic_reply_secret_scans_total",
 		Help: "Agent replies where the reply->room scan detected credential material, by ghost and enforcement action (#343).",
 	}, []string{"ghost", "action"})
+
+	roomBudgetExhaustionsTotal = promauto.NewCounter(prometheus.CounterOpts{
+		Name: "fgentic_room_token_budget_exhaustions_total",
+		Help: "Delegations refused because their room reached its configured per-period token budget (#99). " +
+			"Deliberately label-free: per-room budget state is high-cardinality and stays in-room via the " +
+			"budget command and audit log, never a Prometheus label (D7/D8 cardinality policy).",
+	})
 )
 
 // Outcome labels for fgentic_delegations_total.
 const (
-	outcomeOK            = "ok"
-	outcomeFailed        = "failed"         // agent task ended failed/canceled/rejected
-	outcomeError         = "error"          // A2A transport/protocol error
-	outcomeRateLimited   = "rate_limited"   // D7 budget rejection
-	outcomeDenied        = "denied"         // sender policy rejection before A2A
-	outcomeQueueFull     = "queue_full"     // bounded dispatcher rejected before admission
-	outcomeShutdown      = "shutdown"       // target did not start before dispatcher shutdown
-	outcomeTimeout       = "timeout"        // long task exceeded TASK_TIMEOUT
-	outcomeLost          = "lost"           // GetTask error budget exhausted
-	outcomeCanceled      = "canceled"       // long task canceled from the room (#98)
-	outcomeInputRequired = "input_required" // task paused awaiting a threaded reply (#116)
-	outcomeAmbiguous     = "ambiguous"      // A2A may have accepted a request whose ACK was lost
-	outcomeDead          = "dead"           // bounded recovery exhausted; operator action required
+	outcomeOK              = "ok"
+	outcomeFailed          = "failed"           // agent task ended failed/canceled/rejected
+	outcomeError           = "error"            // A2A transport/protocol error
+	outcomeRateLimited     = "rate_limited"     // D7 budget rejection
+	outcomeBudgetExhausted = "budget_exhausted" // room reached its per-period token budget (#99)
+	outcomeDenied          = "denied"           // sender policy rejection before A2A
+	outcomeQueueFull       = "queue_full"       // bounded dispatcher rejected before admission
+	outcomeShutdown        = "shutdown"         // target did not start before dispatcher shutdown
+	outcomeTimeout         = "timeout"          // long task exceeded TASK_TIMEOUT
+	outcomeLost            = "lost"             // GetTask error budget exhausted
+	outcomeCanceled        = "canceled"         // long task canceled from the room (#98)
+	outcomeInputRequired   = "input_required"   // task paused awaiting a threaded reply (#116)
+	outcomeAmbiguous       = "ambiguous"        // A2A may have accepted a request whose ACK was lost
+	outcomeDead            = "dead"             // bounded recovery exhausted; operator action required
 )

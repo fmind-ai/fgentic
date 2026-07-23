@@ -203,7 +203,7 @@ func TestBudgetCommandReadsLimitsAndReservationsWithoutConsumption(t *testing.T)
 		"Sender + agent invocation rate: 60/minute, burst 3",
 		"agent-remote: 2 whole request(s) available",
 		"maxTokens 8192 per request",
-		"reservation ceilings, not observed or spent token consumption",
+		"admission ceilings, not spend",
 	) {
 		t.Fatalf("/budget response = %#v", events)
 	}

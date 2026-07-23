@@ -142,6 +142,7 @@ type Bridge struct {
 	roomLimits          *limiters
 	noticeSenderLimits  *limiters
 	noticeRoomLimits    *limiters
+	roomBudgets         *roomBudgets // per-room cumulative token budgets (#99), a hard cap over the limiters
 	pollInitial         time.Duration
 	pollMax             time.Duration
 	pollWait            pollWaitFunc
@@ -193,6 +194,7 @@ func New(cfg config.Config, as *appservice.AppService, agents *AgentMap, client 
 		roomLimits:          newLimiters(cfg.RoomRatePerMinute, cfg.RoomRateBurst, cfg.RateLimitBucketCapacity),
 		noticeSenderLimits:  newLimiters(cfg.SenderRatePerMinute, cfg.SenderRateBurst, cfg.RateLimitBucketCapacity),
 		noticeRoomLimits:    newLimiters(cfg.RoomRatePerMinute, cfg.RoomRateBurst, cfg.RateLimitBucketCapacity),
+		roomBudgets:         newRoomBudgets(cfg.RoomTokenBudget, cfg.RoomTokenBudgetPeriod, roomTokenBudgetOverrides(cfg), cfg.RateLimitBucketCapacity),
 		pollInitial:         pollInitial,
 		pollMax:             pollMax,
 		pollWait:            waitForPoll,
@@ -744,6 +746,13 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 			return
 		}
 	}
+	// Per-room token budget (#99): a resumed turn is a fresh invocation, so a room that reached its
+	// token ceiling while paused is refused. Unlike the rate limit, a budget exhaustion does not clear
+	// within the wait window, so the task is finished rather than re-registered for a futile retry.
+	if !b.roomBudgetAllows(reply.RoomID) {
+		b.finishContinuation(ctx, reply, open, currentSender, started, "admission", errorRoomTokenBudget, "this room reached its token budget")
+		return
+	}
 	if !b.senderLimits.Allow(currentSender.rateLimitKey(open.localpart)) || !b.roomLimits.Allow(reply.RoomID.String()) {
 		// Re-register (fresh budget) so a rate-limited answer is retried, not lost.
 		b.openTasks.register(open, b.cfg.InputWaitTimeout, func() { b.expireOpenTask(open) })
@@ -1080,6 +1089,18 @@ func (b *Bridge) dispatchWithDedupVerdict(
 		return
 	}
 
+	// Per-room token budget (#99): a hard cumulative-token cap checked before the invocation-rate
+	// guards, so a room over its ceiling is refused fail-closed without spending a limiter token.
+	if !b.roomBudgetAllows(evt.RoomID) {
+		delegationsTotal.WithLabelValues(localpart, outcomeBudgetExhausted).Inc()
+		audit.outcome = outcomeBudgetExhausted
+		audit.terminalStage = "admission"
+		audit.terminalReason = errorRoomTokenBudget
+		audit.replyEventID = b.postFailureReply(
+			ctx, intent, evt, sender, localpart, errorRoomTokenBudget, 0,
+		)
+		return
+	}
 	// LLM-spend guards (SPEC §4 F7): per (sender, agent) and per room.
 	if !b.senderLimits.Allow(sender.rateLimitKey(localpart)) || !b.roomLimits.Allow(evt.RoomID.String()) {
 		delegationsTotal.WithLabelValues(localpart, outcomeRateLimited).Inc()

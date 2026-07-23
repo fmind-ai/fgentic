@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"net/http"
 	"net/url"
 	"strings"
@@ -198,6 +199,14 @@ type Result struct {
 	Files []ResultFile
 	Data  []string
 	Links []ResultLink
+	// TotalTokens is the exact model-token total kagent attributed to a completed Task, read from its
+	// `kagent_usage_metadata.totalTokenCount` metadata (docs/audit.md §157). It is the only reliable
+	// per-delegation usage source available to the bridge — agentgateway's GenAI metrics are aggregate
+	// and deliberately carry no room/context/task label (docs/observability.md §9.1), so per-room token
+	// budgets (#99) meter this field. It is 0 for a bare terminal Message (no task, no usage row), a
+	// non-terminal poll, or a server that does not populate the field; callers must treat 0 as "not
+	// attributable", never as proof of zero spend.
+	TotalTokens int
 }
 
 // ResultFile is one raw-bytes part the agent emitted (an A2A Raw part), a candidate for upload to the
@@ -674,6 +683,9 @@ func taskResult(t *a2a.Task) Result {
 	}
 	if r.Terminal {
 		r.Text = taskText(t)
+		// Meter exact per-delegation model tokens for per-room budgets (#99) only on a terminal task,
+		// where kagent has attributed final usage. A working poll's metadata is not a final usage row.
+		r.TotalTokens = kagentTotalTokens(t.Metadata)
 		// A finished task's file/data/link products live in its artifacts (SPEC §6): extract them for
 		// the bridge to post as media, deliberately not from status/history (those are working turns).
 		for _, a := range t.Artifacts {
@@ -687,6 +699,27 @@ func taskResult(t *a2a.Task) Result {
 		r.Text = partsText(t.Status.Message.Parts)
 	}
 	return r
+}
+
+// kagentTotalTokens reads kagent's exact per-task token total from a completed Task's metadata
+// (`kagent_usage_metadata.totalTokenCount`, docs/audit.md §157). JSON decoding lands numbers as
+// float64; a missing key, wrong shape, or negative/non-finite value yields 0 (not attributable) so a
+// malformed metadata value can never corrupt the room budget ledger. It reads only the total the
+// bridge budgets against, ignoring the prompt/candidate split.
+func kagentTotalTokens(metadata map[string]any) int {
+	usage, ok := metadata["kagent_usage_metadata"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	total, ok := usage["totalTokenCount"].(float64)
+	if !ok || math.IsNaN(total) || math.IsInf(total, 0) || total <= 0 {
+		return 0
+	}
+	// Bound to MaxInt so an out-of-range provider value cannot overflow the accumulator.
+	if total > float64(math.MaxInt) {
+		return math.MaxInt
+	}
+	return int(total)
 }
 
 // extractParts splits a part list into the bridge's non-text content buckets (#115): Raw parts become

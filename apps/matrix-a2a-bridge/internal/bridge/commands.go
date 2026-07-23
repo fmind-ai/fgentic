@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 
 	"maunium.net/go/mautrix/appservice"
@@ -197,6 +198,19 @@ func (b *Bridge) budgetText(senderID id.UserID, roomID id.RoomID) string {
 		),
 	}
 
+	// Per-room token budget (#99): show this room's metered consumption against its ceiling and the
+	// reset time. Bounded and scoped to this room only — no other room's usage is ever revealed.
+	if b.roomBudgets.enabled() {
+		if tb := b.roomBudgets.snapshot(roomID.String()); tb.limited {
+			lines = append(lines, fmt.Sprintf(
+				"- Room token budget: %d of %d tokens used this period, %d remaining; resets %s.",
+				tb.used, tb.limit, tb.remaining, tb.resetAt.UTC().Format(time.RFC3339),
+			))
+		} else {
+			lines = append(lines, "- Room token budget: unlimited (no budget configured for this room).")
+		}
+	}
+
 	var remoteReservations []string
 	visible := 0
 	hidden := 0
@@ -233,7 +247,7 @@ func (b *Bridge) budgetText(senderID id.UserID, roomID id.RoomID) string {
 	}
 	lines = append(
 		lines,
-		"These are admission limits and reservation ceilings, not observed or spent token consumption. Reading them does not consume invocation capacity.",
+		"The invocation-rate and per-request reservation figures are admission ceilings, not spend; any room token budget line reflects metered consumption this period. Reading this does not consume invocation capacity.",
 	)
 	return strings.Join(lines, "\n")
 }

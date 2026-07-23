@@ -27,6 +27,8 @@ func failureMessage(reason, agent string, timeout time.Duration) string {
 		return "⚠️ The agent service is handling its maximum safe queue. Please try again in a moment."
 	case errorRateLimit:
 		return "⚠️ This agent has reached a request limit. Please wait a moment before trying again."
+	case errorRoomTokenBudget:
+		return "⚠️ This room has reached its token budget for the current period, so the request was not sent. It will reset automatically; ask an operator to review the budget if you need more."
 	case errorQuoteOverBudget:
 		return "⚠️ This agent is over its configured budget limit, so the request was not sent. Ask an operator to review the limit."
 	case errorAgentUntrusted:

@@ -161,6 +161,10 @@ func (b *Bridge) deliverReply(
 	ref *AgentRef,
 	res a2aclient.Result,
 ) (replyID id.EventID, out, rejected int) {
+	// Meter the room's token budget on the synchronous (in-memory) success path (#99). deliverReply is
+	// the single chokepoint for a delivered legacy reply, so this records each completed delegation
+	// exactly once; the durable path meters at its own terminal instead.
+	b.recordRoomBudget(evt.RoomID, res)
 	text, uploads, rejected := b.prepareReply(ctx, intent, localpart, ref, res)
 
 	if placeholder == "" {

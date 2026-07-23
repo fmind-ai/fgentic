@@ -402,3 +402,80 @@ func TestLoadRejectsInvalidLoggingConfig(t *testing.T) {
 		})
 	}
 }
+
+func TestRoomTokenBudgetDefaultsUnlimited(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load with defaults: %v", err)
+	}
+	if cfg.RoomTokenBudget != 0 {
+		t.Errorf("RoomTokenBudget = %d, want 0 (unlimited)", cfg.RoomTokenBudget)
+	}
+	if cfg.RoomTokenBudgetPeriod != 24*time.Hour {
+		t.Errorf("RoomTokenBudgetPeriod = %s, want 24h", cfg.RoomTokenBudgetPeriod)
+	}
+	overrides, err := cfg.RoomTokenBudgetMap()
+	if err != nil {
+		t.Fatalf("RoomTokenBudgetMap: %v", err)
+	}
+	if len(overrides) != 0 {
+		t.Errorf("default overrides = %v, want empty", overrides)
+	}
+}
+
+func TestRoomTokenBudgetParsesOverrides(t *testing.T) {
+	t.Setenv("SERVER_NAME", "example.org")
+	t.Setenv("ROOM_TOKEN_BUDGET", "100000")
+	t.Setenv("ROOM_TOKEN_BUDGET_PERIOD", "6h")
+	t.Setenv("ROOM_TOKEN_BUDGET_OVERRIDES", "!vip:example.org=500000, !free:example.org=0")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.RoomTokenBudget != 100000 || cfg.RoomTokenBudgetPeriod != 6*time.Hour {
+		t.Fatalf("budget defaults = (%d, %s)", cfg.RoomTokenBudget, cfg.RoomTokenBudgetPeriod)
+	}
+	overrides, err := cfg.RoomTokenBudgetMap()
+	if err != nil {
+		t.Fatalf("RoomTokenBudgetMap: %v", err)
+	}
+	if overrides["!vip:example.org"] != 500000 || overrides["!free:example.org"] != 0 {
+		t.Fatalf("overrides = %v, want vip=500000 free=0", overrides)
+	}
+}
+
+func TestRoomTokenBudgetRejectsInvalidConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		budget    string
+		period    string
+		overrides string
+		want      string
+	}{
+		{name: "negative default", budget: "-1", want: "ROOM_TOKEN_BUDGET must be >= 0"},
+		{name: "zero period with budget", budget: "1000", period: "0s", want: "ROOM_TOKEN_BUDGET_PERIOD must be positive"},
+		{name: "malformed override", overrides: "not-a-room", want: "must be !room:server=limit"},
+		{name: "non-room override", overrides: "roomkey=100", want: "must be a Matrix room ID"},
+		{name: "negative override limit", overrides: "!r:example.org=-5", want: "must be a non-negative integer"},
+		{name: "duplicate override", overrides: "!r:example.org=1,!r:example.org=2", want: "configured more than once"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("SERVER_NAME", "example.org")
+			if test.budget != "" {
+				t.Setenv("ROOM_TOKEN_BUDGET", test.budget)
+			}
+			if test.period != "" {
+				t.Setenv("ROOM_TOKEN_BUDGET_PERIOD", test.period)
+			}
+			if test.overrides != "" {
+				t.Setenv("ROOM_TOKEN_BUDGET_OVERRIDES", test.overrides)
+			}
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Load() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
