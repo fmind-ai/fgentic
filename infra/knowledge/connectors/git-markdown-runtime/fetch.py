@@ -39,15 +39,15 @@ class AcquisitionError(RuntimeError):
     """The trusted Flux acquisition boundary failed closed."""
 
 
-def _reject_constant(value: str) -> object:
-    raise AcquisitionError(f"JSON constant is forbidden: {value}")
+def _reject_constant(_value: str) -> object:
+    raise AcquisitionError("JSON constant is forbidden")
 
 
 def _strict_object(pairs: list[tuple[str, object]]) -> JSONObject:
     result: JSONObject = {}
     for key, value in pairs:
         if key in result:
-            raise AcquisitionError(f"duplicate JSON object key: {key}")
+            raise AcquisitionError("duplicate JSON object key")
         result[key] = value
     return result
 
@@ -83,11 +83,53 @@ def _read_file(path: Path, maximum: int) -> bytes:
     return raw
 
 
+def _declared_response_length(response: http.client.HTTPResponse, maximum: int) -> int | None:
+    content_lengths = response.headers.get_all("Content-Length", [])
+    transfer_encodings = response.headers.get_all("Transfer-Encoding", [])
+    if content_lengths and transfer_encodings:
+        raise AcquisitionError("HTTP response framing is ambiguous")
+    if len(content_lengths) > 1 or len(transfer_encodings) > 1:
+        raise AcquisitionError("HTTP response framing is ambiguous")
+    if transfer_encodings:
+        if transfer_encodings[0].strip(" \t").lower() != "chunked":
+            raise AcquisitionError("HTTP response transfer coding is unsupported")
+        return None
+    if not content_lengths:
+        return None
+
+    value = content_lengths[0].strip(" \t")
+    if not value.isascii() or not value.isdecimal():
+        raise AcquisitionError("HTTP response Content-Length is invalid")
+    normalized = value.lstrip("0") or "0"
+    maximum_text = str(maximum)
+    if len(normalized) > len(maximum_text) or (len(normalized) == len(maximum_text) and normalized > maximum_text):
+        raise AcquisitionError("HTTP response declares an oversized body")
+    return int(normalized)
+
+
 def _read_response(response: http.client.HTTPResponse, maximum: int) -> bytes:
-    raw = response.read(maximum + 1)
+    declared_length = _declared_response_length(response, maximum)
+    try:
+        raw = response.read(maximum + 1)
+    except http.client.HTTPException:
+        raise AcquisitionError("HTTP response body is truncated or malformed") from None
     if not raw or len(raw) > maximum:
         raise AcquisitionError("HTTP response is empty or oversized")
+    if declared_length is not None and len(raw) != declared_length:
+        raise AcquisitionError("HTTP response body is truncated or malformed")
     return raw
+
+
+def _strict_json_object(raw: bytes, *, name: str) -> JSONObject:
+    try:
+        document = json.loads(
+            raw.decode("utf-8"),
+            object_pairs_hook=_strict_object,
+            parse_constant=_reject_constant,
+        )
+    except (AcquisitionError, RecursionError, UnicodeDecodeError, ValueError):
+        raise AcquisitionError("HTTP response is not strict UTF-8 JSON") from None
+    return _object(document, name=name)
 
 
 def _api_document(token_file: Path, ca_file: Path) -> JSONObject:
@@ -124,20 +166,12 @@ def _api_document(token_file: Path, ca_file: Path) -> JSONObject:
         if media_type != "application/json":
             raise AcquisitionError("Kubernetes API returned an unexpected media type")
         raw = _read_response(response, MAX_API_BYTES)
-    except (OSError, ssl.SSLError, http.client.HTTPException) as error:
-        raise AcquisitionError(f"Kubernetes API request failed: {error}") from error
+    except (OSError, ssl.SSLError, http.client.HTTPException):
+        raise AcquisitionError("Kubernetes API request failed") from None
     finally:
         connection.close()
 
-    try:
-        document = json.loads(
-            raw.decode("utf-8"),
-            object_pairs_hook=_strict_object,
-            parse_constant=_reject_constant,
-        )
-    except (RecursionError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
-        raise AcquisitionError(f"Kubernetes API response is not strict UTF-8 JSON: {error}") from error
-    return _object(document, name="GitRepository")
+    return _strict_json_object(raw, name="GitRepository")
 
 
 def _artifact_status(document: Mapping[str, object]) -> git_markdown.ArtifactStatus:
@@ -214,14 +248,9 @@ def _download_artifact(status: git_markdown.ArtifactStatus) -> bytes:
         response = connection.getresponse()
         if response.status != http.client.OK:
             raise AcquisitionError(f"source-controller returned HTTP {response.status}")
-        content_length = response.getheader("Content-Length")
-        if content_length is not None and (
-            not content_length.isascii() or not content_length.isdecimal() or int(content_length) != status.size
-        ):
-            raise AcquisitionError("source-controller Content-Length differs from Flux status")
-        raw = response.read(status.size + 1)
-    except (OSError, http.client.HTTPException) as error:
-        raise AcquisitionError(f"source-controller request failed: {error}") from error
+        raw = _read_response(response, status.size)
+    except (OSError, http.client.HTTPException):
+        raise AcquisitionError("source-controller request failed") from None
     finally:
         connection.close()
     if len(raw) != status.size:
