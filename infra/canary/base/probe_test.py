@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 PROBE = str(Path(__file__).with_name("probe.py"))
+ENABLED_PROFILE = str(Path(__file__).parents[1] / "profiles" / "enabled")
 
 sys.path.insert(0, str(Path(__file__).parent))
 import probe  # noqa: E402  (import after sys.path shim)
@@ -100,6 +101,73 @@ def test_reply_correlation_state_is_bounded() -> None:
     else:
         raise AssertionError("reply state must fail closed at its fixed limit")
     print("ok: reply correlation state is bounded")
+
+
+def test_probe_egress_is_exactly_scoped() -> None:
+    manifest = subprocess.run(
+        ["kubectl", "kustomize", ENABLED_PROFILE],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    rendered = subprocess.run(
+        ["yq", "eval-all", "-o=json", "[.]"],
+        input=manifest.stdout,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    policies = json.loads(rendered.stdout)
+    probe_policy = next(
+        policy
+        for policy in policies
+        if policy["kind"] == "NetworkPolicy" and policy["metadata"]["name"] == "canary-probe"
+    )
+    assert probe_policy["spec"]["egress"] == [
+        {
+            "to": [
+                {
+                    "namespaceSelector": {
+                        "matchLabels": {"kubernetes.io/metadata.name": "kube-system"},
+                    },
+                    "podSelector": {
+                        "matchLabels": {"k8s-app": "kube-dns"},
+                    },
+                }
+            ],
+            "ports": [
+                {"protocol": "UDP", "port": 53},
+                {"protocol": "TCP", "port": 53},
+            ],
+        },
+        {
+            "to": [
+                {
+                    "namespaceSelector": {
+                        "matchLabels": {"kubernetes.io/metadata.name": "matrix"},
+                    },
+                    "podSelector": {
+                        "matchLabels": {"app.kubernetes.io/name": "matrix-authentication-service"},
+                    },
+                }
+            ],
+            "ports": [{"protocol": "TCP", "port": 8080}],
+        },
+        {
+            "to": [
+                {
+                    "namespaceSelector": {
+                        "matchLabels": {"kubernetes.io/metadata.name": "matrix"},
+                    },
+                    "podSelector": {
+                        "matchLabels": {"k8s.element.io/synapse-instance": "ess-synapse"},
+                    },
+                }
+            ],
+            "ports": [{"protocol": "TCP", "port": 8008}],
+        },
+    ], "canary egress must stay limited to DNS, MAS, and the exact ESS Synapse workload"
+    print("ok: canary probe egress is exactly scoped")
 
 
 class _FakeMatrix(http.server.BaseHTTPRequestHandler):
@@ -276,6 +344,7 @@ def test_hostile_cursor_never_reaches_failure_log() -> None:
 if __name__ == "__main__":
     test_reply_detection_contract()
     test_reply_correlation_state_is_bounded()
+    test_probe_egress_is_exactly_scoped()
     test_round_trip_success()
     test_round_trip_timeout()
     test_hostile_responses_fail_closed()
