@@ -63,9 +63,9 @@ Runtime evidence stays authoritative. The bridge integration gate proves that ka
 
 ## Goose integration decision
 
-**Decision (2026-07-14): do not present a Goose prototype yet.** Goose is an AAIF-hosted project, but shared foundation membership is not a runtime boundary.
+**Decision (2026-07-14; reviewed 2026-07-24): do not present a Goose prototype yet.** Goose is an AAIF-hosted project, but shared foundation membership is not a runtime boundary.
 
-1. The latest stable release reviewed was [Goose v1.42.0](https://github.com/aaif-goose/goose/releases/tag/v1.42.0), published 2026-07-13. Its official [extension documentation](https://goose-docs.ai/docs/mcp/filesystem-mcp/) and [tagged source](https://github.com/aaif-goose/goose/tree/v1.42.0) expose MCP extension/client behavior, while its repository also documents ACP client surfaces. That review found no supported A2A client or server transport; this is an evidence-based absence inference, not an upstream compatibility promise.
+1. The latest stable release reviewed was [Goose v1.44.0](https://github.com/aaif-goose/goose/releases/tag/v1.44.0), published 2026-07-23. Its exact tagged [architecture source](https://github.com/aaif-goose/goose/blob/v1.44.0/documentation/docs/goose-architecture/goose-architecture.md#L21-L42) documents MCP extension/client behavior and ACP server/provider surfaces. That review found no supported A2A client or server transport; this is an evidence-based absence inference, not an upstream compatibility promise.
 1. Fgentic's current `/mcp` route is a cluster-internal `ClusterIP` surface. It accepts only a SOPS-managed credential bound to `platform-helper` and exposes five allowlisted, read-only Kubernetes tools; it is not a public user-agent integration API ([Security §7.4](security.md#74-governed-mcp-tool-egress)).
 1. The readily available demo—connecting Goose directly to an MCP server—would bypass the Matrix-to-A2A delegation path and Fgentic's scoped MCP identity contract. It would prove Goose/MCP compatibility, not a Fgentic capability. Adding an adapter or publishing a credential solely to manufacture that demo would widen the security surface without user value.
 
