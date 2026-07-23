@@ -56,60 +56,75 @@ def test_network_peers_are_exactly_scoped() -> None:
         text=True,
     )
     resources = json.loads(rendered.stdout)
-    policy = next(
-        resource
+    policies = {
+        resource["metadata"]["name"]: resource["spec"]
         for resource in resources
-        if resource["kind"] == "NetworkPolicy" and resource["metadata"]["name"] == "alert-receiver"
+        if resource["kind"] == "NetworkPolicy"
+    }
+    assert policies == {
+        "alert-delivery-default-deny": {
+            "podSelector": {},
+            "policyTypes": ["Ingress", "Egress"],
+        },
+        "alert-receiver": {
+            "podSelector": {
+                "matchLabels": {"app.kubernetes.io/name": "alert-receiver"},
+            },
+            "policyTypes": ["Ingress", "Egress"],
+            "ingress": [
+                {
+                    "from": [
+                        {
+                            "namespaceSelector": {
+                                "matchLabels": {"kubernetes.io/metadata.name": "monitoring"},
+                            },
+                            "podSelector": {
+                                "matchLabels": {
+                                    "alertmanager": "kube-prometheus-stack-alertmanager",
+                                    "app.kubernetes.io/name": "alertmanager",
+                                },
+                            },
+                        }
+                    ],
+                    "ports": [{"protocol": "TCP", "port": 9095}],
+                }
+            ],
+            "egress": [
+                {
+                    "to": [
+                        {
+                            "namespaceSelector": {
+                                "matchLabels": {"kubernetes.io/metadata.name": "kube-system"},
+                            },
+                            "podSelector": {
+                                "matchLabels": {"k8s-app": "kube-dns"},
+                            },
+                        }
+                    ],
+                    "ports": [
+                        {"protocol": "UDP", "port": 53},
+                        {"protocol": "TCP", "port": 53},
+                    ],
+                },
+                {
+                    "to": [
+                        {
+                            "namespaceSelector": {
+                                "matchLabels": {"kubernetes.io/metadata.name": "matrix"},
+                            },
+                            "podSelector": {
+                                "matchLabels": {"app.kubernetes.io/instance": "ess-haproxy"},
+                            },
+                        }
+                    ],
+                    "ports": [{"protocol": "TCP", "port": 8008}],
+                },
+            ],
+        },
+    }, (
+        "alert-delivery NetworkPolicies must stay limited to default-deny plus the exact "
+        "Alertmanager, CoreDNS, and ESS HAProxy peers"
     )
-    assert policy["spec"]["ingress"] == [
-        {
-            "from": [
-                {
-                    "namespaceSelector": {
-                        "matchLabels": {"kubernetes.io/metadata.name": "monitoring"},
-                    },
-                    "podSelector": {
-                        "matchLabels": {
-                            "alertmanager": "kube-prometheus-stack-alertmanager",
-                            "app.kubernetes.io/name": "alertmanager",
-                        },
-                    },
-                }
-            ],
-            "ports": [{"protocol": "TCP", "port": 9095}],
-        }
-    ], "receiver ingress must stay limited to the exact kube-prometheus-stack Alertmanager workload"
-    assert policy["spec"]["egress"] == [
-        {
-            "to": [
-                {
-                    "namespaceSelector": {
-                        "matchLabels": {"kubernetes.io/metadata.name": "kube-system"},
-                    },
-                    "podSelector": {
-                        "matchLabels": {"k8s-app": "kube-dns"},
-                    },
-                }
-            ],
-            "ports": [
-                {"protocol": "UDP", "port": 53},
-                {"protocol": "TCP", "port": 53},
-            ],
-        },
-        {
-            "to": [
-                {
-                    "namespaceSelector": {
-                        "matchLabels": {"kubernetes.io/metadata.name": "matrix"},
-                    },
-                    "podSelector": {
-                        "matchLabels": {"k8s.element.io/synapse-instance": "ess-synapse"},
-                    },
-                }
-            ],
-            "ports": [{"protocol": "TCP", "port": 8008}],
-        },
-    ], "receiver egress must stay limited to CoreDNS and the exact ESS Synapse workload"
     print("ok: alert receiver network peers are exactly scoped")
 
 
