@@ -4,8 +4,9 @@
 # has three offline layers:
 #   1. Manifest contract: the agentgateway A2A authorization policy ANDs a second Require rule that
 #      compares the bridge-forwarded classification rank to the selected model's ceiling rank, with
-#      fail-closed fallthroughs on BOTH sides (missing header -> regulated; unknown ceiling ->
-#      public), on the kagent egress chokepoint (D11 — enforced at the gateway, not trusted kagent).
+#      fail-closed fallthroughs on BOTH sides (absent header -> deny (the CEL errors on the missing
+#      key); present-but-unknown value -> regulated rank; unknown ceiling -> public), on the kagent
+#      egress chokepoint (D11 — enforced at the gateway, not trusted kagent).
 #   2. Backstop contract: the sovereign (vLLM) provider egress NetworkPolicy exposes NO external
 #      egress path, and the model namespace is default-deny egress — the load-bearing backstop.
 #   3. Decision matrix: the authoritative governed evaluator (check-model-catalog --admit) decides
@@ -213,6 +214,10 @@ assert_status '' "403" "missing header fails closed under public ceiling"
 run_gateway regulated
 assert_status regulated "200" "regulated content admitted under regulated ceiling"
 assert_status public "200" "public content admitted under regulated ceiling"
-assert_status '' "200" "missing header (regulated default) admitted under regulated ceiling"
+# A truly-absent header key makes the real agentgateway CEL error (no such key), which its Require
+# semantics deny — strictly more fail-closed than the "ranks as regulated" model and correct, since a
+# header-less request has bypassed the bridge's classification (D11). Only a PRESENT-but-unknown value
+# falls through the ladder to the regulated rank; a missing header is denied under every ceiling.
+assert_status '' "403" "missing header denied under regulated ceiling (absent key errors -> fail-closed deny)"
 
 echo "model residency runtime contract passed (${agentgateway_image})"
