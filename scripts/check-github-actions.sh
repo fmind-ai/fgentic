@@ -452,6 +452,7 @@ if ! mise --cd "${root_dir}" tasks info install:apps --json | jq -e '
   .run == [
     "mise run install:bridge",
     "mise run install:gateway",
+    "mise run install:groupsync",
     "mise run install:policy"
   ]
 ' >/dev/null; then

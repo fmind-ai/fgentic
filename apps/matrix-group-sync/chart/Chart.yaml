@@ -1,0 +1,15 @@
+apiVersion: v2
+name: matrix-group-sync
+description: GitOps reconciler materializing IdP-group membership into managed Matrix room membership
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - matrix
+  - keycloak
+  - idp
+  - group-sync
+  - authorization
+home: https://github.com/fmind-ai/fgentic
+sources:
+  - https://github.com/fmind-ai/fgentic

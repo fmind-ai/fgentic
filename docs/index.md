@@ -24,6 +24,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 - [Incumbent Chat Coexistence](chat-coexistence.md) - choose whether to run Fgentic beside, bridge with, or migrate from an existing chat system
 - [Persona Onboarding](onboarding/index.md) - role-specific paths for security leads, DPOs, platform engineers, developers, and end users
 - [Identity and SSO](identity.md) - MAS as the Matrix OIDC authority, Keycloak as the reference upstream IdP
+- [IdP Group Sync](group-sync.md) - one-way GitOps reconciler from Keycloak groups to managed Matrix room membership (ADR 0009)
 - [Model Provider Profiles](models.md) - per-cluster model backends behind agentgateway (D16)
 - [Sovereign Grounding Store](grounding.md) - the composed CNPG + pgvector schema, ACL metadata, and exact-ranking contract (D18)
 - [External-Network Interop](interop.md) - opt-in Slack/Telegram bridges as governed identity boundaries

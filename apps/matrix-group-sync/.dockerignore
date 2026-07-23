@@ -1,0 +1,11 @@
+.git
+bin/
+tmp/
+coverage.out
+chart/
+deploy/
+scripts/
+*.md
+Dockerfile
+.dockerignore
+.golangci.yml

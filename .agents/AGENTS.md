@@ -28,7 +28,7 @@ The detailed label taxonomy, milestone links, claim protocol, review gate, and `
 
 ## Lean repository layout
 
-- `apps/` — independent applications. `matrix-a2a-bridge` is the Go Matrix Application Service; `synapse-federation-policy` is the Python callback module; `activitypub-agent-gateway` is the separate additive ActivityPub transport. Each app owns its module, packaging, tests, and any nested `AGENTS.md`.
+- `apps/` — independent applications. `matrix-a2a-bridge` is the Go Matrix Application Service; `synapse-federation-policy` is the Python callback module; `activitypub-agent-gateway` is the separate additive ActivityPub transport; `matrix-group-sync` is the opt-in GitOps reconciler from Keycloak groups to managed Matrix room membership (ADR 0009). Each app owns its module, packaging, tests, and any nested `AGENTS.md`.
 - `clusters/` — Flux entrypoints and environment overlays: `base`, `local`, `gcp`, `demo`, `federation`, and `federation-constrained`.
 - `infra/` — reusable GitOps layers for namespaces, Matrix, Postgres, gateway, agentgateway, kagent, models, federation, policy, observability, identity, knowledge, optional bridges/admin, and production HA.
 - `evals/` — per-Agent deterministic `golden.json` scenarios and rubrics. `scripts/new-agent.sh` scaffolds them; `mise run test:agents-golden` exercises every fixture against the zero-spend loopback model.

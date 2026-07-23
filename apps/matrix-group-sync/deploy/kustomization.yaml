@@ -1,0 +1,12 @@
+# Flux resource list for the matrix-group-sync reconciler app. It is opt-in and NOT referenced by
+# clusters/base/apps.yaml, so it is schema-validated but not reconciled until a deployment adopts it
+# (docs/adr/0009 rollout gate). The Namespace is applied before the namespaced HelmRelease within
+# this single Kustomization. The future Flux Kustomization must post-build substitute
+# platform-settings (server_name + quota_* profile) before activation.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+namespace: matrix-group-sync
+resources:
+  - namespace.yaml
+  - resource-quotas.yaml
+  - helmrelease.yaml
