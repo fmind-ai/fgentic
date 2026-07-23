@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/a2aclient"
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/config"
 )
 
 const testRoomBudgetCapacity = 4096
@@ -259,5 +260,25 @@ func TestRoomTokenBudgetFailureMessageIsContentSafe(t *testing.T) {
 	}
 	if strings.Contains(msg, "agent-k8s") {
 		t.Fatalf("budget notice leaked the ghost name (room budget is not agent-specific): %q", msg)
+	}
+}
+
+func TestRoomTokenBudgetOverridesFailsClosedOnMalformedConfig(t *testing.T) {
+	// A malformed override on an unvalidated Config (config.Load would have rejected it) must fail
+	// CLOSED — panic — rather than nil-degrade to the more permissive default budget.
+	defer func() {
+		if recover() == nil {
+			t.Fatal("malformed room budget overrides did not fail closed (no panic)")
+		}
+	}()
+	roomTokenBudgetOverrides(config.Config{RoomTokenBudgetOverrides: []string{"not-a-room"}})
+}
+
+func TestRoomTokenBudgetOverridesParsesValidConfig(t *testing.T) {
+	got := roomTokenBudgetOverrides(config.Config{
+		RoomTokenBudgetOverrides: []string{"!vip:server=1000"},
+	})
+	if got["!vip:server"] != 1000 {
+		t.Fatalf("valid overrides = %v, want !vip:server=1000", got)
 	}
 }

@@ -1,6 +1,7 @@
 package bridge
 
 import (
+	"fmt"
 	"math"
 	"sync"
 	"time"
@@ -12,12 +13,15 @@ import (
 )
 
 // roomTokenBudgetOverrides resolves the validated per-room override map from config. config.Load has
-// already rejected a malformed entry (fail fast), so a parse error here can only mean an operator
-// constructed a Config directly; the budgets then degrade to the default limit rather than panicking.
+// already rejected a malformed entry (fail fast), so a parse error here can only mean New was called
+// on an unvalidated Config. It fails CLOSED by panicking rather than nil-degrading to the default
+// budget: a cost-enforcement control must never silently fall back to a more permissive limit because
+// its own configuration could not be parsed. This mirrors New's existing regexp.MustCompile
+// contract — an unvalidated Config is a programming error, not a runtime input.
 func roomTokenBudgetOverrides(cfg config.Config) map[string]int {
 	overrides, err := cfg.RoomTokenBudgetMap()
 	if err != nil {
-		return nil
+		panic(fmt.Sprintf("bridge constructed with unvalidated room token budget overrides: %v", err))
 	}
 	return overrides
 }
@@ -192,6 +196,15 @@ func (rb *roomBudgets) window(room string, now time.Time) *roomBudgetWindow {
 		rb.sweep(now)
 		rb.nextSweep = now.Add(limiterSweepInterval)
 	}
+	// LOAD-BEARING INVARIANT: at map capacity an unseen room returns nil, and allow() then admits it
+	// (the budget fails OPEN here). That is only safe because the sibling invocation rate limiter
+	// (Bridge.roomLimits) fails CLOSED at the SAME capacity, is keyed by the SAME room ID string, and
+	// is sized by the SAME RateLimitBucketCapacity — and the set of budgeted rooms is a strict subset
+	// of rate-limited rooms (every invocation reserves a roomLimits token first). So any room this map
+	// cannot track is already refused by roomLimits before an untracked budget can be exceeded, and
+	// the spend blast radius stays bounded. If a future change diverges either map's capacity, keying,
+	// or admission order, this fail-open silently unmasks the budget cap — preserve the equal-capacity,
+	// same-room-keyed, fail-closed roomLimits pairing or replace this with an explicit fail-closed path.
 	if len(rb.windows) >= rb.capacity {
 		return nil
 	}
