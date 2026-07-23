@@ -191,7 +191,7 @@ Running Fgentic under your own GitHub org, domain, GCP project, and registry? Th
 ```text
 apps/matrix-a2a-bridge/  # the Go bridge (mautrix/go appservice + a2a-go client) + its deploy/ Flux unit
 apps/synapse-federation-policy/ # standalone Python Synapse callback policy + namespace-neutral ConfigMaps
-apps/activitypub-agent-gateway/ # experimental 2nd federation transport (ActivityPub); implemented, not yet in the reconciled DAG (ADR 0014)
+apps/activitypub-agent-gateway/ # experimental 2nd federation transport (ActivityPub); demo-reconciled with public routing disabled (ADR 0014)
 apps/matrix-group-sync/   # opt-in Keycloak-group to managed Matrix-room reconciler; audit-only by default
 evals/                  # per-Agent deterministic golden.json fixtures; run with mise run test:agents-golden
 infra/{namespaces,terraform,flux,gateway,postgres,matrix,admin,keycloak,agentgateway,mcp-catalog,models,kagent,knowledge,bridges,federation,policies,production-ha,observability,trivy-operator,secrets}
