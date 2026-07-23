@@ -34,6 +34,7 @@ The detailed label taxonomy, milestone links, claim protocol, review gate, and `
 - `evals/` — per-Agent deterministic `golden.json` scenarios and rubrics. `scripts/new-agent.sh` scaffolds them; `mise run test:agents-golden` exercises every fixture against the zero-spend loopback model.
 - `scripts/` — guarded setup, development, federation, validation, and acceptance commands. Lifecycle scripts own their named resources and must not read or switch the default Kubernetes context.
 - `docs/` — OKF-frontmattered topic specs, runbooks, evidence, and ADRs. Preserve stable § numbering; revisit a settled decision with a new ADR.
+- `release/` — generated adopter release artifacts. `release/bom.yaml` is the reference-profile chart and image pin-set; `mise run check:bom` verifies it and rejects drift. Never edit it by hand.
 - `.github/` — issue/PR templates and CI/CD workflows. CI reuses mise gates; CD builds, scans, signs, and digest-pins the bridge image.
 - `.agents/` — canonical project instructions and shared skills. Root `AGENTS.md` is a symlink to this file; `.claude/skills` links to the same skill source.
 - `mise.toml`, `lefthook.yml`, and formatter/security configs — the single task, hook, formatting, and scan vocabulary. `README.md` is the human entry point; community policy lives in `CONTRIBUTING.md`, `GOVERNANCE.md`, `MAINTAINERS.md`, `SECURITY.md`, and `ADOPTERS.md`.
