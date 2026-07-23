@@ -236,7 +236,7 @@ The supported #335 operational chain is:
 1. merge reviewed `docs/**/*.md` content and its repo-wide ACL;
 1. wait for Flux to report a current ready `GitRepository` artifact;
 1. observe the acquisition schedule publish the matching immutable inventory and blobs;
-1. after #340 is available and ingestion is deliberately unsuspended, let successive ingestion schedules apply one action each until the database cursor matches that inventory;
+1. with the shipped #340 embeddings profile (delivered via #540) enabled and its runtime Ready — source availability has landed, but live enablement and the end-to-end ingestion capture remain unproven — and ingestion deliberately unsuspended, let successive ingestion schedules apply one action each until the database cursor matches that inventory;
 1. verify connector desired/applied state, resulting `knowledge.chunks`, and direct calls to the secure ACL-filtering SQL functions.
 
 That is storage and direct secure-SQL evidence, not answer-level grounding evidence. The permission-aware retrieval boundary in #333 and the grounded-answer acceptance work in #336 must pass before this flow is described as an end-user answer path.
