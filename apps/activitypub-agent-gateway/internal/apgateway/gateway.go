@@ -72,6 +72,8 @@ type Gateway struct {
 	statusLimiter      *budget.Reserver // per-agent status-feed rate limiter; nil disables the feed
 	statusMaxPerWindow uint64           // max status Notes per agent per limiter window
 	httpPublicKeyPEM   string           // RSA #main-key published by every actor that signs delivery
+	fedBrokerToken     string           // bearer credential accepted only on the internal side port
+	fedBrokerClient    *http.Client     // SSRF-guarded WebFinger and actor discovery client
 }
 
 // UseDelivery installs the outbound delivery infrastructure shared by group fan-out (#217) and the
@@ -566,6 +568,11 @@ func (g *Gateway) marshalActor(ghost string, ref AgentRef) ([]byte, error) {
 		}
 	}
 	doc["@context"] = contexts
+	if g.signer != nil {
+		if err := g.signer.SignActivity(doc, string(g.actorID(ghost))); err != nil {
+			return nil, fmt.Errorf("sign actor: %w", err)
+		}
+	}
 	return json.Marshal(doc)
 }
 

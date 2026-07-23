@@ -66,6 +66,8 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("HOMESERVER_URL", "http://hs:8008")
 	t.Setenv("A2A_BASE_URL", "http://kagent-controller.kagent:8083")
 	t.Setenv("A2A_API_KEY", "test-workload-key")
+	t.Setenv("FEDIVERSE_BROKER_URL", "http://activitypub-gateway:9090")
+	t.Setenv("FEDIVERSE_BROKER_TOKEN", "broker-key")
 	t.Setenv("LISTEN_PORT", "9999")
 	t.Setenv("REQUEST_TIMEOUT", "5s")
 	t.Setenv("DEAD_MAN_SWITCH_DELAY", "5m")
@@ -108,6 +110,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.A2AAPIKey != "test-workload-key" {
 		t.Errorf("A2AAPIKey was not loaded")
+	}
+	if cfg.FediverseBrokerURL != "http://activitypub-gateway:9090" || cfg.FediverseBrokerToken != "broker-key" {
+		t.Errorf("fediverse broker config was not loaded")
 	}
 	if cfg.AgentsReloadInterval != 2*time.Second {
 		t.Errorf("AgentsReloadInterval = %s, want 2s", cfg.AgentsReloadInterval)
@@ -303,6 +308,22 @@ func TestValidateRejectsNonPositiveAgentsReloadInterval(t *testing.T) {
 	t.Setenv("AGENTS_RELOAD_INTERVAL", "0s")
 	if _, err := Load(); err == nil {
 		t.Fatal("expected error for non-positive AGENTS_RELOAD_INTERVAL, got nil")
+	}
+}
+
+func TestValidateRequiresCompleteFediverseBrokerConfig(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"URL only":   {"FEDIVERSE_BROKER_URL": "http://activitypub-gateway:9090"},
+		"token only": {"FEDIVERSE_BROKER_TOKEN": "broker-key"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for key, value := range env {
+				t.Setenv(key, value)
+			}
+			if _, err := Load(); err == nil {
+				t.Fatal("Load accepted incomplete fediverse broker config")
+			}
+		})
 	}
 }
 

@@ -19,6 +19,12 @@
 {{- if and .Values.statusFeed.enabled (or (not .Values.integrity.enabled) (not .Values.policy.enabled)) }}
 {{- fail "statusFeed.enabled needs integrity.enabled (signing key) and policy.enabled (border)" }}
 {{- end }}
+{{- if and .Values.fediverseBroker.enabled (not .Values.integrity.enabled) }}
+{{- fail "fediverseBroker.enabled needs integrity.enabled (fallback objects carry proofs)" }}
+{{- end }}
+{{- if and .Values.fediverseBroker.enabled (eq (len .Values.fediverseBroker.fromNamespaces) 0) }}
+{{- fail "fediverseBroker.enabled needs at least one allowed source namespace" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -128,9 +134,16 @@ spec:
             - name: INTEGRITY_REQUIRE_INBOUND
               value: {{ .Values.integrity.requireInbound | quote }}
             {{- end }}
-            {{- if or .Values.groups.enabled .Values.statusFeed.enabled }}
+            {{- if or .Values.groups.enabled .Values.statusFeed.enabled .Values.fediverseBroker.enabled }}
             - name: HTTP_SIGNATURE_KEY_PATH
               value: /etc/activitypub-agent-gateway/http-signature-key/{{ .Values.httpSignature.secretKey }}
+            {{- end }}
+            {{- if .Values.fediverseBroker.enabled }}
+            - name: FEDIVERSE_BROKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.fediverseBroker.secretName }}
+                  key: {{ .Values.fediverseBroker.secretKey }}
             {{- end }}
             {{- if .Values.identity.enabled }}
             - name: IDENTITY_KEY_PATH
@@ -177,7 +190,7 @@ spec:
               mountPath: /etc/activitypub-agent-gateway/signing-key
               readOnly: true
             {{- end }}
-            {{- if or .Values.groups.enabled .Values.statusFeed.enabled }}
+            {{- if or .Values.groups.enabled .Values.statusFeed.enabled .Values.fediverseBroker.enabled }}
             - name: http-signature-key
               mountPath: /etc/activitypub-agent-gateway/http-signature-key
               readOnly: true
@@ -229,7 +242,7 @@ spec:
             secretName: {{ .Values.integrity.secretName }}
             defaultMode: 0400
         {{- end }}
-        {{- if or .Values.groups.enabled .Values.statusFeed.enabled }}
+        {{- if or .Values.groups.enabled .Values.statusFeed.enabled .Values.fediverseBroker.enabled }}
         - name: http-signature-key
           secret:
             secretName: {{ .Values.httpSignature.secretName }}

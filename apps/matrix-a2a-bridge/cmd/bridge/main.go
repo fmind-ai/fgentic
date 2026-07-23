@@ -113,6 +113,11 @@ func run(cfg config.Config, log *slog.Logger) error {
 	log.Info("loaded agent routing map", "agents", agents.Names())
 
 	client := a2aclient.New(cfg.A2ABaseURL, cfg.A2AAPIKey, log)
+	if cfg.FediverseBrokerURL != "" {
+		if err := client.UseFediverseBroker(cfg.FediverseBrokerURL, cfg.FediverseBrokerToken); err != nil {
+			return err
+		}
+	}
 	purger, err := sessioncontrol.New(cfg.KagentAPIURL, &http.Client{Timeout: cfg.RequestTimeout})
 	if err != nil {
 		return fmt.Errorf("configure kagent session deletion: %w", err)

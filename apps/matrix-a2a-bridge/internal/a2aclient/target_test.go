@@ -9,6 +9,7 @@ import (
 	"errors"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/fmind-ai/matrix-a2a-bridge/internal/agentcardjws"
 )
@@ -82,6 +83,44 @@ func TestTargetValidationAndIdentity(t *testing.T) {
 	}
 	if first.ID() == second.ID() {
 		t.Fatal("token budget did not change the routing/cache ID")
+	}
+}
+
+func TestFediverseTargetBindsBothProtocolIdentities(t *testing.T) {
+	card := testCardIdentity(t, newTestSigningKey(t))
+	ap := ActivityPubIdentity{
+		ActorID:            "https://peer.example.com/users/agent",
+		VerificationMethod: "https://peer.example.com/users/agent#ed25519-key",
+		PublicKeyMultibase: testMultikey,
+		ProofMaxAge:        24 * time.Hour,
+	}
+	first, err := NewFediverseTarget("acct:agent@peer.example.com", card, ap, 4096, nil)
+	if err != nil {
+		t.Fatalf("NewFediverseTarget: %v", err)
+	}
+	if !first.IsRemote() || !first.IsFediverse() || first.String() != "acct:agent@peer.example.com" {
+		t.Fatalf("target = %+v", first)
+	}
+	changed := ap
+	changed.ActorID = "https://peer.example.com/users/replacement"
+	changed.VerificationMethod = changed.ActorID + "#ed25519-key"
+	second, err := NewFediverseTarget("acct:agent@peer.example.com", card, changed, 4096, nil)
+	if err != nil {
+		t.Fatalf("NewFediverseTarget changed: %v", err)
+	}
+	if first.SameIdentity(second) || first.ID() == second.ID() {
+		t.Fatal("ActivityPub identity pin change did not re-key the mapping")
+	}
+	if _, err := NewFediverseTarget("acct:agent@peer.example.com", card, ActivityPubIdentity{}, 4096, nil); err == nil {
+		t.Fatal("NewFediverseTarget accepted a missing ActivityPub pin")
+	}
+	tooShort := ap
+	tooShort.ProofMaxAge = time.Nanosecond
+	if _, err := NewFediverseTarget("acct:agent@peer.example.com", card, tooShort, 4096, nil); err == nil {
+		t.Fatal("NewFediverseTarget accepted a sub-second ActivityPub proof age")
+	}
+	if _, err := NewFediverseTarget("acct:agent@-peer.example.com", card, ap, 4096, nil); err == nil {
+		t.Fatal("NewFediverseTarget accepted a non-canonical domain label")
 	}
 }
 

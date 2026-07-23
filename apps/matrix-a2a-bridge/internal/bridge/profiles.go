@@ -318,7 +318,11 @@ func (b *Bridge) syncProfile(ctx context.Context, entry AgentEntry) error {
 	b.profiles.set(entry.Ghost, profile)
 	b.applyGhostProfileWithTimeout(ctx, entry.Ghost, profile)
 	if target.IsRemote() && previous.Status != profileStatusLive {
-		b.logAgentCardAudit(entry, "accepted", "agent_card_verified")
+		reason := "agent_card_verified"
+		if target.IsFediverse() {
+			reason = "fediverse_identity_verified"
+		}
+		b.logAgentCardAudit(entry, "accepted", reason)
 	}
 	return nil
 }

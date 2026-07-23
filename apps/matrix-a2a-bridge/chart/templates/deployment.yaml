@@ -3,6 +3,9 @@
 {{- end }}
 {{- $mediaMaxBytes := include "matrix-a2a-bridge.nonNegativeDecimal" (list "config.mediaMaxBytes" .Values.config.mediaMaxBytes) }}
 {{- $mediaMaxTotalBytes := include "matrix-a2a-bridge.nonNegativeDecimal" (list "config.mediaMaxTotalBytes" .Values.config.mediaMaxTotalBytes) }}
+{{- if and .Values.fediverseBroker.enabled (eq .Values.fediverseBroker.url "") }}
+{{- fail "fediverseBroker.enabled needs a ClusterIP broker URL" }}
+{{- end }}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -63,6 +66,15 @@ spec:
                 secretKeyRef:
                   name: {{ .Values.a2aAuthentication.secretName }}
                   key: {{ .Values.a2aAuthentication.key }}
+            {{- end }}
+            {{- if .Values.fediverseBroker.enabled }}
+            - name: FEDIVERSE_BROKER_URL
+              value: {{ .Values.fediverseBroker.url | quote }}
+            - name: FEDIVERSE_BROKER_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.fediverseBroker.secretName }}
+                  key: {{ .Values.fediverseBroker.secretKey }}
             {{- end }}
             - name: GHOST_PREFIX
               value: {{ .Values.config.ghostPrefix | quote }}

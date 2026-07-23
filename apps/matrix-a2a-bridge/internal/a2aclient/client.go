@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -244,6 +245,7 @@ type Client struct {
 	localHTTPClient  *http.Client
 	remoteHTTPClient *http.Client
 	localResolver    *agentcard.Resolver
+	fediverseBroker  *fediverseBroker
 
 	mu           sync.RWMutex
 	cache        map[string]cachedTarget
@@ -329,6 +331,14 @@ func (c *Client) send(
 ) (Result, error) {
 	if messageID == "" {
 		return Result{}, fmt.Errorf("prepare a2a SendMessage for %s: %w", target.String(), ErrMessageIDRequired)
+	}
+	if target.IsFediverse() {
+		c.mu.RLock()
+		cached := c.cache[target.ID()]
+		c.mu.RUnlock()
+		if cached.ready && cached.fediverse != nil && cached.fediverse.Transport == brokerTransportActivityPub {
+			return c.sendActivityPub(ctx, target, cached.fediverse, messageID, text, contextID, taskID, files)
+		}
 	}
 	client, err := c.clientFor(ctx, target)
 	if err != nil {
@@ -427,6 +437,9 @@ func (c *Client) ResolveAgentCard(ctx context.Context, target Target) (*a2a.Agen
 	if !target.valid() {
 		return nil, fmt.Errorf("resolve agent card: invalid target")
 	}
+	if target.IsFediverse() {
+		return c.resolveFediverseAgentCard(ctx, target)
+	}
 	if target.IsRemote() {
 		return c.resolveRemoteAgentCard(ctx, target)
 	}
@@ -454,7 +467,8 @@ func (c *Client) IsReady(target Target) bool {
 	c.mu.RLock()
 	cached := c.cache[target.ID()]
 	c.mu.RUnlock()
-	return cached.ready && cached.client != nil
+	return cached.ready && (cached.client != nil ||
+		(cached.fediverse != nil && cached.fediverse.Transport == brokerTransportActivityPub))
 }
 
 // clientFor resolves (and caches) an SDK client for a target by fetching its AgentCard. Local cards
@@ -546,20 +560,25 @@ func (c *Client) remoteGeneration(targetID string) *atomic.Uint64 {
 	return generation.(*atomic.Uint64)
 }
 
-// remoteUserTransport returns the RoundTripper for dialing a remote target. Without configured mTLS
-// it reuses the shared remote transport (a userTransport with no API key), preserving existing
-// behavior. With mTLS (#244) it wraps a per-target http.Transport — cloned from DefaultTransport to
-// keep its timeouts/proxy behavior — pinned to the mapping's client certificate and optional server
-// roots, in its own userTransport that likewise carries no local gateway credential.
+// remoteUserTransport returns the RoundTripper for dialing a remote target. Exact operator-pinned
+// routes reuse the shared transport unless they configure mTLS. Discovery-derived routes instead
+// receive a per-target transport that resolves and validates every address at dial time, preventing
+// actor-controlled A2A/Card URLs or DNS rebinding from reaching private services. No remote
+// transport carries the local gateway credential.
 func (c *Client) remoteUserTransport(target Target) http.RoundTripper {
 	tlsConfig := target.clientTLSConfig()
-	if tlsConfig == nil {
+	if tlsConfig == nil && !target.publicOnly {
 		return c.remoteHTTPClient.Transport
 	}
 	if cached, ok := c.remoteTransports.Load(target.ID()); ok {
 		return cached.(http.RoundTripper)
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if target.publicOnly {
+		transport.Proxy = nil
+		transport.DialContext = publicDialContext(net.DefaultResolver, (&net.Dialer{}).DialContext)
+		transport.DialTLSContext = nil
+	}
 	transport.TLSClientConfig = tlsConfig
 	shared, _ := c.remoteTransports.LoadOrStore(target.ID(), &userTransport{base: transport})
 	return shared.(http.RoundTripper)
