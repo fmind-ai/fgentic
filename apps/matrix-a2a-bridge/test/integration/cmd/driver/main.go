@@ -118,6 +118,10 @@ func run() error {
 		return f.runAvailability(ctx)
 	case "crash-recovery":
 		return f.runCrashRecovery(ctx)
+	case "model-outage":
+		return f.runModelOutage(ctx)
+	case "synapse-restart":
+		return f.runSynapseRestart(ctx)
 	case "load":
 		return f.runLoad(ctx)
 	default:
@@ -238,7 +242,7 @@ func (f fixture) runBasic(ctx context.Context) error {
 	if afterPlain.RemoteUserID != sess.UserID {
 		return fmt.Errorf("plain A2A attribution user = %q, want %q", afterPlain.RemoteUserID, sess.UserID)
 	}
-	if err := f.requireDelegationMetric(ctx, plainGhostLocalpart, "ok", 1); err != nil {
+	if err := f.requireDelegationMetric(ctx, plainGhostLocalpart, "ok"); err != nil {
 		return err
 	}
 
@@ -270,7 +274,7 @@ func (f fixture) runBasic(ctx context.Context) error {
 	if err := f.assertNoRemoteDispatch(ctx, afterPlain.RemoteRequests, time.Second); err != nil {
 		return fmt.Errorf("plain A2A bridge rate limit: %w", err)
 	}
-	if err := f.requireDelegationMetric(ctx, plainGhostLocalpart, "rate_limited", 1); err != nil {
+	if err := f.requireDelegationMetric(ctx, plainGhostLocalpart, "rate_limited"); err != nil {
 		return err
 	}
 
@@ -790,7 +794,9 @@ func (f fixture) assertNoRemoteDispatch(ctx context.Context, expected int, durat
 	return nil
 }
 
-func (f fixture) requireDelegationMetric(ctx context.Context, ghost, outcome string, want float64) error {
+func (f fixture) requireDelegationMetric(ctx context.Context, ghost, outcome string) error {
+	// Every delegation-outcome assertion expects exactly one terminal event for its (ghost, outcome).
+	const want = 1.0
 	status, body, err := f.request(ctx, http.MethodGet, f.metricsURL, "", nil)
 	if err != nil {
 		return fmt.Errorf("read bridge delegation metrics: %w", err)

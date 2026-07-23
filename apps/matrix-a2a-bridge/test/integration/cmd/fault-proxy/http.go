@@ -69,6 +69,12 @@ func (t faultTransport) matrixRoundTrip(req *http.Request) (*http.Response, erro
 }
 
 func (t faultTransport) a2aRoundTrip(req *http.Request) (*http.Response, error) {
+	// Sustained refusal fails every A2A request — including the AgentCard resolution GET — before it
+	// reaches the upstream, so the bridge's cold-cache card resolution fails fast and non-ambiguously
+	// (no send is ever attempted), driving the bounded errorA2APreflightRetry dead-letter path. #466
+	if t.controller.refusing() {
+		return nil, fmt.Errorf("%s injected connection failure", faultA2ARefuse)
+	}
 	method, err := a2aMethod(req)
 	if err != nil {
 		return nil, err

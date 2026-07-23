@@ -14,6 +14,11 @@ const (
 	faultPostgresClaim  faultMode = "postgres-claim"
 	faultA2AResponse    faultMode = "a2a-response"
 	faultA2ATaskPoll    faultMode = "a2a-task-poll"
+	// faultA2ARefuse is a sustained (not one-shot) mode: while armed it fails every A2A request —
+	// including the AgentCard resolution GET — fast, modelling a connection-refused backend. It is
+	// the model-backend outage drill's fast, deterministic replacement for scaling the backend to
+	// zero (an endpointless Service hangs to the request timeout instead of refusing). #466
+	faultA2ARefuse      faultMode = "a2a-refuse"
 	faultMatrixRequest  faultMode = "matrix-request"
 	faultMatrixResponse faultMode = "matrix-response"
 	faultMatrixQuestion faultMode = "matrix-question-response"
@@ -24,8 +29,8 @@ const (
 func (m faultMode) valid() bool {
 	switch m {
 	case faultPostgresCommit, faultPostgresClaim, faultA2AResponse, faultA2ATaskPoll,
-		faultMatrixRequest, faultMatrixResponse, faultMatrixQuestion, faultMatrixProgress,
-		faultMatrixPin:
+		faultA2ARefuse, faultMatrixRequest, faultMatrixResponse, faultMatrixQuestion,
+		faultMatrixProgress, faultMatrixPin:
 		return true
 	default:
 		return false
@@ -67,6 +72,24 @@ func (c *faultController) arm(mode faultMode) error {
 	c.matrixPaths = nil
 	c.a2aMethods = nil
 	return nil
+}
+
+// refusing reports whether the sustained a2a-refuse mode is armed. Unlike tryTrip it never disarms,
+// so every A2A request keeps failing until disarm — the retryable, non-ambiguous card-resolution
+// failure the bridge dead-letters after DELEGATION_MAX_ATTEMPTS.
+func (c *faultController) refusing() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.armed && c.mode == faultA2ARefuse
+}
+
+// disarm clears any armed mode so the proxy forwards normally again (drill recovery step).
+func (c *faultController) disarm() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.armed = false
+	c.mode = ""
+	c.tripped = false
 }
 
 func (c *faultController) tryTrip(mode faultMode, path string) bool {
@@ -123,6 +146,10 @@ func (c *faultController) controlHandler() http.Handler {
 			http.Error(w, err.Error(), http.StatusConflict)
 			return
 		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	mux.HandleFunc("POST /disarm", func(w http.ResponseWriter, _ *http.Request) {
+		c.disarm()
 		w.WriteHeader(http.StatusNoContent)
 	})
 	mux.HandleFunc("GET /state", func(w http.ResponseWriter, _ *http.Request) {

@@ -91,6 +91,14 @@ run = "bash test/integration/run-crash-recovery.sh"
 description = "Run the resource-bounded D3 dispatcher regression scenario"
 run = "bash test/integration/run-load.sh"
 
+[tasks."test:model-outage"]
+description = "Prove bounded retries and the §6.1 catalog notice through a model-backend outage (#466)"
+run = "bash test/integration/run-model-outage.sh"
+
+[tasks."test:synapse-restart"]
+description = "Prove exactly-once reply delivery across a Synapse homeserver restart (#466)"
+run = "bash test/integration/run-synapse-restart.sh"
+
 [tasks."eval:models"]
 description = "Evaluate the three sample agents against the selected local model profile"
 run = "bash scripts/eval-models.sh"
