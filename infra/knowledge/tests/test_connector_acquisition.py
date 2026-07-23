@@ -117,6 +117,11 @@ def test_response_reader_accepts_exact_content_length() -> None:
         assert acquisition._read_response(response, 2) == b"ok"
 
 
+def test_response_reader_accepts_content_length_with_optional_whitespace() -> None:
+    with _response(_http_response(b"Content-Length: 2 \t\r\n", b"ok")) as response:
+        assert acquisition._read_response(response, 2) == b"ok"
+
+
 def test_response_reader_accepts_canonical_chunked_body() -> None:
     raw = _http_response(b"Transfer-Encoding: chunked\r\n", b"2\r\nok\r\n0\r\n\r\n")
     with _response(raw) as response:

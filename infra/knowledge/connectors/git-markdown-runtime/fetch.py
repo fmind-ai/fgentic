@@ -91,13 +91,13 @@ def _declared_response_length(response: http.client.HTTPResponse, maximum: int) 
     if len(content_lengths) > 1 or len(transfer_encodings) > 1:
         raise AcquisitionError("HTTP response framing is ambiguous")
     if transfer_encodings:
-        if transfer_encodings[0].strip().lower() != "chunked":
+        if transfer_encodings[0].strip(" \t").lower() != "chunked":
             raise AcquisitionError("HTTP response transfer coding is unsupported")
         return None
     if not content_lengths:
         return None
 
-    value = content_lengths[0]
+    value = content_lengths[0].strip(" \t")
     if not value.isascii() or not value.isdecimal():
         raise AcquisitionError("HTTP response Content-Length is invalid")
     normalized = value.lstrip("0") or "0"
