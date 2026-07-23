@@ -24,18 +24,31 @@ models:
 		t.Fatalf("Decode: %v", err)
 	}
 	directory := t.TempDir()
-	valid := filepath.Join(directory, "valid.yaml")
-	unknown := filepath.Join(directory, "unknown.yaml")
-	if err := os.WriteFile(valid, []byte("data:\n  llm_provider: vertex\n  llm_model: google/gemini-2.5-flash\n"), 0o600); err != nil {
-		t.Fatalf("write valid settings: %v", err)
+	write := func(name, body string) string {
+		t.Helper()
+		path := filepath.Join(directory, name)
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+		return path
 	}
-	if err := os.WriteFile(unknown, []byte("data:\n  llm_provider: vertex\n  llm_model: unknown\n"), 0o600); err != nil {
-		t.Fatalf("write unknown settings: %v", err)
-	}
+	valid := write("valid.yaml", "data:\n  llm_provider: vertex\n  llm_model: google/gemini-2.5-flash\n  model_allowed_classification: public\n")
+	unknown := write("unknown.yaml", "data:\n  llm_provider: vertex\n  llm_model: unknown\n  model_allowed_classification: public\n")
+	missingCeiling := write("missing-ceiling.yaml", "data:\n  llm_provider: vertex\n  llm_model: google/gemini-2.5-flash\n")
+	wrongCeiling := write("wrong-ceiling.yaml", "data:\n  llm_provider: vertex\n  llm_model: google/gemini-2.5-flash\n  model_allowed_classification: regulated\n")
+	badCeiling := write("bad-ceiling.yaml", "data:\n  llm_provider: vertex\n  llm_model: google/gemini-2.5-flash\n  model_allowed_classification: confidential\n")
+
 	if err := validatePlatformSettings(valid, catalog); err != nil {
 		t.Fatalf("validatePlatformSettings: %v", err)
 	}
-	if err := validatePlatformSettings(unknown, catalog); err == nil {
-		t.Fatal("validatePlatformSettings unexpectedly accepted unknown model")
+	for name, path := range map[string]string{
+		"unknown model":   unknown,
+		"missing ceiling": missingCeiling,
+		"widened ceiling": wrongCeiling, // regulated > catalog public ceiling must be rejected
+		"unknown ceiling": badCeiling,
+	} {
+		if err := validatePlatformSettings(path, catalog); err == nil {
+			t.Fatalf("validatePlatformSettings unexpectedly accepted %s", name)
+		}
 	}
 }

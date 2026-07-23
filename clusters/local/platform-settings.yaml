@@ -31,6 +31,11 @@ data:
   llm_provider: vertex
   # Vertex AI OpenAI-compatible endpoint requires <publisher>/<model>.
   llm_model: google/gemini-2.5-flash
+  # #339: highest room data-classification this profile's model may serve, substituted into the
+  # agentgateway residency CEL. It MUST equal the governed catalog ceiling for the selected
+  # profile/model (check:model-catalog enforces this); a room whose forwarded class exceeds it is
+  # denied at the egress chokepoint before any model call. Vertex is a global hyperscaler -> public.
+  model_allowed_classification: public
   vertex_region: europe-west1
   # Provider-specific connection settings. They remain inert unless their profile is selected.
   # Eligible OpenAI projects can use eu.api.openai.com for European processing (see docs/models.md).

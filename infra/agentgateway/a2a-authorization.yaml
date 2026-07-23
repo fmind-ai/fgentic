@@ -3,6 +3,14 @@
 # X-User-Id remains attribution only. Restrict the credential to kagent A2A GET/POST traffic so it
 # cannot authorize another namespace or an unrelated route if the HTTPRoute is widened by mistake.
 # Require is fail-closed when CEL evaluation fails.
+#
+# #339 residency enforcement: the single Require expression also binds the bridge-forwarded data
+# classification (X-Fgentic-Data-Classification) to the selected model's governed ceiling with an
+# `&&`, so a delegation is admitted only when the workload rule AND the residency rule pass. kagent
+# then egresses to the model, so denying here is denying before any model egress. Enforcement sits
+# at this egress chokepoint by design: kagent's X-User-Id is attribution, not authentication (D11),
+# so the classification must be checked at the gateway the room cannot spoof past. See the policy
+# comment below for the fail-closed ladder details.
 apiVersion: agentgateway.dev/v1alpha1
 kind: AgentgatewayPolicy
 metadata:
@@ -25,10 +33,28 @@ spec:
     authorization:
       action: Require
       policy:
+        # ONE matchExpression, matching every other policy in the repo: the workload rule and the
+        # residency rule are joined with `&&` inside a single Require expression. This removes any
+        # dependence on how agentgateway combines multiple list elements — a workload-valid request
+        # whose class exceeds the ceiling is denied because the single `&&` is false. The residency
+        # comparison is fully parenthesized so `<=` (tighter than `&&`) evaluates the two ranked
+        # ladders before the AND. Fail-closed: the header ladder falls through to 3 (regulated) for a
+        # missing/unknown class, the ceiling ladder falls through to 0 (public) for an unknown or
+        # unsubstituted ceiling, and any residual CEL eval error denies (Require). The
+        # ${model_allowed_classification} ceiling is substituted per cluster from platform-settings
+        # and cross-checked against the governed catalog by check:model-catalog; check:model-residency
+        # compiles and evaluates THIS exact expression against the fixture matrix offline.
         matchExpressions:
           - >-
             apiKey.workload == "matrix-a2a-bridge" &&
             request.path.startsWith("/api/a2a/kagent/") &&
             (request.method == "POST" ||
             (request.method == "GET" &&
-            request.path.endsWith("/.well-known/agent-card.json")))
+            request.path.endsWith("/.well-known/agent-card.json"))) &&
+            ((request.headers["x-fgentic-data-classification"] == "public" ? 0 :
+            request.headers["x-fgentic-data-classification"] == "approved_non_public" ? 1 :
+            request.headers["x-fgentic-data-classification"] == "restricted" ? 2 : 3)
+            <=
+            ("${model_allowed_classification}" == "regulated" ? 3 :
+            "${model_allowed_classification}" == "restricted" ? 2 :
+            "${model_allowed_classification}" == "approved_non_public" ? 1 : 0))

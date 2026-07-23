@@ -23,8 +23,9 @@ const (
 
 type platformSettings struct {
 	Data struct {
-		LLMProvider string `yaml:"llm_provider"`
-		LLMModel    string `yaml:"llm_model"`
+		LLMProvider                string `yaml:"llm_provider"`
+		LLMModel                   string `yaml:"llm_model"`
+		ModelAllowedClassification string `yaml:"model_allowed_classification"`
 	} `yaml:"data"`
 }
 
@@ -152,8 +153,26 @@ func validatePlatformSettings(path string, catalog *modelcatalog.Catalog) error 
 	if provider == "" || model == "" {
 		return fmt.Errorf("%s must declare data.llm_provider and data.llm_model", path)
 	}
-	if _, err := catalog.ResolveProfile(provider, model); err != nil {
+	entry, err := catalog.ResolveProfile(provider, model)
+	if err != nil {
 		return fmt.Errorf("validate %s: %w", path, err)
+	}
+	// #339: the gateway CEL residency ceiling is substituted from this field, so it must equal the
+	// governed catalog ceiling for the selected profile. Cross-checking here keeps the enforced
+	// ceiling honest — a hand-edited value cannot silently widen egress past the catalog.
+	ceiling := settings.Data.ModelAllowedClassification
+	if ceiling == "" {
+		return fmt.Errorf("%s must declare data.model_allowed_classification", path)
+	}
+	parsed, err := modelcatalog.ParseClassification(ceiling)
+	if err != nil {
+		return fmt.Errorf("validate %s: model_allowed_classification: %w", path, err)
+	}
+	if parsed != entry.AllowedClassification {
+		return fmt.Errorf(
+			"%s: model_allowed_classification %q does not match catalog ceiling %q for profile/model %s/%s",
+			path, parsed, entry.AllowedClassification, provider, model,
+		)
 	}
 	return nil
 }

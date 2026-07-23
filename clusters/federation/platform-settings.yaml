@@ -22,6 +22,9 @@ data:
   ingress_ip_name: unused-federation
   llm_provider: demo
   llm_model: fgentic-demo
+  # #339: residency ceiling for the selected profile, cross-checked against the governed catalog
+  # (check:model-catalog). The disposable lab model is a placeholder backend -> public only.
+  model_allowed_classification: public
   # The lifecycle replaces this stable offline fixture with its per-run source image tag.
   demo_bridge_tag: local
   # This lab has no Matrix appservice bridge; keep the shared substitutions explicit and disabled.

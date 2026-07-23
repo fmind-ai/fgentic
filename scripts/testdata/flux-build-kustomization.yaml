@@ -22,6 +22,7 @@ spec:
       ingress_ip_name: ci-fgentic-ingress
       llm_provider: vertex
       llm_model: google/gemini-2.5-flash
+      model_allowed_classification: public
       demo_bridge_tag: local
       vertex_region: europe-west1
       openai_host: api.openai.com
