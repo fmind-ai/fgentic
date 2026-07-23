@@ -33,6 +33,12 @@ pre-commit:
       glob: "*.go"
       run: mise run format
       stage_fixed: true
+    format:groupsync:
+      priority: 1
+      root: "apps/matrix-group-sync/"
+      glob: "*.go"
+      run: mise run format
+      stage_fixed: true
     format:policy:
       priority: 1
       root: "apps/synapse-federation-policy/"
