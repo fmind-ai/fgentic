@@ -199,6 +199,7 @@ depends = [
   "check:admission-policies",
   "check:resource-quotas",
   "check:model-catalog",
+  "check:model-residency",
   "check:mcp-governance",
   "check:audit-attribution",
   "check:kubernetes-audit",
@@ -298,6 +299,14 @@ run = "bash scripts/test-agent-retire.sh"
 description = "Validate governed model metadata and every tracked provider/model selection"
 dir = "apps/matrix-a2a-bridge"
 run = "go run ./cmd/check-model-catalog --repo-root ../.."
+
+[tasks."check:model-residency"]
+description = "Prove classification/residency-aware model routing is fail-closed at the egress chokepoint (#339)"
+run = "bash scripts/test-model-residency.sh"
+
+[tasks."test:model-residency"]
+description = "Evaluate the real agentgateway residency CEL against fixture requests in Docker (#339)"
+run = "bash scripts/test-model-residency.sh --runtime"
 
 [tasks."check:terraform"]
 alias = "ct"

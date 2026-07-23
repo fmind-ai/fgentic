@@ -193,3 +193,40 @@ func ParseClassification(value string) (Classification, error) {
 		return "", fmt.Errorf("classification %q is not supported", value)
 	}
 }
+
+// ClassificationOrMostRestrictive parses a value fail-closed: an empty or unknown value collapses
+// to the most-restrictive class so untrusted or missing signals are treated as the most sensitive.
+// This mirrors the bridge's request-header default and the gateway CEL's fail-closed header ladder.
+func ClassificationOrMostRestrictive(value string) Classification {
+	classification, err := ParseClassification(value)
+	if err != nil {
+		return ClassificationRegulated
+	}
+	return classification
+}
+
+// Rank orders the closed classification enum from least (public) to most (regulated) sensitive.
+// An unrecognized value ranks as the most sensitive so any drift denies rather than leaks. The
+// deployed agentgateway CEL encodes this exact ladder; scripts/test-model-residency.sh binds them.
+func (c Classification) Rank() int {
+	switch c {
+	case ClassificationPublic:
+		return 0
+	case ClassificationApprovedNonPublic:
+		return 1
+	case ClassificationRestricted:
+		return 2
+	case ClassificationRegulated:
+		return 3
+	default:
+		return 3
+	}
+}
+
+// Admits reports whether a model whose ceiling is allowedClassification may serve room content of
+// class roomClass. Serving is permitted only when the room's sensitivity does not exceed the
+// model's approved ceiling (roomClass.Rank() <= ceiling.Rank()). This is the residency decision
+// enforced fail-closed at the agentgateway egress chokepoint before any model egress occurs.
+func (m Model) Admits(roomClass Classification) bool {
+	return roomClass.Rank() <= m.AllowedClassification.Rank()
+}

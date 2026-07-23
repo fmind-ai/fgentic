@@ -14,6 +14,9 @@ data:
   ingress_ip_name: unused-demo
   llm_provider: demo
   llm_model: fgentic-demo
+  # #339: residency ceiling for the selected profile, cross-checked against the governed catalog
+  # (check:model-catalog). The disposable demo model is a placeholder backend -> public only.
+  model_allowed_classification: public
   demo_bridge_tag: local
   vertex_region: europe-west1
   openai_host: api.openai.com

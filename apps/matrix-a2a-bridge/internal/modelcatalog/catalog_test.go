@@ -72,3 +72,55 @@ func TestParseClassificationRejectsUnknown(t *testing.T) {
 		t.Fatal("ParseClassification accepted an unknown value")
 	}
 }
+
+func TestClassificationOrMostRestrictiveFailsClosed(t *testing.T) {
+	tests := map[string]Classification{
+		"public":              ClassificationPublic,
+		"regulated":           ClassificationRegulated,
+		"":                    ClassificationRegulated, // missing signal -> most restrictive
+		"confidential":        ClassificationRegulated, // unknown signal -> most restrictive
+		"REGULATED":           ClassificationRegulated, // wrong case is not the closed enum
+		"approved_non_public": ClassificationApprovedNonPublic,
+	}
+	for value, want := range tests {
+		if got := ClassificationOrMostRestrictive(value); got != want {
+			t.Errorf("ClassificationOrMostRestrictive(%q) = %q, want %q", value, got, want)
+		}
+	}
+}
+
+func TestClassificationRankIsTotalAndFailClosed(t *testing.T) {
+	if ClassificationPublic.Rank() >= ClassificationApprovedNonPublic.Rank() ||
+		ClassificationApprovedNonPublic.Rank() >= ClassificationRestricted.Rank() ||
+		ClassificationRestricted.Rank() >= ClassificationRegulated.Rank() {
+		t.Fatal("classification rank is not strictly increasing in sensitivity")
+	}
+	// An out-of-enum value must rank as most sensitive so drift denies rather than leaks.
+	if Classification("confidential").Rank() != ClassificationRegulated.Rank() {
+		t.Fatal("unknown classification did not rank as most restrictive")
+	}
+}
+
+func TestModelAdmitsIsFailClosedResidencyDecision(t *testing.T) {
+	sovereign := Model{Profile: "vllm", Residency: ResidencySelfHosted, AllowedClassification: ClassificationRegulated}
+	hyperscaler := Model{Profile: "vertex", Residency: ResidencyGlobal, AllowedClassification: ClassificationPublic}
+
+	// Sovereign backend serves classified content; hyperscaler is denied before egress.
+	if !sovereign.Admits(ClassificationRegulated) {
+		t.Error("sovereign backend must admit regulated content")
+	}
+	if hyperscaler.Admits(ClassificationRegulated) {
+		t.Error("hyperscaler must be denied for regulated content")
+	}
+	// Default public flow is unchanged on the hyperscaler.
+	if !hyperscaler.Admits(ClassificationPublic) {
+		t.Error("hyperscaler must still admit public content")
+	}
+	// A missing/unknown signal collapses to regulated and is denied on a public-only backend.
+	if hyperscaler.Admits(ClassificationOrMostRestrictive("")) {
+		t.Error("missing classification must fail closed to denied on a public-only backend")
+	}
+	if !sovereign.Admits(ClassificationOrMostRestrictive("garbage")) {
+		t.Error("unknown classification must still be servable by a regulated sovereign backend")
+	}
+}

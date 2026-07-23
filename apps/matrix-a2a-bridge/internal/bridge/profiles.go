@@ -338,7 +338,16 @@ func (b *Bridge) verifyRemoteCard(ctx context.Context, entry AgentEntry) (*a2a.A
 		}
 		return nil, nil
 	}
-	cardCtx, cancel := context.WithTimeout(ctx, agentRequestTimeout(entry.Ref, b.cfg.RequestTimeout))
+	// #339: carry the mapping's reviewed data classification on the AgentCard fetch too. This local
+	// GET traverses the same agentgateway A2A route whose residency policy ANDs the classification
+	// rule, so an unstamped fetch would default to the fail-closed regulated header and be denied
+	// under a public-ceiling cluster. A public agent fetches under public; a regulated agent that a
+	// public-only cluster cannot serve is consistently denied here as well. Remote transports never
+	// emit this header, so the wrap is a no-op for them.
+	cardCtx, cancel := context.WithTimeout(
+		a2aclient.WithDataClassification(ctx, entry.Ref.Classification()),
+		agentRequestTimeout(entry.Ref, b.cfg.RequestTimeout),
+	)
 	defer cancel()
 	card, err := b.client.ResolveAgentCard(cardCtx, target)
 	if err != nil {
