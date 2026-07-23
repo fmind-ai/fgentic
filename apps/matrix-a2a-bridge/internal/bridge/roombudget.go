@@ -250,7 +250,8 @@ func (b *Bridge) roomBudgetAllows(roomID id.RoomID) bool {
 	}
 	roomBudgetExhaustionsTotal.Inc()
 	snap := b.roomBudgets.snapshot(room)
-	b.auditLog.Info("room token budget exhausted",
+	b.auditLog.Info(
+		"room token budget exhausted",
 		"audit_schema", roomBudgetAuditSchema,
 		"room_id", room,
 		"tokens_used", snap.used,
