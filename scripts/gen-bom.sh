@@ -42,6 +42,10 @@ esac
 # awk helper shared by every list emitter: quote a scalar, rendering empty/"-" as YAML null.
 readonly AWK_SCALAR='function scalar(v) { return (v == "" || v == "-") ? "null" : "\"" v "\"" }'
 
+# The note attached to an image whose repository is a chart default that is not present in the repo
+# manifests: it cannot be fully qualified (or mirrored) offline without rendering the chart.
+readonly IMAGE_UNRESOLVED_NOTE="chart-default image; repository absent from repo manifests — enumerate with helm template before mirroring"
+
 # --- chart sources (OCIRepository / GitRepository pinned artifacts) --------------------------------
 chart_sources="$(
 	for file in "${BOM_CHART_FILES[@]}"; do
@@ -86,16 +90,50 @@ helm_repositories="$(
 )"
 
 # --- images (digest-pinned container images) ------------------------------------------------------
-# `ref` is the pinned reference exactly as written; chart-value images may record only the
-# `tag@sha256:` portion because the repository is a chart default — the digest is the authoritative,
-# globally-unique supply-chain identifier and is always complete.
-image_rows="$(
+# Every image is keyed by its authoritative, globally-unique sha256 digest. When the repository (and
+# registry) can be reconstructed from the sibling `registry:`/`repository:` keys of a HelmRelease
+# image map, `ref` is the COMPLETE, mirrorable reference `[registry/]repository:tag@sha256:...` and
+# `resolved: true`. An image whose repository is a chart default absent from the repo manifests keeps
+# the bare `tag@sha256:` token, is marked `resolved: false`, and carries a `note:` — it cannot be
+# fully qualified or mirrored offline without a `helm template` render (see docs/airgap.md). Plain
+# inline `image:`/`imageName:` strings outside a HelmRelease are already complete references.
+structured_images="$(
+	for file in "${BOM_CHART_FILES[@]}"; do
+		yq -er '
+      select(.kind == "HelmRelease") | .spec.values | .. | select(tag == "!!map" and has("tag"))
+      | select(.tag | tostring | test("@sha256:"))
+      | [(.registry // "-"), (.repository // "-"), (.tag | tostring)] | @tsv
+    ' "${file}" 2>/dev/null | while IFS=$'\t' read -r registry repository tag; do
+			[ -n "${tag}" ] || continue # skip empty lines emitted by non-matching docs
+			digest="sha256:${tag##*@sha256:}"
+			if [ "${repository}" != "-" ]; then
+				if [ "${registry}" != "-" ]; then
+					ref="${registry}/${repository}:${tag}"
+				else
+					ref="${repository}:${tag}"
+				fi
+				printf '%s\t%s\t%s\t%s\t%s\n' "${ref}" "${digest}" "true" "-" "${file}"
+			else
+				printf '%s\t%s\t%s\t%s\t%s\n' "${tag}" "${digest}" "false" "${IMAGE_UNRESOLVED_NOTE}" "${file}"
+			fi
+		done
+	done
+)"
+# Digests already captured (with their repository) as a structured HelmRelease image, so the inline
+# scan does not re-emit them as a bare, repository-less duplicate.
+structured_digests="$(printf '%s\n' "${structured_images}" | awk -F'\t' 'NF > 0 { print $2 }' | LC_ALL=C sort -u)"
+inline_images="$(
 	for file in "${BOM_IMAGE_FILES[@]}"; do
 		rg -oN "[^[:space:]\"']+@sha256:[0-9a-f]{64}" "${file}" | while read -r ref; do
-			printf '%s\t%s\t%s\n' "${ref}" "sha256:${ref##*@sha256:}" "${file}"
+			digest="sha256:${ref##*@sha256:}"
+			if printf '%s\n' "${structured_digests}" | grep -qxF "${digest}"; then
+				continue
+			fi
+			printf '%s\t%s\t%s\t%s\t%s\n' "${ref}" "${digest}" "true" "-" "${file}"
 		done
-	done | LC_ALL=C sort -u
+	done
 )"
+image_rows="$(printf '%s\n%s\n' "${structured_images}" "${inline_images}" | grep -v '^[[:space:]]*$' | LC_ALL=C sort -u)"
 
 # --- tagged images (explicit tag overrides in reconciled HelmRelease values) -----------------------
 # Some reconciled charts pin an image through an explicit `image:` value override (registry /
@@ -113,7 +151,13 @@ tagged_image_rows="$(
       | [(.registry // "-"), (.repository // "-"), (.tag | tostring), (.digest // "-")] | @tsv
     ' "${file}" 2>/dev/null | while IFS=$'\t' read -r registry repository tag digest; do
 			[ -n "${tag}" ] || continue # skip empty lines emitted by non-matching maps
-			printf '%s\t%s\t%s\t%s\t%s\n' "${registry}" "${repository}" "${tag}" "${digest}" "${file}"
+			# `resolved` mirrors the images rule: a repository present in the values makes the image
+			# fully qualified and mirrorable; a chart-default repository (absent) does not.
+			if [ "${repository}" != "-" ]; then
+				printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${registry}" "${repository}" "${tag}" "${digest}" "true" "-" "${file}"
+			else
+				printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${registry}" "${repository}" "${tag}" "${digest}" "false" "${IMAGE_UNRESOLVED_NOTE}" "${file}"
+			fi
 		done
 	done | LC_ALL=C sort -u
 )"
@@ -128,9 +172,12 @@ build_bom() {
 #
 # A tagged release == this exact pin-set. Scope: the reconciled clusters/local + clusters/gcp Flux
 # DAG under infra/ plus apps/matrix-a2a-bridge/deploy, with the tracked default platform-settings.
-# `images:` holds inline digest-pinned references; `taggedImages:` holds images pinned by an explicit
-# tag override in the referenced HelmRelease values (with a sibling digest when present). Some
-# `helmRepositories:` back opt-in profiles (e.g. `vllm`) not reconciled by the vertex default.
+# `images:` holds digest-pinned references; `taggedImages:` holds images pinned by an explicit tag
+# override in the referenced HelmRelease values (with a sibling digest when present). Each image and
+# tagged image carries `resolved:` — `true` when `ref`/`repository` is a complete, mirrorable
+# reference reconstructed from the manifests, `false` (with a `note:`) when the repository is a chart
+# default absent from the repo and only a `helm template` render can qualify it (see docs/airgap.md).
+# Some `helmRepositories:` back opt-in profiles (e.g. `vllm`) not reconciled by the vertex default.
 # See docs/releases.md.
 apiVersion: fgentic.dev/bom/v1
 kind: BillOfMaterials
@@ -169,27 +216,24 @@ HEADER
 
 	printf 'images:\n'
 	if [ -n "${image_rows}" ]; then
-		# Group unique (ref,digest) pairs and collect the files each appears in. LC_ALL=C keeps the
-		# in-awk key/file sort byte-ordered so the regenerate-and-diff is locale-independent.
-		printf '%s\n' "${image_rows}" | LC_ALL=C awk -F'\t' '
-      { ref[$1] = $2; files[$1] = files[$1] (files[$1] == "" ? "" : "\x1f") $3 }
-      END {
-        n = 0
-        for (k in ref) { keys[n++] = k }
-        for (i = 0; i < n; i++) {
-          for (j = i + 1; j < n; j++) { if (keys[j] < keys[i]) { t = keys[i]; keys[i] = keys[j]; keys[j] = t } }
-        }
-        for (i = 0; i < n; i++) {
-          k = keys[i]
-          printf "  - ref: \"%s\"\n", k
-          printf "    digest: \"%s\"\n", ref[k]
-          printf "    files:\n"
-          m = split(files[k], fl, "\x1f")
-          for (a = 1; a <= m; a++) { for (b = a + 1; b <= m; b++) { if (fl[b] < fl[a]) { t = fl[a]; fl[a] = fl[b]; fl[b] = t } } }
-          prev = ""
-          for (a = 1; a <= m; a++) { if (fl[a] != prev) { printf "      - %s\n", fl[a]; prev = fl[a] } }
-        }
+		# Rows arrive pre-sorted (LC_ALL=C sort -u), so refs are grouped and their files are already
+		# sorted and adjacent; stream them, emitting one entry per ref with its resolved flag, optional
+		# note, and deduplicated file list. Fields: ref, digest, resolved, note, file.
+		printf '%s\n' "${image_rows}" | awk -F'\t' '
+      function flush() {
+        if (cur == "") return
+        printf "  - ref: \"%s\"\n", cur
+        printf "    digest: \"%s\"\n", curdigest
+        printf "    resolved: %s\n", curresolved
+        if (curnote != "-") printf "    note: \"%s\"\n", curnote
+        printf "    files:\n"
+        for (i = 1; i <= nfiles; i++) printf "      - %s\n", flist[i]
       }
+      {
+        if ($1 != cur) { flush(); cur = $1; curdigest = $2; curresolved = $3; curnote = $4; nfiles = 0; prevfile = "" }
+        if ($5 != prevfile) { flist[++nfiles] = $5; prevfile = $5 }
+      }
+      END { flush() }
     '
 	else
 		printf '  []\n'
@@ -197,8 +241,13 @@ HEADER
 
 	printf 'taggedImages:\n'
 	if [ -n "${tagged_image_rows}" ]; then
+		# Fields: registry, repository, tag, digest, resolved, note, file.
 		printf '%s\n' "${tagged_image_rows}" | awk -F'\t' "${AWK_SCALAR}"'
-      { printf "  - registry: %s\n    repository: %s\n    tag: %s\n    digest: %s\n    file: %s\n", scalar($1), scalar($2), scalar($3), scalar($4), scalar($5) }
+      {
+        printf "  - registry: %s\n    repository: %s\n    tag: %s\n    digest: %s\n    resolved: %s\n", scalar($1), scalar($2), scalar($3), scalar($4), $5
+        if ($6 != "-") printf "    note: \"%s\"\n", $6
+        printf "    file: %s\n", scalar($7)
+      }
     '
 	else
 		printf '  []\n'

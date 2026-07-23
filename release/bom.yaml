@@ -6,9 +6,12 @@
 #
 # A tagged release == this exact pin-set. Scope: the reconciled clusters/local + clusters/gcp Flux
 # DAG under infra/ plus apps/matrix-a2a-bridge/deploy, with the tracked default platform-settings.
-# `images:` holds inline digest-pinned references; `taggedImages:` holds images pinned by an explicit
-# tag override in the referenced HelmRelease values (with a sibling digest when present). Some
-# `helmRepositories:` back opt-in profiles (e.g. `vllm`) not reconciled by the vertex default.
+# `images:` holds digest-pinned references; `taggedImages:` holds images pinned by an explicit tag
+# override in the referenced HelmRelease values (with a sibling digest when present). Each image and
+# tagged image carries `resolved:` — `true` when `ref`/`repository` is a complete, mirrorable
+# reference reconstructed from the manifests, `false` (with a `note:`) when the repository is a chart
+# default absent from the repo and only a `helm template` render can qualify it (see docs/airgap.md).
+# Some `helmRepositories:` back opt-in profiles (e.g. `vllm`) not reconciled by the vertex default.
 # See docs/releases.md.
 apiVersion: fgentic.dev/bom/v1
 kind: BillOfMaterials
@@ -158,46 +161,58 @@ helmRepositories:
 images:
   - ref: "0.2.1@sha256:50b431281d3e32666f27a292962fd486aabaac157083a844d037c12137e353aa"
     digest: "sha256:50b431281d3e32666f27a292962fd486aabaac157083a844d037c12137e353aa"
+    resolved: false
+    note: "chart-default image; repository absent from repo manifests — enumerate with helm template before mirroring"
     files:
       - infra/kagent/helmrelease.yaml
-  - ref: "0.32.0@sha256:d4a61c4607e2931bd2615bf3bcf8912669d11d194c44c77edd413e6301b50c5b"
-    digest: "sha256:d4a61c4607e2931bd2615bf3bcf8912669d11d194c44c77edd413e6301b50c5b"
-    files:
-      - infra/trivy-operator/helmrelease.yaml
-  - ref: "0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f"
-    digest: "sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f"
-    files:
-      - infra/trivy-operator/helmrelease.yaml
   - ref: "docker.io/envoyproxy/ratelimit:3e085e5b@sha256:70453d5ca820dce0c2939d95a3eeb0f3e64ac083749bc021401c13e4233d1595"
     digest: "sha256:70453d5ca820dce0c2939d95a3eeb0f3e64ac083749bc021401c13e4233d1595"
+    resolved: true
     files:
       - infra/agentgateway/mcp-rate-limit.yaml
   - ref: "docker.io/library/redis:8.8.0@sha256:234c902a2db49461a129e2d4aeff85b28cf20187ed274a67f6e50995fa713c7b"
     digest: "sha256:234c902a2db49461a129e2d4aeff85b28cf20187ed274a67f6e50995fa713c7b"
+    resolved: true
     files:
       - infra/agentgateway/mcp-rate-limit.yaml
   - ref: "ghcr.io/cloudnative-pg/postgresql:17.10-202607130907-system-trixie@sha256:c141aec61cab8da3e215aebe0fa155e78442fbb41c982a86743915a967e12af9"
     digest: "sha256:c141aec61cab8da3e215aebe0fa155e78442fbb41c982a86743915a967e12af9"
+    resolved: true
     files:
       - infra/postgres/cluster.yaml
       - infra/postgres/knowledge-schema-v1.yaml
-  - ref: "sha-975d9ecda84a3024bf2dbd17613ea7200f76990b@sha256:67d7fc46909ccd239c4ada479c10c01b47872274ae171fab1f643744868438db"
+  - ref: "ghcr.io/fmind-ai/matrix-a2a-bridge:sha-975d9ecda84a3024bf2dbd17613ea7200f76990b@sha256:67d7fc46909ccd239c4ada479c10c01b47872274ae171fab1f643744868438db"
     digest: "sha256:67d7fc46909ccd239c4ada479c10c01b47872274ae171fab1f643744868438db"
+    resolved: true
     files:
       - apps/matrix-a2a-bridge/deploy/helmrelease.yaml
+  - ref: "mirror.gcr.io/aquasec/trivy-operator:0.32.0@sha256:d4a61c4607e2931bd2615bf3bcf8912669d11d194c44c77edd413e6301b50c5b"
+    digest: "sha256:d4a61c4607e2931bd2615bf3bcf8912669d11d194c44c77edd413e6301b50c5b"
+    resolved: true
+    files:
+      - infra/trivy-operator/helmrelease.yaml
+  - ref: "mirror.gcr.io/aquasec/trivy:0.72.0@sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f"
+    digest: "sha256:cffe3f5161a47a6823fbd23d985795b3ed72a4c806da4c4df16266c02accdd6f"
+    resolved: true
+    files:
+      - infra/trivy-operator/helmrelease.yaml
 taggedImages:
   - registry: null
     repository: null
     tag: "2.19.0"
     digest: "sha256:ede4864215be4cd85bd8c3129a2fea6c5713c5653c7282c429dba123014bc68b"
+    resolved: false
+    note: "chart-default image; repository absent from repo manifests — enumerate with helm template before mirroring"
     file: "infra/observability/tracing-helmreleases.yaml"
   - registry: null
     repository: "ghcr.io/open-telemetry/opentelemetry-collector-releases/opentelemetry-collector-k8s"
     tag: "0.156.0"
     digest: "sha256:4bb87d79b9f4f7971cf0c7c2fbf7decab3ddfda0a8f73794e98d9bc6fe77f609"
+    resolved: true
     file: "infra/observability/tracing-helmreleases.yaml"
   - registry: null
     repository: "quay.io/keycloak/keycloak"
     tag: "26.7.0"
     digest: "sha256:2eb3cd316835c990e69e26ade292ffa78f6fb0db7d5fc6377463c162e1979ac0"
+    resolved: true
     file: "infra/keycloak/helmrelease.yaml"
