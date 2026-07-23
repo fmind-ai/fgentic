@@ -131,7 +131,8 @@ func (b *Bridge) runCapacityNotices(ctx context.Context) {
 
 func (b *Bridge) emitCapacityNotice(ctx context.Context, notice capacityNotice) {
 	evt := &event.Event{ID: notice.eventID, RoomID: notice.roomID, Sender: notice.sender.mxid}
-	b.postFailureForTarget(ctx, evt, notice.sender, notice.agent, notice.reason)
+	// A capacity notice is a bounded-queue rejection, so its terminal outcome is queue_full (#167).
+	b.postFailureForTarget(ctx, evt, notice.sender, notice.agent, notice.reason, outcomeQueueFull)
 }
 
 func (b *Bridge) executeDurableJobAfterTransactionConsumption(ctx context.Context, job state.Job) {

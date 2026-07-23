@@ -216,9 +216,11 @@ func (b *Bridge) projectDurableQuestion(ctx context.Context, job state.Job, cont
 		return b.finishControl(ctx, job, control, state.ControlDead, errorControlFailed, "")
 	}
 	intent := b.as.Intent(id.UserID(job.GhostMXID))
+	// The input-required question is a non-terminal pause (the task resumes on a threaded reply), so it
+	// carries no result block (nil meta).
 	eventID, err := b.editDurableNotice(
 		ctx, intent, id.RoomID(job.RoomID), id.EventID(job.MatrixPlaceholderEventID),
-		string(control.Payload), control.MatrixTxnID,
+		string(control.Payload), control.MatrixTxnID, nil,
 	)
 	if err != nil {
 		return err

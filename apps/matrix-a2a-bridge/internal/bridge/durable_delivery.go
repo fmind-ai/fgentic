@@ -21,6 +21,7 @@ func (b *Bridge) sendDurableNotice(
 	intent *appservice.IntentAPI,
 	evt *event.Event,
 	text, transactionID string,
+	meta *resultMetadata,
 ) (id.EventID, error) {
 	content := &event.MessageEventContent{MsgType: event.MsgNotice, Body: text}
 	content.SetReply(evt)
@@ -28,7 +29,7 @@ func (b *Bridge) sendDurableNotice(
 		ctx,
 		evt.RoomID,
 		event.EventMessage,
-		automatedContent(content),
+		automatedResultContent(content, meta),
 		mautrix.ReqSendEvent{TransactionID: transactionID},
 	)
 	if err != nil {
@@ -47,6 +48,7 @@ func (b *Bridge) editDurableNotice(
 	roomID id.RoomID,
 	target id.EventID,
 	text, transactionID string,
+	meta *resultMetadata,
 ) (id.EventID, error) {
 	if target == "" {
 		return "", fmt.Errorf("edit durable Matrix notice in room %s: empty placeholder", roomID)
@@ -57,7 +59,7 @@ func (b *Bridge) editDurableNotice(
 		ctx,
 		roomID,
 		event.EventMessage,
-		automatedContent(content),
+		automatedResultContent(content, meta),
 		mautrix.ReqSendEvent{TransactionID: transactionID},
 	)
 	if err != nil {
@@ -79,10 +81,11 @@ func (b *Bridge) deliverDurableReply(
 	job state.Job,
 	ref *AgentRef,
 	res a2aclient.Result,
+	meta *resultMetadata,
 ) (primaryEventID id.EventID, edit bool, out, rejected int, err error) {
 	text, uploads, rejected := b.prepareReply(ctx, intent, job.GhostLocalpart, ref, res)
 	if job.MatrixPlaceholderEventID == "" {
-		primaryEventID, err = b.sendDurableNotice(ctx, intent, evt, text, job.MatrixReplyTxnID)
+		primaryEventID, err = b.sendDurableNotice(ctx, intent, evt, text, job.MatrixReplyTxnID, meta)
 	} else {
 		edit = true
 		primaryEventID, err = b.editDurableNotice(
@@ -92,6 +95,7 @@ func (b *Bridge) deliverDurableReply(
 			id.EventID(job.MatrixPlaceholderEventID),
 			text,
 			job.MatrixEditTxnID,
+			meta,
 		)
 	}
 	if err != nil {

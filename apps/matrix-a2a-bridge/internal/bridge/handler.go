@@ -509,7 +509,7 @@ func (b *Bridge) enqueueResolvedTarget(
 		dedupVerdict:     dedupVerdict,
 		rateLimitVerdict: rateLimitVerdictNotChecked,
 	})
-	b.postFailureForTarget(ctx, evt, sender, localpart, result.terminalReason())
+	b.postFailureForTarget(ctx, evt, sender, localpart, result.terminalReason(), outcomeQueueFull)
 }
 
 // recordShutdownTarget is the terminal record for a resolved target that never started. Jobs
@@ -693,8 +693,9 @@ func (b *Bridge) abandonContinuation(evt *event.Event, open *openTask, reason, o
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(b.runCtx), b.cfg.RequestTimeout)
 	defer cancel()
 	intent := b.as.Intent(id.NewUserID(open.localpart, b.cfg.ServerName))
-	b.editReply(ctx, intent, open.origin.RoomID, open.placeholder,
-		fmt.Sprintf("⚠️ could not resume agent %q's task — please start again.", open.localpart))
+	b.editReplyResult(ctx, intent, open.origin.RoomID, open.placeholder,
+		fmt.Sprintf("⚠️ could not resume agent %q's task — please start again.", open.localpart),
+		b.newResultMetadata(open.localpart, outcome, open.taskID))
 	delegationsTotal.WithLabelValues(open.localpart, outcome).Inc()
 	b.logDelegationAudit(evt, open.ref, open.localpart, b.agents.IdentifySender(evt.Sender), delegationAuditResult{
 		outcome:          outcome,
@@ -757,7 +758,8 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 		// Re-register (fresh budget) so a rate-limited answer is retried, not lost.
 		b.openTasks.register(open, b.cfg.InputWaitTimeout, func() { b.expireOpenTask(open) })
 		intent := b.as.Intent(id.NewUserID(open.localpart, b.cfg.ServerName))
-		b.postFailureReply(ctx, intent, reply, currentSender, open.localpart, errorRateLimit, 0)
+		b.postFailureReply(ctx, intent, reply, currentSender, open.localpart, errorRateLimit, 0,
+			outcomeRateLimited, open.taskID)
 		delegationsTotal.WithLabelValues(open.localpart, outcomeRateLimited).Inc()
 		b.logDelegationAudit(reply, ref, open.localpart, currentSender, delegationAuditResult{
 			outcome: outcomeRateLimited, terminalStage: "admission", terminalReason: "rate_limit_rejected",
@@ -776,11 +778,12 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 	if open.contextID != "" {
 		if err := b.store.AddContextOwner(ctx, reply.RoomID.String(), open.localpart, open.contextID, reply.Sender.String()); err != nil {
 			audit.a2aAttempted = false
+			audit.outcome = outcomeDenied // mirror the sibling dispatch path: a fail-closed refusal is a denial
 			audit.terminalStage = "conversation_state"
 			audit.terminalReason = "conversation_owner_record_failed"
 			b.editFailureReply(
 				ctx, intent, reply.RoomID, open.placeholder, currentSender,
-				open.localpart, audit.terminalReason, 0,
+				open.localpart, audit.terminalReason, 0, audit.outcome, audit.taskID,
 			)
 			return
 		}
@@ -808,7 +811,7 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 			audit.a2aAttempted = false
 			b.editFailureReply(
 				ctx, intent, reply.RoomID, open.placeholder, currentSender,
-				open.localpart, errorAgentUntrusted, 0,
+				open.localpart, errorAgentUntrusted, 0, audit.outcome, audit.taskID,
 			)
 			return
 		}
@@ -823,7 +826,7 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 			"reason", "continuation_failed", "error_type", fmt.Sprintf("%T", err))
 		b.editFailureReply(
 			ctx, intent, reply.RoomID, open.placeholder, currentSender,
-			open.localpart, audit.terminalReason, b.cfg.RequestTimeout,
+			open.localpart, audit.terminalReason, b.cfg.RequestTimeout, audit.outcome, audit.taskID,
 		)
 		return
 	}
@@ -848,7 +851,7 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 		audit.terminalReason = "agent_failed"
 		b.editFailureReply(
 			ctx, intent, reply.RoomID, open.placeholder, currentSender,
-			open.localpart, "agent_failed", 0,
+			open.localpart, "agent_failed", 0, audit.outcome, audit.taskID,
 		)
 		return
 	}
@@ -858,7 +861,7 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 		audit.terminalReason = errorEmptyReply
 		b.editFailureReply(
 			ctx, intent, reply.RoomID, open.placeholder, currentSender,
-			open.localpart, errorEmptyReply, 0,
+			open.localpart, errorEmptyReply, 0, audit.outcome, audit.taskID,
 		)
 		return
 	}
@@ -878,7 +881,7 @@ func (b *Bridge) finishContinuation(ctx context.Context, reply *event.Event, ope
 	intent := b.as.Intent(id.NewUserID(open.localpart, b.cfg.ServerName))
 	b.editFailureReply(
 		ctx, intent, open.origin.RoomID, open.placeholder, sender,
-		open.localpart, reason, 0,
+		open.localpart, reason, 0, outcomeDenied, open.taskID,
 	)
 	delegationsTotal.WithLabelValues(open.localpart, outcomeDenied).Inc()
 	b.logDelegationAudit(reply, open.ref, open.localpart, sender, delegationAuditResult{
@@ -958,7 +961,7 @@ func (b *Bridge) refuseOverBudget(
 		rateLimitVerdict: rateLimitVerdictNotChecked,
 		a2aAttempted:     false,
 	})
-	b.postFailureForTarget(ctx, evt, sender, localpart, errorQuoteOverBudget)
+	b.postFailureForTarget(ctx, evt, sender, localpart, errorQuoteOverBudget, outcomeDenied)
 }
 
 // revalidateSender applies the current origin map at dispatch time. Once a queued event is
@@ -1017,7 +1020,7 @@ func (b *Bridge) refuseUntrustedTarget(
 		rateLimitVerdict: rateLimitVerdictNotChecked,
 		a2aAttempted:     false,
 	})
-	b.postFailureForTarget(ctx, evt, sender, localpart, errorAgentUntrusted)
+	b.postFailureForTarget(ctx, evt, sender, localpart, errorAgentUntrusted, outcomeDenied)
 }
 
 func (b *Bridge) dispatchWithDedupVerdict(
@@ -1097,7 +1100,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 		audit.terminalStage = "admission"
 		audit.terminalReason = errorRoomTokenBudget
 		audit.replyEventID = b.postFailureReply(
-			ctx, intent, evt, sender, localpart, errorRoomTokenBudget, 0,
+			ctx, intent, evt, sender, localpart, errorRoomTokenBudget, 0, audit.outcome, audit.taskID,
 		)
 		return
 	}
@@ -1110,7 +1113,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 		audit.terminalReason = "rate_limit_rejected"
 		audit.rateLimitVerdict = rateLimitVerdictRejected
 		audit.replyEventID = b.postFailureReply(
-			ctx, intent, evt, sender, localpart, errorRateLimit, 0,
+			ctx, intent, evt, sender, localpart, errorRateLimit, 0, audit.outcome, audit.taskID,
 		)
 		return
 	}
@@ -1139,7 +1142,8 @@ func (b *Bridge) dispatchWithDedupVerdict(
 			audit.outcome = outcomeDenied
 			audit.terminalStage = "conversation_state"
 			audit.terminalReason = "conversation_owner_record_failed"
-			audit.replyEventID = b.postFailureReply(ctx, intent, evt, sender, localpart, audit.terminalReason, 0)
+			audit.replyEventID = b.postFailureReply(ctx, intent, evt, sender, localpart, audit.terminalReason, 0,
+				audit.outcome, audit.taskID)
 			return
 		}
 	}
@@ -1155,7 +1159,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 		audit.mediaRejected = inRejected
 		b.log.Warn("refusing delegation: attached file failed media policy", "ghost", localpart, "room", evt.RoomID)
 		audit.replyEventID = b.postFailureReply(
-			ctx, intent, evt, sender, localpart, errorMediaDenied, 0,
+			ctx, intent, evt, sender, localpart, errorMediaDenied, 0, audit.outcome, audit.taskID,
 		)
 		return
 	}
@@ -1190,7 +1194,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 			audit.terminalReason = "agent_card_untrusted"
 			audit.a2aAttempted = false
 			audit.replyEventID = b.postFailureReply(
-				ctx, intent, evt, sender, localpart, errorAgentUntrusted, 0,
+				ctx, intent, evt, sender, localpart, errorAgentUntrusted, 0, audit.outcome, audit.taskID,
 			)
 			return
 		}
@@ -1205,7 +1209,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 		}
 		delegationsTotal.WithLabelValues(localpart, audit.outcome).Inc()
 		audit.replyEventID = b.postFailureReply(
-			ctx, intent, evt, sender, localpart, audit.terminalReason, b.cfg.RequestTimeout,
+			ctx, intent, evt, sender, localpart, audit.terminalReason, b.cfg.RequestTimeout, audit.outcome, audit.taskID,
 		)
 		return
 	}
@@ -1237,7 +1241,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 		audit.outcome = outcomeFailed
 		audit.terminalReason = "agent_failed"
 		audit.replyEventID = b.postFailureReply(
-			ctx, intent, evt, sender, localpart, "agent_failed", 0,
+			ctx, intent, evt, sender, localpart, "agent_failed", 0, audit.outcome, audit.taskID,
 		)
 		return
 	}
@@ -1246,7 +1250,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 		audit.outcome = outcomeFailed
 		audit.terminalReason = errorEmptyReply
 		audit.replyEventID = b.postFailureReply(
-			ctx, intent, evt, sender, localpart, errorEmptyReply, 0,
+			ctx, intent, evt, sender, localpart, errorEmptyReply, 0, audit.outcome, audit.taskID,
 		)
 		return
 	}
@@ -1306,7 +1310,8 @@ func (b *Bridge) rejectBridgedSender(
 		return
 	}
 	delegationsTotal.WithLabelValues(localpart, outcomeDenied).Inc()
-	audit.replyEventID = b.postReply(ctx, intent, evt, failureMessage(errorSenderPolicy, localpart, 0))
+	audit.replyEventID = b.postReplyResult(ctx, intent, evt, failureMessage(errorSenderPolicy, localpart, 0),
+		b.newResultMetadata(localpart, audit.outcome, audit.taskID))
 	b.log.Warn(
 		"bridged sender not allowed to invoke agent",
 		"sender", evt.Sender,
@@ -1367,7 +1372,8 @@ func (b *Bridge) refuseStagedTarget(
 		return
 	}
 	delegationsTotal.WithLabelValues(localpart, outcomeDenied).Inc()
-	audit.replyEventID = b.postReply(ctx, intent, evt, failureMessage(errorStagePolicy, localpart, 0))
+	audit.replyEventID = b.postReplyResult(ctx, intent, evt, failureMessage(errorStagePolicy, localpart, 0),
+		b.newResultMetadata(localpart, audit.outcome, audit.taskID))
 	b.log.Warn(
 		"staging agent invoked outside a staging room",
 		"sender", evt.Sender,
@@ -1473,6 +1479,7 @@ func (b *Bridge) awaitTask(
 			b.editFailureReply(
 				ctx, intent, evt.RoomID, placeholder, b.agents.IdentifySender(evt.Sender),
 				localpart, errorTaskTimeout, agentRequestTimeout(ref, b.cfg.TaskTimeout),
+				audit.outcome, res.TaskID,
 			)
 			return audit
 		}
@@ -1496,7 +1503,7 @@ func (b *Bridge) awaitTask(
 				b.log.Warn("stopping task polling after remote agent trust changed", "task", res.TaskID, "agent", ref.Path())
 				b.editFailureReply(
 					ctx, intent, evt.RoomID, placeholder, b.agents.IdentifySender(evt.Sender),
-					localpart, errorAgentUntrusted, 0,
+					localpart, errorAgentUntrusted, 0, audit.outcome, res.TaskID,
 				)
 				return audit
 			}
@@ -1512,7 +1519,7 @@ func (b *Bridge) awaitTask(
 				"reason", "task_poll_failed", "error_type", fmt.Sprintf("%T", err))
 			b.editFailureReply(
 				ctx, intent, evt.RoomID, placeholder, b.agents.IdentifySender(evt.Sender),
-				localpart, "task_poll_failed", 0,
+				localpart, "task_poll_failed", 0, audit.outcome, res.TaskID,
 			)
 			return audit
 		}
@@ -1535,7 +1542,7 @@ func (b *Bridge) awaitTask(
 					"reason", "agent_reported_failure")
 				b.editFailureReply(
 					ctx, intent, evt.RoomID, placeholder, b.agents.IdentifySender(evt.Sender),
-					localpart, "agent_failed", 0,
+					localpart, "agent_failed", 0, audit.outcome, res.TaskID,
 				)
 				return audit
 			}
@@ -1545,7 +1552,7 @@ func (b *Bridge) awaitTask(
 				audit.terminalReason = errorEmptyReply
 				b.editFailureReply(
 					ctx, intent, evt.RoomID, placeholder, b.agents.IdentifySender(evt.Sender),
-					localpart, errorEmptyReply, 0,
+					localpart, errorEmptyReply, 0, audit.outcome, res.TaskID,
 				)
 				return audit
 			}
@@ -1623,7 +1630,7 @@ func (b *Bridge) finishAuthRequired(
 	audit.terminalReason = errorAuthRequired
 	b.editFailureReply(
 		ctx, intent, evt.RoomID, placeholder, b.agents.IdentifySender(evt.Sender),
-		localpart, errorAuthRequired, 0,
+		localpart, errorAuthRequired, 0, audit.outcome, audit.taskID,
 	)
 	b.log.Warn("stopping task: agent requires unforwarded authorization",
 		"ghost", localpart, "room", evt.RoomID)
@@ -1640,8 +1647,9 @@ func (b *Bridge) expireOpenTask(open *openTask) {
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(b.runCtx), b.cfg.RequestTimeout)
 	defer cancel()
 	intent := b.as.Intent(id.NewUserID(open.localpart, b.cfg.ServerName))
-	b.editReply(ctx, intent, open.origin.RoomID, open.placeholder,
-		fmt.Sprintf("⌛ agent %q got no reply within %s — the task was dropped.", open.localpart, b.cfg.InputWaitTimeout))
+	b.editReplyResult(ctx, intent, open.origin.RoomID, open.placeholder,
+		fmt.Sprintf("⌛ agent %q got no reply within %s — the task was dropped.", open.localpart, b.cfg.InputWaitTimeout),
+		b.newResultMetadata(open.localpart, outcomeTimeout, open.taskID))
 	delegationsTotal.WithLabelValues(open.localpart, outcomeTimeout).Inc()
 	b.logDelegationAudit(open.origin, open.ref, open.localpart, open.sender, delegationAuditResult{
 		outcome:          outcomeTimeout,
@@ -1700,7 +1708,8 @@ func (b *Bridge) finishCanceled(
 	audit.terminalStage = "task_cancel"
 	audit.terminalReason = "canceled_by_room"
 	audit.canceledBy = canceledBy.String()
-	b.editReply(ctx, intent, evt.RoomID, placeholder, fmt.Sprintf("🛑 canceled by %s.", canceledBy))
+	b.editReplyResult(ctx, intent, evt.RoomID, placeholder, fmt.Sprintf("🛑 canceled by %s.", canceledBy),
+		b.newResultMetadata(localpart, audit.outcome, taskID))
 	b.log.Info("canceled long task from room",
 		"ghost", localpart, "agent", ref.Path(), "room", evt.RoomID, "canceled_by", canceledBy)
 	return audit
@@ -1765,10 +1774,23 @@ func (b *Bridge) logDelegationAudit(
 // postReply sends text into the room as the ghost, as an m.notice reply to the original message
 // (notice, so other bots/agents ignore it by convention — SPEC §4 F8). Returns the event ID.
 func (b *Bridge) postReply(ctx context.Context, intent *appservice.IntentAPI, evt *event.Event, text string) id.EventID {
+	return b.postReplyResult(ctx, intent, evt, text, nil)
+}
+
+// postReplyResult posts a reply and, when meta is non-nil, attaches the versioned ai.fgentic.a2a
+// result block (#167). A nil meta is exactly postReply — only terminal replies (the answer and
+// terminal failure notices) pass a block; non-terminal notices do not.
+func (b *Bridge) postReplyResult(
+	ctx context.Context,
+	intent *appservice.IntentAPI,
+	evt *event.Event,
+	text string,
+	meta *resultMetadata,
+) id.EventID {
 	trace.SpanFromContext(ctx).AddEvent("matrix.reply.post")
 	content := &event.MessageEventContent{MsgType: event.MsgNotice, Body: text}
 	content.SetReply(evt) // m.relates_to reply pointing at the human's original message
-	resp, err := intent.SendMessageEvent(ctx, evt.RoomID, event.EventMessage, automatedContent(content))
+	resp, err := intent.SendMessageEvent(ctx, evt.RoomID, event.EventMessage, automatedResultContent(content, meta))
 	if err != nil {
 		b.log.Error("post reply", "room", evt.RoomID, "err", err)
 		return ""
@@ -1778,7 +1800,22 @@ func (b *Bridge) postReply(ctx context.Context, intent *appservice.IntentAPI, ev
 
 // editReply replaces a previously-posted reply (m.replace); falls back to logging when the
 // placeholder was never posted.
-func (b *Bridge) editReply(ctx context.Context, intent *appservice.IntentAPI, roomID id.RoomID, target id.EventID, text string) bool {
+func (b *Bridge) editReply(ctx context.Context, intent *appservice.IntentAPI, roomID id.RoomID, target id.EventID, text string) {
+	b.editReplyResult(ctx, intent, roomID, target, text, nil)
+}
+
+// editReplyResult edits a placeholder into its final text and, when meta is non-nil, attaches the
+// versioned ai.fgentic.a2a result block onto both the top-level content and the m.new_content
+// replacement (#167). A nil meta is exactly editReply — only terminal edits (the completed answer and
+// terminal failure notices that replace a working placeholder) pass a block.
+func (b *Bridge) editReplyResult(
+	ctx context.Context,
+	intent *appservice.IntentAPI,
+	roomID id.RoomID,
+	target id.EventID,
+	text string,
+	meta *resultMetadata,
+) bool {
 	trace.SpanFromContext(ctx).AddEvent("matrix.reply.edit")
 	if target == "" {
 		b.log.Error("no placeholder to edit", "room", roomID, "reason", "missing_placeholder")
@@ -1786,7 +1823,7 @@ func (b *Bridge) editReply(ctx context.Context, intent *appservice.IntentAPI, ro
 	}
 	content := &event.MessageEventContent{MsgType: event.MsgNotice, Body: text}
 	content.SetEdit(target)
-	if _, err := intent.SendMessageEvent(ctx, roomID, event.EventMessage, automatedContent(content)); err != nil {
+	if _, err := intent.SendMessageEvent(ctx, roomID, event.EventMessage, automatedResultContent(content, meta)); err != nil {
 		b.log.Error("edit reply", "room", roomID, "err", err)
 		return false
 	}

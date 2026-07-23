@@ -62,12 +62,12 @@ func TestFailureNoticesUseSharedBoundedAutomatedPlane(t *testing.T) {
 	sender := b.agents.IdentifySender(evt.Sender)
 
 	if replyID := b.postFailureReply(
-		t.Context(), intent, evt, sender, "agent-k8s", errorRateLimit, 0,
+		t.Context(), intent, evt, sender, "agent-k8s", errorRateLimit, 0, outcomeRateLimited, "",
 	); replyID == "" {
 		t.Fatal("first failure notice was unexpectedly suppressed")
 	}
 	if replyID := b.postFailureReply(
-		t.Context(), intent, evt, sender, "agent-k8s", errorRateLimit, 0,
+		t.Context(), intent, evt, sender, "agent-k8s", errorRateLimit, 0, outcomeRateLimited, "",
 	); replyID != "" {
 		t.Fatalf("second failure notice bypassed exhausted sender bucket: %q", replyID)
 	}
