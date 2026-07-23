@@ -30,6 +30,12 @@ func TestPublicDialContextRejectsSpecialUseAndMixedAnswersBeforeDial(t *testing.
 		"IPv6 unique-local": {
 			netip.MustParseAddr("fd00::1"),
 		},
+		"IPv4-mapped IPv6": {
+			netip.MustParseAddr("::ffff:127.0.0.1"),
+		},
+		"multicast": {
+			netip.MustParseAddr("224.0.0.1"),
+		},
 		"mixed public and private": {
 			netip.MustParseAddr("93.184.216.34"),
 			netip.MustParseAddr("192.168.1.1"),
