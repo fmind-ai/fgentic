@@ -10,10 +10,11 @@ spec:
   policyTypes:
     - Ingress
 ---
-# Only the agent workloads (the bridge in ns `bridge` and kagent in ns `kagent`) may reach the
-# proxy data plane. The labeled Prometheus workload receives only the metrics port. These exact
-# policies pass isolated kind+Calico deny/allow conformance; repeat the active-cluster probe on each
-# target CNI.
+# Only the exact bridge and managed Agent workloads may reach the proxy data plane. The kagent
+# controller translates ModelConfig into generated Agent configuration; the Agent runtimes make
+# model and MCP calls. Namespace membership alone is not an authorization boundary. The labeled
+# Prometheus workload receives only the metrics port. These exact policies pass isolated kind+Calico
+# deny/allow conformance; repeat the active-cluster probe on each target CNI.
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -30,9 +31,16 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: bridge
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/instance: matrix-a2a-bridge
+              app.kubernetes.io/name: matrix-a2a-bridge
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: kagent
+          podSelector:
+            matchLabels:
+              fgentic.dev/agent-zoo: "true"
       ports:
         - port: 8080
           protocol: TCP
