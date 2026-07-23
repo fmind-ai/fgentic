@@ -77,7 +77,7 @@ func (f fixture) runModelOutage(ctx context.Context) error {
 	}
 	// Bounded terminal: exactly one dead-letter outcome. run.sh independently counts the content-free
 	// preflight-retry log lines to prove the attempt count equalled DELEGATION_MAX_ATTEMPTS.
-	if err := f.requireDelegationMetric(ctx, ghostLocalpart, outcomeDeadLabel, 1); err != nil {
+	if err := f.requireDelegationMetric(ctx, ghostLocalpart, outcomeDeadLabel); err != nil {
 		return err
 	}
 
@@ -97,7 +97,7 @@ func (f fixture) runModelOutage(ctx context.Context) error {
 	if err := f.waitForReply(ctx, sess.AccessToken, roomID, ghost, okEventID, replyText); err != nil {
 		return fmt.Errorf("await post-recovery reply: %w", err)
 	}
-	if err := f.requireDelegationMetric(ctx, ghostLocalpart, outcomeOKLabel, 1); err != nil {
+	if err := f.requireDelegationMetric(ctx, ghostLocalpart, outcomeOKLabel); err != nil {
 		return err
 	}
 	// Exactly one A2A execution reached the backend across the whole drill (the recovery mention). The
