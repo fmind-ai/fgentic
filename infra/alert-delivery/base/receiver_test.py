@@ -130,11 +130,27 @@ def test_webhook_rejects_invalid_framing_and_oversized_body() -> None:
             )
             == 400
         )
+        assert (
+            _raw_status(
+                recv,
+                b"POST / HTTP/1.1\r\nHost: test\r\nContent-Length: -1\r\nConnection: close\r\n\r\n",
+            )
+            == 400
+        )
         oversized = receiver._MAX_REQUEST_BYTES + 1
         assert (
             _raw_status(
                 recv,
                 f"POST / HTTP/1.1\r\nHost: test\r\nContent-Length: {oversized}\r\nConnection: close\r\n\r\n".encode(),
+            )
+            == 413
+        )
+        huge_decimal = "9" * 5_000
+        assert (
+            _raw_status(
+                recv,
+                f"POST / HTTP/1.1\r\nHost: test\r\nContent-Length: {huge_decimal}\r\n"
+                "Connection: close\r\n\r\n".encode(),
             )
             == 413
         )

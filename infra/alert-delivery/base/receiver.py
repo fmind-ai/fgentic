@@ -31,7 +31,7 @@ from typing import Any, cast
 # Low-cardinality, non-content labels safe to surface (never message text / user identifiers).
 _SAFE_LABELS = ("namespace", "job_name", "cronjob", "gen_ai_system", "resource_kind")
 _MAX_ALERTS = 20  # bound the fan-out so an alert storm becomes a bounded stream, never a flood.
-_MAX_REQUEST_BYTES = 262_144
+_MAX_REQUEST_BYTES = 65_536
 _MAX_CONCURRENT_REQUESTS = 4
 _REQUEST_TIMEOUT_SECONDS = 5.0
 
