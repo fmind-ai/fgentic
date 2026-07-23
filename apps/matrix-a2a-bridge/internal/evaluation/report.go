@@ -32,6 +32,11 @@ type ScenarioResult struct {
 	// JudgeScores holds the content-free sovereign LLM-as-judge score pair when the judge lane scored
 	// this scenario; nil when the deterministic rubric applied or the judge lane was blocked (#355).
 	JudgeScores *JudgeScores `json:"judge_scores,omitempty"`
+	// Faithfulness holds the content-free citation-faithfulness result when the scenario carried a
+	// corpus-cited answer contract and the sovereign judge lane was approved; nil otherwise. It surfaces
+	// only verdicts and claim/chunk IDs alongside groundedness — never claim prose or chunk text (D7,
+	// #358).
+	Faithfulness *FaithfulnessResult `json:"faithfulness,omitempty"`
 }
 
 // CostSummary aggregates estimates made with one catalog identity.

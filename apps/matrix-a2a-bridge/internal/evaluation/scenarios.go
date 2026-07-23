@@ -53,6 +53,11 @@ type Scenario struct {
 	Agent  Agent  `json:"agent"`
 	Prompt string `json:"prompt"`
 	Rubric Rubric `json:"rubric"`
+	// Citations optionally carries a corpus-cited answer contract for the citation-faithfulness check.
+	// It is populated by the M25 retrieval tool in the live path and by fixtures in tests; a nil value
+	// skips the check. It is retrieval-tool-agnostic — only claims and the chunks they reference — so it
+	// leaves the fixed prompt/rubric suite and its stable SuiteDigest unchanged when absent (#358).
+	Citations *CitedAnswer `json:"citations,omitempty"`
 }
 
 // Scenarios returns the fixed evaluation suite. Prompts favor invariant policy and documentation
