@@ -160,6 +160,70 @@ def test_webhook_rejects_invalid_framing_and_oversized_body() -> None:
         recv.server_close()
 
 
+def test_request_headers_are_bounded() -> None:
+    recv = _serve(receiver._Handler)
+    prefix = b"GET /healthz HTTP/1.1\r\nHost: test\r\nX-Fill: "
+    suffix = b"\r\nConnection: close\r\n\r\n"
+    try:
+        fill = b"a" * (receiver._MAX_HEADER_BYTES - len(prefix) - len(suffix))
+        request = prefix + fill + suffix
+        assert len(request) == receiver._MAX_HEADER_BYTES
+        assert _raw_status(recv, request) == 200
+
+        oversized = prefix + fill + b"a" + suffix
+        assert _raw_status(recv, oversized) == 431
+        assert _raw_status(recv, b"G" * (receiver._MAX_HEADER_BYTES + 1)) == 431
+        print("ok: aggregate request headers are bounded")
+    finally:
+        recv.shutdown()
+        recv.server_close()
+
+
+def test_slow_headers_release_all_request_slots() -> None:
+    with (
+        mock.patch.object(receiver, "_REQUEST_TIMEOUT_SECONDS", 0.1),
+        mock.patch.object(receiver._Handler, "timeout", 0.1),
+    ):
+        recv = _serve(receiver._Handler)
+        address = cast(tuple[str, int], recv.server_address)
+        connections = [socket.create_connection(address, timeout=2) for _ in range(receiver._MAX_CONCURRENT_REQUESTS)]
+
+        def trickle(connection: socket.socket) -> None:
+            deadline = time.monotonic() + 0.3
+            while time.monotonic() < deadline:
+                try:
+                    connection.sendall(b"a")
+                except OSError:
+                    return
+                time.sleep(0.03)
+
+        try:
+            for connection in connections:
+                connection.sendall(b"GET /healthz HTTP/1.1\r\nHost: test\r\nX-Slow: ")
+            senders = [threading.Thread(target=trickle, args=(connection,)) for connection in connections]
+            for sender in senders:
+                sender.start()
+
+            # Every slow connection exceeds one shared wall-clock deadline despite the trickle.
+            time.sleep(0.15)
+            assert (
+                _raw_status(
+                    recv,
+                    b"GET /healthz HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n",
+                )
+                == 200
+            )
+            for sender in senders:
+                sender.join(timeout=1)
+                assert not sender.is_alive()
+            print("ok: slow headers release every bounded request slot")
+        finally:
+            for connection in connections:
+                connection.close()
+            recv.shutdown()
+            recv.server_close()
+
+
 def test_webhook_rejects_incomplete_and_slow_body() -> None:
     with (
         mock.patch.object(receiver, "_REQUEST_TIMEOUT_SECONDS", 0.1),
@@ -329,6 +393,8 @@ if __name__ == "__main__":
     test_txn_id_is_stable_but_time_bucketed()
     test_safe_label_summary_excludes_content()
     test_webhook_rejects_invalid_framing_and_oversized_body()
+    test_request_headers_are_bounded()
+    test_slow_headers_release_all_request_slots()
     test_webhook_rejects_incomplete_and_slow_body()
     test_request_concurrency_is_bounded_and_recovers()
     test_thread_start_failure_releases_request_slot()
