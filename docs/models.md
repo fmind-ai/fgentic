@@ -121,7 +121,7 @@ Selecting an API profile sends the complete model request and response from agen
 
 ### Self-hosted vLLM
 
-Set `llm_provider: vllm` and `llm_model: Qwen/Qwen2.5-0.5B-Instruct`. The selected provider inventory deploys the official [vLLM Production Stack chart 0.1.11](https://github.com/vllm-project/production-stack/releases/tag/vllm-stack-0.1.11), the multi-architecture CPU runtime `v0.24.0`, and the public Qwen model at immutable revision `7ae557604adf67be50417f59c2c2f167def9a775`. The chart, runtime, and model are Apache-2.0.
+Set `llm_provider: vllm` and `llm_model: Qwen/Qwen2.5-0.5B-Instruct`. The selected provider inventory deploys the official [vLLM Production Stack chart 0.1.11](https://github.com/vllm-project/production-stack/releases/tag/vllm-stack-0.1.11), the multi-architecture CPU runtime `vllm/vllm-openai-cpu:v0.25.1@sha256:6b301f040db8152dfb8ff55e06fd348aa5d0d9a311f58118160c7058262c8628`, and the public Qwen model at immutable revision `7ae557604adf67be50417f59c2c2f167def9a775`. The chart, runtime, and model are Apache-2.0.
 
 A one-shot loader writes the approximately 1 GB model snapshot to a 3 GiB PVC. Only that prompt-free Job may reach public HTTPS; the serving Pod mounts the cache read-only, enables Hugging Face and vLLM offline/telemetry-off modes, and receives no egress allowance. Agentgateway's vLLM-profile policy additionally limits its proxy to cluster DNS, its XDS control plane, vLLM, and kagent. The loader's public TCP 443 rule is necessarily address-based because portable Kubernetes NetworkPolicy cannot allow an HTTPS FQDN and its CDN aliases.
 
@@ -229,14 +229,14 @@ patches:
 
 Enabling the profile alongside an **external** chat provider (Vertex/Anthropic/OpenAI/Azure/Mistral) requires operator care: those providers ship no proxy egress policy, so the additive `agentgateway-embeddings-egress` policy flips the proxy to default-deny egress. Pair it with a self-hosted chat provider (`vllm`) or extend the provider-egress inventory (#339) to permit the external chat endpoint too. See "Fail-closed reachability" below.
 
-The enabled profile deploys the vLLM Production Stack chart `0.1.11` and CPU runtime `v0.24.0` (both Apache-2.0) as two engines under `infra/models/embeddings/`:
+The enabled profile deploys the vLLM Production Stack chart `0.1.11` and CPU runtime `vllm/vllm-openai-cpu:v0.25.1@sha256:6b301f040db8152dfb8ff55e06fd348aa5d0d9a311f58118160c7058262c8628` (both Apache-2.0) as two engines under `infra/models/embeddings/`:
 
 | Engine                 | Model                     | Revision                                   | License    | vLLM runner       | Endpoints                     |
 | ---------------------- | ------------------------- | ------------------------------------------ | ---------- | ----------------- | ----------------------------- |
 | `knowledge-embeddings` | `BAAI/bge-m3`             | `5617a9f61b028005a4858fdac845db406aefb181` | MIT        | `pooling` (embed) | `/v1/embeddings`, `/tokenize` |
 | `knowledge-reranker`   | `BAAI/bge-reranker-v2-m3` | `953dc6f6f85a1b2dbfca4c34a2796e7dde08d41e` | Apache-2.0 | `pooling` (score) | `/rerank`, `/score`           |
 
-vLLM v0.24.0 removed the top-level `--task` flag; `--runner pooling` auto-detects the embedding architecture (bge-m3) and the cross-encoder scorer (bge-reranker-v2-m3, `num_labels == 1` → `/score` + `/rerank`).
+vLLM v0.25.1 uses `--runner pooling` to auto-detect the embedding architecture (bge-m3) and the cross-encoder scorer (bge-reranker-v2-m3, `num_labels == 1` → `/score` + `/rerank`).
 
 Each engine's one-shot, prompt-free loader Job writes its pinned snapshot (~5 GiB PVC) and is the only Pod allowed public HTTPS; the serving Pods mount the cache read-only, run Hugging Face and vLLM offline/telemetry-off, and receive no egress allowance. Stable Services `knowledge-embeddings.models.svc.cluster.local:8000` and `knowledge-reranker.models…:8000` honour the #332 ingestion consumer contract (`bge-m3-1024-v1`, 1024 dimensions, `max_model_len=8192`) so callers never see the local model path.
 
