@@ -24,6 +24,10 @@ jobs:
           persist-credentials: false
       - name: Install mise system
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+        with:
+          # Pin mise: 2026.7.12 broke the npm backend's renovate install (resolution succeeds,
+          # install fails), failing this job's toolchain setup on every PR. 2026.7.11 is known-good.
+          version: 2026.7.11
       - name: Install application toolchains
         # Each app pins its own tools and run_auto_install is off; Python also syncs its lockfile.
         run: mise run install:apps
@@ -65,6 +69,7 @@ jobs:
         if: steps.bridge-changes.outputs.run == 'true'
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
         with:
+          version: 2026.7.11 # pin: keep the toolchain on the known-good mise (see above)
           # The app config supplies kind and kubectl; the inherited root config supplies jq and
           # yq. Go builds run inside the integration harness's pinned container images.
           install_args: kind kubectl jq yq
