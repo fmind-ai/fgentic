@@ -94,6 +94,8 @@ The model-evaluation task port-forwards the local agentgateway, runs 10 fixed A2
 | `SENDER_RATE_PER_MINUTE` / `SENDER_RATE_BURST`      | `6` / `3`                                                              | Token bucket per (sender, agent).                                                                   |
 | `ROOM_RATE_PER_MINUTE` / `ROOM_RATE_BURST`          | `30` / `10`                                                            | Token bucket per room.                                                                              |
 | `RATE_LIMIT_BUCKET_CAPACITY`                        | `4096`                                                                 | Hard cap for each invocation/notice sender/room map; unknown keys fail closed when full.            |
+| `ROOM_TOKEN_BUDGET` / `ROOM_TOKEN_BUDGET_PERIOD`    | `0` / `24h`                                                            | Cumulative model-token ceiling per room and reset period; `0` is unlimited.                         |
+| `ROOM_TOKEN_BUDGET_OVERRIDES`                       | _(empty)_                                                              | Comma-separated exact `!room:server=limit` overrides; a per-room `0` is unlimited.                  |
 | `LISTEN_HOST` / `LISTEN_PORT`                       | `0.0.0.0` / `29331`                                                    | Appservice HTTP bind.                                                                               |
 | `LOG_LEVEL` / `LOG_FORMAT`                          | `info` / `json`                                                        | Structured logging.                                                                                 |
 

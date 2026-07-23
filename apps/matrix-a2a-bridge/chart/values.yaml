@@ -47,6 +47,11 @@ config:
   roomRatePerMinute: 30
   roomRateBurst: 10
   rateLimitBucketCapacity: 4096 # hard cap for each sender/room invocation/notice bucket map
+  # Cumulative model-token budget per Matrix room. Zero preserves the unlimited default; each
+  # override is an exact "!room:server=limit" entry, where limit zero makes that room unlimited.
+  roomTokenBudget: 0
+  roomTokenBudgetPeriod: 24h
+  roomTokenBudgetOverrides: []
   logLevel: info
   logFormat: json
   listenPort: 29331

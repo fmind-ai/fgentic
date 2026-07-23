@@ -126,6 +126,14 @@ spec:
               value: {{ .Values.config.roomRateBurst | quote }}
             - name: RATE_LIMIT_BUCKET_CAPACITY
               value: {{ .Values.config.rateLimitBucketCapacity | quote }}
+            - name: ROOM_TOKEN_BUDGET
+              value: {{ .Values.config.roomTokenBudget | quote }}
+            - name: ROOM_TOKEN_BUDGET_PERIOD
+              value: {{ .Values.config.roomTokenBudgetPeriod | quote }}
+            {{- if .Values.config.roomTokenBudgetOverrides }}
+            - name: ROOM_TOKEN_BUDGET_OVERRIDES
+              value: {{ join "," .Values.config.roomTokenBudgetOverrides | quote }}
+            {{- end }}
             - name: MEDIA_MAX_BYTES
               value: {{ $mediaMaxBytes | quote }}
             - name: MEDIA_MAX_TOTAL_BYTES
