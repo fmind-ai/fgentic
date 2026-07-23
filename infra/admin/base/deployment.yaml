@@ -10,6 +10,7 @@ metadata:
     app.kubernetes.io/version: 1.3.0
 spec:
   replicas: 1
+  revisionHistoryLimit: 3
   selector:
     matchLabels:
       app.kubernetes.io/name: ketesa
