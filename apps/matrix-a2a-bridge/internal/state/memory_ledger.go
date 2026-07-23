@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"fmt"
+	"slices"
 	"time"
 )
 
@@ -514,7 +515,22 @@ func (m *Memory) Transition(_ context.Context, request TransitionRequest) error 
 	job.PollCount = 0
 	job.UpdatedAt = request.At
 	if request.Patch.A2AContextID != nil && *request.Patch.A2AContextID != "" {
-		m.contexts[[2]string{job.RoomID, job.GhostLocalpart}] = *request.Patch.A2AContextID
+		key := [2]string{job.RoomID, job.GhostLocalpart}
+		conversation := m.contexts[key]
+		owners := []string{job.SenderMXID}
+		if conversation.ContextID == *request.Patch.A2AContextID {
+			owners = slices.Clone(conversation.Owners)
+			if !slices.Contains(owners, job.SenderMXID) {
+				if len(owners) >= MaxConversationOwners {
+					return ErrConversationOwnerLimit
+				}
+				owners = append(owners, job.SenderMXID)
+			}
+		}
+		m.contexts[key] = Conversation{
+			RoomID: job.RoomID, Ghost: job.GhostLocalpart, ContextID: *request.Patch.A2AContextID,
+			Owners: owners, OwnersComplete: true, UpdatedAt: request.At,
+		}
 	}
 	if request.To.Terminal() {
 		clearJobContent(&job)

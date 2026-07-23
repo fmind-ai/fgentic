@@ -112,6 +112,7 @@ assert_query "${bridge_dashboard}" "Queue depth" "fgentic_queue_depth"
 assert_query "${bridge_dashboard}" "In-flight delegations" "fgentic_inflight_delegations"
 assert_query "${bridge_dashboard}" "Rate-limit rejections" 'outcome="rate_limited"'
 assert_query "${bridge_dashboard}" "Deduplicated events" "fgentic_dedup_skips_total"
+assert_query "${bridge_dashboard}" "Room token-budget exhaustions" "fgentic_room_token_budget_exhaustions_total"
 assert_only_reviewed_labels "${bridge_dashboard}"
 
 assert_dashboard "${llm_dashboard}" "Fgentic — LLM Token & Cost Guard" "fgentic-llm-token-cost"
@@ -129,10 +130,24 @@ yq -e '
   .spec.values.grafana.sidecar.dashboards.enabled == true
   and .spec.values.grafana.sidecar.dashboards.label == "grafana_dashboard"
   and .spec.values.grafana.sidecar.dashboards.labelValue == "1"
-  and .spec.values.grafana.sidecar.dashboards.searchNamespace == "ALL"
+  and .spec.values.grafana.sidecar.dashboards.searchNamespace == "monitoring"
   and .spec.values.grafana.sidecar.dashboards.provider.allowUiUpdates == false
 ' "${repo_root}/infra/observability/helmrelease.yaml" >/dev/null \
 	|| fail "Grafana dashboard sidecar contract is missing"
+
+# Issue #647: the Grafana sidecars must have no cluster-wide, cross-namespace, or Secret-read path.
+# Assert the values that deterministically drive the subchart RBAC render: broad generated RBAC off,
+# both sidecars scoped to `monitoring` ConfigMaps only, and the ServiceAccount name pinned so the
+# namespaced RoleBinding subject is stable.
+yq -e '
+  .spec.values.grafana.rbac.create == false
+  and .spec.values.grafana.serviceAccount.name == "kube-prometheus-stack-grafana"
+  and .spec.values.grafana.sidecar.dashboards.resource == "configmap"
+  and .spec.values.grafana.sidecar.datasources.enabled == true
+  and .spec.values.grafana.sidecar.datasources.searchNamespace == "monitoring"
+  and .spec.values.grafana.sidecar.datasources.resource == "configmap"
+' "${repo_root}/infra/observability/helmrelease.yaml" >/dev/null \
+	|| fail "Grafana sidecar RBAC scoping contract is missing"
 
 workdir="$(mktemp -d)"
 trap 'rm -rf "${workdir}"' EXIT
@@ -151,6 +166,37 @@ yq -e '
     and (.data."fgentic-bridge.json" | length > 0)
     and (.data."fgentic-llm-token-cost.json" | length > 0)
 ' "${rendered}" >/dev/null || fail "rendered dashboard ConfigMap is missing payloads or sidecar label"
+
+# Issue #647: the rendered layer grants the Grafana ServiceAccount exactly one namespaced Role —
+# ConfigMap read in `monitoring` — and nothing cluster-scoped or Secret-touching.
+yq -e '
+  select(.kind == "Role" and .metadata.name == "kube-prometheus-stack-grafana-sidecar")
+  | .metadata.namespace == "monitoring"
+    and (.rules | length == 1)
+    and ((.rules[0].apiGroups | join("|")) == "")
+    and ((.rules[0].resources | join(",")) == "configmaps")
+    and ((.rules[0].verbs | sort | join(",")) == "get,list,watch")
+' "${rendered}" >/dev/null || fail "scoped Grafana sidecar Role is missing or over-privileged"
+
+yq -e '
+  select(.kind == "RoleBinding" and .metadata.name == "kube-prometheus-stack-grafana-sidecar")
+  | .metadata.namespace == "monitoring"
+    and .roleRef.kind == "Role"
+    and .roleRef.name == "kube-prometheus-stack-grafana-sidecar"
+    and (.subjects | length == 1)
+    and .subjects[0].kind == "ServiceAccount"
+    and .subjects[0].name == "kube-prometheus-stack-grafana"
+    and .subjects[0].namespace == "monitoring"
+' "${rendered}" >/dev/null || fail "scoped Grafana sidecar RoleBinding is missing or misbound"
+
+if yq -e 'select(.kind == "ClusterRole" or .kind == "ClusterRoleBinding") | .metadata.name' \
+	"${rendered}" 2>/dev/null | grep -qi grafana; then
+	fail "observability layer must not render a cluster-scoped Grafana binding"
+fi
+if yq -e 'select(.kind == "Role" or .kind == "ClusterRole") | .rules[]?.resources[]?' \
+	"${rendered}" 2>/dev/null | grep -qx secrets; then
+	fail "observability RBAC must not grant Secret access"
+fi
 
 for dashboard_key in fgentic-bridge.json fgentic-llm-token-cost.json; do
 	export dashboard_key

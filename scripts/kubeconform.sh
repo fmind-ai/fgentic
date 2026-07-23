@@ -61,8 +61,10 @@ done <<<"${settings_env}"
 # Federation-only manifests introduce overlay-scoped substitutions that intentionally do not
 # belong in production settings. Export their unreachable fixture values for the raw schema pass;
 # the effective org-a/org-b/org-c releases are rendered separately through the recursive overlay.
-for key in federation_partner_server_name federation_denied_server_name federation_gateway_ip \
+for key in federation_partner_server_name federation_second_partner_server_name \
+	federation_denied_server_name federation_gateway_ip \
 	federation_a2a_max_budget_units federation_a2a_quota_budget_units_per_minute \
+	federation_second_a2a_quota_budget_units_per_minute \
 	demo_bridge_tag; do
 	value="$(yq -er ".data.${key}" clusters/federation/platform-settings.yaml)"
 	export "${key}=${value}"
@@ -123,9 +125,10 @@ if [ -d apps/matrix-a2a-bridge/chart ]; then
 fi
 
 echo "==> Rendering + validating apps/activitypub-agent-gateway/chart"
-# The ActivityPub gateway is an opt-in second federation transport (docs/adr/0014); it is not yet
-# wired into the reconciled cluster DAG, so — like the mautrix bridge profiles — its chart is
-# validated here directly. Render with the public route enabled so the gated HTTPRoute is checked.
+# The ActivityPub gateway is an additive second federation transport (docs/adr/0014), reconciled on
+# the demo profile only (issue #489; local/gcp keep it absent). Its chart is validated here directly;
+# the demo composition, default-deny NetworkPolicy, and gated route are gated by check:activitypub.
+# Render with the public route enabled so the gated HTTPRoute is checked.
 if [ -d apps/activitypub-agent-gateway/chart ]; then
 	# Render with the public route AND the policy border on so both gated paths are checked.
 	helm template activitypub-agent-gateway apps/activitypub-agent-gateway/chart \
@@ -153,6 +156,33 @@ if [ -d apps/activitypub-agent-gateway/chart ]; then
 		| "${KUBECONFORM[@]}"
 	# Validate the namespace-neutral federation-border policy Component (issue #211) renders.
 	kubectl kustomize apps/activitypub-agent-gateway/component | "${KUBECONFORM[@]}"
+fi
+
+echo "==> Rendering + validating apps/matrix-group-sync/chart"
+# The matrix-group-sync reconciler is an opt-in, self-contained app (docs/adr/0009); like the
+# ActivityPub gateway it is not yet wired into the reconciled cluster DAG, so its chart is validated
+# here directly. Render with the PodMonitor + a sample binding + enforce so every gated path renders.
+if [ -d apps/matrix-group-sync/chart ]; then
+	helm template matrix-group-sync apps/matrix-group-sync/chart \
+		--namespace matrix-group-sync \
+		--set metrics.podMonitor.enabled=true \
+		--set config.enforce=true \
+		--set 'bindings.platform.group=/fgentic/agent-access/platform' \
+		--set 'bindings.platform.roomAlias=#agent-platform:fgentic.fmind.ai' \
+		--set 'bindings.platform.agents={agent-k8s,agent-helm}' \
+		| "${KUBECONFORM[@]}"
+	# Schema-validate its self-contained deploy unit (Namespace + HelmRelease + quota) via Flux envsubst.
+	# Capture the find output first (like the ActivityPub block) so its return value is not masked (SC2312).
+	groupsync_manifests="$(find apps/matrix-group-sync/deploy -type f -name '*.yaml' ! -name 'kustomization.yaml' | sort)"
+	[[ -n "${groupsync_manifests}" ]] || {
+		echo "error: matrix-group-sync deploy unit contains no schema-validation manifests" >&2
+		exit 1
+	}
+	while IFS= read -r manifest; do
+		flux envsubst --strict <"${manifest}"
+		echo "---"
+	done <<<"${groupsync_manifests}" \
+		| "${KUBECONFORM[@]}"
 fi
 
 echo "==> Rendering + validating optional mautrix bridge releases"
@@ -192,7 +222,8 @@ federation_render="$(flux build kustomization cluster-overlay-validation \
 for homeserver in \
 	'matrix matrix-stack' \
 	'matrix-b matrix-stack-b' \
-	'matrix-c matrix-stack-c'; do
+	'matrix-c matrix-stack-c' \
+	'matrix-d matrix-stack-d'; do
 	read -r namespace release <<<"${homeserver}"
 	yq -e "select(.kind == \"HelmRelease\" and .metadata.namespace == \"${namespace}\" and
     .metadata.name == \"${release}\") | .spec.values" <<<"${federation_render}" \
@@ -230,6 +261,8 @@ manifest_list="$(find infra clusters -type f \( -name '*.yaml' -o -name '*.yml' 
 	! -name 'kustomization.yaml' \
 	! -name '*.sops.yaml' \
 	! -path 'infra/agentgateway/providers/model-catalog.yaml' \
+	! -path 'infra/federation/registry/*' \
+	! -path 'infra/federation/agreements/*' \
 	! -path '*/bridges/chart/*' \
 	! -path '*/terraform/*' \
 	! -path '*/flux-system/*')"

@@ -71,6 +71,31 @@ expect_a2a_status() {
 		|| die "${label} A2A request returned HTTP ${status}, expected ${expected}"
 }
 
+# Org D (issue #354) invokes the same docs-qa agent on org A's dedicated per-consumer host
+# `a2a-d.${SERVER_A}`; only the host differs, so its route carries org D's own azp-bound seller signer.
+a2a_status_d() {
+	local output="$1"
+	local token="$2"
+	local document="$3"
+	request_status "${output}" --request POST --header 'Content-Type: application/json' \
+		--header 'A2A-Version: 1.0' \
+		--header "A2A-Extensions: ${TOKEN_BUDGET_EXTENSION}, ${USAGE_RECEIPT_EXTENSION}" \
+		--header "Authorization: Bearer ${token}" --data "${document}" \
+		"${A2A_D_URL}${A2A_AGENT_PATH}"
+}
+
+expect_a2a_status_d() {
+	local label="$1"
+	local expected="$2"
+	local token="$3"
+	local document="$4"
+	local output="${WORK_DIR}/a2a-d-${label}.json"
+	local status
+	status="$(a2a_status_d "${output}" "${token}" "${document}")"
+	[ "${status}" = "${expected}" ] \
+		|| die "${label} org-D A2A request returned HTTP ${status}, expected ${expected}"
+}
+
 agentgateway_token_total() {
 	local pod metrics
 	pod="$(kubectl --namespace agentgateway-system get pods \
@@ -140,6 +165,13 @@ usage_receipt_archive_count() {
 		--archive=/var/lib/usage-receipts/receipts.jsonl
 }
 
+# Org D's independent seller-receipt archive on its own azp-bound signer (issue #354).
+usage_receipt_archive_count_d() {
+	kubectl --namespace agentgateway-system exec deployment/federation-usage-receipt-d -- \
+		/usr/local/bin/usage-receipt archive-count \
+		--archive=/var/lib/usage-receipts/receipts.jsonl
+}
+
 verify_kagent_not_public() {
 	local services routes
 	services="$(kubectl --namespace kagent get services --output json)"
@@ -158,6 +190,83 @@ verify_kagent_not_public() {
       all(.spec.rules[]?.backendRefs[]?;
         .name != "kagent-controller" and .name != "kagent-a2a"))
   ' <<<"${routes}" >/dev/null || die "a Gateway API route exposes kagent directly"
+}
+
+verify_agent_card_rotation() {
+	# Zero-downtime AgentCard signing-key rotation acceptance (#352 Task 5). Reuses the merged bridge
+	# verifier through sign-agent-card.sh (agentcardjws.VerifySet, #920/#939) against the overlap set the
+	# lifecycle published: a card verifies under the primary OR overlap kid (overlap window), the retired
+	# kid is refused deterministically once revoked, and a tampered card still fails — all content-free.
+	# Skipped byte-for-byte when rotation is disabled, so the single-key fed:up path is unchanged.
+	[ "${FEDERATION_AGENT_CARD_ROTATION:-no}" = yes ] || return 0
+	local dir="${WORK_DIR}/rotation"
+	local keys="${dir}/agent-card-keys.json"
+	local primary_card="${dir}/agent-card.json" primary_jwk="${dir}/public-jwk.json"
+	local overlap_card="${dir}/agent-card-overlap.json" overlap_jwk="${dir}/public-jwk-overlap.json"
+	local revoked_card="${dir}/agent-card-revoked.json" revoked_jwk="${dir}/public-jwk-revoked.json"
+	local tampered="${dir}/tampered-agent-card.json" output="${dir}/verify-output.txt"
+	local primary_kid overlap_kid revoked_kid entry
+	local primary_jwk_kid overlap_jwk_kid revoked_jwk_kid
+	local signer="${ROOT_DIR}/scripts/sign-agent-card.sh"
+	mkdir -p "${dir}"
+	for entry in agent-card-keys.json agent-card.json public-jwk.json \
+		agent-card-overlap.json public-jwk-overlap.json \
+		agent-card-revoked.json public-jwk-revoked.json; do
+		kubectl --namespace agentgateway-system get configmap "${AGENT_CARD_CONFIGMAP}" \
+			--output "go-template={{index .data \"${entry}\"}}" >"${dir}/${entry}" \
+			|| die "federation AgentCard rotation artifact ${entry} is missing"
+	done
+
+	# The derived cardIdentity models the bridge shape (#920): the pinned set {primary, overlap} is disjoint
+	# from the revoked kid, and each served card's JWK kid matches its declared rotation key ID.
+	primary_kid="$(jq -er '.keyID | select(type == "string" and length > 0)' "${keys}")"
+	overlap_kid="$(jq -er '.additionalKeys[0].keyID | select(type == "string" and length > 0)' "${keys}")"
+	revoked_kid="$(jq -er '.revokedKeyIDs[0] | select(type == "string" and length > 0)' "${keys}")"
+	primary_jwk_kid="$(jq -er '.kid' "${primary_jwk}")"
+	overlap_jwk_kid="$(jq -er '.kid' "${overlap_jwk}")"
+	revoked_jwk_kid="$(jq -er '.kid' "${revoked_jwk}")"
+	[ "${primary_jwk_kid}" = "${primary_kid}" ] \
+		|| die "served AgentCard primary JWK kid does not match the rotation key set"
+	[ "${overlap_jwk_kid}" = "${overlap_kid}" ] \
+		|| die "overlap AgentCard JWK kid does not match the rotation key set"
+	[ "${revoked_jwk_kid}" = "${revoked_kid}" ] \
+		|| die "revoked AgentCard JWK kid does not match the rotation key set"
+	{ [ "${revoked_kid}" != "${primary_kid}" ] && [ "${revoked_kid}" != "${overlap_kid}" ]; } \
+		|| die "revoked AgentCard kid must be disjoint from the pinned overlap set"
+
+	# (a) Mid-overlap: a card under EITHER pinned kid verifies against the pinned set {primary, overlap}.
+	"${signer}" verify --input "${primary_card}" --public-key "${primary_jwk}" \
+		--key-id "${primary_kid}" --additional-key "${overlap_kid}=${overlap_jwk}" \
+		|| die "primary-kid AgentCard did not verify mid-overlap"
+	"${signer}" verify --input "${overlap_card}" --public-key "${primary_jwk}" \
+		--key-id "${primary_kid}" --additional-key "${overlap_kid}=${overlap_jwk}" \
+		|| die "overlap-kid AgentCard did not verify mid-overlap"
+
+	# (b) After revocation the retired kid is refused fail-closed while the promoted (overlap) kid verifies;
+	# the refused card body must never surface in the evidence (content-free revocation record).
+	if "${signer}" verify --input "${revoked_card}" --public-key "${primary_jwk}" \
+		--key-id "${primary_kid}" --additional-key "${overlap_kid}=${overlap_jwk}" \
+		--revoked-key-id "${revoked_kid}" >"${output}" 2>&1; then
+		die "revoked-kid AgentCard was accepted after revocation"
+	fi
+	if rg --fixed-strings 'fgentic-documentation' "${output}" >/dev/null; then
+		die "revoked AgentCard verification logged card content"
+	fi
+	"${signer}" verify --input "${overlap_card}" --public-key "${primary_jwk}" \
+		--key-id "${primary_kid}" --additional-key "${overlap_kid}=${overlap_jwk}" \
+		--revoked-key-id "${revoked_kid}" \
+		|| die "promoted overlap-kid AgentCard did not verify after revocation"
+
+	# (c) An unrevoked but tampered card still fails, and its mutated body is never logged.
+	jq '.description = "rotation-tamper-must-not-be-logged"' "${primary_card}" >"${tampered}"
+	if "${signer}" verify --input "${tampered}" --public-key "${primary_jwk}" \
+		--key-id "${primary_kid}" --additional-key "${overlap_kid}=${overlap_jwk}" \
+		>"${output}" 2>&1; then
+		die "tampered AgentCard was accepted mid-overlap"
+	fi
+	if rg --fixed-strings 'rotation-tamper-must-not-be-logged' "${output}" >/dev/null; then
+		die "tampered AgentCard verification logged card content"
+	fi
 }
 
 reset_delegation_quota_fixture() {
@@ -181,6 +290,7 @@ verify_cross_org_delegation() {
 	local before_receipts after_denials after_receipt receipt request request_hash tampered
 	reset_delegation_quota_fixture
 	verify_public_agent_card
+	verify_agent_card_rotation
 	verify_kagent_not_public
 
 	org_b_secret="$(bootstrap_secret_value org-b-a2a-client-secret)"
@@ -316,4 +426,71 @@ verify_cross_org_delegation() {
 	after_receipt="$(usage_receipt_archive_count)"
 	[ "${after_receipt}" -eq "$((after_denials + 1))" ] \
 		|| die "authorized terminal delegation or quota denial changed the receipt archive unexpectedly"
+
+	verify_org_d_delegation
+}
+
+# Second admitted A2A consumer org D (issue #354). Proves the FULL multi-consumer flow: org D does a
+# SUCCESSFUL delegation on org A's dedicated per-consumer host that mints exactly one receipt correctly
+# stamped `org-d-a2a` — never `org-b-a2a` — because org D's route carries its OWN azp-bound seller signer
+# and archive (structurally impossible to misattribute, regardless of maxTokens); and org D's per-`azp`
+# reservation still exhausts independently (429 keyed to org-d-a2a) at its own distinct budget, so one
+# member can never consume another's (D7/D8). Org D authenticates through the SAME shared federation IdP
+# as org B (issuer id.org-b), distinguished only by its verified azp `org-d-a2a`.
+verify_org_d_delegation() {
+	local org_d_secret document request org_d_response status org_d_receipt request_hash
+	local before_receipts after_receipts before_org_b_receipts after_org_b_receipts
+	org_d_secret="$(bootstrap_secret_value org-d-a2a-client-secret)"
+	client_credentials_token org-d-a2a "${org_d_secret}" ORG_D_A2A_TOKEN
+	org_d_secret=""
+	before_receipts="$(usage_receipt_archive_count_d)"
+	before_org_b_receipts="$(usage_receipt_archive_count)"
+
+	# A successful org-D delegation within org D's distinct 2000-unit budget returns a completed Task and a
+	# signed receipt on org D's OWN azp-bound signer/archive.
+	document="$(a2a_document 1500)"
+	request="${WORK_DIR}/a2a-org-d-request.json"
+	printf '%s' "${document}" >"${request}"
+	org_d_response="${WORK_DIR}/a2a-org-d.json"
+	status="$(a2a_status_d "${org_d_response}" "${ORG_D_A2A_TOKEN}" "${document}")"
+	[ "${status}" = "200" ] || die "authorized org D delegation returned HTTP ${status}"
+	# Independent per-`azp` reservation: a second 1500-unit reservation exceeds org D's 2000-unit budget
+	# and is refused (429) keyed to org-d-a2a only, while org B's earlier exhaustion was keyed to
+	# org-b-a2a — separate counters, no cross-org spend.
+	expect_a2a_status_d org-d-exhausted-reservation 429 "${ORG_D_A2A_TOKEN}" "${document}"
+	jq -e '
+      .jsonrpc == "2.0" and .error == null and
+      .result.task.status.state == "TASK_STATE_COMPLETED"
+    ' "${org_d_response}" >/dev/null \
+		|| die "authorized org D delegation did not return a completed Task"
+	jq -e --arg reply "${EXPECTED_DEMO_REPLY}" '
+      ([.. | objects | .text? // empty] | any(. == $reply))
+    ' "${org_d_response}" >/dev/null || die "authorized org D delegation returned no model reply"
+
+	org_d_receipt="${WORK_DIR}/usage-receipt-org-d.json"
+	jq -e --arg extension "${USAGE_RECEIPT_EXTENSION}" '.result.task.metadata[$extension]' \
+		"${org_d_response}" >"${org_d_receipt}" \
+		|| die "authorized org D delegation returned no signed usage receipt"
+	# Both signers use org A's one seller key, so org D's receipt verifies under the same public JWK.
+	"${ROOT_DIR}/scripts/usage-receipt.sh" verify --input "${org_d_receipt}" \
+		--public-key "${USAGE_RECEIPT_PUBLIC_JWK}" --key-id "${USAGE_RECEIPT_KEY_ID}"
+	request_hash="$("${ROOT_DIR}/scripts/usage-receipt.sh" request-hash --input "${request}")"
+	# CORRECT per-consumer attribution — the receipt is stamped org-d-a2a and NEVER org-b-a2a.
+	jq -e --arg azp org-d-a2a --arg schema fgentic.usage-receipt.v1 \
+		--arg key_id "${USAGE_RECEIPT_KEY_ID}" --arg request_hash "${request_hash}" '
+      .receipt.azp == $azp and .receipt.schema == $schema and
+      .receipt.tokensReserved == 1500 and .receipt.tokensConsumed == null and
+      .receipt.keyId == $key_id and .receipt.requestHash == $request_hash
+    ' "${org_d_receipt}" >/dev/null || die "org D usage receipt is not correctly attributed to org-d-a2a"
+	jq -e '.receipt.azp != "org-b-a2a"' "${org_d_receipt}" >/dev/null \
+		|| die "org D delegation minted a receipt misattributed to org-b-a2a"
+
+	# Exactly one new receipt in org D's OWN archive, and org B's archive is untouched by org D's traffic
+	# (no cross-consumer receipt leakage in either direction).
+	after_receipts="$(usage_receipt_archive_count_d)"
+	[ "${after_receipts}" -eq "$((before_receipts + 1))" ] \
+		|| die "org D delegation did not mint exactly one receipt in org D's own archive"
+	after_org_b_receipts="$(usage_receipt_archive_count)"
+	[ "${after_org_b_receipts}" -eq "${before_org_b_receipts}" ] \
+		|| die "org D delegation changed org B's receipt archive (per-consumer signers must stay isolated)"
 }

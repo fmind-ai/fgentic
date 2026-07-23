@@ -6,3 +6,5 @@ metadata:
 data:
   llm_provider: vertex
   admin_console: enabled
+  synthetic_canary: disabled
+  alert_delivery: disabled

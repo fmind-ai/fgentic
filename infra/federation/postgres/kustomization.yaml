@@ -1,4 +1,4 @@
-# Federation CNPG inventory: three homeservers plus the provider-free Keycloak/kagent/knowledge plane.
+# Federation CNPG inventory: four homeservers plus the provider-free Keycloak/kagent/knowledge plane.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 resources:
@@ -33,6 +33,10 @@ patches:
             login: true
             passwordSecret:
               name: pg-synapse-c
+          - name: synapse_d
+            login: true
+            passwordSecret:
+              name: pg-synapse-d
           - name: kagent
             login: true
             passwordSecret:
@@ -49,6 +53,7 @@ patches:
           - hostssl synapse synapse all scram-sha-256
           - hostssl synapse_b synapse_b all scram-sha-256
           - hostssl synapse_c synapse_c all scram-sha-256
+          - hostssl synapse_d synapse_d all scram-sha-256
           - hostssl kagent kagent all scram-sha-256
           - hostssl keycloak keycloak all scram-sha-256
           - hostssl knowledge knowledge_owner all scram-sha-256

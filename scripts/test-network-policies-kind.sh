@@ -65,16 +65,36 @@ assert_connection() {
 			;;
 	esac
 
-	observed="$(
+	probe() {
 		kubectl --namespace "${namespace}" exec "${pod}" -- \
 			sh -ec "if nc -z -w 5 \"\$1\" \"\$2\"; then printf reachable; else printf denied; fi" \
 			-- "${host}" "${port}"
-	)"
-	if [[ "${observed}" != "${expectation}" ]]; then
-		echo "error: ${namespace}/${pod}: expected ${host}:${port} to be ${expectation}, got ${observed}" >&2
+	}
+
+	# A positive control retries within a bounded window: on a loaded runner Calico may not have
+	# programmed the allow policy (or the target may not be serving) at the instant of a single
+	# probe. The negative control stays single-shot so a genuine allow trips it immediately and the
+	# deny assertion is never weakened.
+	if [ "${expectation}" = reachable ]; then
+		local deadline=$((SECONDS + 45))
+		while ((SECONDS < deadline)); do
+			observed="$(probe)"
+			if [[ "${observed}" == reachable ]]; then
+				echo "pass: ${namespace}/${pod}: ${host}:${port} is reachable"
+				return 0
+			fi
+			sleep 2
+		done
+		echo "error: ${namespace}/${pod}: expected ${host}:${port} to be reachable, last observed ${observed}" >&2
 		return 1
 	fi
-	echo "pass: ${namespace}/${pod}: ${host}:${port} is ${expectation}"
+
+	observed="$(probe)"
+	if [[ "${observed}" != denied ]]; then
+		echo "error: ${namespace}/${pod}: expected ${host}:${port} to be denied, got ${observed}" >&2
+		return 1
+	fi
+	echo "pass: ${namespace}/${pod}: ${host}:${port} is denied"
 }
 
 mkdir -p "${DIAGNOSTICS_DIR}"

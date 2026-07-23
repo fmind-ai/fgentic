@@ -105,9 +105,17 @@ run_probe() {
 	local labels="${6:-}"
 	local command
 
+	# A positive control retries within a bounded window: on a loaded CI runner Calico may not have
+	# finished programming the allow policy (or the target may not be serving yet) at the instant a
+	# single probe fires, which otherwise surfaces as an intermittent "expected reachable" failure.
+	# The window stays under POD_TIMEOUT_SECONDS so the outer Pod-phase wait never fires first. The
+	# negative control is NOT retried — a denied path must fail immediately, so a genuine allow still
+	# trips it and the deny assertion is never weakened.
+	local retry_window
+	retry_window=$((POD_TIMEOUT_SECONDS > 20 ? POD_TIMEOUT_SECONDS - 10 : 10))
 	case "${expectation}" in
 		reachable)
-			command="nc -z -w 5 '${host}' '${port}'"
+			command="deadline=\$(( \$(date +%s) + ${retry_window} )); until nc -z -w 5 '${host}' '${port}'; do if [ \$(date +%s) -ge \$deadline ]; then echo 'connection never became reachable within ${retry_window}s' >&2; exit 1; fi; sleep 2; done"
 			;;
 		denied)
 			command="if nc -z -w 5 '${host}' '${port}'; then echo 'unexpected connection succeeded' >&2; exit 1; else echo 'connection denied as expected'; fi"

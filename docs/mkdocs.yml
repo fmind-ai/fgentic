@@ -68,8 +68,10 @@ nav:
           - One-page template: adopters/template.md
       - Inbound migration: migration-guide.md
       - Open agentic stack: open-stack.md
+      - CNCF Sandbox application dossier: cncf-sandbox-application.md
       - Incumbent chat coexistence: chat-coexistence.md
       - Forking and adapting: forking.md
+      - Extending without forking: extending-without-forking.md
       - Exit strategy: exit-strategy.md
       - Persona onboarding:
           - Overview: onboarding/index.md
@@ -83,6 +85,7 @@ nav:
       - Design decisions D1-D20: design-decisions.md
       - Bridge specification: bridge.md
       - Identity and SSO: identity.md
+      - IdP Group Sync: group-sync.md
       - Model profiles: models.md
       - Sovereign grounding: grounding.md
       - Federation: federation.md
@@ -94,7 +97,13 @@ nav:
       - Stability contract: stability.md
   - Operations:
       - Production installation: production.md
+      - Release and upgrade contract: releases.md
+      - Air-gapped installation: airgap.md
+      - Upgrade notes:
+          - Template: upgrades/TEMPLATE.md
+          - Unreleased: upgrades/unreleased.md
       - Day-2 handbook: operations-handbook.md
+      - Demo recording: demo-recording.md
       - Cost dashboards: cost-dashboards.md
       - Partner onboarding: federation-onboarding.md
       - Partner offboarding: federation-offboarding.md
@@ -114,6 +123,9 @@ nav:
           - Threat model: security/threat-model.md
           - Prompt injection: security/prompt-injection.md
           - Supply chain: security/supply-chain.md
+          - Security releases: security/release-process.md
+          - OpenSSF best practices: security/openssf-best-practices.md
+          - Audit readiness: security/audit-readiness.md
   - Architecture decisions:
       - Index: adr/index.md
       - 0001 Open-standard agent platform: adr/0001-open-standard-agent-platform.md
@@ -136,3 +148,4 @@ nav:
       - 0018 Content-bounded identity audit: adr/0018-content-bounded-identity-audit.md
       - 0019 Synapse media store: adr/0019-synapse-media-store.md
       - 0020 Retain Bash acceptance rigs: adr/0020-retain-bash-acceptance-rigs.md
+      - 0021 Pinned key resolution: adr/0021-pinned-key-resolution.md

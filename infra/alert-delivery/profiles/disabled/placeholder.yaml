@@ -1,0 +1,6 @@
+# Kustomize rejects a resource-free file. This build-only placeholder is deleted by the profile's
+# patch, leaving Flux an empty inventory that prunes any previously enabled alert-delivery resources.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alert-delivery-disabled-placeholder

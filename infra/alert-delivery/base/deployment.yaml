@@ -1,0 +1,72 @@
+# The self-hosted Alertmanager->Matrix receiver: one stdlib Python webhook handler in the already
+# pinned python:3.14-slim image (no new dependency, no external/GPL image). Non-root, read-only
+# root filesystem, no service-account token; the Matrix access token is mounted from the SOPS
+# alert-receiver credential. It is a plain @alertbot user in no agent's allowedSenders, so an alert
+# can never invoke an agent (D7/D8).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alert-receiver
+  namespace: alert-delivery
+  labels:
+    app.kubernetes.io/name: alert-receiver
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: alert-receiver
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: alert-receiver
+    spec:
+      serviceAccountName: alert-receiver
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65534
+        runAsGroup: 65534
+        fsGroup: 65534
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: receiver
+          image: python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6
+          imagePullPolicy: IfNotPresent
+          command: ["python3", "/receiver/receiver.py"]
+          envFrom:
+            - configMapRef:
+                name: alert-receiver-config
+            - secretRef:
+                name: alertbot-credential
+          ports:
+            - name: webhook
+              containerPort: 9095
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: webhook
+            initialDelaySeconds: 5
+            periodSeconds: 20
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: webhook
+            initialDelaySeconds: 2
+            periodSeconds: 10
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 100m, memory: 64Mi }
+          volumeMounts:
+            - name: receiver
+              mountPath: /receiver
+              readOnly: true
+      volumes:
+        - name: receiver
+          configMap:
+            name: alert-receiver-code

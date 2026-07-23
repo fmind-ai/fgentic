@@ -1,3 +1,19 @@
+# Namespace-wide fail-closed baseline: every Pod in the enabled knowledge namespace is denied all
+# ingress and egress unless a later label-scoped policy explicitly re-admits it. A future,
+# accidentally unlabelled, or controller-created Pod that matches none of the workload selectors
+# below therefore has no ambient network access (issue #566). Empty ingress/egress with both
+# policy types is the canonical Kubernetes default-deny.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: knowledge-default-deny
+  namespace: knowledge
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+---
 # The Pod network is bounded to DNS, its database, and the dedicated authenticated embeddings
 # listener. Port 8080 is deliberately absent, so Docling cannot reach the generic chat/A2A/MCP
 # surface even though Kubernetes NetworkPolicy is Pod-scoped rather than container-scoped.

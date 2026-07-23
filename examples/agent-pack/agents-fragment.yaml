@@ -1,0 +1,24 @@
+# agents.yaml fragment for the example pack (issue #190). This is NOT a standalone file the bridge loads —
+# it is the mapping entry an operator MERGES into their cluster's `agents.yaml` under the `agents:` key, in
+# a reviewed PR, so the bridge will route to and authorize the out-of-tree agent. The entry alone grants
+# no access: the sender must match allowedSenders, and the agent starts in `stage: dev` (STAGING_ROOMS).
+#
+# The `agentContractSHA256` is the pin the bridge records for every attempted delegation; it must equal the
+# digest of the effective Agent contract. Do not hand-write it: it is produced and validated by the
+# platform's reviewed agent tooling (`mise run agent:new` pins a governed agent's digest; `mise run
+# check:agents` VALIDATES that a mapping's pin matches its effective contract and rejects a split
+# contract). Wiring a pack's Agent into that contract flow is part of the reviewed mapping PR.
+agents:
+  agent-example-greeter:
+    namespace: kagent
+    name: example-greeter
+    description: Example out-of-tree agent that answers general questions (issue #190 pack).
+    stage: dev
+    # Fails closed to `regulated` if omitted, which the agentgateway admission boundary can block; a public
+    # conversational greeter is `public`. Set the real classification a pack's data actually warrants.
+    dataClassification: public
+    # Deny-by-default: only these exact full MXIDs may invoke the agent. Federated senders and any
+    # bridgedOrigins sender stay denied unless explicitly listed here.
+    allowedSenders:
+      - "@alice:fgentic.localhost"
+    # agentContractSHA256: "<compute with cmd/agent-contract as noted above; a split contract fails>"

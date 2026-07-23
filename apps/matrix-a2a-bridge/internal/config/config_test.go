@@ -69,6 +69,8 @@ func TestLoadOverrides(t *testing.T) {
 	t.Setenv("HOMESERVER_URL", "http://hs:8008")
 	t.Setenv("A2A_BASE_URL", "http://kagent-controller.kagent:8083")
 	t.Setenv("A2A_API_KEY", "test-workload-key")
+	t.Setenv("FEDIVERSE_BROKER_URL", "http://activitypub-gateway:9090")
+	t.Setenv("FEDIVERSE_BROKER_TOKEN", "broker-key")
 	t.Setenv("LISTEN_PORT", "9999")
 	t.Setenv("REQUEST_TIMEOUT", "5s")
 	t.Setenv("DEAD_MAN_SWITCH_DELAY", "5m")
@@ -115,6 +117,9 @@ func TestLoadOverrides(t *testing.T) {
 	}
 	if cfg.A2AAPIKey != "test-workload-key" {
 		t.Errorf("A2AAPIKey was not loaded")
+	}
+	if cfg.FediverseBrokerURL != "http://activitypub-gateway:9090" || cfg.FediverseBrokerToken != "broker-key" {
+		t.Errorf("fediverse broker config was not loaded")
 	}
 	if cfg.AgentsReloadInterval != 2*time.Second {
 		t.Errorf("AgentsReloadInterval = %s, want 2s", cfg.AgentsReloadInterval)
@@ -320,6 +325,22 @@ func TestValidateRejectsNonPositiveAgentsReloadInterval(t *testing.T) {
 	}
 }
 
+func TestValidateRequiresCompleteFediverseBrokerConfig(t *testing.T) {
+	for name, env := range map[string]map[string]string{
+		"URL only":   {"FEDIVERSE_BROKER_URL": "http://activitypub-gateway:9090"},
+		"token only": {"FEDIVERSE_BROKER_TOKEN": "broker-key"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			for key, value := range env {
+				t.Setenv(key, value)
+			}
+			if _, err := Load(); err == nil {
+				t.Fatal("Load accepted incomplete fediverse broker config")
+			}
+		})
+	}
+}
+
 func TestValidateRejectsNonPositiveAgentCardRefreshInterval(t *testing.T) {
 	t.Setenv("AGENT_CARD_REFRESH_INTERVAL", "0s")
 	if _, err := Load(); err == nil {
@@ -409,6 +430,83 @@ func TestLoadRejectsInvalidLoggingConfig(t *testing.T) {
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
 			t.Setenv(test.key, test.value)
+			_, err := Load()
+			if err == nil || !strings.Contains(err.Error(), test.want) {
+				t.Fatalf("Load() error = %v, want containing %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestRoomTokenBudgetDefaultsUnlimited(t *testing.T) {
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load with defaults: %v", err)
+	}
+	if cfg.RoomTokenBudget != 0 {
+		t.Errorf("RoomTokenBudget = %d, want 0 (unlimited)", cfg.RoomTokenBudget)
+	}
+	if cfg.RoomTokenBudgetPeriod != 24*time.Hour {
+		t.Errorf("RoomTokenBudgetPeriod = %s, want 24h", cfg.RoomTokenBudgetPeriod)
+	}
+	overrides, err := cfg.RoomTokenBudgetMap()
+	if err != nil {
+		t.Fatalf("RoomTokenBudgetMap: %v", err)
+	}
+	if len(overrides) != 0 {
+		t.Errorf("default overrides = %v, want empty", overrides)
+	}
+}
+
+func TestRoomTokenBudgetParsesOverrides(t *testing.T) {
+	t.Setenv("SERVER_NAME", "example.org")
+	t.Setenv("ROOM_TOKEN_BUDGET", "100000")
+	t.Setenv("ROOM_TOKEN_BUDGET_PERIOD", "6h")
+	t.Setenv("ROOM_TOKEN_BUDGET_OVERRIDES", "!vip:example.org=500000, !free:example.org=0")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.RoomTokenBudget != 100000 || cfg.RoomTokenBudgetPeriod != 6*time.Hour {
+		t.Fatalf("budget defaults = (%d, %s)", cfg.RoomTokenBudget, cfg.RoomTokenBudgetPeriod)
+	}
+	overrides, err := cfg.RoomTokenBudgetMap()
+	if err != nil {
+		t.Fatalf("RoomTokenBudgetMap: %v", err)
+	}
+	if overrides["!vip:example.org"] != 500000 || overrides["!free:example.org"] != 0 {
+		t.Fatalf("overrides = %v, want vip=500000 free=0", overrides)
+	}
+}
+
+func TestRoomTokenBudgetRejectsInvalidConfig(t *testing.T) {
+	tests := []struct {
+		name      string
+		budget    string
+		period    string
+		overrides string
+		want      string
+	}{
+		{name: "negative default", budget: "-1", want: "ROOM_TOKEN_BUDGET must be >= 0"},
+		{name: "zero period with budget", budget: "1000", period: "0s", want: "ROOM_TOKEN_BUDGET_PERIOD must be positive"},
+		{name: "malformed override", overrides: "not-a-room", want: "must be !room:server=limit"},
+		{name: "non-room override", overrides: "roomkey=100", want: "must be a Matrix room ID"},
+		{name: "negative override limit", overrides: "!r:example.org=-5", want: "must be a non-negative integer"},
+		{name: "duplicate override", overrides: "!r:example.org=1,!r:example.org=2", want: "configured more than once"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv("SERVER_NAME", "example.org")
+			if test.budget != "" {
+				t.Setenv("ROOM_TOKEN_BUDGET", test.budget)
+			}
+			if test.period != "" {
+				t.Setenv("ROOM_TOKEN_BUDGET_PERIOD", test.period)
+			}
+			if test.overrides != "" {
+				t.Setenv("ROOM_TOKEN_BUDGET_OVERRIDES", test.overrides)
+			}
 			_, err := Load()
 			if err == nil || !strings.Contains(err.Error(), test.want) {
 				t.Fatalf("Load() error = %v, want containing %q", err, test.want)

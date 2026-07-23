@@ -1,0 +1,57 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: model-outage-driver
+  namespace: bridge-integration
+spec:
+  activeDeadlineSeconds: 300
+  backoffLimit: 0
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: model-outage-driver
+    spec:
+      automountServiceAccountToken: false
+      restartPolicy: Never
+      securityContext:
+        runAsGroup: 65532
+        runAsNonRoot: true
+        runAsUser: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: driver
+          image: matrix-a2a-bridge-integration:local
+          imagePullPolicy: Never
+          command: [/usr/local/bin/integration-driver]
+          env:
+            - name: DRIVER_SCENARIO
+              value: model-outage
+            - name: DRIVER_TIMEOUT
+              value: 270s
+            - name: MATRIX_URL
+              value: http://synapse:8008
+            - name: BRIDGE_URL
+              value: http://bridge:29331
+            - name: BRIDGE_METRICS_URL
+              value: http://bridge:9090/metrics
+            - name: A2A_STUB_URL
+              value: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080
+            - name: FAULT_PROXY_URL
+              value: http://fault-proxy:8081
+            - name: MATRIX_SERVER_NAME
+              value: integration.test
+            - name: BRIDGE_HS_TOKEN
+              value: integration-homeserver-token
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 250m
+              memory: 64Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: [ALL]
+            readOnlyRootFilesystem: true

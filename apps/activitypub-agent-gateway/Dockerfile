@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 # Multi-stage, static, distroless-nonroot image for the ActivityPub agent gateway.
-FROM golang:1.25 AS build
+FROM golang:1.26 AS build
 WORKDIR /src
 # -mod=mod lets the build fetch + record sums even before a committed go.sum (run `go mod tidy`
 # locally for a reproducible, pinned build). CGO off => a fully static binary for distroless.
@@ -8,7 +8,7 @@ ENV CGO_ENABLED=0 GOFLAGS=-mod=mod
 COPY . .
 RUN go build -trimpath -ldflags="-s -w" -o /out/gateway ./cmd/gateway
 
-FROM gcr.io/distroless/static-debian12:nonroot
+FROM gcr.io/distroless/static-debian13:nonroot
 LABEL org.opencontainers.image.source="https://github.com/fmind-ai/fgentic"
 LABEL org.opencontainers.image.title="activitypub-agent-gateway"
 LABEL org.opencontainers.image.description="ActivityPub Service actor per agent, delegating fediverse mentions to AI agents over A2A"

@@ -1,0 +1,15 @@
+# Non-secret probe configuration. The homeserver is the in-cluster Synapse client-server API; the
+# target is the deterministic zero-model-cost ghost so the default probe exercises bridge intake,
+# the ledger, agentgateway routing, and kagent A2A without any model spend. The canary user,
+# password, and room id are provisioning outputs and live in the SOPS canary-credential Secret.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: canary-config
+  namespace: canary
+data:
+  # Sync + send go to Synapse; password login goes to MAS (MSC3861 — Synapse does not serve /login).
+  CANARY_HOMESERVER_URL: http://ess-synapse.matrix.svc.cluster.local:8008
+  CANARY_LOGIN_URL: http://ess-matrix-authentication-service.matrix.svc.cluster.local:8080
+  CANARY_TARGET_MXID: "@agent-docs-qa:${server_name}"
+  CANARY_DEADLINE_SECONDS: "120"

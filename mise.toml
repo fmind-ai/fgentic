@@ -8,33 +8,36 @@ run_auto_install = false # fail fast in hooks/CI on a missing tool (never silent
 
 # Pinned infra toolchain (reproducible local + CI). Each app pins its own toolchain separately.
 [tools]
-age = "latest"
-dprint = "latest"
-flux2 = "latest"
-gitleaks = "latest"
-git-cliff = "latest"
-lefthook = "latest"
-promtool = "latest"
-actionlint = "latest"
-kubeconform = "latest"
-trivy = "latest"
-terraform = "latest"
-helm = "latest"
-jq = "latest"
+age = "1.3.1"
+dprint = "0.55.2"
+flux2 = "2.9.2"
+gitleaks = "8.30.1"
+git-cliff = "2.13.1"
+lefthook = "2.1.10"
+promtool = "3.13.1"
+actionlint = "1.7.12"
+zizmor = "1.27.0"
+kubeconform = "0.8.0"
+trivy = "0.72.0"
+terraform = "1.15.8"
+helm = "4.2.3"
+jq = "1.8.2"
 xh = "0.26.1"
 "github:helm-unittest/helm-unittest" = { version = "1.1.1", rename_exe = "helm-unittest" }
 kind = "0.32.0"
 k3d = "5.9.0"
 k9s = "0.51.0"
-kubectl = "1.35.0"
+kubectl = "1.36.2"
+node = "24.18.0"
+"npm:renovate" = "43.271.0"
 python = "3.14.6"
-ripgrep = "latest"
+ripgrep = "15.2.0"
 shellcheck = "0.11.0"
 shfmt = "3.13.1"
-sops = "latest"
+sops = "3.13.2"
 uv = "0.11.29"
 watchexec = "2.5.1"
-yq = "latest"
+yq = "4.53.3"
 
 # --- Aggregate vocabulary (install / format / check / test / build / watch) ---
 
@@ -54,6 +57,7 @@ description = "Install all application toolchains and locked environments"
 run = [
   "mise run install:bridge",
   "mise run install:gateway",
+  "mise run install:groupsync",
   "mise run install:policy",
 ]
 
@@ -64,6 +68,10 @@ run = "mise --cd apps/matrix-a2a-bridge install"
 [tasks."install:gateway"]
 description = "Install the ActivityPub agent gateway toolchain"
 run = "mise --cd apps/activitypub-agent-gateway install"
+
+[tasks."install:groupsync"]
+description = "Install the matrix-group-sync reconciler toolchain"
+run = "mise --cd apps/matrix-group-sync install"
 
 [tasks."install:policy"]
 description = "Install the Synapse policy toolchain and locked environment"
@@ -84,6 +92,11 @@ run = "bash scripts/agent-gate.sh"
 description = "Scaffold one deny-by-default local Agent into the GitOps and evaluation seams"
 run = "bash scripts/new-agent.sh"
 
+[tasks."agent:test"]
+description = "Run one Agent's golden tasks locally against the deterministic zero-spend model (offline, no cluster) — the pre-PR loop; shares the CI test:agents-golden code path"
+dir = "apps/matrix-a2a-bridge"
+run = "bash scripts/eval-golden.sh"
+
 [tasks.format]
 alias = "f"
 description = "Format everything (config/markup, shell, Terraform, and applications)"
@@ -96,6 +109,7 @@ depends = [
   "format:knowledge-ingestion",
   "format:app",
   "format:gateway",
+  "format:groupsync",
   "format:policy",
 ]
 
@@ -146,6 +160,11 @@ description = "Format the ActivityPub agent gateway"
 dir = "apps/activitypub-agent-gateway"
 run = "mise run format"
 
+[tasks."format:groupsync"]
+description = "Format the matrix-group-sync reconciler"
+dir = "apps/matrix-group-sync"
+run = "mise run format"
+
 [tasks."format:policy"]
 description = "Format the Synapse federation policy application"
 dir = "apps/synapse-federation-policy"
@@ -156,6 +175,7 @@ alias = "c"
 description = "Run every static check (config, Terraform, manifests, scans, workflows, and apps)"
 depends = [
   "check:format",
+  "check:renovate",
   "check:docs",
   "check:shell",
   "check:terraform",
@@ -170,6 +190,8 @@ depends = [
   "check:leaks",
   "check:prometheus",
   "check:dashboards",
+  "check:canary",
+  "check:alert-delivery",
   "check:reference-grants",
   "check:a2a-operation-names",
   "check:a2a-authorization",
@@ -183,21 +205,34 @@ depends = [
   "check:postgres-audit",
   "check:knowledge-store",
   "check:knowledge-ingestion",
+  "check:identity-audit",
   "check:trivy-operator",
   "check:secret-rotation",
+  "check:mirror-artifacts",
+  "check:break-glass",
   "check:supply-chain",
+  "check:bom",
+  "check:identity",
   "check:agents",
   "check:agent-new",
+  "check:agent-retire",
   "check:demo",
   "check:federation",
+  "check:fed-registry",
+  "check:fed-break-glass",
+  "check:fed-agreement",
+  "check:fed-trust-alert",
   "check:federation-onboarding",
   "check:smoke-workflow",
   "check:mautrix-bridges",
+  "check:activitypub",
   "check:agent-readiness",
   "check:github-actions",
   "check:workflows",
+  "check:zizmor",
   "check:app",
   "check:gateway",
+  "check:groupsync",
   "check:policy",
 ]
 
@@ -206,11 +241,17 @@ alias = "cf"
 description = "Verify config/markup formatting (dprint)"
 run = "dprint check"
 
+[tasks."check:renovate"]
+description = "Validate the Renovate dependency policy strictly"
+run = "renovate-config-validator --strict --no-global renovate.json5"
+
 [tasks."docs:build"]
 description = "Build the version-locked documentation site"
-# The acknowledged Material maintenance notice is recorded in docs/site.md. Use its supported
-# opt-out so warning-free hooks preserve signal for actual MkDocs build diagnostics.
+# `--frozen` deliberately skips manifest freshness, so fail before building when the docs lock
+# drifts. The acknowledged Material maintenance notice is recorded in docs/site.md; use its
+# supported opt-out so warning-free hooks preserve signal for actual MkDocs build diagnostics.
 run = [
+  "uv lock --project docs --check",
   "env NO_MKDOCS_2_WARNING=1 PYTHONDONTWRITEBYTECODE=1 uv run --project docs --frozen mkdocs build --strict --config-file docs/mkdocs.yml",
   "test -z \"$(rg --no-config --hidden --no-ignore --files .agents/tmp/docs-site -g '*.pyc')\"",
   "test ! -d .agents/tmp/docs-site/__pycache__ && test ! -d .agents/tmp/docs-site/tests",
@@ -249,6 +290,10 @@ run = "bash scripts/test-agent-readiness.sh"
 description = "Validate deterministic Agent scaffolding and its effective offline renders"
 run = "bash scripts/test-new-agent.sh"
 
+[tasks."check:agent-retire"]
+description = "Offline contract test for the ownership-guarded agent-retire residual-state sweep"
+run = "bash scripts/test-agent-retire.sh"
+
 [tasks."check:model-catalog"]
 description = "Validate governed model metadata and every tracked provider/model selection"
 dir = "apps/matrix-a2a-bridge"
@@ -261,6 +306,13 @@ run = "bash scripts/check-terraform.sh"
 
 [tasks."check:terraform-hermetic"]
 description = "Prove check:terraform survives a poisoned GCS backend cache with no credentials"
+# Ordered after check:terraform so the two Terraform trees never spin up their google provider
+# plugin concurrently inside the highly parallel aggregate `check`. Two providers under the
+# aggregate's process/disk pressure on the 14 GiB host is what killed the plugin ("did not respond
+# to plugin.(*GRPCProvider).ValidateProviderConfig"); the ordinary and hermetic proofs pass fine
+# one-at-a-time. This only serializes the two Terraform tasks — every other check still fans out
+# in parallel (issue #794).
+depends = ["check:terraform"]
 run = "bash scripts/test-terraform-hermetic.sh"
 
 [tasks."check:manifests"]
@@ -316,6 +368,14 @@ run = "bash scripts/test-prometheus-rules.sh"
 description = "Validate declarative Grafana dashboard provisioning, panels, and PromQL contracts"
 run = "bash scripts/test-grafana-dashboards.sh"
 
+[tasks."check:canary"]
+description = "Validate the opt-in synthetic delegation canary render, flag resolution, and probe logic"
+run = "bash scripts/test-canary.sh"
+
+[tasks."check:alert-delivery"]
+description = "Validate the opt-in sovereign alert delivery render, flag resolution, D7/D8 sender proof, and receiver logic"
+run = "bash scripts/test-alert-delivery.sh"
+
 [tasks."check:reference-grants"]
 description = "Audit cross-namespace Gateway API backends and their ReferenceGrants"
 run = "bash scripts/check-reference-grants.sh && bash scripts/test-reference-grants.sh"
@@ -366,6 +426,17 @@ run = "bash scripts/test-postgres-audit.sh"
 description = "Validate the pgvector image, scoped roles, ACL schema, indexes, and migration Job"
 run = "bash scripts/test-knowledge-store.sh"
 
+[tasks."check:identity-audit"]
+description = "Validate the content-bounded Synapse/MAS/admin-action audit projectors and closed record schemas (ADR 0018)"
+# Reuse the pinned synapse-federation-policy toolchain (like check:knowledge-ingestion) rather than
+# standing up a separate lock; the projectors are pure Python with no runtime dependency.
+run = [
+  "mise --cd apps/synapse-federation-policy exec -- uv run ruff format --check --config ../../infra/audit/pyproject.toml ../../infra/audit/base ../../infra/audit/tests",
+  "mise --cd apps/synapse-federation-policy exec -- uv run ruff check --config ../../infra/audit/pyproject.toml ../../infra/audit/base ../../infra/audit/tests",
+  "mise --cd apps/synapse-federation-policy exec -- env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=../../infra/audit/base uv run ty check ../../infra/audit/base ../../infra/audit/tests",
+  "mise --cd apps/synapse-federation-policy exec -- env PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=../../infra/audit/base uv run pytest -q ../../infra/audit/tests",
+]
+
 [tasks."check:knowledge-ingestion"]
 description = "Validate bounded ingestion, connector state, ACL mirroring, and opt-in Flux contracts"
 run = [
@@ -384,9 +455,29 @@ run = "bash scripts/test-trivy-operator.sh"
 description = "Test selective SOPS rotation and cross-consumer invariants with offline fixtures"
 run = "bash scripts/test-rotate-secrets.sh"
 
+[tasks."check:break-glass"]
+description = "Prove the fail-closed default posture of the disabled-by-default break-glass recovery credential"
+run = "bash scripts/test-break-glass.sh"
+
+[tasks."check:mirror-artifacts"]
+description = "Offline contract test for the BOM-driven air-gap artifact mirror (digest-preserving, fail-closed)"
+run = "bash scripts/test-mirror-artifacts.sh"
+
 [tasks."check:supply-chain"]
 description = "Validate signed OCI bootstrap/active invariants and CD attestation controls"
 run = "bash scripts/check-supply-chain.sh"
+
+[tasks."check:bom"]
+description = "Verify the adopter release BOM matches the reference profile and every repo pin is classified"
+run = "bash scripts/check-bom.sh"
+
+[tasks."check:identity"]
+description = "Assert the Keycloak↔MAS OIDC backchannel-logout wiring (client config, provider, egress)"
+run = "bash scripts/check-identity.sh"
+
+[tasks."identity:backchannel-migrate"]
+description = "Idempotently apply the OIDC backchannel-logout config to an existing cluster's live fgentic client"
+run = "bash scripts/keycloak-backchannel-migrate.sh"
 
 [tasks."check:agents"]
 description = "Validate every in-repo Agent, bridge mapping, sender policy, stage, and source contract"
@@ -403,6 +494,22 @@ run = "bash scripts/test-demo.sh"
 [tasks."check:federation"]
 description = "Validate the offline federation topology, room policy, and denied control"
 run = "bash scripts/test-federation.sh"
+
+[tasks."check:fed-registry"]
+description = "Assert the partner trust registry is schema-valid and every federation enforcement plane is consistent"
+run = "bash scripts/check-fed-registry.sh"
+
+[tasks."check:fed-break-glass"]
+description = "Assert cross-org break-glass containment, the content-free evidence pack, and the abuse-report schema"
+run = "bash scripts/test-fed-break-glass.sh"
+
+[tasks."check:fed-agreement"]
+description = "Verify the signed bilateral agreements and assert the registry enforces exactly their signed terms"
+run = "bash scripts/test-fed-agreement.sh"
+
+[tasks."check:fed-trust-alert"]
+description = "Assert the time-bounded-trust review/expiry rules render from the registry and fire correctly (promtool)"
+run = "bash scripts/test-fed-trust-alert.sh"
 
 [tasks."check:federation-onboarding"]
 description = "Test the read-only partner federation preflight and onboarding conformance with offline fixtures"
@@ -422,6 +529,14 @@ run = "bash scripts/check-github-actions.sh"
 [tasks."check:mautrix-bridges"]
 description = "Render and validate optional mautrix runtimes, privacy defaults, secrets, and composable Flux layers"
 run = "bash scripts/test-mautrix-bridges.sh"
+
+[tasks."check:activitypub"]
+description = "Validate the demo-reconciled ActivityPub gateway: rendered deploy unit, quota, default-deny NetworkPolicy, gated route, and demo-only composition"
+run = "bash scripts/check-activitypub.sh"
+
+[tasks."test:activitypub-interop"]
+description = "Runtime GoToSocial/Mastodon-wire interop acceptance for the demo ActivityPub gateway (run after demo:up)"
+run = "bash scripts/test-activitypub-interop.sh"
 
 [tasks."test:network-policies"]
 description = "Probe allow and deny paths on the active reconciled cluster"
@@ -473,6 +588,11 @@ alias = "cw"
 description = "Lint GitHub Actions workflows (actionlint)"
 run = "actionlint"
 
+[tasks."check:zizmor"]
+description = "Audit GitHub Actions workflow behavior (zizmor)"
+env = { ZIZMOR_OFFLINE = "true" }
+run = "zizmor --persona regular .github/workflows"
+
 [tasks."check:app"]
 description = "Run the application's static checks (delegates to apps/matrix-a2a-bridge)"
 dir = "apps/matrix-a2a-bridge"
@@ -481,6 +601,11 @@ run = "mise run check"
 [tasks."check:gateway"]
 description = "Run the ActivityPub agent gateway static checks"
 dir = "apps/activitypub-agent-gateway"
+run = "mise run check"
+
+[tasks."check:groupsync"]
+description = "Run the matrix-group-sync reconciler static checks"
+dir = "apps/matrix-group-sync"
 run = "mise run check"
 
 [tasks."check:policy"]
@@ -498,6 +623,11 @@ description = "Run the ActivityPub agent gateway test suite"
 dir = "apps/activitypub-agent-gateway"
 run = "mise run test"
 
+[tasks."test:groupsync"]
+description = "Run the matrix-group-sync reconciler test suite"
+dir = "apps/matrix-group-sync"
+run = "mise run test"
+
 [tasks."test:policy"]
 description = "Run the Synapse federation policy unit suite"
 dir = "apps/synapse-federation-policy"
@@ -509,6 +639,7 @@ description = "Run deterministic application, Agent golden, and pinned external-
 depends = [
   "test:app",
   "test:gateway",
+  "test:groupsync",
   "test:policy",
   "test:knowledge-ingestion",
   "test:mautrix-bridges",
@@ -534,6 +665,16 @@ run = "mise run test:availability"
 description = "Run the bridge's durable hard-crash recovery scenario"
 dir = "apps/matrix-a2a-bridge"
 run = "mise run test:crash-recovery"
+
+[tasks."test:model-outage"]
+description = "Run the bridge's model-backend outage dependency drill (#466)"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run test:model-outage"
+
+[tasks."test:synapse-restart"]
+description = "Run the bridge's Synapse-restart dependency drill (#466)"
+dir = "apps/matrix-a2a-bridge"
+run = "mise run test:synapse-restart"
 
 [tasks."test:tracing"]
 description = "Render the tracing stack and prove an OTLP span reaches Jaeger locally"
@@ -570,7 +711,7 @@ run = "mise run eval:golden"
 [tasks.build]
 alias = "b"
 description = "Build all application artifacts"
-depends = ["build:bridge", "build:gateway", "build:policy"]
+depends = ["build:bridge", "build:gateway", "build:groupsync", "build:policy"]
 
 [tasks."build:bridge"]
 description = "Build the production bridge image"
@@ -580,6 +721,11 @@ run = "mise run build:image"
 [tasks."build:gateway"]
 description = "Build the production ActivityPub agent gateway image"
 dir = "apps/activitypub-agent-gateway"
+run = "mise run build:image"
+
+[tasks."build:groupsync"]
+description = "Build the production matrix-group-sync reconciler image"
+dir = "apps/matrix-group-sync"
 run = "mise run build:image"
 
 [tasks."build:policy"]
@@ -667,6 +813,26 @@ run = "bash scripts/dev.sh stop"
 [tasks."dev:down"]
 description = "Delete only the owned lightweight development cluster"
 run = "bash scripts/dev.sh down"
+
+[tasks."fed:registry-render"]
+description = "Render the derived federation planes (policy.json + platform-settings) from the partner trust registry"
+run = "bash scripts/fed-registry-render.sh"
+
+[tasks."fed:agreement-render"]
+description = "Sync the registry reservation/quota/classification from the signed bilateral agreements"
+run = "bash scripts/fed-agreement-render.sh"
+
+[tasks."fed:trust-alert-render"]
+description = "Render the time-bounded-trust review/expiry PrometheusRules from the partner trust registry"
+run = "bash scripts/fed-trust-alert-render.sh"
+
+[tasks."fed:break-glass"]
+description = "Break-glass containment: contain|restore|status a partner across the federation trust planes"
+run = "bash scripts/fed-break-glass.sh"
+
+[tasks."fed:evidence-pack"]
+description = "Assemble the content-free cross-org incident evidence pack for a contained partner"
+run = "bash scripts/fed-evidence-pack.sh"
 
 [tasks."fed:up"]
 description = "Reconcile and prove the provider-free federation hardening lab"

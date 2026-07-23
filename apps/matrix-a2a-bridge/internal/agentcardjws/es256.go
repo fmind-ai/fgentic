@@ -11,6 +11,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"errors"
 	"fmt"
 	"math/big"
 	"strings"
@@ -172,10 +173,18 @@ func ParsePublicJWK(
 	if err != nil || len(yBytes) != p256CoordinateBytes {
 		return nil, fmt.Errorf("public JWK y must be a 32-byte base64url coordinate")
 	}
-	key := &ecdsa.PublicKey{
-		Curve: elliptic.P256(),
-		X:     new(big.Int).SetBytes(xBytes),
-		Y:     new(big.Int).SetBytes(yBytes),
+	// Build the SEC 1 uncompressed point and parse it: ParseUncompressedPublicKey rejects an
+	// off-curve or identity point (Go 1.26 deprecated raw big.Int coordinate assignment on
+	// ecdsa.PublicKey; parsing the encoded point is the supported, on-curve-checked path).
+	encoded := make([]byte, 1+p256CoordinateBytes*2)
+	encoded[0] = 4
+	copy(encoded[1:1+p256CoordinateBytes], xBytes)
+	copy(encoded[1+p256CoordinateBytes:], yBytes)
+	// The coordinate lengths are already validated above, so ParseUncompressedPublicKey can only
+	// fail here for an off-curve or identity point — keep the original error message for that case.
+	key, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), encoded)
+	if err != nil {
+		return nil, fmt.Errorf("public key point is not on P-256")
 	}
 	if err := validatePublicKey(key); err != nil {
 		return nil, err
@@ -230,27 +239,89 @@ func Sign(raw []byte, key *ecdsa.PrivateKey, keyID string) (Bundle, error) {
 	return Bundle{AgentCard: signedCard, PublicJWK: jwk}, nil
 }
 
-// Verify accepts the document when at least one signature is a valid ES256 signature made by
-// key under the exact protected key ID. Unsupported signatures are ignored so key rotation can
-// publish a multi-signature card without weakening the pinned trust decision.
+// PinnedKey is one currently-valid AgentCard signing key in a rotation overlap window: the protected
+// key ID and the ES256 public key that must have produced the signature carrying that ID.
+type PinnedKey struct {
+	KeyID string
+	Key   *ecdsa.PublicKey
+}
+
+// ErrRevokedKeyID reports that a card's only recognizable signatures were made under an explicitly
+// revoked key ID. It is distinguished from a generic untrusted card so the retired-key case can be
+// audited deterministically.
+var ErrRevokedKeyID = errors.New("card signed only with a revoked key ID")
+
+// Verify accepts the document when at least one signature is a valid ES256 signature made by key
+// under the exact protected key ID. It is the single-key form of VerifySet, preserved for callers
+// that pin exactly one key.
 func Verify(document *Document, key *ecdsa.PublicKey, keyID string) error {
+	return VerifySet(document, []PinnedKey{{KeyID: keyID, Key: key}}, nil)
+}
+
+// VerifySet accepts the document when at least one signature is a valid ES256 signature made under a
+// pinned key — the multi-key rotation overlap window. During rotation both the old and new keys are
+// pinned so a partner that still presents the old key ID keeps verifying; once the old key is retired
+// its key ID is added to revoked (and removed from the pinned set) and a card offered under it is
+// refused. A card may carry several signatures (old + new during overlap); it is trusted as soon as
+// one pinned key verifies, so a stale signature alongside a valid one never blocks it.
+//
+// Security invariant: a revoked key ID must never also be a pinned key (this fails closed below), so
+// acceptance can only ever occur via a currently-pinned, non-revoked key. The revoked set is consulted
+// only to attribute the rejection reason AFTER no pinned key has matched — it can never cause acceptance.
+func VerifySet(document *Document, keys []PinnedKey, revoked map[string]bool) error {
 	if document == nil {
 		return fmt.Errorf("card document is nil")
 	}
-	if err := validatePublicKey(key); err != nil {
-		return err
+	if len(keys) == 0 {
+		return fmt.Errorf("no pinned keys to verify against")
+	}
+	for _, pinned := range keys {
+		if err := validateKeyID(pinned.KeyID); err != nil {
+			return err
+		}
+		if err := validatePublicKey(pinned.Key); err != nil {
+			return err
+		}
+		if revoked[pinned.KeyID] {
+			return fmt.Errorf("pinned key ID %q is also marked revoked", pinned.KeyID)
+		}
 	}
 	signatures, present := document.Signatures()
 	if !present || len(signatures) == 0 {
 		return fmt.Errorf("card is unsigned")
 	}
 	for _, signature := range signatures {
-		matches, err := verifySignature(document.payload, signature, keyID, key)
-		if err == nil && matches {
-			return nil
+		for _, pinned := range keys {
+			matches, err := verifySignature(document.payload, signature, pinned.KeyID, pinned.Key)
+			if err == nil && matches {
+				return nil
+			}
 		}
 	}
-	return fmt.Errorf("card has no valid ES256 signature for pinned key ID %q", keyID)
+	// Rejection is already decided. If any signature was offered under a revoked key ID, attribute the
+	// revoked reason; this lenient key-ID read is post-decision and cannot affect acceptance.
+	for _, signature := range signatures {
+		if keyID, ok := signatureKeyID(signature); ok && revoked[keyID] {
+			return ErrRevokedKeyID
+		}
+	}
+	return fmt.Errorf("card has no valid ES256 signature for any pinned key ID")
+}
+
+// signatureKeyID leniently reads the protected "kid" for post-rejection reason attribution only. It
+// returns ("", false) for any malformed header; it is never used to decide acceptance.
+func signatureKeyID(signature a2a.AgentCardSignature) (string, bool) {
+	protectedJSON, err := base64.RawURLEncoding.Strict().DecodeString(signature.Protected)
+	if err != nil {
+		return "", false
+	}
+	var header struct {
+		KeyID string `json:"kid"`
+	}
+	if json.Unmarshal(protectedJSON, &header) != nil || header.KeyID == "" {
+		return "", false
+	}
+	return header.KeyID, true
 }
 
 func verifySignature(
@@ -414,8 +485,14 @@ func EncodePublicJWK(key *ecdsa.PublicKey, keyID string) ([]byte, error) {
 	if err := validateKeyID(keyID); err != nil {
 		return nil, err
 	}
-	x := base64.RawURLEncoding.EncodeToString(key.X.FillBytes(make([]byte, p256CoordinateBytes)))
-	y := base64.RawURLEncoding.EncodeToString(key.Y.FillBytes(make([]byte, p256CoordinateBytes)))
+	// Derive the coordinate halves from the validated SEC 1 uncompressed encoding rather than the
+	// deprecated raw X/Y big.Int fields; validatePublicKey above already proved the point is on-curve.
+	point, err := encodePublicKey(key)
+	if err != nil {
+		return nil, err
+	}
+	x := base64.RawURLEncoding.EncodeToString(point[1 : 1+p256CoordinateBytes])
+	y := base64.RawURLEncoding.EncodeToString(point[1+p256CoordinateBytes:])
 	encoded, err := json.Marshal(publicJWK{
 		KeyType:   "EC",
 		Curve:     "P-256",
@@ -451,16 +528,19 @@ func validateKeyID(keyID string) error {
 }
 
 func validatePrivateKey(key *ecdsa.PrivateKey) error {
-	if key == nil || key.D == nil {
+	if key == nil {
 		return fmt.Errorf("private key is missing")
 	}
 	if err := validatePublicKey(&key.PublicKey); err != nil {
 		return fmt.Errorf("private key: %w", err)
 	}
-	if key.D.Sign() <= 0 || key.D.BitLen() > p256CoordinateBytes*8 {
+	// PrivateKey.Bytes returns the fixed-length scalar and fails for a nil, zero, or out-of-range
+	// scalar (Go 1.26 deprecated the raw D big.Int); ecdh.NewPrivateKey re-validates P-256 range,
+	// preserving the previous Sign/BitLen + round-trip guarantee.
+	privateBytes, err := key.Bytes()
+	if err != nil {
 		return fmt.Errorf("private key scalar is outside the P-256 range")
 	}
-	privateBytes := key.D.FillBytes(make([]byte, p256CoordinateBytes))
 	ecdhPrivateKey, err := ecdh.P256().NewPrivateKey(privateBytes)
 	if err != nil {
 		return fmt.Errorf("private key scalar is outside the P-256 range")
@@ -476,7 +556,7 @@ func validatePrivateKey(key *ecdsa.PrivateKey) error {
 }
 
 func validatePublicKey(key *ecdsa.PublicKey) error {
-	if key == nil || key.Curve != elliptic.P256() || key.X == nil || key.Y == nil {
+	if key == nil || key.Curve != elliptic.P256() {
 		return fmt.Errorf("public key must be ECDSA P-256")
 	}
 	if _, err := encodePublicKey(key); err != nil {
@@ -486,16 +566,17 @@ func validatePublicKey(key *ecdsa.PublicKey) error {
 }
 
 func encodePublicKey(key *ecdsa.PublicKey) ([]byte, error) {
-	if key == nil || key.X == nil || key.Y == nil ||
-		key.X.Sign() < 0 || key.Y.Sign() < 0 ||
-		key.X.BitLen() > p256CoordinateBytes*8 || key.Y.BitLen() > p256CoordinateBytes*8 {
+	if key == nil {
 		return nil, fmt.Errorf("public key point is not on P-256")
 	}
-	encoded := make([]byte, 1+p256CoordinateBytes*2)
-	encoded[0] = 4 // SEC 1 uncompressed point encoding.
-	key.X.FillBytes(encoded[1 : 1+p256CoordinateBytes])
-	key.Y.FillBytes(encoded[1+p256CoordinateBytes:])
-	if _, err := ecdh.P256().NewPublicKey(encoded); err != nil {
+	// PublicKey.Bytes returns the SEC 1 uncompressed encoding and fails for a nil, invalid,
+	// off-curve, or identity point — the same guarantee the previous coordinate range check plus
+	// ecdh.NewPublicKey round-trip gave, without touching the Go 1.26-deprecated X/Y fields.
+	encoded, err := key.Bytes()
+	if err != nil {
+		return nil, fmt.Errorf("public key point is not on P-256")
+	}
+	if len(encoded) != 1+p256CoordinateBytes*2 || encoded[0] != 4 {
 		return nil, fmt.Errorf("public key point is not on P-256")
 	}
 	return encoded, nil

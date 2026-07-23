@@ -71,3 +71,50 @@ spec:
         - name: federated-docs-qa-a2a
           group: agentgateway.dev
           kind: AgentgatewayBackend
+---
+# Second admitted consumer org D (issue #354) invokes the same docs-qa agent on org A's dedicated
+# per-consumer public host `a2a-d.${server_name}`. Only the exact POST invocation is exposed; org D
+# discovers the agent through the same anonymous signed card served on `a2a.${server_name}`.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: federated-docs-qa-public-d
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+    - name: fgentic-gateway
+      namespace: gateway
+      sectionName: https-a2a-d
+  hostnames:
+    - a2a-d.${server_name}
+  rules:
+    - matches:
+        - method: POST
+          path:
+            type: Exact
+            value: /api/a2a/kagent/docs-qa
+      backendRefs:
+        - name: agentgateway-proxy
+          port: 8082
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: federated-docs-qa-d
+  namespace: agentgateway-system
+spec:
+  parentRefs:
+    - name: agentgateway-proxy
+      sectionName: federation-a2a-d
+  hostnames:
+    - a2a-d.${server_name}
+  rules:
+    - matches:
+        - method: POST
+          path:
+            type: Exact
+            value: /api/a2a/kagent/docs-qa
+      backendRefs:
+        - name: federated-docs-qa-a2a
+          group: agentgateway.dev
+          kind: AgentgatewayBackend

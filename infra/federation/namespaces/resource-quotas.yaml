@@ -1,4 +1,4 @@
-# The two additional homeservers carry the same core profile as the primary Matrix namespace.
+# The three additional homeservers carry the same core profile as the primary Matrix namespace.
 apiVersion: v1
 kind: ResourceQuota
 metadata:
@@ -45,6 +45,34 @@ kind: LimitRange
 metadata:
   name: container-defaults
   namespace: matrix-c
+spec:
+  limits:
+    - type: Container
+      default:
+        cpu: "${quota_default_limit_cpu}"
+        memory: "${quota_default_limit_memory}"
+      defaultRequest:
+        cpu: "${quota_default_request_cpu}"
+        memory: "${quota_default_request_memory}"
+---
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: compute-budget
+  namespace: matrix-d
+spec:
+  hard:
+    pods: "${quota_core_pods}"
+    requests.cpu: "${quota_core_requests_cpu}"
+    requests.memory: "${quota_core_requests_memory}"
+    limits.cpu: "${quota_core_limits_cpu}"
+    limits.memory: "${quota_core_limits_memory}"
+---
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: container-defaults
+  namespace: matrix-d
 spec:
   limits:
     - type: Container

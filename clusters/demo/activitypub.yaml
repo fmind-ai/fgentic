@@ -1,0 +1,106 @@
+# Demo-only composition point for the ActivityPub agent gateway (issue #489). The app's self-contained
+# deploy unit (apps/activitypub-agent-gateway/deploy) is wrapped here — mirroring the `bridge`
+# Kustomization in clusters/base/apps.yaml — but ONLY the ephemeral demo overlay lists this resource,
+# so clusters/local and clusters/gcp keep the gateway absent. Public exposure stays gated regardless:
+# the deploy unit leaves httpRoute disabled on every profile (docs/fediverse.md §3).
+#
+# The full internet-facing AP border on local/gcp remains a separate, explicitly gated decision.
+apiVersion: kustomize.toolkit.fluxcd.io/v1
+kind: Kustomization
+metadata:
+  name: activitypub
+  namespace: flux-system
+spec:
+  interval: 30m
+  path: ./apps/activitypub-agent-gateway/deploy
+  # Optional per-cluster units append their own components/patches here. Empty lists keep one Flux
+  # field owner so future profiles compose without editing the app manifest (mirrors `bridge`).
+  components: []
+  patches:
+    # Evaluation omits the observability stack, so its PodMonitor CRD is absent. Disable scraping here
+    # exactly as the demo overlay does for the bridge; the deploy unit keeps it on for full profiles.
+    # The AP gateway image is GHCR-unpublished, so — exactly like the bridge — demo overrides it to the
+    # locally built + k3d-imported tag (${demo_bridge_tag}) with pullPolicy Never so the pod never
+    # pulls from GHCR. local/gcp keep the deploy unit's GHCR repository reference unchanged.
+    # Also enable the interop-acceptance posture (issue #489 Task 7): pin the two in-cluster peer
+    # public keys (ADR 0021 — an in-cluster peer cannot be SSRF-fetched by the #320-guarded resolver),
+    # and relax the FEP-8b32 object-proof requirement, because a Mastodon/GoToSocial-wire peer signs
+    # only HTTP Signatures. The HTTP-signature border, allowlist, budget admission, dedup, and
+    # FEP-8b32 OUTBOUND signing all stay ON — only the inbound object-proof gate relaxes. Demo-only.
+    - target:
+        kind: HelmRelease
+        name: activitypub-agent-gateway
+      patch: |
+        - op: replace
+          path: /spec/values/metrics/podMonitor/enabled
+          value: false
+        - op: replace
+          path: /spec/values/image
+          value:
+            repository: activitypub-agent-gateway
+            tag: ${demo_bridge_tag}
+            pullPolicy: Never
+        - op: add
+          path: /spec/values/pinnedKeys
+          value:
+            enabled: true
+            secretName: activitypub-agent-gateway-pinned-keys
+            key: pins.json
+        - op: replace
+          path: /spec/values/integrity/requireInbound
+          value: false
+        # The AP gateway is the LAST workload in the demo dependency chain (platform-secrets ->
+        # agentgateway -> kagent), so its first COLD rollout can exceed helm's default 5m --wait even
+        # though the Deployment does reach Available/ready 1/1. Give the demo release a longer wait and
+        # remediation so the slow first reconcile completes cleanly instead of being marked Failed. The
+        # deploy unit carries no timeout/remediation, so local/gcp keep the Flux defaults (unchanged).
+        - op: add
+          path: /spec/timeout
+          value: 10m
+        - op: add
+          path: /spec/install
+          value:
+            remediation:
+              retries: 3
+              remediateLastFailure: true
+        - op: add
+          path: /spec/upgrade
+          value:
+            remediation:
+              retries: 3
+              remediateLastFailure: true
+    # Demo-scoped only: allow the in-cluster interop peer namespace to reach the gateway inbox on
+    # :8480 (the public route stays gated). local/gcp never reconcile this unit, so their gateway
+    # ingress boundary is unaffected. The authoritative default-deny NetworkPolicy is otherwise
+    # unchanged (ingress still only from the Gateway and Prometheus).
+    - target:
+        kind: NetworkPolicy
+        name: activitypub-agent-gateway
+        namespace: activitypub
+      patch: |
+        - op: add
+          path: /spec/ingress/-
+          value:
+            from:
+              - namespaceSelector:
+                  matchLabels:
+                    kubernetes.io/metadata.name: activitypub-interop
+            ports:
+              - protocol: TCP
+                port: 8480
+  prune: true
+  dependsOn:
+    - name: platform-secrets # the identity/signing/credential Secrets (cluster-only demo path)
+    - name: agentgateway # the A2A route the gateway dials (LLM-credential chokepoint)
+    - name: kagent # the agents behind it
+  # NOT matrix: the ActivityPub transport is homeserver-independent (docs/adr/0014).
+  sourceRef:
+    kind: GitRepository
+    name: flux-system
+  postBuild:
+    substituteFrom:
+      - kind: ConfigMap
+        name: platform-settings
+      - kind: ConfigMap
+        name: platform-settings-overrides
+        optional: true

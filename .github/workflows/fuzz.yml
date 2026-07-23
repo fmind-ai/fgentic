@@ -7,6 +7,9 @@ on:
   schedule:
     - cron: "37 4 * * *"
   workflow_dispatch: {}
+defaults:
+  run:
+    shell: bash
 permissions:
   contents: read
 concurrency:
@@ -14,15 +17,20 @@ concurrency:
   cancel-in-progress: false
 jobs:
   fuzz:
+    name: Run bounded fuzzing
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - name: Install mise system
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
-      - name: Install application toolchains
-        run: mise run install:apps
+        with:
+          persist-credentials: false
+      - name: Install Go fuzz toolchain
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+        with:
+          version: 2026.7.11 # pin: keep the toolchain on the known-good mise (see ci.yml)
+          install_args: go
+          working_directory: apps/matrix-a2a-bridge
       - name: Bounded fuzz smoke (extended budget)
         env:
           FGENTIC_FUZZTIME: 60s

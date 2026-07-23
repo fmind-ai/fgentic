@@ -1,7 +1,7 @@
 ---
 type: Contract
 title: Public Surface Stability Contract
-description: Stability tiers for the public surfaces partners pin: extension URIs, event namespaces, schemas.
+description: "Stability tiers for the public surfaces partners pin: extension URIs, event namespaces, schemas."
 ---
 
 # Public Surface Stability Contract
@@ -27,6 +27,15 @@ Fgentic mints public surfaces beyond its code: extension URIs partners pin, even
 | `mise` task vocabulary (`demo:up`, `fed:up`, `fed:up:constrained`, `fed:status`, `fed:stop`, `fed:down`, …) | Beta         | `mise.toml`, README                                                                             | Documented commands keep working within a minor line; removals get a deprecation cycle                              |
 | Bridge Helm chart values                                                                                    | Beta         | `apps/matrix-a2a-bridge/chart/`                                                                 | Standalone consumption tracked by #190; values changes ship migration notes per the release contract                |
 | Federation lab acceptance interface (`fed:up` proofs, constrained mode, lifecycle, resource trace)          | Beta         | [docs/federation.md](federation.md) §8.5, ADR 0013                                              | The canonical proof remains the baseline; constrained mode changes capacity and install order, not the proof set    |
+
+## Support and tested upgrade paths
+
+This section states the support reality plainly; do not infer stronger guarantees than are written here.
+
+1. **Single maintainer.** Fgentic is maintained by one person. There is no support SLA, no security-response SLA beyond the [SECURITY.md](../SECURITY.md) private-reporting process, and no commitment to backport fixes to older releases. Best-effort, community-oriented support only.
+1. **The release unit is a tag.** A supported deployment pins a release **tag** and its [BOM](../release/bom.yaml), not `main`. See the [Adopter Release & Upgrade Contract](releases.md). Tracking `main` is unsupported: it carries untested pin-sets and CD digest-pin commits.
+1. **Tested upgrade paths: currently none end-to-end.** At this stage the release contract's offline core is in place (the BOM, its fail-closed verify gate, and the upgrade-notes convention), but **no live tag-to-tag upgrade drill has been run**. Do not assume any upgrade is validated until an upgrade note documents it. The intended steady-state guarantee is **N-1 → N only**: each release is expected to be upgradeable from the immediately preceding release by following its [upgrade note](upgrades/TEMPLATE.md), and skipping releases is not tested. Multi-version jumps mean applying each intermediate note in order, at your own risk.
+1. **Surface guarantees are separate from upgrade support.** The tiers below govern how individual public surfaces change; they do not by themselves promise that a full-platform upgrade between two tags has been exercised.
 
 ## Policy
 

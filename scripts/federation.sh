@@ -14,12 +14,13 @@ usage() {
 	cat <<'EOF'
 usage: scripts/federation.sh up|status|stop|down
 
-Creates the owned fgentic-fed k3d cluster with three provider-free Synapse homeservers:
+Creates the owned fgentic-fed k3d cluster with four provider-free Synapse homeservers:
   org-a.fgentic.localhost
   org-b.fgentic.localhost
+  org-d.fgentic.localhost (second admitted partner + second A2A consumer)
   org-c.fgentic.localhost (denied control)
 
-`up` reconciles the lab, proves a bidirectional A/B exchange plus C's rejection, and leaves the
+`up` reconciles the lab, proves a three-org A/B/D exchange plus C's rejection, and leaves the
 cluster running for inspection. `stop` releases CPU/RAM while retaining the exact owned cluster
 and image volume for same-mode reuse. `down` deletes only that ownership-labelled cluster and its
 local images; run it before switching between canonical and constrained capacity.
@@ -36,6 +37,9 @@ Environment:
   FGENTIC_FED_TRACE    yes writes allowlisted resource-only JSON under .agents/tmp (default: no)
   FGENTIC_FED_POLICY_PROBE
                        deny (default) or allow; allow changes only the ephemeral Git snapshot
+  FGENTIC_FED_AGENT_CARD_ROTATION
+                       yes (default) serves + proves the AgentCard key-rotation overlap window and
+                       revocation; no restores the byte-identical single-key path
   FGENTIC_DEMO_CACHE_DIR
                        optional persistent BuildKit cache directory for the source image
   FGENTIC_DEMO_STATE_DIR

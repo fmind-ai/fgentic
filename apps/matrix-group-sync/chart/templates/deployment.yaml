@@ -1,0 +1,129 @@
+{{- if ne (int .Values.replicaCount) 1 }}
+{{- fail "matrix-group-sync requires replicaCount=1 (in-memory stall/SLO state; a single reconciler)" }}
+{{- end }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "matrix-group-sync.fullname" . }}
+  labels:
+    {{- include "matrix-group-sync.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.replicaCount }}
+  strategy:
+    type: Recreate
+  revisionHistoryLimit: {{ .Values.revisionHistoryLimit }}
+  selector:
+    matchLabels:
+      {{- include "matrix-group-sync.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "matrix-group-sync.selectorLabels" . | nindent 8 }}
+    spec:
+      terminationGracePeriodSeconds: {{ .Values.terminationGracePeriodSeconds }}
+      serviceAccountName: {{ include "matrix-group-sync.serviceAccountName" . }}
+      automountServiceAccountToken: {{ .Values.serviceAccount.automountServiceAccountToken }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: reconciler
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: []
+          ports:
+            - name: metrics
+              containerPort: {{ .Values.config.metricsPort }}
+              protocol: TCP
+          env:
+            - name: SERVER_NAME
+              value: {{ .Values.config.serverName | quote }}
+            - name: ACCESS_MANAGER_MXID
+              value: {{ .Values.config.accessManagerMXID | quote }}
+            - name: GHOST_PREFIX
+              value: {{ .Values.config.ghostPrefix | quote }}
+            - name: MATRIX_HOMESERVER_URL
+              value: {{ .Values.config.matrixHomeserverURL | quote }}
+            - name: MATRIX_ACCESS_TOKEN_PATH
+              value: /etc/matrix-group-sync/matrix/{{ .Values.secrets.matrix.key }}
+            - name: KEYCLOAK_BASE_URL
+              value: {{ .Values.config.keycloak.baseURL | quote }}
+            - name: KEYCLOAK_REALM
+              value: {{ .Values.config.keycloak.realm | quote }}
+            - name: KEYCLOAK_CLIENT_ID
+              value: {{ .Values.config.keycloak.clientID | quote }}
+            - name: KEYCLOAK_CLIENT_SECRET_PATH
+              value: /etc/matrix-group-sync/keycloak/{{ .Values.secrets.keycloak.key }}
+            - name: KEYCLOAK_PAGE_SIZE
+              value: {{ .Values.config.keycloak.pageSize | quote }}
+            - name: BINDINGS_PATH
+              value: /etc/matrix-group-sync/bindings/bindings.yaml
+            - name: ENFORCE
+              value: {{ .Values.config.enforce | quote }}
+            - name: RECONCILE_INTERVAL
+              value: {{ .Values.config.reconcileInterval | quote }}
+            - name: REVOCATION_SLO
+              value: {{ .Values.config.revocationSLO | quote }}
+            - name: MISSED_INTERVAL_ALERT
+              value: {{ .Values.config.missedIntervalAlert | quote }}
+            - name: REQUEST_TIMEOUT
+              value: {{ .Values.config.requestTimeout | quote }}
+            - name: SHUTDOWN_TIMEOUT
+              value: {{ .Values.config.shutdownTimeout | quote }}
+            - name: METRICS_PORT
+              value: {{ .Values.config.metricsPort | quote }}
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel | quote }}
+            - name: LOG_FORMAT
+              value: {{ .Values.config.logFormat | quote }}
+          volumeMounts:
+            - name: bindings
+              # Whole-directory mount (atomic symlink swap) so an updated ConfigMap is picked up on
+              # the next process start; the reconciler reads the file each restart.
+              mountPath: /etc/matrix-group-sync/bindings
+              readOnly: true
+            - name: matrix-token
+              mountPath: /etc/matrix-group-sync/matrix
+              readOnly: true
+            - name: keycloak-client
+              mountPath: /etc/matrix-group-sync/keycloak
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /readyz
+              port: metrics
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: bindings
+          configMap:
+            name: {{ include "matrix-group-sync.fullname" . }}-bindings
+        - name: matrix-token
+          secret:
+            secretName: {{ .Values.secrets.matrix.secretName }}
+            defaultMode: 0400
+        - name: keycloak-client
+          secret:
+            secretName: {{ .Values.secrets.keycloak.secretName }}
+            defaultMode: 0400
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

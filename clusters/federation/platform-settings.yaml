@@ -9,7 +9,11 @@ data:
   server_name: org-a.fgentic.localhost
   # The federation lab proves cross-org protocols, not operator administration.
   admin_console: disabled
+  synthetic_canary: disabled
+  alert_delivery: disabled
   federation_partner_server_name: org-b.fgentic.localhost
+  # Second admitted partner (issue #354): a third participating homeserver and second A2A consumer.
+  federation_second_partner_server_name: org-d.fgentic.localhost
   federation_denied_server_name: org-c.fgentic.localhost
   # RFC 5737 placeholder: valid for offline rendering, deliberately unreachable at runtime.
   federation_gateway_ip: 192.0.2.1
@@ -50,3 +54,7 @@ data:
   # deterministically exceeds this lab quota.
   federation_a2a_max_budget_units: "4096"
   federation_a2a_quota_budget_units_per_minute: "5000"
+  # Second admitted consumer org D (issue #354) has its OWN, distinct, lower per-minute reservation
+  # budget. A 3000-unit reservation org B accepts is deterministically refused for org-d-a2a (3000 >
+  # 2000), proving per-`azp` reservations are independent (D7/D8) — one member cannot spend another's.
+  federation_second_a2a_quota_budget_units_per_minute: "2000"

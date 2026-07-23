@@ -15,6 +15,9 @@ config:
   # agent's own egress). Point directly at kagent to skip the gateway hop:
   #   http://kagent-controller.kagent.svc.cluster.local:8083
   a2aBaseURL: http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080
+  # Internal controller origin used only by verified conversation deletion.
+  kagentAPIURL: http://kagent-controller.kagent.svc.cluster.local:8083
+  conversationSweepInterval: 1h
   ghostPrefix: agent-
   # Exact local MXID allowed to invite mapped ghosts into their declared allowedRooms.
   accessManagerMXID: "@alice:fgentic.fmind.ai"
@@ -97,6 +100,15 @@ a2aAuthentication:
   secretName: a2a-bridge-credential
   key: token
 
+# Private acct: discovery/delivery broker in the ActivityPub gateway (#220). Disabled until an
+# acct mapping is configured. The shared SOPS Secret contains the same bearer token mounted into
+# both workloads; the local A2A_API_KEY is never sent to this broker or any remote organization.
+fediverseBroker:
+  enabled: false
+  url: http://activitypub-agent-gateway.activitypub-agent-gateway.svc.cluster.local:9090
+  secretName: activitypub-agent-gateway-broker
+  secretKey: token
+
 # Anchored full-MXID namespaces owned by external bridges. Matching senders require an explicit
 # per-agent allowedSenders match even though their MXID is local. Network names are low-cardinality
 # audit values; patterns use one trailing localpart '*' and an exact homeserver.
@@ -110,6 +122,7 @@ bridgedOrigins: {}
 # and partner-enforced `tokenBudget` extension value, plus a pinned ES256 `cardIdentity` (`name`,
 # `organization`, `keyID`, and public P-256 JWK). The bridge does not observe model token usage.
 # Signed-card trust is checked before any remote A2A invocation; no remote target is enabled by default.
+# A local mapping may set maxSessionAge (for example 168h) to expire each room/agent conversation.
 agents:
   agent-platform-helper:
     namespace: kagent

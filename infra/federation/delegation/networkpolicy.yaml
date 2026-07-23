@@ -17,8 +17,11 @@ spec:
             matchLabels:
               kubernetes.io/metadata.name: gateway
       ports:
+        # 8081 = org B's federation-a2a listener; 8082 = org D's isolated federation-a2a-d listener.
         - protocol: TCP
           port: 8081
+        - protocol: TCP
+          port: 8082
 ---
 # The selected demo-provider egress policy already grants proxy DNS, control-plane, model, and
 # kagent paths. NetworkPolicy rules are additive, so this grants only the missing RLS hop.
@@ -45,6 +48,9 @@ spec:
         - podSelector:
             matchLabels:
               app.kubernetes.io/name: federation-usage-receipt
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/name: federation-usage-receipt-d
       ports:
         - protocol: TCP
           port: 4444

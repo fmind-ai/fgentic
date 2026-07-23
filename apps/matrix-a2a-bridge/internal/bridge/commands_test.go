@@ -46,6 +46,18 @@ func TestParsePlaintextCommand(t *testing.T) {
 			body: "!budget",
 			want: plaintextCommand{kind: plaintextCommandBudget},
 		},
+		"forget": {
+			body: "/forget @agent-k8s:fgentic.fmind.ai",
+			want: plaintextCommand{kind: plaintextCommandForget, agent: "@agent-k8s:fgentic.fmind.ai"},
+		},
+		"forget alias": {
+			body: "!forget k8s",
+			want: plaintextCommand{kind: plaintextCommandForget, agent: "k8s"},
+		},
+		"missing forget agent": {
+			body: "!forget",
+			want: plaintextCommand{kind: plaintextCommandInvalid},
+		},
 		"missing ask prompt": {
 			body: "/ask k8s",
 			want: plaintextCommand{kind: plaintextCommandInvalid},
@@ -192,7 +204,7 @@ func TestBudgetCommandReadsLimitsAndReservationsWithoutConsumption(t *testing.T)
 		"Sender + agent invocation rate: 60/minute, burst 3",
 		"agent-remote: 2 whole request(s) available",
 		"maxTokens 8192 per request",
-		"reservation ceilings, not observed or spent token consumption",
+		"admission ceilings, not spend",
 	) {
 		t.Fatalf("/budget response = %#v", events)
 	}

@@ -88,8 +88,8 @@ verify_whitelist() {
 	response="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 		--header "Authorization: Bearer ${token}" \
 		"${matrix_url}/_synapse/client/v1/config/federation_whitelist")"
-	jq -e --arg a "${SERVER_A}" --arg b "${SERVER_B}" \
-		'.whitelist_enabled == true and (.whitelist | sort) == ([$a, $b] | sort)' \
+	jq -e --arg a "${SERVER_A}" --arg b "${SERVER_B}" --arg d "${SERVER_D}" \
+		'.whitelist_enabled == true and (.whitelist | sort) == ([$a, $b, $d] | sort)' \
 		<<<"${response}" >/dev/null
 }
 
@@ -100,8 +100,8 @@ verify_control_whitelist() {
 	response="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 		--header "Authorization: Bearer ${token}" \
 		"${matrix_url}/_synapse/client/v1/config/federation_whitelist")"
-	jq -e --arg a "${SERVER_A}" --arg b "${SERVER_B}" --arg c "${SERVER_C}" \
-		'.whitelist_enabled == true and (.whitelist | sort) == ([$a, $b, $c] | sort)' \
+	jq -e --arg a "${SERVER_A}" --arg b "${SERVER_B}" --arg d "${SERVER_D}" --arg c "${SERVER_C}" \
+		'.whitelist_enabled == true and (.whitelist | sort) == ([$a, $b, $d, $c] | sort)' \
 		<<<"${response}" >/dev/null
 }
 
@@ -177,12 +177,13 @@ verify_membership() {
 			--header "Authorization: Bearer ${token}" \
 			"${matrix_url}/_matrix/client/v3/rooms/${encoded_room}/joined_members")"
 		if jq -e --arg alice "@alice:${SERVER_A}" --arg bob "@bob:${SERVER_B}" \
-			'.joined | has($alice) and has($bob)' <<<"${joined}" >/dev/null; then
+			--arg dave "@dave:${SERVER_D}" \
+			'.joined | has($alice) and has($bob) and has($dave)' <<<"${joined}" >/dev/null; then
 			return
 		fi
 		sleep 2
 	done
-	die "both users were not joined on ${matrix_url} within 2 minutes"
+	die "all three admitted users were not joined on ${matrix_url} within 2 minutes"
 }
 
 verify_federated_room_policy() {
@@ -193,10 +194,10 @@ verify_federated_room_policy() {
 	acl="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 		--header "Authorization: Bearer ${token}" \
 		"${matrix_url}/_matrix/client/v3/rooms/${encoded_room}/state/m.room.server_acl")"
-	jq -e --arg a "${SERVER_A}" --arg b "${SERVER_B}" '
+	jq -e --arg a "${SERVER_A}" --arg b "${SERVER_B}" --arg d "${SERVER_D}" '
     .allow_ip_literals == false and .deny == [] and
-    (.allow | sort) == ([$a, $b] | sort)
-  ' <<<"${acl}" >/dev/null || die "federated room server ACL is not partner-only"
+    (.allow | sort) == ([$a, $b, $d] | sort)
+  ' <<<"${acl}" >/dev/null || die "federated room server ACL is not admitted-partner-only"
 
 	creation="$(curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" \
 		--header "Authorization: Bearer ${token}" \
@@ -248,7 +249,7 @@ create_federated_room() {
 	# This is the lab's only supported federated-room constructor: the ACL is initial state, so no
 	# federated event can race ahead of the participant-only policy.
 	document="$(jq --null-input --compact-output --arg a "${SERVER_A}" --arg b "${SERVER_B}" \
-		--arg name "${room_name}" '{
+		--arg d "${SERVER_D}" --arg name "${room_name}" '{
 	    name: $name,
 	    preset: "private_chat",
 	    visibility: "private",
@@ -263,7 +264,7 @@ create_federated_room() {
       {
         type: "m.room.server_acl",
         state_key: "",
-        content: {allow: [$a, $b], deny: [], allow_ip_literals: false}
+        content: {allow: [$a, $b, $d], deny: [], allow_ip_literals: false}
       }
     ]
   }')"
@@ -278,19 +279,32 @@ create_federated_room() {
 invite_and_join_partner() {
 	local encoded_room="$1"
 	local invite_document encoded_a
+	encoded_a="$(jq --null-input --raw-output --arg value "${SERVER_A}" '$value | @uri')"
+	# Invite and join BOTH admitted remote partners (org B and org D) so one room holds three
+	# organizations. Each partner joins via A, exercising N-way federation, not just a bilateral link.
 	invite_document="$(jq --null-input --compact-output --arg user_id "@bob:${SERVER_B}" \
 		'{user_id: $user_id}')"
 	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" --request POST \
 		--header "Authorization: Bearer ${ALICE_TOKEN}" \
 		--header 'Content-Type: application/json' --data "${invite_document}" \
 		"${MATRIX_A_URL}/_matrix/client/v3/rooms/${encoded_room}/invite" >/dev/null
-	encoded_a="$(jq --null-input --raw-output --arg value "${SERVER_A}" '$value | @uri')"
 	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" --request POST \
 		--header "Authorization: Bearer ${BOB_TOKEN}" \
 		--header 'Content-Type: application/json' --data '{}' \
 		"${MATRIX_B_URL}/_matrix/client/v3/join/${encoded_room}?server_name=${encoded_a}" >/dev/null
+	invite_document="$(jq --null-input --compact-output --arg user_id "@dave:${SERVER_D}" \
+		'{user_id: $user_id}')"
+	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" --request POST \
+		--header "Authorization: Bearer ${ALICE_TOKEN}" \
+		--header 'Content-Type: application/json' --data "${invite_document}" \
+		"${MATRIX_A_URL}/_matrix/client/v3/rooms/${encoded_room}/invite" >/dev/null
+	curl --silent --show-error --fail-with-body --cacert "${CA_CERT}" --request POST \
+		--header "Authorization: Bearer ${DAVE_TOKEN}" \
+		--header 'Content-Type: application/json' --data '{}' \
+		"${MATRIX_D_URL}/_matrix/client/v3/join/${encoded_room}?server_name=${encoded_a}" >/dev/null
 	verify_membership "${MATRIX_A_URL}" "${ALICE_TOKEN}" "${encoded_room}"
 	verify_membership "${MATRIX_B_URL}" "${BOB_TOKEN}" "${encoded_room}"
+	verify_membership "${MATRIX_D_URL}" "${DAVE_TOKEN}" "${encoded_room}"
 }
 
 verify_local_policy_event() {
@@ -341,7 +355,7 @@ wait_for_policy_violation() {
 	      .type == $type and .reason == "event_type_not_allowed" and
 	      .invite_rule == "allow_from_allowed_servers" and
 	      (.allowed_event_type_count | type == "number" and . > 0) and
-	      (.allowed_server_count | type == "number" and . == 2) and
+	      (.allowed_server_count | type == "number" and . == 3) and
 	      (.policy_digest | type == "string" and test("^[0-9a-f]{64}$"))
 	    ' <<<"${payload}" >/dev/null \
 			|| die "federation policy violation log is not the content-free canonical record"

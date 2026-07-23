@@ -85,10 +85,11 @@ The record sets `governance_verified` to `false` throughout and `eligible_for_re
 
 ## 4. Matrix technical controls
 
-Each operator supplies authenticated or local evidence for the following controls. Hash or link to the reviewed evidence rather than copying secrets or room content.
+Each operator supplies authenticated or local evidence for the following controls. Hash or link to the reviewed evidence rather than copying secrets or room content. The partner's entry in the trust registry (`infra/federation/registry/partners.yaml`, §8.2.1) is the single validated source these controls derive from: reference the one registry entry and its `check:fed-registry` result rather than five separately captured configurations, since the gate proves each plane already agrees with it.
 
 | Gate                   | Required control                                                                                                                                                               | Evidence owner records                                               |
 | ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------- |
+| Trust registry         | The partner has exactly one registry entry (exact `server_name`, allowlist membership, admitted A2A `azp`/issuer, classification); `check:fed-registry` passes                 | Registry entry reference plus the clean `check:fed-registry` run     |
 | DNS and TLS            | Apex `/.well-known` delegates to the agreed DNS server; publicly trusted certificate covers every advertised name; renewal is monitored                                        | Public preflight plus certificate/renewal monitor reference          |
 | Closed federation      | `federation_domain_whitelist` contains only the local and approved partner server names; network ingress is restricted to partner addresses where stable addressing permits it | Redacted effective config and Git revision                           |
 | Signing-key retrieval  | The approved partner is reachable as configured; any notary choice and failure behavior are documented                                                                         | Effective Synapse config and negative test                           |
@@ -139,6 +140,8 @@ Matrix room federation and direct A2A invocation are separate trust boundaries. 
 
 Exchange only verify-only public keys and public discovery material. Private signing keys, client secrets, bearer tokens, and model credentials never cross organizations or enter Git. A Signed AgentCard authenticates the declared card under the pinned key; it does not replace transport authentication or prove the identity of the Matrix user who initiated a task.
 
+Record the agreed quota, allowed classification, and residency as a **signed agreement artifact** (`infra/federation/agreements/<partner>.yaml`, detached ES256 signature) so the enforced values render from the signed contract and cannot silently diverge — see [federation §8.3.1](federation.md#831-signed-bilateral-agreement-as-the-enforcement-source). `mise run check:fed-agreement` fails closed on a tampered agreement, an [ADR 0015](adr/0015-federated-room-encryption.md)-out-of-bound classification, or a registry that disagrees with the signed terms.
+
 ## 7. Contractual and privacy gates
 
 Legal and privacy owners must approve the following in the bilateral agreement. Matrix history is replicated to each participating homeserver and cross-server redaction is best-effort, so technical controls cannot substitute for these commitments.
@@ -182,7 +185,9 @@ Run a rotation rehearsal before production and at the agreed interval:
 1. Prove the new identity on the limited route, then revoke the old identity and prove it fails.
 1. Record timestamps, owners, evidence IDs, and observed interruption; never record secret material.
 
-On a suspected compromise, either organization's security owner may suspend the affected room/route first and investigate second. Preserve content-free event IDs, policy digests, key IDs, Git revisions, and timestamps according to the agreement.
+On a suspected compromise, either organization's security owner may suspend the affected room/route first and investigate second. For a fast, reversible, evidenced containment use `mise run fed:break-glass contain <partner>` (registry-native break-glass — see the offboarding runbook [§3.1](federation-offboarding.md#31-break-glass-automation-fedbreak-glass)) and `mise run fed:evidence-pack <partner>` for the content-free regulator pack. Preserve content-free event IDs, policy digests, key IDs, Git revisions, and timestamps according to the agreement.
+
+**Time-bounded trust and renewal rehearsal (issue #463).** Every admitted partner carries a `review_by` and optional `valid_until` in the trust registry and the signed agreement, so cross-org access is never indefinite. `review_by` raises the `FederationPartnerReviewDue` alert when the contracted control-review date nears; a passed `valid_until` raises `FederationPartnerAccessExpired` **and** fails `mise run check:fed-registry`/`check:fed-agreement` closed, blocking reconciliation of federation trust config until the partner is renewed or offboarded. Rehearse renewal at the agreed cadence: (1) confirm the alert fires as the window nears; (2) renew by editing the window and **re-signing** the agreement (`fed:agreement-render` then re-sign; the signature covers the new dates, so a window cannot change without re-signing); (3) confirm the check gates pass again and record the timestamps, owners, and evidence IDs. State the boundary honestly: an expired window blocks _reconciliation and renewal_ and raises the alert — it is **not** a silent live-traffic kill-switch. Immediate cutoff of an in-window partner is the break-glass path above, not expiry.
 
 Offboard in this order (the dedicated [offboarding runbook](federation-offboarding.md) expands each plane's exact mechanism, evidence, partial revocation, and re-admission):
 

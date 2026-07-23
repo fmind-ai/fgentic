@@ -134,6 +134,7 @@ The Matrix proof requires room-v12 policy, participant-only server ACLs, bidirec
 
 The repository owns its development cluster; no global Kubernetes setup, default kubeconfig context, GitHub account, SOPS key, or paid model is required. Use the cheapest proof that reaches the boundary you changed:
 
+1. **Authoring an agent:** `mise run agent:new <name>` scaffolds it, then `mise run agent:test <name>` runs that one agent's golden tasks against the deterministic zero-spend model — offline, no cluster — the same code path as CI's `test:agents-golden`. The full scaffold → edit → test → promote → roll-back loop is the [agent authoring runbook](.agents/skills/matrix-agents/SKILL.md#runbook-add-an-agent).
 1. **Go behavior:** run the focused package tests, then the bridge suite before commit.
 
    ```bash
@@ -213,6 +214,8 @@ Contributions are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md) for the wor
 1. Never commit plaintext secrets — SOPS-encrypted `*.sops.yaml` only (gitleaks runs pre-commit).
 
 Security reports go through [SECURITY.md](SECURITY.md), not public issues. Deployments and pilots: add yourself to [ADOPTERS.md](ADOPTERS.md).
+
+Questions, usage support, and early ideas follow the [project support routes](.github/SUPPORT.md).
 
 ## Standards & building blocks
 

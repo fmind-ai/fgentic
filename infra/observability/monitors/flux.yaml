@@ -1,0 +1,42 @@
+# Flux controllers expose their native controller-runtime metrics on the named http-prom port.
+# Scrape Pods directly so the endpoint remains internal and the bootstrap allow-scraping policy is
+# the only cross-namespace network grant needed by Prometheus.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: flux-controllers
+  namespace: flux-system
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/part-of: flux
+  podMetricsEndpoints:
+    - port: http-prom
+      path: /metrics
+      scheme: http
+---
+# A healthy controller process can still fail every reconciliation. TargetDown covers an
+# unreachable metrics endpoint; this rule separately detects sustained GitOps convergence errors.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: flux-reconciliation
+  namespace: monitoring
+spec:
+  groups:
+    - name: flux-reconciliation
+      rules:
+        - alert: FluxReconciliationErrors
+          expr: >-
+            sum by (namespace, pod, controller) (
+              rate(controller_runtime_reconcile_total{namespace="flux-system", result="error"}[5m])
+            ) > 0
+          for: 15m
+          labels:
+            severity: critical
+          annotations:
+            summary: Flux controller reconciliation is persistently failing
+            description: >-
+              {{ $labels.namespace }}/{{ $labels.pod }} controller {{ $labels.controller }} has
+              returned reconciliation errors continuously for 15 minutes. Inspect the affected
+              Flux resource conditions and controller logs; the cluster may have diverged from Git.

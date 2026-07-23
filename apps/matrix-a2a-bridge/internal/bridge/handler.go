@@ -142,6 +142,7 @@ type Bridge struct {
 	roomLimits          *limiters
 	noticeSenderLimits  *limiters
 	noticeRoomLimits    *limiters
+	roomBudgets         *roomBudgets // per-room cumulative token budgets (#99), a hard cap over the limiters
 	pollInitial         time.Duration
 	pollMax             time.Duration
 	pollWait            pollWaitFunc
@@ -166,6 +167,8 @@ type Bridge struct {
 	durableIntake       bool // immutable after startup; pre-ACK jobs replace legacy message dispatch
 	durableQueue        *durableQueue
 	durableIntakeGate   durableIntakeGate
+	sessionPurger       sessionPurger
+	conversationLocks   [conversationLockStripes]sync.Mutex
 
 	runCtx context.Context // process lifetime; delegations run under it, not the handler ctx
 }
@@ -191,6 +194,7 @@ func New(cfg config.Config, as *appservice.AppService, agents *AgentMap, client 
 		roomLimits:          newLimiters(cfg.RoomRatePerMinute, cfg.RoomRateBurst, cfg.RateLimitBucketCapacity),
 		noticeSenderLimits:  newLimiters(cfg.SenderRatePerMinute, cfg.SenderRateBurst, cfg.RateLimitBucketCapacity),
 		noticeRoomLimits:    newLimiters(cfg.RoomRatePerMinute, cfg.RoomRateBurst, cfg.RateLimitBucketCapacity),
+		roomBudgets:         newRoomBudgets(cfg.RoomTokenBudget, cfg.RoomTokenBudgetPeriod, roomTokenBudgetOverrides(cfg), cfg.RateLimitBucketCapacity),
 		pollInitial:         pollInitial,
 		pollMax:             pollMax,
 		pollWait:            waitForPoll,
@@ -289,6 +293,10 @@ func (b *Bridge) Start(ctx context.Context) error {
 		b.watchWG.Add(1)
 		go b.cleanupDurableState(watchCtx)
 	}
+	// Keep one cheap sweep loop resident even when the initial map has no retention policy: agents
+	// are reloadable, and enabling maxSessionAge must take effect without a bridge restart.
+	b.watchWG.Add(1)
+	go b.runConversationRetention(watchCtx)
 	return nil
 }
 
@@ -392,6 +400,11 @@ func (b *Bridge) HandleMessage(ctx context.Context, evt *event.Event) {
 				b.handleCommandNotice(ctx, evt, budgetCommand, func() string {
 					return b.budgetText(ctx, evt.Sender, evt.RoomID)
 				})
+			}
+			return
+		case plaintextCommandForget:
+			if b.markEventProcessed(ctx, evt) != dedupVerdictDuplicate {
+				b.handleForgetCommand(ctx, evt, command.agent)
 			}
 			return
 		case plaintextCommandInvalid:
@@ -708,6 +721,9 @@ func (b *Bridge) abandonContinuation(evt *event.Event, open *openTask, reason, o
 // then calls SendMessage with the answer and same taskID+contextID, following the reused placeholder
 // to a terminal state (or another pause). A rate-limited answer re-registers the task so it can retry.
 func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open *openTask, answer string) {
+	conversationLock := b.conversationLock(reply.RoomID.String(), open.localpart)
+	conversationLock.Lock()
+	defer conversationLock.Unlock()
 	inflightDelegations.Inc()
 	defer inflightDelegations.Dec()
 	started := time.Now()
@@ -742,6 +758,13 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 			return
 		}
 	}
+	// Per-room token budget (#99): a resumed turn is a fresh invocation, so a room that reached its
+	// token ceiling while paused is refused. Unlike the rate limit, a budget exhaustion does not clear
+	// within the wait window, so the task is finished rather than re-registered for a futile retry.
+	if !b.roomBudgetAllows(reply.RoomID) {
+		b.finishContinuation(ctx, reply, open, currentSender, started, "admission", errorRoomTokenBudget, "this room reached its token budget")
+		return
+	}
 	if !b.senderLimits.Allow(currentSender.rateLimitKey(open.localpart)) || !b.roomLimits.Allow(reply.RoomID.String()) {
 		// Re-register (fresh budget) so a rate-limited answer is retried, not lost.
 		b.openTasks.register(open, b.cfg.InputWaitTimeout, func() { b.expireOpenTask(open) })
@@ -761,6 +784,18 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 		outcome: outcomeError, terminalStage: "message_send", terminalReason: "dispatch_failed",
 		a2aAttempted: true, a2aUserID: reply.Sender.String(), contextID: open.contextID, taskID: open.taskID,
 		replyEventID: open.placeholder, dedupVerdict: dedupVerdictAccepted, rateLimitVerdict: rateLimitVerdictAllowed,
+	}
+	if open.contextID != "" {
+		if err := b.store.AddContextOwner(ctx, reply.RoomID.String(), open.localpart, open.contextID, reply.Sender.String()); err != nil {
+			audit.a2aAttempted = false
+			audit.terminalStage = "conversation_state"
+			audit.terminalReason = "conversation_owner_record_failed"
+			b.editFailureReply(
+				ctx, intent, reply.RoomID, open.placeholder, currentSender,
+				open.localpart, audit.terminalReason, 0,
+			)
+			return
+		}
 	}
 	defer func() {
 		audit.duration = time.Since(started)
@@ -808,7 +843,7 @@ func (b *Bridge) continueOpenTask(ctx context.Context, reply *event.Event, open 
 	audit.contextID = orDefault(res.ContextID, open.contextID)
 	audit.taskID = orDefault(res.TaskID, open.taskID)
 	if res.ContextID != "" {
-		if err := b.store.SetContext(ctx, reply.RoomID.String(), open.localpart, res.ContextID); err != nil {
+		if err := b.store.SetContext(ctx, reply.RoomID.String(), open.localpart, res.ContextID, reply.Sender.String()); err != nil {
 			b.log.Error("store context", "room", reply.RoomID, "ghost", open.localpart, "err", err)
 		}
 	}
@@ -1040,6 +1075,9 @@ func (b *Bridge) dispatchWithDedupVerdict(
 ) {
 	inflightDelegations.Inc()
 	defer inflightDelegations.Dec()
+	conversationLock := b.conversationLock(evt.RoomID.String(), localpart)
+	conversationLock.Lock()
+	defer conversationLock.Unlock()
 	auditStarted := time.Now()
 	ctx, span := b.tracer.Start(
 		ctx,
@@ -1090,6 +1128,18 @@ func (b *Bridge) dispatchWithDedupVerdict(
 		return
 	}
 
+	// Per-room token budget (#99): a hard cumulative-token cap checked before the invocation-rate
+	// guards, so a room over its ceiling is refused fail-closed without spending a limiter token.
+	if !b.roomBudgetAllows(evt.RoomID) {
+		delegationsTotal.WithLabelValues(localpart, outcomeBudgetExhausted).Inc()
+		audit.outcome = outcomeBudgetExhausted
+		audit.terminalStage = "admission"
+		audit.terminalReason = errorRoomTokenBudget
+		audit.replyEventID = b.postFailureReply(
+			ctx, intent, evt, sender, localpart, errorRoomTokenBudget, 0,
+		)
+		return
+	}
 	// LLM-spend guards (SPEC §4 F7): per (sender, agent) and per room.
 	if !b.senderLimits.Allow(sender.rateLimitKey(localpart)) || !b.roomLimits.Allow(evt.RoomID.String()) {
 		delegationsTotal.WithLabelValues(localpart, outcomeRateLimited).Inc()
@@ -1118,6 +1168,19 @@ func (b *Bridge) dispatchWithDedupVerdict(
 	contextID, err := b.store.Context(ctx, evt.RoomID.String(), localpart)
 	if err != nil {
 		b.log.Error("load context, starting fresh thread", "room", evt.RoomID, "ghost", localpart, "err", err)
+	}
+	if contextID != "" {
+		if err := b.store.AddContextOwner(ctx, evt.RoomID.String(), localpart, contextID, evt.Sender.String()); err != nil {
+			b.log.Warn(
+				"record conversation owner failed",
+				"room", evt.RoomID, "ghost", localpart, "reason", "conversation_owner_record_failed",
+			)
+			audit.outcome = outcomeDenied
+			audit.terminalStage = "conversation_state"
+			audit.terminalReason = "conversation_owner_record_failed"
+			audit.replyEventID = b.postFailureReply(ctx, intent, evt, sender, localpart, audit.terminalReason, 0)
+			return
+		}
 	}
 
 	// Resolve any file the mention carries into A2A parts (#115). A referenced file that fails policy
@@ -1191,7 +1254,7 @@ func (b *Bridge) dispatchWithDedupVerdict(
 	audit.taskID = res.TaskID
 	audit.activated = res.ActivatedExtensions // extension set the remote echoed on SendMessage (#114)
 	if res.ContextID != "" {
-		if err := b.store.SetContext(ctx, evt.RoomID.String(), localpart, res.ContextID); err != nil {
+		if err := b.store.SetContext(ctx, evt.RoomID.String(), localpart, res.ContextID, evt.Sender.String()); err != nil {
 			b.log.Error("store context", "room", evt.RoomID, "ghost", localpart, "err", err)
 		}
 	}

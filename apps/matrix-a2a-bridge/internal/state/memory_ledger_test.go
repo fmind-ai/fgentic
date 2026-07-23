@@ -958,7 +958,7 @@ func TestMemoryTransitionCannotReplaceMatrixEventEvidence(t *testing.T) {
 
 func TestMemoryTransitionAtomicallyUpdatesConversationContext(t *testing.T) {
 	store, job, at := memoryJobAtState(t, StateA2APrepared)
-	if err := store.SetContext(t.Context(), job.RoomID, job.GhostLocalpart, "old-context"); err != nil {
+	if err := store.SetContext(t.Context(), job.RoomID, job.GhostLocalpart, "old-context", job.SenderMXID); err != nil {
 		t.Fatal(err)
 	}
 	contextID := "new-context"

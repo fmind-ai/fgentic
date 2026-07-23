@@ -31,6 +31,7 @@ const (
 	errorMediaDenied         = "media_input_rejected"
 	errorQuoteOverBudget     = "quote_over_budget"
 	errorRateLimit           = "rate_limit_rejected"
+	errorRoomTokenBudget     = "room_token_budget_exhausted"
 	errorSenderPolicy        = "sender_policy_rejected"
 	errorStagePolicy         = "stage_policy_rejected"
 	errorDeadManRefresh      = "dead_man_refresh_failed"
@@ -105,6 +106,9 @@ type durableA2AClient interface {
 // released for a bounded retry. The dispatcher owns heartbeats and cancels ctx on lease loss.
 func (b *Bridge) executeDurableJob(ctx context.Context, claimed state.Job) {
 	job := claimed
+	conversationLock := b.conversationLock(job.RoomID, job.GhostLocalpart)
+	conversationLock.Lock()
+	defer conversationLock.Unlock()
 	stop, err := b.executeDurableControls(ctx, &job)
 	if stop || errors.Is(err, state.ErrLeaseLost) || ctx.Err() != nil {
 		return
@@ -817,6 +821,13 @@ func (b *Bridge) reserveDurableAdmission(
 	evt *event.Event,
 	sender senderIdentity,
 ) (allowed bool, reason string) {
+	// Per-room token budget (#99) is the outermost, cheapest gate: a room already at its cumulative
+	// token ceiling is refused before any invocation-rate token is spent, so no reservation needs
+	// refunding. It is a hard cap layered on the per-sender/per-room rate limits below, not a
+	// replacement (D7/D8).
+	if !b.roomBudgetAllows(evt.RoomID) {
+		return false, errorRoomTokenBudget
+	}
 	senderToken, ok := b.senderLimits.reserve(sender.rateLimitKey(job.GhostLocalpart))
 	if !ok {
 		return false, errorRateLimit
@@ -852,8 +863,11 @@ func (b *Bridge) denyDurableJob(
 	}
 	notice := failureMessage(reason, job.GhostLocalpart, 0)
 	outcome := outcomeDenied
-	if reason == errorRateLimit {
+	switch reason {
+	case errorRateLimit:
 		outcome = outcomeRateLimited
+	case errorRoomTokenBudget:
+		outcome = outcomeBudgetExhausted
 	}
 	payload.Audit.RateLimit = durableRateLimitVerdict(*job)
 	if durableDenialStage(reason) == "room_authorization" {
@@ -1244,6 +1258,11 @@ func (b *Bridge) recordDurableTerminal(
 		outcome = outcomeDead
 	}
 	delegationsTotal.WithLabelValues(job.GhostLocalpart, outcome).Inc()
+	// Meter the room's token budget once at the single durable terminal, only for a delivered success
+	// carrying an attributable kagent token total (#99). A replay never reaches this terminal twice.
+	if outcome == outcomeOK && payload.Result != nil {
+		b.recordRoomBudget(id.RoomID(job.RoomID), *payload.Result)
+	}
 	if job.State == state.StateAmbiguous || job.State == state.StateDead {
 		durableRecoveryOutcomes.WithLabelValues(string(job.State)).Inc()
 	}

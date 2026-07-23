@@ -3,15 +3,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-federation-check.XXXXXX")"
 readonly WORK_DIR
 trap 'rm -rf "${WORK_DIR}"' EXIT INT TERM
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
 
 assert_yq() {
 	local expression="$1"
@@ -39,6 +37,7 @@ readonly POLICY_MODULE="${POLICY_APP}/src/fgentic_federation_policy/__init__.py"
 readonly MATRIX_A_COMPONENT="${FEDERATION_ROOT}/matrix-a/kustomization.yaml"
 readonly MATRIX_B_LAYER="${FEDERATION_ROOT}/matrix-b"
 readonly MATRIX_C_LAYER="${FEDERATION_ROOT}/matrix-c"
+readonly MATRIX_D_LAYER="${FEDERATION_ROOT}/matrix-d"
 readonly GATEWAY_COMPONENT="${FEDERATION_ROOT}/gateway/kustomization.yaml"
 readonly NAMESPACE_COMPONENT="${FEDERATION_ROOT}/namespaces"
 readonly POSTGRES_COMPONENT="${FEDERATION_ROOT}/postgres"

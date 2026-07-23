@@ -220,6 +220,26 @@ spec:
                 configMapKeyRef:
                   name: fixture-settings
                   key: delegationLeaseDuration
+            # Optional retry knobs: only the model-outage drill sets these; other scenarios omit the
+            # keys and fall back to the bridge defaults (5 attempts, 1s/30s capped backoff).
+            - name: DELEGATION_MAX_ATTEMPTS
+              valueFrom:
+                configMapKeyRef:
+                  name: fixture-settings
+                  key: delegationMaxAttempts
+                  optional: true
+            - name: DELEGATION_RETRY_INITIAL
+              valueFrom:
+                configMapKeyRef:
+                  name: fixture-settings
+                  key: delegationRetryInitial
+                  optional: true
+            - name: DELEGATION_RETRY_MAX
+              valueFrom:
+                configMapKeyRef:
+                  name: fixture-settings
+                  key: delegationRetryMax
+                  optional: true
             - name: SENDER_RATE_PER_MINUTE
               valueFrom:
                 configMapKeyRef:

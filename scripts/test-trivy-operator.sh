@@ -5,6 +5,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 readonly HELM_RELEASE="${ROOT_DIR}/infra/trivy-operator/helmrelease.yaml"
 readonly SOURCE="${ROOT_DIR}/infra/trivy-operator/source.yaml"
@@ -61,18 +64,6 @@ elif (($# > 0)); then
 	echo "usage: $0 [--runtime]" >&2
 	exit 2
 fi
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
-
-require_commands() {
-	local command
-	for command in "$@"; do
-		command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
-	done
-}
 
 assert_yq() {
 	local expression="$1"
@@ -286,6 +277,9 @@ static_contract() {
         "from": [{
           "namespaceSelector": {
             "matchLabels": {"kubernetes.io/metadata.name": "monitoring"}
+          },
+          "podSelector": {
+            "matchLabels": {"fgentic.dev/metrics-reader": "prometheus"}
           }
         }],
         "ports": [{"protocol": "TCP", "port": 8080}]

@@ -67,7 +67,7 @@ spec:
           type: RuntimeDefault
       containers:
         - name: redis
-          image: docker.io/library/redis:8.8.0@sha256:2838d5524559494f6f1cd66e97e76b200d64a633a8614200620755ed395daf32
+          image: docker.io/library/redis:8.8.0@sha256:234c902a2db49461a129e2d4aeff85b28cf20187ed274a67f6e50995fa713c7b
           args:
             - --save
             - ""
@@ -197,9 +197,11 @@ spec:
           resources:
             requests:
               cpu: 10m
+              ephemeral-storage: 8Mi
               memory: 32Mi
             limits:
               cpu: 250m
+              ephemeral-storage: 64Mi
               memory: 128Mi
           securityContext:
             allowPrivilegeEscalation: false
@@ -218,7 +220,9 @@ spec:
           configMap:
             name: mcp-tool-rate-limit
         - name: tmp
-          emptyDir: {}
+          emptyDir:
+            # Leave headroom inside the container limit for logs and other ephemeral usage.
+            sizeLimit: 32Mi
 ---
 # Default-deny ingress already selects both quota pods; restrict their egress to the one required
 # service hop as well, with DNS allowed only for the rate-limit service's Redis lookup.

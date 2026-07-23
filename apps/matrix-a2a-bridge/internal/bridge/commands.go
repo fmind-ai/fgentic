@@ -4,8 +4,10 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 	"unicode"
 
+	"maunium.net/go/mautrix/appservice"
 	"maunium.net/go/mautrix/event"
 	"maunium.net/go/mautrix/id"
 )
@@ -16,6 +18,8 @@ const (
 	agentsCommand   = "/agents"
 	budgetCommand   = "/budget"
 	budgetAlias     = "!budget"
+	forgetCommand   = "/forget"
+	forgetAlias     = "!forget"
 	commandScope    = "/commands"
 	maxBudgetAgents = maxDirectoryAgents
 )
@@ -27,6 +31,7 @@ const (
 	plaintextCommandAsk
 	plaintextCommandAgents
 	plaintextCommandBudget
+	plaintextCommandForget
 	plaintextCommandInvalid
 )
 
@@ -46,7 +51,7 @@ type textMessageClassification struct {
 
 func parsePlaintextCommand(body string) plaintextCommand {
 	name, rest := splitLeadingToken(body)
-	if !strings.HasPrefix(name, "/") && name != askAlias && name != budgetAlias {
+	if !strings.HasPrefix(name, "/") && name != askAlias && name != budgetAlias && name != forgetAlias {
 		return plaintextCommand{}
 	}
 	switch name {
@@ -67,6 +72,12 @@ func parsePlaintextCommand(body string) plaintextCommand {
 			return plaintextCommand{kind: plaintextCommandInvalid}
 		}
 		return plaintextCommand{kind: plaintextCommandBudget}
+	case forgetCommand, forgetAlias:
+		agent, extra := splitLeadingToken(rest)
+		if agent == "" || extra != "" {
+			return plaintextCommand{kind: plaintextCommandInvalid}
+		}
+		return plaintextCommand{kind: plaintextCommandForget, agent: agent}
 	default:
 		return plaintextCommand{kind: plaintextCommandInvalid}
 	}
@@ -127,6 +138,16 @@ func (b *Bridge) handleCommandNotice(
 	scope string,
 	body func() string,
 ) bool {
+	return b.handleCommandNoticeAs(ctx, evt, scope, b.as.BotIntent(), body)
+}
+
+func (b *Bridge) handleCommandNoticeAs(
+	ctx context.Context,
+	evt *event.Event,
+	scope string,
+	intent *appservice.IntentAPI,
+	body func() string,
+) bool {
 	sender := b.agents.IdentifySender(evt.Sender)
 	if !b.allowNotice(sender, evt.RoomID, scope) {
 		b.log.Info(
@@ -136,9 +157,8 @@ func (b *Bridge) handleCommandNotice(
 		)
 		return false
 	}
-	intent := b.as.BotIntent()
 	if intent == nil {
-		b.log.Error("create bot intent for command response")
+		b.log.Error("create intent for command response")
 		return false
 	}
 	if err := intent.EnsureRegistered(ctx); err != nil {
@@ -153,7 +173,7 @@ func (b *Bridge) handleCommandNotice(
 }
 
 func commandHelpText() string {
-	return "Command not recognized. Use !ask <agent> <prompt>, !agents [name], or !budget. The /ask, /agents, and /budget forms also work when your Matrix client sends leading slashes unchanged."
+	return "Command not recognized. Use !ask <agent> <prompt>, !agents [name], !budget, or !forget <agent>. Leading-slash forms also work when your Matrix client preserves them."
 }
 
 func unknownCommandAgentText() string {
@@ -176,6 +196,19 @@ func (b *Bridge) budgetText(ctx context.Context, senderID id.UserID, roomID id.R
 			"- Sender + agent invocation rate: %g/minute, burst %d.",
 			b.senderLimits.perMinute, b.senderLimits.burst,
 		),
+	}
+
+	// Per-room token budget (#99): show this room's metered consumption against its ceiling and the
+	// reset time. Bounded and scoped to this room only — no other room's usage is ever revealed.
+	if b.roomBudgets.enabled() {
+		if tb := b.roomBudgets.snapshot(roomID.String()); tb.limited {
+			lines = append(lines, fmt.Sprintf(
+				"- Room token budget: %d of %d tokens used this period, %d remaining; resets %s.",
+				tb.used, tb.limit, tb.remaining, tb.resetAt.UTC().Format(time.RFC3339),
+			))
+		} else {
+			lines = append(lines, "- Room token budget: unlimited (no budget configured for this room).")
+		}
 	}
 
 	var remoteReservations []string
@@ -217,7 +250,7 @@ func (b *Bridge) budgetText(ctx context.Context, senderID id.UserID, roomID id.R
 	}
 	lines = append(
 		lines,
-		"These are admission limits and reservation ceilings, not observed or spent token consumption. Reading them does not consume invocation capacity.",
+		"The invocation-rate and per-request reservation figures are admission ceilings, not spend; any room token budget line reflects metered consumption this period. Reading this does not consume invocation capacity.",
 	)
 	return strings.Join(lines, "\n")
 }

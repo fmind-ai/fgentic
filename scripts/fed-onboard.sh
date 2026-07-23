@@ -24,6 +24,9 @@ readonly AGENT_CARD_PATH="/.well-known/agent-card.json"
 readonly TOKEN_BUDGET_EXTENSION="https://fgentic.fmind.ai/a2a/extensions/token-budget/v1"
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 
 usage() {
@@ -49,11 +52,6 @@ Environment:
 Trust is earned by passing gates, not by running this script: a passing record is evidence that
 gates a reviewed registry admission (#349), never an automatic grant.
 EOF
-}
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
 }
 
 # Verify subshell-less fetch that mirrors scripts/fed-check.sh: whole-request timeout, no redirects,

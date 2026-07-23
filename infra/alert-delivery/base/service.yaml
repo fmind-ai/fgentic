@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: alert-receiver
+  namespace: alert-delivery
+spec:
+  selector:
+    app.kubernetes.io/name: alert-receiver
+  ports:
+    - name: webhook
+      port: 9095
+      targetPort: webhook

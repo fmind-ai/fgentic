@@ -13,6 +13,21 @@ resource "google_container_cluster" "cluster" {
   remove_default_node_pool = true
   initial_node_count       = 1
   deletion_protection      = var.deletion_protection
+  enable_legacy_abac       = false
+
+  # Operators authenticate through short-lived Google credentials and authorize through IAM/RBAC;
+  # never mint the retrievable legacy cluster client certificate.
+  master_auth {
+    client_certificate_config {
+      issue_client_certificate = false
+    }
+  }
+
+  resource_labels = {
+    application = "fgentic"
+    deployment  = "reference"
+    managed_by  = "terraform"
+  }
 
   network    = google_compute_network.vpc.self_link
   subnetwork = google_compute_subnetwork.subnet.self_link
@@ -55,8 +70,32 @@ resource "google_container_cluster" "cluster" {
 
   datapath_provider = "ADVANCED_DATAPATH" # Dataplane V2 (Cilium) => NetworkPolicy enforcement
 
+  # Reject Service.spec.externalIPs cluster-wide. Public ingress uses the reviewed Traefik
+  # LoadBalancer/Gateway API path; arbitrary external IP routing must not bypass that boundary.
+  service_external_ips_config {
+    enabled = false
+  }
+
   release_channel {
     channel = "REGULAR"
+  }
+
+  # GKE otherwise exports every workload container's stdout/stderr to Cloud Logging by default.
+  # Keep provider-managed system diagnostics without exporting potentially content-bearing
+  # application logs or duplicating the platform's sovereign observability layer.
+  logging_service = "logging.googleapis.com/kubernetes"
+  logging_config {
+    enable_components = ["SYSTEM_COMPONENTS"]
+  }
+
+  # Retain non-billable GKE system diagnostics without deploying Google-managed workload
+  # collectors beside the platform's sovereign kube-prometheus-stack.
+  monitoring_service = "monitoring.googleapis.com/kubernetes"
+  monitoring_config {
+    enable_components = ["SYSTEM_COMPONENTS"]
+    managed_prometheus {
+      enabled = false
+    }
   }
 
   master_authorized_networks_config {

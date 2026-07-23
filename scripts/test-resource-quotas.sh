@@ -5,6 +5,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 readonly NAMESPACE_DIR="${ROOT_DIR}/infra/namespaces"
 readonly NAMESPACE_FILE="${NAMESPACE_DIR}/namespaces.yaml"
@@ -35,18 +38,6 @@ elif [[ "$#" -ne 0 ]]; then
 	echo "usage: $0 [--runtime]" >&2
 	exit 2
 fi
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
-
-require_commands() {
-	local command
-	for command in "$@"; do
-		command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
-	done
-}
 
 load_profile_settings() {
 	local profile="$1"
@@ -241,8 +232,8 @@ assert_static_contract() {
 			| yq -r '.[].metadata.name' | sort
 	)"
 	federation_namespace_count="$(wc -l <<<"${federation_namespaces}" | tr -d ' ')"
-	[[ "${federation_namespace_count}" -eq 16 ]] \
-		|| fail "expected the shared and federation namespace sources to own sixteen namespaces"
+	[[ "${federation_namespace_count}" -eq 17 ]] \
+		|| fail "expected the shared and federation namespace sources to own seventeen namespaces"
 	repository_namespaces="$(
 		yq eval-all -o=json '[select(.kind == "Namespace")]' \
 			"${NAMESPACE_FILE}" "${FEDERATION_NAMESPACE_FILE}" "${ACTIVITYPUB_NAMESPACE_FILE}" \
@@ -250,8 +241,8 @@ assert_static_contract() {
 			| yq -r '.[].metadata.name' | sort
 	)"
 	repository_namespace_count="$(wc -l <<<"${repository_namespaces}" | tr -d ' ')"
-	[[ "${repository_namespace_count}" -eq 18 ]] \
-		|| fail "expected all eighteen repository-owned namespaces to be quota-managed"
+	[[ "${repository_namespace_count}" -eq 19 ]] \
+		|| fail "expected all nineteen repository-owned namespaces to be quota-managed"
 	repository_quota_namespaces="$(
 		yq eval-all -o=json \
 			'[select(.kind == "ResourceQuota" and .metadata.name == "compute-budget")]' \
@@ -356,8 +347,8 @@ assert_static_contract() {
 		sorted_managed_namespaces <<<"${federation_rendered}"
 	)"
 	effective_namespace_count="$(wc -l <<<"${effective_namespaces}" | tr -d ' ')"
-	[[ "${effective_namespace_count}" -eq 12 ]] \
-		|| fail "the effective federation overlay must own exactly twelve namespaces"
+	[[ "${effective_namespace_count}" -eq 13 ]] \
+		|| fail "the effective federation overlay must own exactly thirteen namespaces"
 	effective_quota_namespaces="$(
 		sorted_names ResourceQuota <<<"${federation_rendered}"
 	)"

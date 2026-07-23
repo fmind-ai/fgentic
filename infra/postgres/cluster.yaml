@@ -6,6 +6,10 @@ kind: Cluster
 metadata:
   name: platform-pg
   namespace: postgres
+  annotations:
+    # The operator makes every database PVC a child of this Cluster. Require a reviewed two-step
+    # decommission instead of letting an accidental source removal cascade through Flux pruning.
+    kustomize.toolkit.fluxcd.io/prune: disabled
 spec:
   instances: 1
   imageName: ghcr.io/cloudnative-pg/postgresql:17.10-202607130907-system-trixie@sha256:c141aec61cab8da3e215aebe0fa155e78442fbb41c982a86743915a967e12af9

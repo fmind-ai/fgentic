@@ -1,0 +1,36 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fixture-settings
+  namespace: bridge-integration
+data:
+  # Direct dependencies (no fault proxy): the drill restarts the real Synapse Deployment. taskTimeout
+  # must exceed the homeserver restart window plus the held reply, so the mid-poll task survives it.
+  a2aBaseURL: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080
+  databaseURL: postgres://postgres@postgres:5432/bridge?sslmode=disable
+  homeserverURL: http://synapse:8008
+  agentCardRefreshInterval: 30s
+  concurrency: "2"
+  delegationClaimInterval: 100ms
+  delegationLeaseDuration: 10s
+  deadManSwitchDelay: 0s
+  senderRatePerMinute: "6000"
+  senderRateBurst: "20"
+  roomRatePerMinute: "6000"
+  roomRateBurst: "20"
+  maxTaskProgressPosts: "2"
+  pinInFlightTasks: "false"
+  controlCapacityPerJob: "16"
+  taskTimeout: 8m
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: fixture-settings
+  namespace: plain-agent
+data:
+  a2aStubDelay: 0s
+  a2aStubHold: "false"
+  # The long task holds its reply until the driver releases it after the homeserver restart returns.
+  a2aStubLongHold: "true" # gitleaks:allow -- ConfigMap field name, not a credential.
+  a2aStubLocalBaseURL: http://plain-a2a-agent.plain-agent.svc.cluster.local:8080

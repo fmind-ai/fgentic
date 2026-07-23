@@ -766,7 +766,7 @@ def _expect_object(
 ) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ConnectorError(f"{name} must be an object")
-    keys = frozenset(value)
+    keys = frozenset(str(key) for key in value)
     missing = required - keys
     unknown = keys - allowed
     if missing:

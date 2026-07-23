@@ -3,15 +3,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-fed-check-test.XXXXXX")"
 readonly WORK_DIR
 trap 'rm -rf "${WORK_DIR}"' EXIT INT TERM
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
 
 for command in jq rg; do
 	command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
@@ -51,8 +49,12 @@ chmod +x "${WORK_DIR}/bin/xh"
 run_check() {
 	local fixture="$1"
 	shift
+	# The fake xh always responds instantly, so this timeout never bounds a real request — it only
+	# has to survive scheduler starvation under heavy aggregate host load without spuriously firing.
+	# A generous but finite value (well under fed-check's 60s max) keeps the fixture fast in the
+	# common case while tolerating ordinary delay; production defaults stay untouched (#789).
 	PATH="${WORK_DIR}/bin:${PATH}" FED_CHECK_FIXTURE="${fixture}" \
-		FGENTIC_FED_CHECK_TIMEOUT=2 "${CHECK}" "$@"
+		FGENTIC_FED_CHECK_TIMEOUT=30 "${CHECK}" "$@"
 }
 
 expect_failure() {

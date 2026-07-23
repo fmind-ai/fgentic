@@ -1,4 +1,4 @@
-# Keep the provider-free delegation namespaces, omit unrelated stacks, and add homeservers B/C.
+# Keep the provider-free delegation namespaces, omit unrelated stacks, and add homeservers B/C/D.
 apiVersion: kustomize.config.k8s.io/v1alpha1
 kind: Component
 resources:

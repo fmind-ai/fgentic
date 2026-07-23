@@ -44,6 +44,9 @@ Environment:
   FGENTIC_FED_TRACE_DIR      optional trace parent directory
   FGENTIC_FED_POLICY_PROBE   federation profile only: deny (default) or allow; allow mutates only
                              the ephemeral Git snapshot used by the disposable lab
+  FGENTIC_FED_AGENT_CARD_ROTATION
+                             federation profile only: yes (default) serves + proves the AgentCard
+                             key-rotation overlap window and revocation; no restores single-key
   FGENTIC_LLM_PROVIDER       demo (default), vllm, vertex, mistral, anthropic,
                              openai, or azure-openai
   FGENTIC_LLM_MODEL          model identifier; required for API profiles except Vertex
@@ -98,6 +101,11 @@ case "${PROFILE}" in
 esac
 DEMO_TIMEOUT="${FGENTIC_DEMO_TIMEOUT:-15m}"
 FEDERATION_POLICY_PROBE="${FGENTIC_FED_POLICY_PROBE:-deny}"
+# Federation lab exercises zero-downtime AgentCard key rotation by default (#352): the lifecycle serves the
+# overlap+revoked cards and the acceptance proves the overlap window, revocation, and tamper refusal. It is
+# additive — disabling it restores the byte-identical single-key path. Exported so the seed child sees it.
+FEDERATION_AGENT_CARD_ROTATION="${FGENTIC_FED_AGENT_CARD_ROTATION:-yes}"
+export FEDERATION_AGENT_CARD_ROTATION
 FEDERATION_CONSTRAINED="${FEDERATION_CONSTRAINED:-no}"
 FEDERATION_CAPACITY_MODE=standard
 if [ "${PROFILE}" = federation ] && [ "${FEDERATION_CONSTRAINED}" = yes ]; then
@@ -110,6 +118,10 @@ BRIDGE_TAG="demo-${RANDOM}-$$"
 SOURCE_IMAGE="fgentic-demo-source-${CLUSTER_NAME}:${BRIDGE_TAG}"
 SOURCE_REVISION=""
 BRIDGE_IMAGE="matrix-a2a-bridge:${BRIDGE_TAG}"
+# The demo profile also reconciles the ActivityPub agent gateway (issue #489), whose image is not
+# published to GHCR. Build + side-load it locally under the same shared demo tag as the bridge, and
+# override the HelmRelease to this local tag with pullPolicy Never (demo only; local/gcp use GHCR).
+AP_GATEWAY_IMAGE="activitypub-agent-gateway:${BRIDGE_TAG}"
 [[ "${CLUSTER_NAME}" =~ ^[a-z0-9][a-z0-9-]{0,47}$ ]] || die "invalid FGENTIC_DEMO_CLUSTER"
 if [ "${PROFILE}" = "demo" ]; then
 	case "${CLUSTER_NAME}" in
@@ -128,6 +140,10 @@ if [ "${PROFILE}" = "federation" ]; then
 	case "${FEDERATION_CONSTRAINED}" in
 		yes | no) ;;
 		*) die "FGENTIC_FED_CONSTRAINED must be yes or no" ;;
+	esac
+	case "${FEDERATION_AGENT_CARD_ROTATION}" in
+		yes | no) ;;
+		*) die "FGENTIC_FED_AGENT_CARD_ROTATION must be yes or no" ;;
 	esac
 	case "${FGENTIC_FED_TRACE:-no}" in
 		yes | no) ;;

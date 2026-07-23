@@ -25,13 +25,23 @@ run "defaults_to_six_public_hosts_without_admin" {
   command = plan
 
   assert {
-    condition     = length(google_project_service.enabled_services) == 7 && contains(keys(google_project_service.enabled_services), "dns.googleapis.com")
+    condition     = length(google_project_service.enabled_services) == 9 && contains(keys(google_project_service.enabled_services), "dns.googleapis.com")
     error_message = "Managed DNS must enable Cloud DNS in addition to every required platform API."
   }
 
   assert {
     condition     = google_dns_managed_zone.platform[0].project == google_project_service.enabled_services["dns.googleapis.com"].project
     error_message = "The managed zone must depend on the exact Cloud DNS API service resource."
+  }
+
+  assert {
+    condition     = google_dns_managed_zone.platform[0].deletion_policy == "PREVENT"
+    error_message = "The authoritative public zone must reject implicit deletion."
+  }
+
+  assert {
+    condition     = length(google_dns_managed_zone.platform[0].dnssec_config) == 1 && google_dns_managed_zone.platform[0].dnssec_config[0].state == "on"
+    error_message = "The public platform zone must enable DNSSEC explicitly."
   }
 
   assert {
@@ -95,6 +105,8 @@ run "unmanaged_dns_has_zero_records" {
       "container.googleapis.com",
       "iam.googleapis.com",
       "iamcredentials.googleapis.com",
+      "logging.googleapis.com",
+      "monitoring.googleapis.com",
       "storage.googleapis.com",
     ])
     error_message = "External DNS must retain every required platform API without enabling Cloud DNS."

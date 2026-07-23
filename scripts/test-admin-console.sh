@@ -5,16 +5,14 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 readonly FIXTURE="${ROOT_DIR}/scripts/testdata/flux-build-kustomization.yaml"
 readonly ADMIN_DIR="${ROOT_DIR}/infra/admin/profiles"
 readonly GATEWAY_DIR="${ROOT_DIR}/infra/gateway/profiles"
 readonly ENABLED_OVERLAY="${ROOT_DIR}/scripts/testdata/admin-enabled-overlay"
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
 
 for command in flux helm jq kubeconform kubectl yq; do
 	command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"

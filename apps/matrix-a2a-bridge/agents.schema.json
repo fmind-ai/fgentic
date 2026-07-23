@@ -42,7 +42,13 @@
       "properties": {
         "namespace": { "$ref": "#/$defs/nonEmptyString" },
         "name": { "$ref": "#/$defs/nonEmptyString" },
+        "maxSessionAge": {
+          "description": "Optional positive duration after which each local room/agent conversation is deleted from kagent and reset. Local targets only.",
+          "type": "string",
+          "pattern": "^(?:[0-9]+(?:\\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))+$"
+        },
         "url": { "type": "string", "format": "uri", "pattern": "^https?://" },
+        "acct": { "type": "string", "pattern": "^acct:[A-Za-z0-9._~-]+@[a-z0-9.-]+\\.[a-z0-9.-]+$" },
         "description": { "type": "string" },
         "avatarURL": { "type": "string", "pattern": "^mxc://[^/]+/.+$" },
         "stage": {
@@ -64,6 +70,7 @@
         },
         "tokenBudget": { "type": "integer", "minimum": 1 },
         "cardIdentity": { "$ref": "#/$defs/cardIdentity" },
+        "activityPubIdentity": { "$ref": "#/$defs/activityPubIdentity" },
         "extensions": {
           "description": "Additional A2A extension URIs to activate on a remote delegation, beyond the always-on token-budget contract. Also the allowlist of required card extensions the bridge accepts.",
           "type": "array",
@@ -120,9 +127,11 @@
           "not": {
             "anyOf": [
               { "required": ["url"] },
+              { "required": ["acct"] },
               { "required": ["timeout"] },
               { "required": ["tokenBudget"] },
               { "required": ["cardIdentity"] },
+              { "required": ["activityPubIdentity"] },
               { "required": ["extensions"] },
               { "required": ["maxCost"] },
               { "required": ["allowMedia"] },
@@ -134,10 +143,26 @@
           "required": ["url", "timeout", "tokenBudget", "cardIdentity"],
           "not": {
             "anyOf": [
+              { "required": ["acct"] },
               { "required": ["namespace"] },
               { "required": ["name"] },
+              { "required": ["maxSessionAge"] },
               { "required": ["dataClassification"] },
               { "required": ["agentContractSHA256"] }
+            ]
+          }
+        },
+        {
+          "required": ["acct", "timeout", "tokenBudget", "cardIdentity", "activityPubIdentity"],
+          "not": {
+            "anyOf": [
+              { "required": ["url"] },
+              { "required": ["namespace"] },
+              { "required": ["name"] },
+              { "required": ["maxSessionAge"] },
+              { "required": ["dataClassification"] },
+              { "required": ["agentContractSHA256"] },
+              { "required": ["mtls"] }
             ]
           }
         }
@@ -151,7 +176,41 @@
         "name": { "$ref": "#/$defs/nonEmptyString" },
         "organization": { "$ref": "#/$defs/nonEmptyString" },
         "keyID": { "$ref": "#/$defs/nonEmptyString" },
-        "publicKey": { "$ref": "#/$defs/publicKey" }
+        "publicKey": { "$ref": "#/$defs/publicKey" },
+        "additionalKeys": {
+          "description": "Further currently-valid signing keys for a zero-downtime rotation overlap window (#352). A card verifies if its kid matches the primary keyID or any of these; none may share a keyID with the primary or each other, and none may appear in revokedKeyIDs.",
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["keyID", "publicKey"],
+            "properties": {
+              "keyID": { "$ref": "#/$defs/nonEmptyString" },
+              "publicKey": { "$ref": "#/$defs/publicKey" }
+            }
+          }
+        },
+        "revokedKeyIDs": {
+          "description": "Retired key IDs (#352). A card offered under one is refused even if cryptographically valid; a revoked keyID must not also be pinned (that fails closed).",
+          "type": "array",
+          "items": { "$ref": "#/$defs/nonEmptyString" }
+        }
+      }
+    },
+    "activityPubIdentity": {
+      "description": "Exact FEP-8b32 actor identity pin used only when acct discovery has no A2A implementation.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["actorID", "verificationMethod", "publicKeyMultibase", "proofMaxAge"],
+      "properties": {
+        "actorID": { "type": "string", "format": "uri", "pattern": "^https://" },
+        "verificationMethod": { "type": "string", "format": "uri", "pattern": "^https://.+#.+$" },
+        "publicKeyMultibase": { "type": "string", "pattern": "^z[1-9A-HJ-NP-Za-km-z]{40,60}$" },
+        "proofMaxAge": {
+          "description": "Maximum accepted age of the actor's FEP-8b32 proof; at most 720h.",
+          "type": "string",
+          "pattern": "^(?:[0-9]+(?:\\.[0-9]+)?(?:ns|us|µs|ms|s|m|h))+$"
+        }
       }
     },
     "publicKey": {

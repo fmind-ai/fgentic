@@ -9,6 +9,8 @@ data:
   server.py: |
     import json
     import os
+    import threading
+    import time
     from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
     from pathlib import Path
     from typing import Any, cast
@@ -16,10 +18,48 @@ data:
     SOURCE_DIR = Path(os.environ.get("SOURCE_DIR", "/app"))
     RESPONSE_TEXT = (SOURCE_DIR / "response.txt").read_text(encoding="utf-8").strip()
     ATTRIBUTION_LOG = os.environ.get("ATTRIBUTION_LOG")
+    # Bound the raw body; cap concurrent parsers separately to contain JSON expansion under the
+    # pod's 64 MiB memory limit.
+    MAX_REQUEST_BYTES = 1_048_576
+    MAX_CONCURRENT_REQUESTS = 4
+    REQUEST_TIMEOUT_SECONDS = 5.0
+
+
+    def reject_json_constant(_constant: str) -> None:
+        raise ValueError
+
+
+    class BoundedThreadingHTTPServer(ThreadingHTTPServer):
+        def __init__(
+            self,
+            server_address: tuple[str, int],
+            handler_class: type[BaseHTTPRequestHandler],
+        ) -> None:
+            super().__init__(server_address, handler_class)
+            self._request_slots = threading.BoundedSemaphore(MAX_CONCURRENT_REQUESTS)
+
+        def process_request(self, request: Any, client_address: Any) -> None:
+            # Acquire before ThreadingMixIn allocates a thread, leaving excess connections under
+            # the server/kernel listen backlog instead of growing process memory.
+            self._request_slots.acquire()
+            try:
+                super().process_request(request, client_address)
+            except BaseException:
+                self._request_slots.release()
+                raise
+
+        def process_request_thread(self, request: Any, client_address: Any) -> None:
+            try:
+                super().process_request_thread(request, client_address)
+            finally:
+                self._request_slots.release()
 
 
     class Handler(BaseHTTPRequestHandler):
-        def log_message(self, _message_format: str, *_args: object) -> None:
+        # Bound idle request-line/header reads; body reads also enforce this as a wall-clock limit.
+        timeout = REQUEST_TIMEOUT_SECONDS
+
+        def log_message(self, format: str, *args: Any) -> None:
             return
 
         def write_json(self, status: int, document: dict[str, Any]) -> None:
@@ -29,6 +69,60 @@ data:
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
+
+        def request_size(self) -> int | None:
+            content_lengths = self.headers.get_all("Content-Length", [])
+            if not content_lengths:
+                self.write_json(411, {"error": {"message": "Content-Length is required"}})
+                return None
+            if (
+                len(content_lengths) != 1
+                or not content_lengths[0].isascii()
+                or not content_lengths[0].isdecimal()
+                or bool(self.headers.get_all("Transfer-Encoding", []))
+            ):
+                self.write_json(400, {"error": {"message": "invalid Content-Length"}})
+                return None
+
+            # Normalize before int() so an oversized decimal header cannot hit Python's digit cap.
+            normalized_length = content_lengths[0].lstrip("0") or "0"
+            if len(normalized_length) > len(str(MAX_REQUEST_BYTES)):
+                self.write_json(413, {"error": {"message": "request body too large"}})
+                return None
+
+            size = int(normalized_length)
+            if size > MAX_REQUEST_BYTES:
+                self.write_json(413, {"error": {"message": "request body too large"}})
+                return None
+            return size
+
+        def read_body(self, size: int) -> bytes | None:
+            deadline = time.monotonic() + REQUEST_TIMEOUT_SECONDS
+            body = bytearray(size)
+            view = memoryview(body)
+            received = 0
+
+            try:
+                while received < size:
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise TimeoutError
+                    self.connection.settimeout(remaining)
+                    read = self.rfile.readinto1(view[received:])
+                    if read == 0:
+                        self.close_connection = True
+                        self.write_json(400, {"error": {"message": "incomplete request body"}})
+                        return None
+                    received += read
+            except TimeoutError:
+                self.connection.settimeout(self.timeout)
+                self.close_connection = True
+                self.write_json(408, {"error": {"message": "request body timed out"}})
+                return None
+            finally:
+                self.connection.settimeout(self.timeout)
+
+            return bytes(body)
 
         def do_GET(self) -> None:
             if self.path in ("/health", "/healthz"):
@@ -56,10 +150,18 @@ data:
                 self.write_json(404, {"error": {"message": "not found"}})
                 return
 
+            size = self.request_size()
+            if size is None:
+                return
+            body = self.read_body(size)
+            if body is None:
+                return
+
             try:
-                size = int(self.headers.get("Content-Length", "0"))
-                untrusted_request: Any = json.loads(self.rfile.read(size) or b"{}")
-            except (ValueError, json.JSONDecodeError):
+                untrusted_request: Any = json.loads(body, parse_constant=reject_json_constant)
+            # The bytes decoder also raises ValueError for invalid UTF-8, integer limits, and
+            # rejected non-finite constants; RecursionError covers excessive nesting.
+            except (RecursionError, ValueError):
                 self.write_json(400, {"error": {"message": "invalid JSON"}})
                 return
             if not isinstance(untrusted_request, dict):
@@ -84,18 +186,14 @@ data:
                         "object": "chat.completion.chunk",
                         "created": 0,
                         "model": model,
-                        "choices": [
-                            {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
-                        ],
+                        "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
                     },
                     {
                         "id": "chatcmpl-fgentic-demo",
                         "object": "chat.completion.chunk",
                         "created": 0,
                         "model": model,
-                        "choices": [
-                            {"index": 0, "delta": {"content": RESPONSE_TEXT}, "finish_reason": None}
-                        ],
+                        "choices": [{"index": 0, "delta": {"content": RESPONSE_TEXT}, "finish_reason": None}],
                     },
                     {
                         "id": "chatcmpl-fgentic-demo",
@@ -141,9 +239,7 @@ data:
             )
 
 
-    server = ThreadingHTTPServer(
-        (os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8080"))), Handler
-    )
+    server = BoundedThreadingHTTPServer((os.environ.get("HOST", "0.0.0.0"), int(os.environ.get("PORT", "8080"))), Handler)
     if port_file := os.environ.get("PORT_FILE"):
         Path(port_file).write_text(str(server.server_address[1]), encoding="utf-8")
     server.serve_forever()
@@ -177,7 +273,7 @@ spec:
       containers:
         - name: server
           # Multi-architecture manifest digest for Python 3.14.6 slim, pinned for reproducibility.
-          image: python:3.14-slim@sha256:b877e50bd90de10af8d82c57a022fc2e0dc731c5320d762a27986facfc3355c1
+          image: python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6
           imagePullPolicy: IfNotPresent
           command:
             - python3

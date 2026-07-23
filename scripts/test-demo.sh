@@ -135,24 +135,39 @@ reply_fixture_matches() {
 
 bash -n "${DEMO_SOURCES[@]}" "${DEV}" "${ROOT_DIR}/scripts/seed-demo.sh"
 (
-	# The Secret key already names the caller. Its value must be one Agentgateway credential record,
-	# not another caller-name map, or every bridge request is rejected as an unknown API key.
+	# The a2a-bridge-callers Secret carries one Agentgateway credential record PER caller name, never a
+	# nested caller-name map, or the caller is rejected as an unknown API key. Demo registers TWO
+	# callers in that single Secret (issue #489): the bridge and the second ActivityPub gateway caller.
 	# shellcheck source=scripts/lib/demo-secrets.sh
 	source "${ROOT_DIR}/scripts/lib/demo-secrets.sh"
 	secret_calls=()
 	apply_secret() {
 		secret_calls+=("$*")
 	}
+	# apply_a2a_secrets reads the AP caller's token from the demo bootstrap Secret; stub it
+	# deterministically offline, mirroring the apply_secret stub above.
+	bootstrap_secret_value() {
+		printf 'fixture-ap-token'
+	}
 	apply_a2a_secrets fixture-key
 	[ "${#secret_calls[@]}" -eq 2 ]
-	server_prefix='agentgateway-system a2a-bridge-callers --from-literal=matrix-a2a-bridge='
-	[[ "${secret_calls[0]}" == "${server_prefix}"* ]]
-	server_document="${secret_calls[0]#"${server_prefix}"}"
+	callers_prefix='agentgateway-system a2a-bridge-callers '
+	[[ "${secret_calls[0]}" == "${callers_prefix}"* ]]
+	callers_args="${secret_calls[0]#"${callers_prefix}"}"
+	# Two space-delimited --from-literal=<name>=<compact-json> tokens (the JSON is space-free).
+	bridge_document="${callers_args%% --from-literal=activitypub-agent-gateway=*}"
+	bridge_document="${bridge_document#--from-literal=matrix-a2a-bridge=}"
+	ap_document="${callers_args##*--from-literal=activitypub-agent-gateway=}"
 	jq --exit-status '
     .key == "fixture-key" and
     .metadata == {"workload": "matrix-a2a-bridge"} and
     (has("matrix-a2a-bridge") | not)
-  ' <<<"${server_document}" >/dev/null
+  ' <<<"${bridge_document}" >/dev/null
+	jq --exit-status '
+    .key == "fixture-ap-token" and
+    .metadata == {"workload": "activitypub-agent-gateway"} and
+    (has("activitypub-agent-gateway") | not)
+  ' <<<"${ap_document}" >/dev/null
 	[ "${secret_calls[1]}" = \
 		'bridge a2a-bridge-credential --from-literal=token=fixture-key' ]
 )
@@ -169,6 +184,8 @@ bash -n "${DEMO_SOURCES[@]}" "${DEV}" "${ROOT_DIR}/scripts/seed-demo.sh"
 	SOURCE_GIT_PACKAGES='git git-daemon busybox-extras'
 	SOURCE_IMAGE='fgentic-demo-source:fixture'
 	BRIDGE_IMAGE='matrix-a2a-bridge:fixture'
+	# Demo also builds + eagerly side-loads the GHCR-unpublished ActivityPub gateway image (issue #489).
+	AP_GATEWAY_IMAGE='activitypub-agent-gateway:fixture'
 	mkdir -p "${SOURCE_CONTEXT}"
 	early_image_calls=()
 	build_image() {
@@ -182,12 +199,18 @@ bash -n "${DEMO_SOURCES[@]}" "${DEV}" "${ROOT_DIR}/scripts/seed-demo.sh"
 		early_image_calls+=("prune:$1")
 	}
 	build_and_load_images
+	# SOURCE + bridge + AP gateway are built; SOURCE imports first, then — after the AP gateway sits
+	# ready deep in the dependency chain — the AP gateway is eagerly imported (the bridge loads later).
 	[ "${early_image_calls[0]}" = 'build:fgentic-demo-source:fixture' ]
 	[ "${early_image_calls[1]}" = 'build:matrix-a2a-bridge:fixture' ]
-	[ "${early_image_calls[2]}" = \
+	[ "${early_image_calls[2]}" = 'build:activitypub-agent-gateway:fixture' ]
+	[ "${early_image_calls[3]}" = \
 		'k3d:image import --mode auto --cluster fgentic-demo-fixture fgentic-demo-source:fixture' ]
-	[ "${early_image_calls[3]}" = 'prune:fgentic-demo-source' ]
-	[ "${#early_image_calls[@]}" -eq 4 ]
+	[ "${early_image_calls[4]}" = 'prune:fgentic-demo-source' ]
+	[ "${early_image_calls[5]}" = \
+		'k3d:image import --mode auto --cluster fgentic-demo-fixture activitypub-agent-gateway:fixture' ]
+	[ "${early_image_calls[6]}" = 'prune:activitypub-agent-gateway' ]
+	[ "${#early_image_calls[@]}" -eq 7 ]
 	bridge_image_calls="${WORK_DIR}/bridge-image-calls"
 	: >"${bridge_image_calls}"
 	kubectl() {
@@ -329,8 +352,10 @@ demo_bootstrap_names="$(
 	yq eval-all -o=json '[select(.kind == "Namespace") | .metadata.name] | sort' \
 		"${WORK_DIR}/demo-bootstrap-namespaces.yaml" | jq --compact-output .
 )"
+# The demo profile additionally reconciles the ActivityPub gateway (issue #489), whose Namespace
+# lives with the app deploy unit and is surfaced early so its cluster-only Secrets can land.
 [ "${demo_bootstrap_names}" = \
-	'["agentgateway-system","bridge","bridges","cert-manager","cnpg-system","gateway","kagent","keycloak","knowledge","matrix","models","monitoring","postgres"]' ] || {
+	'["activitypub","agentgateway-system","bridge","bridges","cert-manager","cnpg-system","gateway","kagent","keycloak","knowledge","matrix","models","monitoring","postgres"]' ] || {
 	echo "error: demo bootstrap Namespace set drifted: ${demo_bootstrap_names}" >&2
 	exit 1
 }
@@ -339,7 +364,7 @@ federation_bootstrap_names="$(
 		"${WORK_DIR}/federation-bootstrap-namespaces.yaml" | jq --compact-output .
 )"
 [ "${federation_bootstrap_names}" = \
-	'["agentgateway-system","cert-manager","cnpg-system","gateway","kagent","keycloak","knowledge","matrix","matrix-b","matrix-c","models","postgres"]' ] || {
+	'["agentgateway-system","cert-manager","cnpg-system","gateway","kagent","keycloak","knowledge","matrix","matrix-b","matrix-c","matrix-d","models","postgres"]' ] || {
 	echo "error: federation bootstrap Namespace set drifted: ${federation_bootstrap_names}" >&2
 	exit 1
 }
@@ -665,7 +690,7 @@ assert_yq \
 	'select(.kind == "Kustomization" and .metadata.name == "agentgateway-embeddings") |
     .spec.path == "./infra/agentgateway/providers/profiles/embeddings/disabled"' \
 	"${WORK_DIR}/cluster.yaml" 'demo must keep the sovereign embeddings runtime structurally disabled'
-expected_demo_layers=$'admin\nagentgateway\nagentgateway-embeddings\nagentgateway-provider\nbridge\ncontrollers\ngateway\nkagent\nknowledge-ingestion\nmatrix\nnamespaces\nplatform-secrets\npolicies\npostgres'
+expected_demo_layers=$'activitypub\nadmin\nagentgateway\nagentgateway-embeddings\nagentgateway-provider\nalert-delivery\nbridge\ncanary\ncontrollers\ngateway\nkagent\nknowledge-ingestion\nmatrix\nnamespaces\nplatform-secrets\npolicies\npostgres'
 actual_demo_layers="$(
 	yq eval-all -N -r 'select(.kind == "Kustomization") | .metadata.name' \
 		"${WORK_DIR}/cluster.yaml" | sort
@@ -1001,5 +1026,43 @@ if rg -n 'mas_password_login_enabled|llm_token_budget_15m' \
 	echo 'error: demo path uses a retired platform-setting name' >&2
 	exit 1
 fi
+
+# Focused fixture: apply_secret must preserve a typed Secret's requested type and data, and stay
+# fail-closed on an unknown argument. Regression guard for the #624 SC2249 refactor that made the
+# second dispatch case reject --type and break kubernetes.io/basic-auth secrets (#680).
+(
+	# shellcheck source=scripts/lib.sh
+	source "${ROOT_DIR}/scripts/lib.sh"
+	# shellcheck source=scripts/lib/demo-secrets.sh
+	source "${ROOT_DIR}/scripts/lib/demo-secrets.sh"
+
+	captured="${WORK_DIR}/apply-secret.json"
+	kubectl() { cat >"${captured}"; }
+
+	apply_secret postgres pg-basic-auth --type=kubernetes.io/basic-auth \
+		--from-literal=username=alice --from-literal=password=s3cret
+	jq --exit-status '
+    .kind == "Secret"
+    and .metadata.name == "pg-basic-auth"
+    and .metadata.namespace == "postgres"
+    and .type == "kubernetes.io/basic-auth"
+    and .data.username == "YWxpY2U="
+    and .data.password == "czNjcmV0"
+  ' "${captured}" >/dev/null || {
+		echo 'error: apply_secret dropped a typed Secret type or data' >&2
+		exit 1
+	}
+
+	apply_secret bridge opaque-secret --from-literal=token=xyz
+	jq --exit-status '.type == "Opaque" and .data.token == "eHl6"' "${captured}" >/dev/null || {
+		echo 'error: apply_secret Opaque default regressed' >&2
+		exit 1
+	}
+
+	if (apply_secret ns name --bogus=1) 2>/dev/null; then
+		echo 'error: apply_secret accepted an unsupported argument' >&2
+		exit 1
+	fi
+)
 
 echo 'Demo install contracts passed.'

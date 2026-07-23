@@ -1,0 +1,79 @@
+# The ActivityPub demo interop peer (issue #489 Task 7): a Mastodon/GoToSocial-wire-compatible signing
+# client the acceptance harness drives via `kubectl exec`. It idles; each acceptance step runs
+# `python3 /peer/peer.py <cmd>` inside it. Pure Python standard library (no cryptography/openssl/curl),
+# on the same repo-vetted, digest-pinned python image the knowledge layer already uses. Its RSA
+# #main-keys come from the cluster-only demo secret path and are pinned into the gateway (ADR 0021).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: activitypub-interop-peer
+  namespace: activitypub-interop
+  labels:
+    app.kubernetes.io/name: activitypub-interop-peer
+    app.kubernetes.io/part-of: fgentic
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: activitypub-interop-peer
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: activitypub-interop-peer
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: peer
+          image: python:3.14-slim@sha256:cea0e6040540fb2b965b6e7fb5ffa00871e632eef63719f0ea54bca189ce14a6
+          command: ["sleep", "infinity"]
+          env:
+            - name: CONNECT_URL
+              value: http://activitypub-agent-gateway.activitypub.svc.cluster.local:8480
+            - name: GHOST
+              value: agent-docs-qa
+            - name: AGENT_HANDLE
+              value: agent-docs-qa@fgentic.localhost
+            - name: HOME
+              value: /tmp
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 200m
+              memory: 96Mi
+          volumeMounts:
+            - name: script
+              mountPath: /peer
+              readOnly: true
+            - name: keys
+              mountPath: /keys
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: script
+          configMap:
+            name: activitypub-interop-peer-script
+        - name: keys
+          secret:
+            # Created by the acceptance harness from the cluster-only demo secret path (never SOPS).
+            secretName: activitypub-interop-peer-keys
+            defaultMode: 0400
+        - name: tmp
+          emptyDir: {}

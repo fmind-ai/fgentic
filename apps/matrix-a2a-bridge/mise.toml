@@ -5,14 +5,14 @@ APP_NAME = "matrix-a2a-bridge"
 run_auto_install = false # fail fast in hooks/CI on a missing tool
 
 [tools]
-go = "latest"
-golangci-lint = "latest"
-gotestsum = "latest"
-gitleaks = "latest"
-dprint = "latest"
-lefthook = "latest"
+go = "1.26.5"
+golangci-lint = "2.12.2"
+gotestsum = "1.13.0"
+gitleaks = "8.30.1"
+dprint = "0.55.2"
+lefthook = "2.1.10"
 kind = "0.32.0"
-kubectl = "1.35.0"
+kubectl = "1.36.2"
 
 [tasks.all]
 alias = "a"
@@ -90,6 +90,14 @@ run = "bash test/integration/run-crash-recovery.sh"
 [tasks."test:load"]
 description = "Run the resource-bounded D3 dispatcher regression scenario"
 run = "bash test/integration/run-load.sh"
+
+[tasks."test:model-outage"]
+description = "Prove bounded retries and the §6.1 catalog notice through a model-backend outage (#466)"
+run = "bash test/integration/run-model-outage.sh"
+
+[tasks."test:synapse-restart"]
+description = "Prove exactly-once reply delivery across a Synapse homeserver restart (#466)"
+run = "bash test/integration/run-synapse-restart.sh"
 
 [tasks."eval:models"]
 description = "Evaluate the three sample agents against the selected local model profile"

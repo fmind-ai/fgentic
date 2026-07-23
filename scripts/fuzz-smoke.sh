@@ -11,6 +11,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 
 # Seconds per target. Short by default for a quick smoke; the scheduled CI job passes a longer value.
@@ -19,11 +22,6 @@ readonly MODULES=(
 	"apps/matrix-a2a-bridge"
 	"apps/activitypub-agent-gateway"
 )
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
 
 command -v go >/dev/null 2>&1 || fail "go toolchain not found"
 

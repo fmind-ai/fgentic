@@ -90,6 +90,10 @@ apply_secret() {
 				;;
 		esac
 		case "${argument}" in
+			# --type is consumed by the dispatch case above; it carries no Secret data, so it is a
+			# no-op here. Without this branch a typed Secret (e.g. kubernetes.io/basic-auth) hits the
+			# default and fails closed with "unsupported apply_secret argument" (regression from #624).
+			--type=*) ;;
 			--from-literal=* | --from-file=*)
 				[[ "${key}" =~ ^[-._a-zA-Z0-9]+$ ]] || die "invalid Secret data key"
 				encoded="$(printf '%s' "${value}" | base64)"
@@ -107,16 +111,25 @@ apply_secret() {
 
 a2a_caller_document() {
 	local key="$1"
-	jq --null-input --compact-output --arg key "${key}" \
-		'{key: $key, metadata: {workload: "matrix-a2a-bridge"}}'
+	local workload="$2"
+	jq --null-input --compact-output --arg key "${key}" --arg workload "${workload}" \
+		'{key: $key, metadata: {workload: $workload}}'
 }
 
 apply_a2a_secrets() {
 	local key="$1"
-	local caller
-	caller="$(a2a_caller_document "${key}")"
+	local bridge_caller ap_token ap_caller
+	bridge_caller="$(a2a_caller_document "${key}" matrix-a2a-bridge)"
+	# Demo also reconciles the ActivityPub agent gateway (issue #489), a second caller of the A2A
+	# chokepoint. Register its workload credential alongside the bridge's in the SAME callers Secret so
+	# agentgateway resolves its Authorization bearer to the `activitypub-agent-gateway` workload the
+	# demo-scoped CEL admits (clusters/demo/kustomization.yaml). local/gcp use the SOPS caller Secret,
+	# which has no such entry, keeping their single-caller boundary intact.
+	ap_token="$(bootstrap_secret_value ap-a2a-key)"
+	ap_caller="$(a2a_caller_document "${ap_token}" activitypub-agent-gateway)"
 	apply_secret agentgateway-system a2a-bridge-callers \
-		--from-literal=matrix-a2a-bridge="${caller}"
+		--from-literal=matrix-a2a-bridge="${bridge_caller}" \
+		--from-literal=activitypub-agent-gateway="${ap_caller}"
 	apply_secret bridge a2a-bridge-credential --from-literal=token="${key}"
 }
 
@@ -131,9 +144,9 @@ create_ephemeral_secrets() {
 	local bootstrap_json generated_value key key_spec patch_data patch_document value_length
 	local -a bootstrap_arguments=()
 	local -a bootstrap_key_specs=(
-		pg-synapse:24 pg-mas:24 pg-bridge:24 pg-kagent:24
+		pg-synapse:24 pg-mas:24 pg-bridge:24 pg-kagent:24 pg-activitypub:24
 		pg-knowledge-owner:24 pg-knowledge-retrieval:24
-		as-token:32 hs-token:32 a2a-key:32 mcp-platform-helper-key:32
+		as-token:32 hs-token:32 a2a-key:32 ap-a2a-key:32 mcp-platform-helper-key:32
 		mas-admin-client:32 demo-password:24
 	)
 	local -a missing_bootstrap_arguments=()
@@ -172,6 +185,7 @@ create_ephemeral_secrets() {
 	PG_MAS="$(bootstrap_secret_value pg-mas)"
 	PG_BRIDGE="$(bootstrap_secret_value pg-bridge)"
 	PG_KAGENT="$(bootstrap_secret_value pg-kagent)"
+	PG_ACTIVITYPUB="$(bootstrap_secret_value pg-activitypub)"
 	PG_KNOWLEDGE_OWNER="$(bootstrap_secret_value pg-knowledge-owner)"
 	PG_KNOWLEDGE_RETRIEVAL="$(bootstrap_secret_value pg-knowledge-retrieval)"
 	AS_TOKEN="$(bootstrap_secret_value as-token)"
@@ -191,6 +205,8 @@ create_ephemeral_secrets() {
 		--from-literal=username=bridge --from-literal=password="${PG_BRIDGE}"
 	apply_secret postgres pg-kagent --type=kubernetes.io/basic-auth \
 		--from-literal=username=kagent --from-literal=password="${PG_KAGENT}"
+	apply_secret postgres pg-activitypub --type=kubernetes.io/basic-auth \
+		--from-literal=username=activitypub --from-literal=password="${PG_ACTIVITYPUB}"
 	apply_secret postgres pg-knowledge-owner --type=kubernetes.io/basic-auth \
 		--from-literal=username=knowledge_owner --from-literal=password="${PG_KNOWLEDGE_OWNER}"
 	apply_secret postgres pg-knowledge-retrieval --type=kubernetes.io/basic-auth \
@@ -251,6 +267,8 @@ EOF
 	)"
 	apply_secret matrix mas-demo-admin --from-literal=config.yaml="${mas_admin_config}"
 
+	create_activitypub_secrets
+
 	if [ -n "${MODEL_SECRET_NAME}" ]; then
 		apply_secret agentgateway-system "${MODEL_SECRET_NAME}" \
 			--from-literal=Authorization="${MODEL_SECRET_VALUE}"
@@ -258,4 +276,93 @@ EOF
 		apply_secret agentgateway-system gcp-adc \
 			--from-file="key.json=${GOOGLE_APPLICATION_CREDENTIALS}"
 	fi
+}
+
+# ActivityPub agent gateway secrets (issue #489, demo profile only). These are the cluster-only
+# counterparts of the SOPS templates in infra/secrets/ — generated in-cluster, never committed and
+# never SOPS-encrypted (the ephemeral demo secret path). The identity (P-256) and signing (Ed25519)
+# PEM keys are persisted in the bootstrap Secret so a retained cluster keeps a stable did:key anchor
+# across restarts; the A2A workload credential (bootstrap ap-a2a-key, also registered as an
+# agentgateway caller by apply_a2a_secrets) proves the gateway is the caller to agentgateway.
+# Generate one ActivityPub PEM key into the demo bootstrap Secret if (and only if) it is absent, so a
+# retained cluster preserves established identities and only newly added keys are minted.
+# Args: <bootstrap-key-name> <openssl-algorithm> [pkeyopt]
+ensure_activitypub_bootstrap_key() {
+	local bootstrap_key="$1"
+	local algorithm="$2"
+	local pkeyopt="${3:-}"
+	local existing generated patch_document patch_data
+	existing="$(bootstrap_secret_value "${bootstrap_key}")"
+	[ -n "${existing}" ] && return 0
+	if [ -n "${pkeyopt}" ]; then
+		generated="$(openssl genpkey -algorithm "${algorithm}" -pkeyopt "${pkeyopt}" 2>/dev/null)"
+	else
+		generated="$(openssl genpkey -algorithm "${algorithm}" 2>/dev/null)"
+	fi
+	[ -n "${generated}" ] || die "failed to generate ActivityPub ${bootstrap_key} (${algorithm})"
+	patch_document="$(kubectl --namespace flux-system create secret generic fgentic-demo-bootstrap \
+		--from-literal="${bootstrap_key}=${generated}" --dry-run=client --output=json)"
+	patch_data="$(jq --compact-output '{data: .data}' <<<"${patch_document}")"
+	printf '%s\n' "${patch_data}" \
+		| kubectl --namespace flux-system patch secret fgentic-demo-bootstrap \
+			--type=merge --patch-file /dev/stdin >/dev/null
+}
+
+create_activitypub_secrets() {
+	local ap_identity ap_signing ap_rsa ap_token ap_db_password
+	# Persist each PEM key in the bootstrap Secret independently, generating ONLY the missing ones so a
+	# retained cluster keeps its stable did:key / #main-key anchors while a newly required key (e.g. the
+	# RSA transport key rsa.pem, #476 — the deploy enables groups + the status feed, without which the
+	# pod fails to start) self-heals on upgrade without rotating the established identity keys.
+	ensure_activitypub_bootstrap_key ap-identity-key EC ec_paramgen_curve:P-256
+	ensure_activitypub_bootstrap_key ap-signing-key ed25519
+	ensure_activitypub_bootstrap_key ap-rsa-key RSA rsa_keygen_bits:2048 # >= 2048 (chart-enforced)
+
+	ap_identity="$(bootstrap_secret_value ap-identity-key)"
+	ap_signing="$(bootstrap_secret_value ap-signing-key)"
+	ap_rsa="$(bootstrap_secret_value ap-rsa-key)"
+	ap_token="$(bootstrap_secret_value ap-a2a-key)"
+	apply_secret activitypub activitypub-agent-gateway-identity-key \
+		--from-literal="p256.pem=${ap_identity}"
+	# Both object-integrity (ed25519.pem, FEP-8b32) and hop-signature (rsa.pem, #476) keys live in the
+	# single signing-key Secret the deploy mounts for integrity + groups + status feed.
+	apply_secret activitypub activitypub-agent-gateway-signing-key \
+		--from-literal="ed25519.pem=${ap_signing}" \
+		--from-literal="rsa.pem=${ap_rsa}"
+	apply_secret activitypub activitypub-agent-gateway-credential \
+		--from-literal="token=${ap_token}"
+
+	# Namespace-local DATABASE_URL for the durable inbox activity ledger (#321). Same password as the
+	# matching CNPG pg-activitypub Secret, mirroring the bridge's matrix-a2a-bridge-db credential.
+	ap_db_password="$(bootstrap_secret_value pg-activitypub)"
+	apply_secret activitypub activitypub-agent-gateway-db \
+		--from-literal="url=postgres://activitypub:${ap_db_password}@platform-pg-rw.postgres.svc.cluster.local:5432/activitypub?sslmode=require"
+
+	create_activitypub_interop_pins
+}
+
+# Interop-acceptance pinned peer keys (issue #489 Task 7, ADR 0021). Generate two Mastodon/GtS-wire-
+# compatible RSA signer identities and pin their PUBLIC keys into the gateway. The gateway verifies an
+# inbound signature from these actors WITHOUT the #320 SSRF fetch (they are only reachable in-cluster),
+# while every unpinned actor still uses the guarded HTTPS resolver unchanged. The PRIVATE keys stay in
+# the cluster-only bootstrap Secret for the acceptance harness to load into the peer pod; only the
+# public keys are pinned. The allowlist itself is applied at acceptance time (hot-reloaded), so a peer
+# is admitted only during the proof.
+create_activitypub_interop_pins() {
+	# shellcheck source=scripts/lib/activitypub-interop.sh
+	source "${ROOT_DIR}/scripts/lib/activitypub-interop.sh"
+	ensure_activitypub_bootstrap_key "${AP_INTEROP_ALLOWED_KEY}" RSA rsa_keygen_bits:2048
+	ensure_activitypub_bootstrap_key "${AP_INTEROP_DENIED_KEY}" RSA rsa_keygen_bits:2048
+	local allowed_priv denied_priv allowed_pub denied_pub pins_json
+	allowed_priv="$(bootstrap_secret_value "${AP_INTEROP_ALLOWED_KEY}")"
+	denied_priv="$(bootstrap_secret_value "${AP_INTEROP_DENIED_KEY}")"
+	allowed_pub="$(printf '%s' "${allowed_priv}" | openssl pkey -pubout 2>/dev/null)"
+	denied_pub="$(printf '%s' "${denied_priv}" | openssl pkey -pubout 2>/dev/null)"
+	[ -n "${allowed_pub}" ] && [ -n "${denied_pub}" ] \
+		|| die "failed to derive ActivityPub interop peer public keys"
+	pins_json="$(jq -cn \
+		--arg allowed "${AP_INTEROP_ALLOWED_ACTOR}" --arg allowed_pem "${allowed_pub}" \
+		--arg denied "${AP_INTEROP_DENIED_ACTOR}" --arg denied_pem "${denied_pub}" \
+		'{pins: {($allowed): $allowed_pem, ($denied): $denied_pem}}')"
+	apply_secret activitypub "${AP_INTEROP_PINS_SECRET}" --from-literal="pins.json=${pins_json}"
 }

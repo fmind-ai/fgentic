@@ -4,6 +4,9 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 readonly CLUSTER_MANIFEST="${ROOT_DIR}/infra/postgres/cluster.yaml"
 readonly KUSTOMIZATION="${ROOT_DIR}/infra/postgres/kustomization.yaml"
@@ -40,18 +43,6 @@ case "${1:-}" in
 		exit 2
 		;;
 esac
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
-
-require_commands() {
-	local command
-	for command in "$@"; do
-		command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
-	done
-}
 
 static_contract() {
 	require_commands jq kubectl rg yq
@@ -360,7 +351,7 @@ static_contract() {
     any(.spec.egress[];
       .to == [{"namespaceSelector": {"matchLabels": {
         "kubernetes.io/metadata.name": "kube-system"
-      }}}] and
+      }}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}] and
       ([.ports[] | [.protocol, .port]] | sort) == [["TCP", 53], ["UDP", 53]]) and
     any(.spec.egress[];
       .to == [{"podSelector": {"matchLabels": {"cnpg.io/cluster": "platform-pg"}}}] and
@@ -376,7 +367,7 @@ static_contract() {
     any(.spec.egress[];
       .to == [{"namespaceSelector": {"matchLabels": {
         "kubernetes.io/metadata.name": "kube-system"
-      }}}] and
+      }}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}] and
       ([.ports[] | [.protocol, .port]] | sort) == [["TCP", 53], ["UDP", 53]]) and
     any(.spec.egress[];
       .to == [{"podSelector": {"matchLabels": {"cnpg.io/cluster": "platform-pg"}}}] and
@@ -393,7 +384,7 @@ static_contract() {
     any(.spec.egress[];
       .to == [{"namespaceSelector": {"matchLabels": {
         "kubernetes.io/metadata.name": "kube-system"
-      }}}] and
+      }}, "podSelector": {"matchLabels": {"k8s-app": "kube-dns"}}}] and
       ([.ports[] | [.protocol, .port]] | sort) == [["TCP", 53], ["UDP", 53]]) and
     any(.spec.egress[];
       .to == [{"podSelector": {"matchLabels": {"cnpg.io/cluster": "platform-pg"}}}] and

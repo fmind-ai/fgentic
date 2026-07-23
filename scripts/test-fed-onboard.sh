@@ -7,15 +7,13 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# shellcheck source=scripts/lib.sh
+source "${ROOT_DIR}/scripts/lib.sh"
 readonly ROOT_DIR
 WORK_DIR="$(mktemp -d "${TMPDIR:-/tmp}/fgentic-fed-onboard-test.XXXXXX")"
 readonly WORK_DIR
 trap 'rm -rf "${WORK_DIR}"' EXIT INT TERM
-
-fail() {
-	echo "error: $*" >&2
-	exit 1
-}
 
 for command in jq rg openssl; do
 	command -v "${command}" >/dev/null 2>&1 || fail "required command not found: ${command}"
@@ -119,8 +117,12 @@ chmod +x "${WORK_DIR}/bin/xh"
 run_onboard() {
 	local fixture="$1" card_file="$2"
 	shift 2
+	# The fake xh always responds instantly; this timeout only has to survive scheduler starvation
+	# under heavy aggregate host load without spuriously firing (a delayed stub previously surfaced
+	# as a false "Matrix federation version request failed"). Generous but finite, well under the
+	# 60s max; production defaults stay untouched (#789).
 	PATH="${WORK_DIR}/bin:${PATH}" FED_ONBOARD_FIXTURE="${fixture}" \
-		FED_ONBOARD_CARD_FILE="${card_file}" FGENTIC_FED_CHECK_TIMEOUT=2 \
+		FED_ONBOARD_CARD_FILE="${card_file}" FGENTIC_FED_CHECK_TIMEOUT=30 \
 		"${ONBOARD}" "$@"
 }
 

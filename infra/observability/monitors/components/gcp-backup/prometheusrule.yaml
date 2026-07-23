@@ -1,0 +1,46 @@
+# The GCP reference takes one base backup every night. The pinned CloudNativePG in-core Barman
+# path exposes these timestamps on every instance, so aggregate replicas before comparing them.
+# Issue #170 must replace these deprecated native metrics when it moves backups to the plugin.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: cnpg-backup
+  namespace: monitoring
+spec:
+  groups:
+    - name: cnpg-backup
+      rules:
+        - alert: CNPGBackupFailed
+          expr: >-
+            max(cnpg_collector_last_failed_backup_timestamp{namespace="postgres"})
+            >
+            max(cnpg_collector_last_available_backup_timestamp{namespace="postgres"})
+          for: 5m
+          labels:
+            severity: warning
+          annotations:
+            summary: The latest platform PostgreSQL backup failed
+            description: >-
+              CloudNativePG reports a failed platform-pg backup newer than its latest successful
+              backup. Inspect the ScheduledBackup and operator logs, then verify a new recovery
+              point completes before resolving the incident.
+        - alert: CNPGBackupStale
+          # A 36-hour window gives the nightly 03:00 schedule twelve hours of bounded headroom.
+          # `absent` also catches scrape or metric-contract loss instead of silently disabling
+          # recovery monitoring.
+          expr: >-
+            absent(cnpg_collector_last_available_backup_timestamp{namespace="postgres"})
+            or
+            max(cnpg_collector_last_available_backup_timestamp{namespace="postgres"}) == 0
+            or
+            time() - max(cnpg_collector_last_available_backup_timestamp{namespace="postgres"})
+            > 129600
+          for: 1h
+          labels:
+            severity: critical
+          annotations:
+            summary: The platform PostgreSQL recovery point is stale
+            description: >-
+              CloudNativePG has exposed no successful platform-pg backup in the last 36 hours, or
+              its expected success metric is absent. Check scraping, WAL archiving, Workload
+              Identity, bucket access, and the nightly ScheduledBackup before relying on recovery.

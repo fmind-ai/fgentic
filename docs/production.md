@@ -1,12 +1,14 @@
 ---
 type: Runbook
 title: Production Installation
-description: Production path: Flux reconciliation of a reviewed revision, SOPS secrets, SSO, observability, and acceptance gates.
+description: "Production path: Flux reconciliation of a reviewed revision, SOPS secrets, SSO, observability, and acceptance gates."
 ---
 
 # Production Installation
 
 The production path reconciles a reviewed git revision through Flux, decrypts per-cluster SOPS secrets in-cluster, enables SSO and observability, and keeps the canonical HelmRelease values under `infra/` and `apps/`. It is intentionally different from the disposable [evaluation installer](../README.md#evaluate-in-15-minutes). After bootstrap, use the [Day-2 Operations Handbook](operations-handbook.md) for monitoring, scaling, recovery, incident response, and upgrades.
+
+**Track release tags, not `main`.** A production deployment points its Flux `GitRepository` at a release **tag** — a tested pin-set described by a machine-readable [Bill of Materials](../release/bom.yaml) — never at the moving `main` branch. Per-release upgrade notes live in [`docs/upgrades/`](upgrades/TEMPLATE.md). The full contract, the recommended `GitRepository` configuration, and the honest [support statement](stability.md#support-and-tested-upgrade-paths) (single maintainer; upgrade paths not yet drilled end-to-end) are in the [Adopter Release & Upgrade Contract](releases.md).
 
 ## Choose the model boundary
 

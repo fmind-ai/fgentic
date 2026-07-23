@@ -42,13 +42,19 @@ When Group or status-feed delivery is enabled, set `HTTP_SIGNATURE_KEY_PATH` to 
 
 The gateway remains opt-in until issue #489 composes it into the demo profile, so operators provision this key manually with the other ActivityPub keys. Copy `infra/secrets/activitypub-agent-gateway-signing-key.sops.yaml.example` to the target cluster's secret set, generate a distinct transport key with `openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:3072 -out rsa.pem`, add its PEM as `stringData.rsa.pem`, then encrypt the manifest in place with SOPS before committing it. Never replace `stringData.ed25519.pem`: the two keys have separate identities and rotation lifecycles. The opt-in HelmRelease deliberately fails fast if `rsa.pem` is absent rather than silently sending an Ed25519 transport signature that Mastodon cannot discover.
 
+## Private Matrix-to-Fediverse broker
+
+`FEDIVERSE_BROKER_TOKEN` enables two authenticated routes on the internal metrics listener: `/internal/v1/fediverse/resolve` and `/internal/v1/fediverse/delegate`. They are not mounted on the public listener and the chart's HTTPRoute cannot select them. The broker resolves a strict `acct:` handle through SSRF-guarded WebFinger and its exact actor link. An advertised FEP-844e `implements` entry returns the exact A2A endpoint and card URL to the bridge, which performs its existing pinned Signed AgentCard verification. Without A2A, the broker requires the actor document to carry a fresh FEP-8b32 proof under the mapping's exact actor, verification-method, Multikey, and maximum-age pins before sending a signed `Create(Note)`.
+
+The fallback is intentionally asynchronous: a successful call acknowledges signed inbox delivery, not a synchronous agent answer. Its object is signed by the Ed25519 integrity key and its HTTP request by the RSA delivery key. The local `A2A_API_KEY` is never accepted by this client path. Helm `fediverseBroker.enabled` exposes only the side port on the ClusterIP Service, admits only `fediverseBroker.fromNamespaces`, and reads the shared bearer from a SOPS-backed Secret.
+
 ## Layout
 
 - `cmd/gateway` — entrypoint (two HTTP servers: public AP + private metrics).
 - `internal/config` — typed, env-parsed, fail-fast configuration.
 - `internal/a2a` — thin wrapper over the official `a2a-go` client (local kagent targets only).
 - `internal/activitystate` — Postgres-backed unique activity ledger and asynchronous work queue.
-- `internal/apgateway` — the AP surface: agent registry, Service actor, WebFinger, inbox→A2A→outbox.
+- `internal/apgateway` — the AP surface plus the private pinned-handle resolver and signed fallback broker.
 - `chart/` — the Helm chart; `deploy/` — its Flux unit (Namespace + HelmRelease), opt-in.
 
 ## Development

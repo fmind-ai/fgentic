@@ -1,0 +1,66 @@
+# promtool unit test for the time-bounded-trust alerts (issue #463). The test runner renders the alert
+# rules with a small lead window (--lead-seconds 300) and feeds synthetic partner review_by/valid_until
+# timestamps (constant series) so the alert logic is exercised at small eval times instead of real epochs.
+# review_by = 1000, valid_until = 1000: review is "due" once time() > 700 (within the 300s lead); access
+# is "expired" once time() > 1000.
+evaluation_interval: 1m
+# The test runner replaces this with the extracted alert-rules payload (lead window 300s).
+rule_files: []
+tests:
+  - name: healthy partner well inside its window is silent
+    interval: 1m
+    input_series:
+      - series: 'fgentic:federation_partner_review_by:timestamp{server_name="org-b.fgentic.localhost"}'
+        values: "1000x30"
+      - series: 'fgentic:federation_partner_valid_until:timestamp{server_name="org-b.fgentic.localhost"}'
+        values: "1000x30"
+    alert_rule_test:
+      - eval_time: 600s
+        alertname: FederationPartnerReviewDue
+        exp_alerts: []
+      - eval_time: 600s
+        alertname: FederationPartnerAccessExpired
+        exp_alerts: []
+  - name: review due within the lead window fires the review alert only
+    interval: 1m
+    input_series:
+      - series: 'fgentic:federation_partner_review_by:timestamp{server_name="org-b.fgentic.localhost"}'
+        values: "1000x30"
+      - series: 'fgentic:federation_partner_valid_until:timestamp{server_name="org-b.fgentic.localhost"}'
+        values: "1000x30"
+    alert_rule_test:
+      - eval_time: 800s
+        alertname: FederationPartnerReviewDue
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              server_name: org-b.fgentic.localhost
+            exp_annotations:
+              summary: Federated partner control review is due
+              description: >-
+                The contracted control-review date for a federated partner is within the lead window or
+                has passed. Re-review the partner's controls and renew the signed agreement with a new
+                validity window, or offboard the partner.
+      - eval_time: 800s
+        alertname: FederationPartnerAccessExpired
+        exp_alerts: []
+  - name: passed valid_until fires the expired alert
+    interval: 1m
+    input_series:
+      - series: 'fgentic:federation_partner_review_by:timestamp{server_name="org-b.fgentic.localhost"}'
+        values: "1000x30"
+      - series: 'fgentic:federation_partner_valid_until:timestamp{server_name="org-b.fgentic.localhost"}'
+        values: "1000x30"
+    alert_rule_test:
+      - eval_time: 1200s
+        alertname: FederationPartnerAccessExpired
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              server_name: org-b.fgentic.localhost
+            exp_annotations:
+              summary: Federated partner access has expired
+              description: >-
+                A federated partner's valid_until date has passed. Federation trust config will not
+                reconcile until the partner is renewed (re-signed with a new window) or offboarded. This
+                alert is the live warning; immediate containment is the break-glass path (#350).

@@ -28,6 +28,10 @@ const (
 // material implicitly: startup and periodic profile refresh own that network boundary.
 var ErrRemoteTargetUntrusted = errors.New("remote A2A target has no verified AgentCard")
 
+// ErrRemoteKeyRevoked re-exports the AgentCard revoked-key-ID signal (#352) so the bridge can attribute
+// a distinct audit reason when a card was offered only under a retired signing key ID.
+var ErrRemoteKeyRevoked = agentcardjws.ErrRevokedKeyID
+
 // ErrRemoteExtensionUnsupported marks a verified card that declares a `required: true` A2A
 // extension the bridge is not configured to activate. It wraps ErrRemoteTargetUntrusted so every
 // fail-closed path still quarantines the target, while giving the audit a distinct terminal reason
@@ -58,21 +62,45 @@ type cachedTarget struct {
 	lastModified string
 	ready        bool
 	generation   uint64
+	fediverse    *fediverseResolution
 }
 
 func (c *Client) resolveRemoteAgentCard(ctx context.Context, target Target) (*a2a.AgentCard, error) {
-	refreshLock := c.refreshLock(target.ID())
+	return c.resolveRemoteAgentCardAs(ctx, target, target)
+}
+
+// resolveRemoteAgentCardAs verifies trustTarget's discovered endpoint/card while atomically
+// installing the client under cacheTarget. acct mappings therefore retain one stable trust fence
+// even when WebFinger changes the advertised endpoint.
+func (c *Client) resolveRemoteAgentCardAs(ctx context.Context, trustTarget, cacheTarget Target) (*a2a.AgentCard, error) {
+	refreshLock := c.refreshLock(cacheTarget.ID())
 	refreshLock.Lock()
 	defer refreshLock.Unlock()
 
 	c.mu.RLock()
-	previous := c.cache[target.ID()]
+	previous := c.cache[cacheTarget.ID()]
 	c.mu.RUnlock()
 
-	cardURL := strings.TrimRight(target.String(), "/") + remoteAgentCardPath
+	cardURL := trustTarget.cardURL
+	if cardURL == "" {
+		cardURL = strings.TrimRight(trustTarget.String(), "/") + remoteAgentCardPath
+	}
+	if cacheTarget.IsFediverse() && previous.ready && !sameFediverseA2ARoute(previous.fediverse, trustTarget.String(), cardURL) {
+		// WebFinger is the current routing authority for an acct mapping. Once it advertises a
+		// different A2A endpoint or card URL, the old client must not remain callable while the new
+		// route is being verified (or if that verification is unavailable). Clear it before the
+		// fetch and advance the generation fence so an in-flight old transport also fails closed.
+		c.invalidateRemote(
+			cacheTarget,
+			fmt.Errorf("discovered A2A route changed to %s", trustTarget.String()),
+		)
+		c.mu.RLock()
+		previous = c.cache[cacheTarget.ID()]
+		c.mu.RUnlock()
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, cardURL, nil)
 	if err != nil {
-		return nil, fmt.Errorf("build remote AgentCard request for %s: %w", target.String(), err)
+		return nil, fmt.Errorf("build remote AgentCard request for %s: %w", trustTarget.String(), err)
 	}
 	req.Header.Set("Accept", "application/a2a+json, application/json")
 	if previous.ready {
@@ -86,7 +114,7 @@ func (c *Client) resolveRemoteAgentCard(ctx context.Context, target Target) (*a2
 
 	// The card is fetched over the same endpoint the delegation dials, so it must present the same
 	// per-target client certificate when mTLS is configured (#244).
-	cardClient := &http.Client{Transport: c.remoteUserTransport(target), CheckRedirect: c.remoteHTTPClient.CheckRedirect}
+	cardClient := &http.Client{Transport: c.remoteUserTransport(trustTarget), CheckRedirect: c.remoteHTTPClient.CheckRedirect}
 	resp, err := cardClient.Do(req)
 	if err != nil {
 		// Availability failures do not revoke a previously verified identity. The explicit
@@ -99,7 +127,7 @@ func (c *Client) resolveRemoteAgentCard(ctx context.Context, target Target) (*a2
 			return nil, fmt.Errorf("close remote AgentCard response %s: %w", cardURL, err)
 		}
 		if !previous.ready || previous.card == nil || previous.client == nil {
-			return nil, c.quarantineRemote(target, errors.New("server returned 304 without a verified cached card"))
+			return nil, c.quarantineRemote(cacheTarget, errors.New("server returned 304 without a verified cached card"))
 		}
 		if etag := resp.Header.Get("ETag"); etag != "" {
 			previous.etag = etag
@@ -108,14 +136,14 @@ func (c *Client) resolveRemoteAgentCard(ctx context.Context, target Target) (*a2
 			previous.lastModified = lastModified
 		}
 		c.mu.Lock()
-		c.cache[target.ID()] = previous
+		c.cache[cacheTarget.ID()] = previous
 		c.mu.Unlock()
 		return cloneAgentCard(previous.card)
 	}
 	if resp.StatusCode != http.StatusOK {
 		closeErr := resp.Body.Close()
 		if resp.StatusCode == http.StatusNotFound || resp.StatusCode == http.StatusGone {
-			trustErr := c.quarantineRemote(target, fmt.Errorf("card was withdrawn with HTTP %d", resp.StatusCode))
+			trustErr := c.quarantineRemote(cacheTarget, fmt.Errorf("card was withdrawn with HTTP %d", resp.StatusCode))
 			if closeErr != nil {
 				return nil, errors.Join(trustErr, fmt.Errorf("close withdrawn remote AgentCard response: %w", closeErr))
 			}
@@ -131,13 +159,13 @@ func (c *Client) resolveRemoteAgentCard(ctx context.Context, target Target) (*a2
 		if err := resp.Body.Close(); err != nil {
 			return nil, fmt.Errorf("close oversized remote AgentCard response %s: %w", cardURL, err)
 		}
-		return nil, c.quarantineRemote(target, fmt.Errorf("card exceeds %d bytes", maxAgentCardBytes))
+		return nil, c.quarantineRemote(cacheTarget, fmt.Errorf("card exceeds %d bytes", maxAgentCardBytes))
 	}
 	if !isJSONMediaType(resp.Header.Get("Content-Type")) {
 		if err := resp.Body.Close(); err != nil {
 			return nil, fmt.Errorf("close non-JSON remote AgentCard response %s: %w", cardURL, err)
 		}
-		return nil, c.quarantineRemote(target, errors.New("card response is not JSON"))
+		return nil, c.quarantineRemote(cacheTarget, errors.New("card response is not JSON"))
 	}
 
 	raw, readErr := io.ReadAll(io.LimitReader(resp.Body, maxAgentCardBytes+1))
@@ -149,30 +177,30 @@ func (c *Client) resolveRemoteAgentCard(ctx context.Context, target Target) (*a2
 		return nil, fmt.Errorf("close remote AgentCard response %s: %w", cardURL, closeErr)
 	}
 	if len(raw) > maxAgentCardBytes {
-		return nil, c.quarantineRemote(target, fmt.Errorf("card exceeds %d bytes", maxAgentCardBytes))
+		return nil, c.quarantineRemote(cacheTarget, fmt.Errorf("card exceeds %d bytes", maxAgentCardBytes))
 	}
 
-	card, err := verifyRemoteAgentCard(raw, target)
+	card, err := verifyRemoteAgentCard(raw, trustTarget)
 	if err != nil {
 		// err may wrap ErrRemoteExtensionUnsupported; quarantineRemote preserves it for the audit.
-		return nil, c.quarantineRemote(target, err)
+		return nil, c.quarantineRemote(cacheTarget, err)
 	}
 	// A card that requires mTLS but whose mapping configured no client certificate is refused: the
 	// partner demands transport auth the bridge cannot present, and trusting it anyway would be a
 	// silent downgrade of the declared scheme (#244).
-	if cardRequiresMutualTLS(card) && !target.requiresClientCert() {
-		return nil, c.quarantineRemote(target, ErrRemoteMutualTLSRequired)
+	if cardRequiresMutualTLS(card) && !trustTarget.requiresClientCert() {
+		return nil, c.quarantineRemote(cacheTarget, ErrRemoteMutualTLSRequired)
 	}
 	generation := nextGeneration(previous.generation)
-	generationState := c.remoteGeneration(target.ID())
+	generationState := c.remoteGeneration(cacheTarget.ID())
 	client, err := buildSDKClient(
 		ctx,
 		card,
-		c.remoteSDKHTTPClient(target, generationState, generation),
-		target.ActivatedExtensions(),
+		c.remoteSDKHTTPClient(trustTarget, generationState, generation),
+		trustTarget.ActivatedExtensions(),
 	)
 	if err != nil {
-		return nil, c.quarantineRemote(target, fmt.Errorf("build client from verified card: %w", err))
+		return nil, c.quarantineRemote(cacheTarget, fmt.Errorf("build client from verified card: %w", err))
 	}
 
 	installed := cachedTarget{
@@ -183,16 +211,21 @@ func (c *Client) resolveRemoteAgentCard(ctx context.Context, target Target) (*a2
 		ready:        true,
 		generation:   generation,
 	}
+	if cacheTarget.IsFediverse() {
+		installed.fediverse = &fediverseResolution{
+			Transport: brokerTransportA2A, A2AEndpoint: trustTarget.String(), AgentCard: cardURL,
+		}
+	}
 	c.mu.Lock()
 	generationState.Store(generation)
-	c.cache[target.ID()] = installed
+	c.cache[cacheTarget.ID()] = installed
 	c.mu.Unlock()
 	c.log.Info(
 		"verified remote a2a agent",
-		"target", target.String(),
+		"target", cacheTarget.String(),
 		"card_name", card.Name,
 		"card_organization", card.Provider.Org,
-		"card_key_id", target.expectedKeyID,
+		"card_key_id", trustTarget.expectedKeyID,
 	)
 	return cloneAgentCard(card)
 }
@@ -207,13 +240,24 @@ func (c *Client) refreshLock(targetID string) *sync.Mutex {
 // itself wraps a more specific sentinel (e.g. ErrRemoteExtensionUnsupported) stays inspectable so
 // the audit can report a distinct terminal reason.
 func (c *Client) quarantineRemote(target Target, cause error) error {
+	c.invalidateRemote(target, cause)
+	return fmt.Errorf("%w: %s: %w", ErrRemoteTargetUntrusted, target.String(), cause)
+}
+
+func (c *Client) invalidateRemote(target Target, cause error) {
 	c.mu.Lock()
 	generation := nextGeneration(c.cache[target.ID()].generation)
 	c.remoteGeneration(target.ID()).Store(generation)
 	c.cache[target.ID()] = cachedTarget{generation: generation}
 	c.mu.Unlock()
 	c.log.Warn("quarantined remote a2a agent", "target", target.String(), "reason", cause.Error())
-	return fmt.Errorf("%w: %s: %w", ErrRemoteTargetUntrusted, target.String(), cause)
+}
+
+func sameFediverseA2ARoute(resolved *fediverseResolution, endpoint, cardURL string) bool {
+	return resolved != nil &&
+		resolved.Transport == brokerTransportA2A &&
+		resolved.A2AEndpoint == endpoint &&
+		resolved.AgentCard == cardURL
 }
 
 func nextGeneration(current uint64) uint64 {
@@ -261,11 +305,13 @@ func verifyRemoteAgentCard(raw []byte, target Target) (*a2a.AgentCard, error) {
 	if err := validateRemoteCardContract(card, target); err != nil {
 		return nil, err
 	}
-	publicKey := target.es256PublicKey()
-	if publicKey == nil {
+	pinnedKeys := target.pinnedKeys()
+	if len(pinnedKeys) == 0 {
 		return nil, fmt.Errorf("pinned ES256 public key is invalid")
 	}
-	if err := agentcardjws.Verify(document, publicKey, target.expectedKeyID); err != nil {
+	// Verify against the currently-valid pin set (rotation overlap) and the revoked list (#352): a card
+	// under any pinned, non-revoked key is trusted; one under a retired key is refused.
+	if err := agentcardjws.VerifySet(document, pinnedKeys, target.revoked()); err != nil {
 		return nil, err
 	}
 	return card, nil

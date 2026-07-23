@@ -1,0 +1,51 @@
+# D owns a distinct leaf certificate and Gateway listeners while sharing the Traefik data plane.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: matrix-d-tls
+  namespace: gateway
+spec:
+  secretName: matrix-d-tls
+  issuerRef:
+    kind: ClusterIssuer
+    name: ${cluster_issuer}
+  dnsNames:
+    - ${federation_second_partner_server_name}
+    - matrix.${federation_second_partner_server_name}
+---
+apiVersion: gateway.networking.k8s.io/v1
+kind: Gateway
+metadata:
+  name: federation-d
+  namespace: gateway
+spec:
+  gatewayClassName: traefik
+  listeners:
+    - name: https-wellknown-d
+      protocol: HTTPS
+      port: 443
+      hostname: ${federation_second_partner_server_name}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: matrix-d-tls
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix-d
+    - name: https-matrix-d
+      protocol: HTTPS
+      port: 443
+      hostname: matrix.${federation_second_partner_server_name}
+      tls:
+        mode: Terminate
+        certificateRefs:
+          - name: matrix-d-tls
+      allowedRoutes:
+        namespaces:
+          from: Selector
+          selector:
+            matchLabels:
+              kubernetes.io/metadata.name: matrix-d

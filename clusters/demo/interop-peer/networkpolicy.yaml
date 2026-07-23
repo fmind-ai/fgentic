@@ -1,0 +1,37 @@
+# Default-deny NetworkPolicy for the interop peer (issue #489 Task 7). The peer is outbound-only: it
+# resolves DNS and reaches ONLY the gateway inbox (namespace `activitypub`, :8480). No ingress, and no
+# other egress — it never reaches kagent, agentgateway, Postgres, or the public internet.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: activitypub-interop-peer
+  namespace: activitypub-interop
+  labels:
+    app.kubernetes.io/name: activitypub-interop-peer
+    app.kubernetes.io/part-of: fgentic
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: activitypub-interop-peer
+  policyTypes:
+    - Ingress
+    - Egress
+  egress:
+    # DNS resolution (CoreDNS in kube-system).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # The gateway inbox only (WebFinger + signed activity POSTs).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: activitypub
+      ports:
+        - protocol: TCP
+          port: 8480

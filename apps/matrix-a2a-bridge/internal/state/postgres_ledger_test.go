@@ -20,8 +20,8 @@ var (
 )
 
 func TestDurableLedgerMigrationContract(t *testing.T) {
-	if len(UpgradeTable) != 4 {
-		t.Fatalf("upgrade table length = %d, want 4", len(UpgradeTable))
+	if len(UpgradeTable) != 5 {
+		t.Fatalf("upgrade table length = %d, want 5", len(UpgradeTable))
 	}
 	recorder := &databaseRecorder{}
 	db := recorder.database(t)
@@ -57,6 +57,55 @@ func TestDurableLedgerMigrationContract(t *testing.T) {
 	}
 	if strings.Contains(migration, "-- only: postgres") || strings.Contains(migration, "-- end only postgres") {
 		t.Fatal("dbutil dialect markers leaked into executed migration")
+	}
+}
+
+func TestConversationGovernanceMigrationContract(t *testing.T) {
+	recorder := &databaseRecorder{}
+	db := recorder.database(t)
+	t.Cleanup(func() { _ = db.Close() })
+	to, compat, err := UpgradeTable[4].DangerouslyRun(t.Context(), db)
+	if err != nil {
+		t.Fatalf("execute conversation-governance migration through dbutil: %v", err)
+	}
+	if to != 5 || compat != 5 {
+		t.Fatalf("migration version = (%d, %d), want (5, 5)", to, compat)
+	}
+	migration := strings.Join(recorder.executedQueries(), "\n")
+	for _, required := range []string{
+		"ADD COLUMN owners JSONB", "ADD COLUMN owners_complete BOOLEAN", "jsonb_array_length(owners) <= 256",
+		"bridge_contexts_retention", "WHERE owners_complete",
+	} {
+		if !strings.Contains(migration, required) {
+			t.Errorf("conversation-governance migration does not contain %q", required)
+		}
+	}
+}
+
+func TestConversationRetentionQuerySkipsIncompleteAndBusyRows(t *testing.T) {
+	recorder := &databaseRecorder{}
+	db := recorder.database(t)
+	t.Cleanup(func() { _ = db.Close() })
+	store := &Postgres{db: db}
+
+	conversations, err := store.ConversationsBefore(t.Context(), "agent-a", time.Now().UTC(), 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(conversations) != 0 {
+		t.Fatalf("retention candidates = %#v, want none", conversations)
+	}
+	events := recorder.recordedEvents()
+	if len(events) != 1 || events[0].kind != "query" {
+		t.Fatalf("database events = %#v, want one query", events)
+	}
+	for _, required := range []string{
+		"contexts.owners_complete", "NOT EXISTS", "jobs.room_id = contexts.room_id",
+		"jobs.ghost_localpart = contexts.ghost", "jobs.terminal_at IS NULL",
+	} {
+		if !strings.Contains(events[0].query, required) {
+			t.Errorf("conversation-retention query does not contain %q", required)
+		}
 	}
 }
 

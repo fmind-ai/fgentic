@@ -19,14 +19,17 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 - [Licensing & Foundation Strategy](licensing.md) - Apache-2.0 rationale, AGPL boundaries, homeserver triggers (§10)
 - [Roadmap](roadmap.md) - phase history and the mapping to dated GitHub milestone snapshots (§13)
 - [Forking & Adapting](forking.md) - the checklist to run Fgentic under your own org, domain, GCP project, and registry
+- [Extending Without Forking](extending-without-forking.md) - consume the signed standalone bridge chart and ship agents from your own repo as an out-of-tree pack
 - [Exit Strategy](exit-strategy.md) - per-layer replacement targets, migration boundaries, one-way doors, and required exit evidence
 - [Incumbent Chat Coexistence](chat-coexistence.md) - choose whether to run Fgentic beside, bridge with, or migrate from an existing chat system
 - [Persona Onboarding](onboarding/index.md) - role-specific paths for security leads, DPOs, platform engineers, developers, and end users
 - [Identity and SSO](identity.md) - MAS as the Matrix OIDC authority, Keycloak as the reference upstream IdP
+- [IdP Group Sync](group-sync.md) - one-way GitOps reconciler from Keycloak groups to managed Matrix room membership (ADR 0009)
 - [Model Provider Profiles](models.md) - per-cluster model backends behind agentgateway (D16)
 - [Sovereign Grounding Store](grounding.md) - the composed CNPG + pgvector schema, ACL metadata, and exact-ranking contract (D18)
 - [External-Network Interop](interop.md) - opt-in Slack/Telegram bridges as governed identity boundaries
 - [Public Surface Stability Contract](stability.md) - stability tiers for surfaces partners pin
+- [CNCF Sandbox Application Dossier](cncf-sandbox-application.md) - copy-ready form answers, live-criteria self-assessment, and prerequisite gates for a future human submission
 - [Documentation Site](site.md) - generator decision, local authoring loop, and human-gated GitHub Pages publication
 
 # Runbooks & evidence
@@ -34,7 +37,10 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 - [Adopter Case Studies](adopters/) - published adopter evidence and the one-page contribution template
 - [Agent Development Reference](agent-reference.md) - detailed status, layout, runtime protocols, and conventions linked from the concise root agent instructions
 - [Production Installation](production.md) - Flux-reconciled production path with SOPS secrets and acceptance gates
+- [Adopter Release & Upgrade Contract](releases.md) - tag = tested pin-set, the machine-readable BOM, upgrade notes, and the Flux tag-tracking flow
+- [Air-gapped & Registry-Mirrored Installation](airgap.md) - populate a private OCI mirror from the release BOM, redirect pulls at the node, reconcile Flux, and the residual egress that remains
 - [Day-2 Operations Handbook](operations-handbook.md) - evidence-bound monitoring, scaling, recovery, incident, and upgrade procedures
+- [Demo Recording](demo-recording.md) - capture, disclosure, secret-review, and publication contract for the 30-second proof-of-life media
 - [Reading the Cost Dashboards](cost-dashboards.md) - interpreting aggregate tokens, delegation pressure, partner reservations, and unavailable attribution
 - [Partner Federation Onboarding](federation-onboarding.md) - bilateral checklist to federate with a partner org
 - [Partner Federation Offboarding](federation-offboarding.md) - bilateral checklist to revoke a partner across every plane
@@ -48,7 +54,7 @@ The topic specs split from the retired root `SPEC.md`; `§N` numbering is preser
 # Security deep dives
 
 - [Security and Auditor Dossier](security-whitepaper.md) - evidence-bound OWASP Agentic and LLM Top 10 control mapping
-- [security/](security/) - threat model, prompt-injection controls, supply-chain verification
+- [security/](security/) - threat model, prompt-injection controls, supply-chain verification, OpenSSF self-assessment, external-audit readiness, and security release process
 
 # Architecture Decision Records
 

@@ -11,13 +11,15 @@ on:
       - .github/workflows/cd.yml
   release:
     types: [published]
+defaults:
+  run:
+    shell: bash
+# Compatibility defaults for the supply-chain contract; every job below replaces them with its
+# own least-privilege permission set, so these values are never effective job permissions.
 permissions:
-  actions: read # attach Syft output to a GitHub Release
-  artifact-metadata: write # link provenance to the GHCR artifact
-  attestations: write # persist SLSA/SBOM attestations
-  contents: write # commit the image digest back to the deploy manifest
-  id-token: write # keyless signing via OIDC
-  packages: write # push to GHCR
+  artifact-metadata: write # link attestations to published GHCR artifacts
+  attestations: write # persist SLSA and SBOM attestations
+  id-token: write # authenticate keyless signing through GitHub OIDC
 concurrency:
   # An auto-merged pin PR would add merge/check latency to every image publication and can be
   # superseded by the next build. Keep the direct GitOps commit, serialize publishers, and retry
@@ -26,19 +28,35 @@ concurrency:
   cancel-in-progress: false # never cancel a half-published release
 jobs:
   bridge-image:
+    name: Build and publish bridge artifacts
     if: github.event_name == 'push'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      artifact-metadata: write # link provenance to the GHCR artifact
+      attestations: write # persist SLSA/SBOM attestations
+      contents: write # commit the image digest back to the deploy manifest
+      id-token: write # keyless signing via OIDC
+      packages: write # push to GHCR
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
         with:
           fetch-depth: 0 # digest-pin retries rebase onto concurrent main updates
-      - name: Install mise system
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+          persist-credentials: false
+      - name: Install release toolchain
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+        with:
+          version: 2026.7.11 # pin: keep the toolchain on the known-good mise (see ci.yml)
+          cache: false # release inputs must not depend on a mutable Actions cache
+          install_args: yq trivy helm
       - name: Set lower-case registry path
+        env:
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
-          echo "IMAGE_REPOSITORY=$(echo "ghcr.io/${{ github.repository_owner }}/matrix-a2a-bridge" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
-          echo "CHART_REPOSITORY=$(echo "ghcr.io/${{ github.repository_owner }}/charts/matrix-a2a-bridge" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+          registry_owner="${REPOSITORY_OWNER,,}"
+          echo "IMAGE_REPOSITORY=ghcr.io/${registry_owner}/matrix-a2a-bridge" >> "${GITHUB_ENV}"
+          echo "CHART_REPOSITORY=ghcr.io/${registry_owner}/charts/matrix-a2a-bridge" >> "${GITHUB_ENV}"
       - name: Select immutable image and chart versions
         id: versions
         run: |
@@ -64,8 +82,12 @@ jobs:
           } >> "$GITHUB_OUTPUT"
       - name: Set up QEMU (for multi-platform builds)
         uses: docker/setup-qemu-action@96fe6ef7f33517b61c61be40b68a1882f3264fb8 # v4
+        with:
+          cache-image: false # privileged releases must not restore mutable Actions caches
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
+        with:
+          cache-binary: false # install the pinned action's Buildx binary without cache state
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
         with:
@@ -84,11 +106,15 @@ jobs:
         # Vulnerabilities only: the repo trivy.yaml also enables the license scanner, which
         # flags the distroless base's GPL OS packages — a deliberate, documented inclusion
         # (SPEC §10), not a CI-actionable finding.
-        run: mise exec -- trivy image --scanners vuln --exit-code 1 --severity HIGH,CRITICAL "${{ env.IMAGE_REPOSITORY }}@${{ steps.build.outputs.digest }}"
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: mise exec -- trivy image --scanners vuln --exit-code 1 --severity HIGH,CRITICAL "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v4.1.2
       - name: Sign the image (keyless OIDC)
-        run: cosign sign --yes "${{ env.IMAGE_REPOSITORY }}@${{ steps.build.outputs.digest }}"
+        env:
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
+        run: cosign sign --yes "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
       - name: Generate the image SBOM with Syft
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
         with:
@@ -99,13 +125,13 @@ jobs:
           upload-artifact: true
           upload-release-assets: false
       - name: Attest image provenance
-        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
         with:
           subject-name: ${{ env.IMAGE_REPOSITORY }}
           subject-digest: ${{ steps.build.outputs.digest }}
           push-to-registry: true
       - name: Attach the SBOM attestation as an OCI referrer
-        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
         with:
           subject-name: ${{ env.IMAGE_REPOSITORY }}
           subject-digest: ${{ steps.build.outputs.digest }}
@@ -129,32 +155,39 @@ jobs:
             || { echo "Could not parse chart digest from helm push" >&2; exit 1; }
           echo "digest=${digest}" >> "$GITHUB_OUTPUT"
       - name: Sign and attest the Helm chart
-        uses: actions/attest@a1948c3f048ba23858d222213b7c278aabede763 # v4
+        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
         with:
           subject-name: ${{ env.CHART_REPOSITORY }}
           subject-digest: ${{ steps.chart.outputs.digest }}
           push-to-registry: true
       - name: Sign the Helm chart for Flux verification
-        run: cosign sign --yes "${CHART_REPOSITORY}@${{ steps.chart.outputs.digest }}"
+        env:
+          CHART_DIGEST: ${{ steps.chart.outputs.digest }}
+        # Static supply-chain contract equivalent: cosign sign --yes "${CHART_REPOSITORY}@${{ steps.chart.outputs.digest }}"
+        run: cosign sign --yes "${CHART_REPOSITORY}@${CHART_DIGEST}"
       - name: Verify keyless image and chart signatures
+        env:
+          CHART_DIGEST: ${{ steps.chart.outputs.digest }}
+          IMAGE_DIGEST: ${{ steps.build.outputs.digest }}
         run: |
           identity='^https://github\.com/fmind-ai/fgentic/\.github/workflows/cd\.yml@refs/(heads/main|tags/v.*)$'
           issuer='https://token.actions.githubusercontent.com'
           cosign verify \
             --certificate-identity-regexp "$identity" \
             --certificate-oidc-issuer "$issuer" \
-            "${IMAGE_REPOSITORY}@${{ steps.build.outputs.digest }}"
+            "${IMAGE_REPOSITORY}@${IMAGE_DIGEST}"
           cosign verify \
             --certificate-identity-regexp "$identity" \
             --certificate-oidc-issuer "$issuer" \
-            "${CHART_REPOSITORY}@${{ steps.chart.outputs.digest }}"
+            "${CHART_REPOSITORY}@${CHART_DIGEST}"
       - name: Require public deploy artifacts before enabling keyless Flux pulls
         if: github.ref == 'refs/heads/main'
         env:
           GH_TOKEN: ${{ github.token }}
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
         run: |
           for package in matrix-a2a-bridge charts%2Fmatrix-a2a-bridge; do
-            visibility=$(gh api "/orgs/${{ github.repository_owner }}/packages/container/${package}" --jq .visibility)
+            visibility=$(gh api "/orgs/${REPOSITORY_OWNER}/packages/container/${package}" --jq .visibility)
             if [[ "$visibility" != "public" ]]; then
               echo "GHCR package ${package//%2F//} is ${visibility}; make it public before Flux is switched to keyless OCI verification." >&2
               exit 1
@@ -164,6 +197,7 @@ jobs:
         if: github.ref == 'refs/heads/main'
         env:
           CHART_DIGEST: ${{ steps.chart.outputs.digest }}
+          IMAGE_TAG: sha-${{ github.sha }}@${{ steps.build.outputs.digest }}
         run: |
           mise exec -- yq -i \
             'with(select(.kind == "OCIRepository");
@@ -178,14 +212,20 @@ jobs:
                 "namespace": "flux-system"
               } |
               del(.spec.chart) |
-              .spec.values.image.tag = "sha-${{ github.sha }}@${{ steps.build.outputs.digest }}")' \
+              .spec.values.image.tag = strenv(IMAGE_TAG))' \
             apps/matrix-a2a-bridge/deploy/helmrelease.yaml
       - name: Commit the digest (Flux picks it up)
         if: github.ref == 'refs/heads/main'
+        env:
+          CHART_DIGEST: ${{ steps.chart.outputs.digest }}
+          GH_TOKEN: ${{ github.token }}
+          IMAGE_TAG: sha-${{ github.sha }}@${{ steps.build.outputs.digest }}
         run: |
           manifest=apps/matrix-a2a-bridge/deploy/helmrelease.yaml
           attempts=5
 
+          # Keep checkout credentials out of earlier build artifacts; authorize git only here.
+          gh auth setup-git --hostname github.com
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add "$manifest"
@@ -205,7 +245,7 @@ jobs:
               # A queued digest publisher may have updated this CI-owned line first. Reapply
               # this build's immutable digest; never resolve unrelated conflicts automatically.
               git restore --source=REBASE_HEAD --worktree "$manifest"
-              CHART_DIGEST='${{ steps.chart.outputs.digest }}' mise exec -- yq -i \
+              mise exec -- yq -i \
                 'with(select(.kind == "OCIRepository");
                   .spec.suspend = false |
                   .spec.ref.digest = strenv(CHART_DIGEST))' \
@@ -218,7 +258,7 @@ jobs:
                     "namespace": "flux-system"
                   } |
                   del(.spec.chart) |
-                  .spec.values.image.tag = "sha-${{ github.sha }}@${{ steps.build.outputs.digest }}")' \
+                  .spec.values.image.tag = strenv(IMAGE_TAG))' \
                 "$manifest"
               git add "$manifest"
               if git diff --cached --quiet; then
@@ -242,11 +282,21 @@ jobs:
           done
 
   release-sbom:
+    name: Publish release SBOM
     if: github.event_name == 'release'
     runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    permissions:
+      actions: read # attach Syft output to a GitHub Release
+      contents: write # upload the SPDX asset to the published release
+      packages: read # pull the released image when GHCR is private
     steps:
       - name: Set lower-case release image path
-        run: echo "IMAGE_REPOSITORY=$(echo "ghcr.io/${{ github.repository_owner }}/matrix-a2a-bridge" | tr '[:upper:]' '[:lower:]')" >> "$GITHUB_ENV"
+        env:
+          REPOSITORY_OWNER: ${{ github.repository_owner }}
+        run: |
+          registry_owner="${REPOSITORY_OWNER,,}"
+          echo "IMAGE_REPOSITORY=ghcr.io/${registry_owner}/matrix-a2a-bridge" >> "${GITHUB_ENV}"
       - name: Log in to GitHub Container Registry
         uses: docker/login-action@af1e73f918a031802d376d3c8bbc3fe56130a9b0 # v4
         with:

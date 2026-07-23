@@ -34,3 +34,27 @@ spec:
   podMetricsEndpoints:
     - port: container-port
       path: /metrics
+---
+# Ready and scrapeable vLLM engines can still be capacity-saturated. A continuous non-empty queue
+# distinguishes sustained inference pressure from the short bursts expected at max concurrency.
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: vllm-capacity
+  namespace: monitoring
+spec:
+  groups:
+    - name: vllm-capacity
+      rules:
+        - alert: VLLMRequestsWaiting
+          expr: vllm:num_requests_waiting{namespace="models"} > 0
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: A sovereign vLLM engine has a sustained request queue
+            description: >-
+              {{ $labels.namespace }}/{{ $labels.pod }} model {{ $labels.model_name }} engine
+              {{ $labels.engine }} has had one or more waiting requests for ten minutes. The
+              process remains scrapeable, but model concurrency or compute capacity is saturated;
+              inspect queue pressure and inference latency before scaling the selected profile.

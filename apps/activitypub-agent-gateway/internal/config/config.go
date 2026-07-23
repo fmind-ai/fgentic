@@ -65,6 +65,13 @@ type Config struct {
 	// much smaller tolerance for an ahead-of-gateway signer clock and cannot exceed five minutes.
 	SignatureMaxSkew    time.Duration `env:"SIGNATURE_MAX_SKEW" envDefault:"12h"`
 	SignatureFutureSkew time.Duration `env:"SIGNATURE_FUTURE_SKEW" envDefault:"5m"`
+	// PinnedKeysPath is an optional mounted JSON map of actor URI -> PKIX/SPKI public-key PEM. When
+	// set, the border resolves a signer's key from this out-of-band pin WITHOUT any network fetch for
+	// exactly those actors, and every other actor still goes through the unchanged #320 SSRF-guarded
+	// HTTPS resolver. It mirrors the platform's pinned-remote-agent identity model and lets a pinned
+	// (e.g. in-cluster) peer be verified without being SSRF-fetchable (ADR 0021, docs/fediverse.md §3).
+	// Empty keeps the pure guarded-HTTP resolver — the default, unchanged behavior.
+	PinnedKeysPath string `env:"PINNED_KEYS_PATH"`
 
 	// IntegrityKeyPath is the mounted, SOPS-backed PKCS#8 PEM Ed25519 key used to attach FEP-8b32
 	// object integrity proofs to outbound replies (and publish the actor's assertionMethod Multikey).
@@ -77,6 +84,10 @@ type Config struct {
 	// HTTPSignatureKeyPath is the mounted RSA private key used only for hop-by-hop ActivityPub HTTP
 	// signatures. Keeping it separate preserves the Ed25519 FEP-8b32 object-proof contract.
 	HTTPSignatureKeyPath string `env:"HTTP_SIGNATURE_KEY_PATH"`
+	// FediverseBrokerToken enables the authenticated, ClusterIP-only Matrix bridge broker. It is
+	// never accepted on the public AP listener. The broker needs both signing keys because AP
+	// fallback carries a FEP-8b32 proof and an RFC 9421/Cavage HTTP signature.
+	FediverseBrokerToken string `env:"FEDIVERSE_BROKER_TOKEN"`
 
 	// IdentityKeyPath is the mounted, SOPS-backed PKCS#8 PEM P-256 key that anchors the FEP-c390
 	// cross-transport identity (issue #218): each actor attaches a VerifiableIdentityStatement bound
@@ -213,6 +224,17 @@ func (c Config) validate() error {
 	}
 	if c.IntegrityRequireInbound && c.PolicyPath == "" {
 		return fmt.Errorf("INTEGRITY_REQUIRE_INBOUND needs POLICY_PATH (object integrity gates the border)")
+	}
+	if c.FediverseBrokerToken != "" {
+		if strings.TrimSpace(c.FediverseBrokerToken) != c.FediverseBrokerToken {
+			return fmt.Errorf("FEDIVERSE_BROKER_TOKEN must not contain surrounding whitespace")
+		}
+		if c.IntegrityKeyPath == "" {
+			return fmt.Errorf("FEDIVERSE_BROKER_TOKEN needs INTEGRITY_KEY_PATH (fallback objects carry proofs)")
+		}
+		if c.HTTPSignatureKeyPath == "" {
+			return fmt.Errorf("FEDIVERSE_BROKER_TOKEN needs HTTP_SIGNATURE_KEY_PATH (fallback delivery is authenticated)")
+		}
 	}
 	if c.GroupsPath != "" {
 		if c.IntegrityKeyPath == "" {

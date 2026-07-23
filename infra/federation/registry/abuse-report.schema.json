@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://fgentic.fmind.ai/schemas/federation/abuse-report.schema.json",
+  "title": "Fgentic cross-org abuse report",
+  "description": "Inbound abuse report from a federated partner (issue #350). A report maps to a break-glass containment action and a content-free evidence pack. It carries references (server_name, event IDs, policy digests) — never message bodies, prompts, or room content.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "reporter_server_name",
+    "subject_server_name",
+    "category",
+    "severity",
+    "requested_action",
+    "reported_at"
+  ],
+  "properties": {
+    "schema": { "type": "string", "const": "fgentic.federation.abuse-report.v1" },
+    "reporter_server_name": {
+      "description": "Exact Matrix server_name of the reporting partner (FQDN — D6).",
+      "type": "string",
+      "pattern": "^(?=.{1,255}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$"
+    },
+    "subject_server_name": {
+      "description": "Exact Matrix server_name the report is about (FQDN — D6).",
+      "type": "string",
+      "pattern": "^(?=.{1,255}$)([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)(\\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+(:[0-9]{1,5})?$"
+    },
+    "category": {
+      "description": "Abuse class. All are references to behaviour, never content.",
+      "type": "string",
+      "enum": ["spam", "harassment", "policy-violation", "credential-compromise", "data-exfiltration", "other"]
+    },
+    "severity": {
+      "type": "string",
+      "enum": ["low", "medium", "high", "critical"]
+    },
+    "requested_action": {
+      "description": "What the reporter asks for. 'contain' maps to fed:break-glass on the subject.",
+      "type": "string",
+      "enum": ["investigate", "rate-limit", "contain"]
+    },
+    "evidence_refs": {
+      "description": "Content-free references only: Matrix event IDs, policy digests, key IDs, or A2A task IDs — NEVER message bodies or prompt text.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "value"],
+        "properties": {
+          "kind": { "type": "string", "enum": ["matrix_event_id", "policy_digest", "key_id", "a2a_task_id", "azp"] },
+          "value": { "type": "string", "minLength": 1 }
+        }
+      }
+    },
+    "reported_at": {
+      "description": "UTC ISO-8601 timestamp.",
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$"
+    },
+    "contact": {
+      "description": "Optional out-of-band contact for the report (an address or ticket URL, not content).",
+      "type": "string"
+    }
+  }
+}

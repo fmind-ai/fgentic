@@ -12,6 +12,9 @@ on:
         options:
           - none
           - bad-model-image
+defaults:
+  run:
+    shell: bash
 permissions:
   contents: read
 concurrency:
@@ -29,8 +32,12 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - name: Install mise toolchain
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+        with:
+          persist-credentials: false
+      - name: Install demo toolchain
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+        with:
+          install_args: flux2 jq k3d kubectl ripgrep yq
       - name: Configure Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
       - name: Restore demo image cache
@@ -118,11 +125,16 @@ jobs:
         run: bash scripts/collect-smoke-diagnostics.sh demo-down
       - name: Enforce demo result
         if: always()
+        env:
+          DEMO_DOWN_OUTCOME: ${{ steps.demo_down.outcome }}
+          DEMO_UP_OUTCOME: ${{ steps.demo_up.outcome }}
+          QUOTA_USAGE_OUTCOME: ${{ steps.quota_usage.outcome }}
         run: |
-          if [[ "${{ steps.demo_up.outcome }}" != "success" \
-            || "${{ steps.quota_usage.outcome }}" != "success" \
-            || "${{ steps.demo_down.outcome }}" != "success" ]]; then
-            echo "demo:up=${{ steps.demo_up.outcome }} quota=${{ steps.quota_usage.outcome }} demo:down=${{ steps.demo_down.outcome }}" >&2
+          # Contract source: steps.quota_usage.outcome is imported as QUOTA_USAGE_OUTCOME.
+          if [[ "${DEMO_UP_OUTCOME}" != "success" \
+            || "${QUOTA_USAGE_OUTCOME}" != "success" \
+            || "${DEMO_DOWN_OUTCOME}" != "success" ]]; then
+            echo "demo:up=${DEMO_UP_OUTCOME} quota=${QUOTA_USAGE_OUTCOME} demo:down=${DEMO_DOWN_OUTCOME}" >&2
             exit 1
           fi
       - name: Preserve demo diagnostics
@@ -139,14 +151,19 @@ jobs:
     runs-on: ubuntu-24.04
     timeout-minutes: 19
     env:
+      MISE_EXEC_AUTO_INSTALL: "false"
       NETWORK_POLICY_DIAGNOSTICS_DIR: ${{ github.workspace }}/.agents/tmp/policy-diagnostics
       KIND_CLUSTER_NAME: fgentic-smoke-policy
       K3D_AUDIT_CLUSTER_NAME: fgentic-smoke-api-audit
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - name: Install mise toolchain
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+        with:
+          persist-credentials: false
+      - name: Install policy toolchain
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+        with:
+          install_args: flux2 go helm jq k3d kind kubeconform kubectl ripgrep xh yq
       - name: Verify A2A authorization boundary
         id: a2a
         continue-on-error: true
@@ -175,25 +192,41 @@ jobs:
         run: mise run test:kubernetes-audit
       - name: Record policy results
         if: always()
+        env:
+          A2A_OUTCOME: ${{ steps.a2a.outcome }}
+          KUBERNETES_AUDIT_OUTCOME: ${{ steps.kubernetes_audit.outcome }}
+          MCP_OUTCOME: ${{ steps.mcp.outcome }}
+          NETWORK_OUTCOME: ${{ steps.network.outcome }}
+          QUOTA_OUTCOME: ${{ steps.quota.outcome }}
+          TRACING_OUTCOME: ${{ steps.tracing.outcome }}
         run: |
+          # Contract sources: the quota and kubernetes_audit step outcomes projected above.
           mkdir -p "${NETWORK_POLICY_DIAGNOSTICS_DIR}"
           cat >"${NETWORK_POLICY_DIAGNOSTICS_DIR}/workflow-results.txt" <<EOF
-          a2a=${{ steps.a2a.outcome }}
-          mcp=${{ steps.mcp.outcome }}
-          tracing=${{ steps.tracing.outcome }}
-          network=${{ steps.network.outcome }}
-          quota=${{ steps.quota.outcome }}
-          kubernetes_audit=${{ steps.kubernetes_audit.outcome }}
+          a2a=${A2A_OUTCOME}
+          mcp=${MCP_OUTCOME}
+          tracing=${TRACING_OUTCOME}
+          network=${NETWORK_OUTCOME}
+          quota=${QUOTA_OUTCOME}
+          kubernetes_audit=${KUBERNETES_AUDIT_OUTCOME}
           EOF
       - name: Enforce policy result
         if: always()
+        env:
+          A2A_OUTCOME: ${{ steps.a2a.outcome }}
+          KUBERNETES_AUDIT_OUTCOME: ${{ steps.kubernetes_audit.outcome }}
+          MCP_OUTCOME: ${{ steps.mcp.outcome }}
+          NETWORK_OUTCOME: ${{ steps.network.outcome }}
+          QUOTA_OUTCOME: ${{ steps.quota.outcome }}
+          TRACING_OUTCOME: ${{ steps.tracing.outcome }}
         run: |
-          if [[ "${{ steps.a2a.outcome }}" != "success" \
-            || "${{ steps.mcp.outcome }}" != "success" \
-            || "${{ steps.tracing.outcome }}" != "success" \
-            || "${{ steps.network.outcome }}" != "success" \
-            || "${{ steps.quota.outcome }}" != "success" \
-            || "${{ steps.kubernetes_audit.outcome }}" != "success" ]]; then
+          # Enforce every projected policy-step outcome, including quota and Kubernetes audit.
+          if [[ "${A2A_OUTCOME}" != "success" \
+            || "${MCP_OUTCOME}" != "success" \
+            || "${TRACING_OUTCOME}" != "success" \
+            || "${NETWORK_OUTCOME}" != "success" \
+            || "${QUOTA_OUTCOME}" != "success" \
+            || "${KUBERNETES_AUDIT_OUTCOME}" != "success" ]]; then
             cat "${NETWORK_POLICY_DIAGNOSTICS_DIR}/workflow-results.txt" >&2
             exit 1
           fi
@@ -218,17 +251,24 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - name: Install mise toolchain
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+        with:
+          persist-credentials: false
+      - name: Install scanner toolchain
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+        with:
+          install_args: helm jq k3d kubectl ripgrep yq
       - name: Verify continuous vulnerability scanning
         id: trivy_operator
         continue-on-error: true
         run: timeout --signal=TERM --kill-after=90s 30m mise run test:trivy-operator
       - name: Enforce scanner result
         if: always()
+        env:
+          TRIVY_OPERATOR_OUTCOME: ${{ steps.trivy_operator.outcome }}
         run: |
-          if [[ "${{ steps.trivy_operator.outcome }}" != "success" ]]; then
-            echo "trivy_operator=${{ steps.trivy_operator.outcome }}" >&2
+          # Contract source: steps.trivy_operator.outcome is imported as TRIVY_OPERATOR_OUTCOME.
+          if [[ "${TRIVY_OPERATOR_OUTCOME}" != "success" ]]; then
+            echo "trivy_operator=${TRIVY_OPERATOR_OUTCOME}" >&2
             exit 1
           fi
       - name: Preserve scanner diagnostics
@@ -253,7 +293,7 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: read
-      issues: write
+      issues: write # maintain the default-branch smoke failure tracker
     env:
       DEMO_RESULT: ${{ needs.demo.result }}
       POLICY_RESULT: ${{ needs.policy.result }}

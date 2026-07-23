@@ -1,0 +1,20 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "matrix-group-sync.fullname" . }}-bindings
+  labels:
+    {{- include "matrix-group-sync.labels" . | nindent 4 }}
+data:
+  # The exact Keycloak-group -> managed-room bindings the reconciler materializes (docs/adr/0009).
+  # One binding = one access bundle. This file is the SOLE source of which rooms are managed.
+  bindings.yaml: |
+    schemaVersion: 1
+    bindings:
+      {{- range $key, $b := .Values.bindings }}
+      - group: {{ $b.group | quote }}
+        roomAlias: {{ $b.roomAlias | quote }}
+        agents:
+          {{- range $b.agents }}
+          - {{ . | quote }}
+          {{- end }}
+      {{- end }}

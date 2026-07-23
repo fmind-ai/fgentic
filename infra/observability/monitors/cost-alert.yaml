@@ -28,5 +28,24 @@ spec:
             description: >-
               More than ${llm_usage_budget_15m} model tokens were consumed in 15 minutes through
               agentgateway across all providers and models. Check for mention storms, agent loops,
-              or a misbehaving automation (bridge rate limits and this global token budget bound
-              the current blast radius; per-room budgets are tracked in issue #99).
+              or a misbehaving automation (bridge rate limits, per-room token budgets, and this
+              global token budget bound the current blast radius; per-room budgets are issue #99).
+    # Per-room token-budget exhaustion (#99). The bridge meters exact per-room model-token spend from
+    # each completed delegation (docs/audit.md §157) and refuses new invocations once a room reaches
+    # its configured budget for the period. The counter is deliberately label-free: per-room budget
+    # state is high-cardinality and stays in-room via the bridge budget command, never a metric label
+    # (D7/D8). This alert only signals that some room hit its cap so an operator can review the budget.
+    - name: room-token-budget
+      rules:
+        - alert: RoomTokenBudgetExhausted
+          expr: increase(fgentic_room_token_budget_exhaustions_total[15m]) > 0
+          for: 5m
+          labels:
+            severity: info
+          annotations:
+            summary: A room reached its per-period token budget
+            description: >-
+              At least one room was refused an agent invocation in the last 15 minutes because it
+              reached its configured per-period token budget (#99). This is the intended hard cap,
+              not an outage. Identify the room from the bridge audit log (audit_schema
+              fgentic.room_token_budget.v1) and raise its budget only if the spend is expected.

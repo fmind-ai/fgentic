@@ -28,6 +28,19 @@ patches:
       - op: add
         path: /spec/components/-
         value: retention
+  # Only the GCP reference enables CNPG object-store backups. Compose their alerts into the
+  # dependency-ordered monitor layer without creating false positives in local profiles.
+  - target:
+      group: kustomize.toolkit.fluxcd.io
+      version: v1
+      kind: Kustomization
+      name: observability-monitors
+      namespace: flux-system
+    patch: |
+      - op: add
+        path: /spec/components
+        value:
+          - components/gcp-backup
   # Bind Synapse media to the CSI-backed class whose snapshots are retained independently of
   # their request objects. The restore drill owns snapshot creation and recovery-point evidence.
   - patch: |

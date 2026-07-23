@@ -42,7 +42,7 @@ If the ordinary user can read or mutate any admin surface, disable `admin_consol
 1. Open **Users**, select the full MXID, and open **Edit**.
 1. Set **Deactivated** and save. Under MAS, use the MAS account-state control shown by Ketesa; do not use **Erase** or a destructive delete path for a temporary suspension.
 1. Verify the user's access is blocked.
-1. Clear **Deactivated**, save, and verify access returns. Record who approved the change and why.
+1. Clear **Deactivated**, save, and verify access returns. Attribution of who performed each privileged admin-API mutation (room purge, media quarantine, report dismissal), when, and with what outcome is captured by the opt-in content-bounded admin-action audit stream `fgentic.admin_action.v1` ([ADR 0018 — Admin-action audit](adr/0018-content-bounded-identity-audit.md#admin-action-audit-455)), not a manual note. Note its honest boundaries: it does not assert suspend vs reactivate direction (a body-only request argument), does not attribute registration-token or MAS-plane actions, and covers admin-API calls only — record any out-of-scope approval rationale (e.g. a `kubectl` or direct-database change) in the change ticket.
 
 ### Review an event report
 

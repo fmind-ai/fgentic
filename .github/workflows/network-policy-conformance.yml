@@ -1,6 +1,9 @@
 name: NetworkPolicy conformance
 on:
   workflow_dispatch:
+defaults:
+  run:
+    shell: bash
 permissions:
   contents: read
 concurrency:
@@ -11,11 +14,18 @@ jobs:
     name: kind and Calico policy enforcement
     runs-on: ubuntu-24.04
     timeout-minutes: 20
+    env:
+      MISE_EXEC_AUTO_INSTALL: "false"
     steps:
       - name: Checkout repository
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7
-      - name: Install mise toolchain
-        uses: jdx/mise-action@e6a8b3978addb5a52f2b4cd9d91eafa7f0ab959d # v4
+        with:
+          persist-credentials: false
+      - name: Install conformance toolchain
+        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+        with:
+          install_args: flux2 go helm jq kind kubeconform kubectl ripgrep yq
+          working_directory: apps/matrix-a2a-bridge
       - name: Verify A2A authorization boundary
         run: mise run test:a2a-authorization
       - name: Verify governed MCP boundary

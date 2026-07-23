@@ -6,8 +6,12 @@ import (
 	"crypto/rand"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"slices"
 	"testing"
+	"time"
+
+	"github.com/fmind-ai/matrix-a2a-bridge/internal/agentcardjws"
 )
 
 func newTestSigningKey(t *testing.T) *ecdsa.PrivateKey {
@@ -79,6 +83,44 @@ func TestTargetValidationAndIdentity(t *testing.T) {
 	}
 	if first.ID() == second.ID() {
 		t.Fatal("token budget did not change the routing/cache ID")
+	}
+}
+
+func TestFediverseTargetBindsBothProtocolIdentities(t *testing.T) {
+	card := testCardIdentity(t, newTestSigningKey(t))
+	ap := ActivityPubIdentity{
+		ActorID:            "https://peer.example.com/users/agent",
+		VerificationMethod: "https://peer.example.com/users/agent#ed25519-key",
+		PublicKeyMultibase: testMultikey,
+		ProofMaxAge:        24 * time.Hour,
+	}
+	first, err := NewFediverseTarget("acct:agent@peer.example.com", card, ap, 4096, nil)
+	if err != nil {
+		t.Fatalf("NewFediverseTarget: %v", err)
+	}
+	if !first.IsRemote() || !first.IsFediverse() || first.String() != "acct:agent@peer.example.com" {
+		t.Fatalf("target = %+v", first)
+	}
+	changed := ap
+	changed.ActorID = "https://peer.example.com/users/replacement"
+	changed.VerificationMethod = changed.ActorID + "#ed25519-key"
+	second, err := NewFediverseTarget("acct:agent@peer.example.com", card, changed, 4096, nil)
+	if err != nil {
+		t.Fatalf("NewFediverseTarget changed: %v", err)
+	}
+	if first.SameIdentity(second) || first.ID() == second.ID() {
+		t.Fatal("ActivityPub identity pin change did not re-key the mapping")
+	}
+	if _, err := NewFediverseTarget("acct:agent@peer.example.com", card, ActivityPubIdentity{}, 4096, nil); err == nil {
+		t.Fatal("NewFediverseTarget accepted a missing ActivityPub pin")
+	}
+	tooShort := ap
+	tooShort.ProofMaxAge = time.Nanosecond
+	if _, err := NewFediverseTarget("acct:agent@peer.example.com", card, tooShort, 4096, nil); err == nil {
+		t.Fatal("NewFediverseTarget accepted a sub-second ActivityPub proof age")
+	}
+	if _, err := NewFediverseTarget("acct:agent@-peer.example.com", card, ap, 4096, nil); err == nil {
+		t.Fatal("NewFediverseTarget accepted a non-canonical domain label")
 	}
 }
 
@@ -283,5 +325,73 @@ func TestNewRemoteTargetRejectsInvalidTrustMaterialWithoutPanicking(t *testing.T
 	}
 	if _, err := NewRemoteTarget("https://partner.example/a2a", valid, maxExactJSONInteger+1, nil); err == nil {
 		t.Fatal("inexact JSON token budget accepted")
+	}
+}
+
+func TestNewRemoteTargetKeyRotationOverlapAndRevocation(t *testing.T) {
+	oldKey := newTestSigningKey(t)
+	newKey := newTestSigningKey(t)
+
+	// Overlap window: primary = old key, additional = new key. Both are currently valid.
+	overlapIdentity := CardIdentity{
+		Name:         "Remote contract agent",
+		Organization: "Partner Org",
+		KeyID:        "partner-key-old",
+		PublicKeyJWK: testPublicJWK(t, oldKey, "partner-key-old"),
+		AdditionalKeys: []CardKey{{
+			KeyID:        "partner-key-new",
+			PublicKeyJWK: testPublicJWK(t, newKey, "partner-key-new"),
+		}},
+	}
+	overlapTarget, err := NewRemoteTarget("https://partner.example/a2a", overlapIdentity, 4096, nil)
+	if err != nil {
+		t.Fatalf("NewRemoteTarget overlap: %v", err)
+	}
+	base := validRemoteCard(overlapTarget.String())
+
+	// A card under EITHER the old or the new key verifies during the overlap — no rotation gap.
+	if _, err := verifyRemoteAgentCard(signAgentCard(t, base, oldKey, "partner-key-old", "", nil, nil), overlapTarget); err != nil {
+		t.Fatalf("overlap old key: %v", err)
+	}
+	if _, err := verifyRemoteAgentCard(signAgentCard(t, base, newKey, "partner-key-new", "", nil, nil), overlapTarget); err != nil {
+		t.Fatalf("overlap new key: %v", err)
+	}
+
+	// After retiring the old key: primary = new key, old key revoked. A card under the old key is refused
+	// with the revoked reason; a card under the new key still verifies.
+	retiredIdentity := CardIdentity{
+		Name:          "Remote contract agent",
+		Organization:  "Partner Org",
+		KeyID:         "partner-key-new",
+		PublicKeyJWK:  testPublicJWK(t, newKey, "partner-key-new"),
+		RevokedKeyIDs: []string{"partner-key-old"},
+	}
+	retiredTarget, err := NewRemoteTarget("https://partner.example/a2a", retiredIdentity, 4096, nil)
+	if err != nil {
+		t.Fatalf("NewRemoteTarget retired: %v", err)
+	}
+	retiredBase := validRemoteCard(retiredTarget.String())
+	if _, err := verifyRemoteAgentCard(signAgentCard(t, retiredBase, oldKey, "partner-key-old", "", nil, nil), retiredTarget); !errors.Is(err, agentcardjws.ErrRevokedKeyID) {
+		t.Fatalf("retired old key: want ErrRevokedKeyID, got %v", err)
+	}
+	if _, err := verifyRemoteAgentCard(signAgentCard(t, retiredBase, newKey, "partner-key-new", "", nil, nil), retiredTarget); err != nil {
+		t.Fatalf("new key after retirement: %v", err)
+	}
+
+	// Construction fails closed: a key ID that is both pinned and revoked.
+	if _, err := NewRemoteTarget("https://partner.example/a2a", CardIdentity{
+		Name: "Remote contract agent", Organization: "Partner Org",
+		KeyID: "partner-key-new", PublicKeyJWK: testPublicJWK(t, newKey, "partner-key-new"),
+		RevokedKeyIDs: []string{"partner-key-new"},
+	}, 4096, nil); err == nil {
+		t.Fatal("NewRemoteTarget accepted a key ID that is both pinned and revoked")
+	}
+	// Construction fails closed: a duplicate pinned key ID.
+	if _, err := NewRemoteTarget("https://partner.example/a2a", CardIdentity{
+		Name: "Remote contract agent", Organization: "Partner Org",
+		KeyID: "partner-key-dup", PublicKeyJWK: testPublicJWK(t, oldKey, "partner-key-dup"),
+		AdditionalKeys: []CardKey{{KeyID: "partner-key-dup", PublicKeyJWK: testPublicJWK(t, newKey, "partner-key-dup")}},
+	}, 4096, nil); err == nil {
+		t.Fatal("NewRemoteTarget accepted a duplicate pinned key ID")
 	}
 }

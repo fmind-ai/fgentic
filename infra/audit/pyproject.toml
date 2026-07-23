@@ -1,0 +1,14 @@
+[tool.ruff]
+extend = "../../apps/synapse-federation-policy/pyproject.toml"
+target-version = "py312"
+
+[tool.ruff.lint.per-file-ignores]
+"test_*.py" = [
+  "A002",
+  "ARG002", # test fakes implement Protocol methods with intentionally-unused args
+  "S101",
+  "SLF001",
+]
+# schemacheck is test-support: a schema validator whose interface is raising AssertionError for the
+# tests, never production runtime, so its intentional asserts are exempt like the test files.
+"schemacheck.py" = ["S101"]

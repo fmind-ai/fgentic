@@ -17,18 +17,33 @@ terraform {
 variable "project_id" {
   type        = string
   description = "The GCP Project ID"
+
+  validation {
+    condition     = can(regex("^[a-z][a-z0-9-]{4,28}[a-z0-9]$", var.project_id))
+    error_message = "project_id must be 6-30 characters, use only lowercase letters, numbers, and hyphens, start with a letter, and end with a letter or number."
+  }
 }
 
 variable "region" {
   type        = string
   default     = "europe-west1"
   description = "Region for the state bucket"
+
+  validation {
+    condition     = can(regex("^[a-z]+(-[a-z]+)+[0-9]+$", var.region))
+    error_message = "region must use a lowercase Google Cloud region code such as europe-west1 or northamerica-northeast2."
+  }
 }
 
 variable "state_bucket_name" {
   type        = string
   default     = "fgentic-tfstate"
   description = "Globally-unique name of the Terraform state bucket (must match the parent module's backend config)"
+
+  validation {
+    condition     = length(var.state_bucket_name) >= 3 && length(var.state_bucket_name) <= 63 && can(regex("^[a-z0-9]([a-z0-9-]*[a-z0-9])$", var.state_bucket_name))
+    error_message = "state_bucket_name must be 3-63 characters, use only lowercase letters, numbers, and hyphens, and start and end with a letter or number."
+  }
 }
 
 provider "google" {

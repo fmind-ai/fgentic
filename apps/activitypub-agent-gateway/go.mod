@@ -1,6 +1,6 @@
 module github.com/fmind-ai/activitypub-agent-gateway
 
-go 1.25.0
+go 1.26.0
 
 require (
 	github.com/a2aproject/a2a-go/v2 v2.3.1
@@ -33,7 +33,7 @@ require (
 	golang.org/x/sync v0.22.0 // indirect
 	golang.org/x/sys v0.47.0 // indirect
 	golang.org/x/telemetry v0.0.0-20260708182218-49f421fb7959 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/text v0.39.0 // indirect
 	golang.org/x/tools v0.48.0 // indirect
 	golang.org/x/vuln v1.6.0 // indirect
 	google.golang.org/protobuf v1.36.11 // indirect

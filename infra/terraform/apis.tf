@@ -6,6 +6,8 @@ locals {
     "container.googleapis.com",
     "iam.googleapis.com",
     "iamcredentials.googleapis.com", # GKE WIF prerequisite; also used by CNPG's GSA impersonation
+    "logging.googleapis.com",        # system-only GKE logs; workload stdout stays inside the cluster
+    "monitoring.googleapis.com",     # system-only GKE metrics; workload metrics stay inside the cluster
     "storage.googleapis.com",        # tfstate + CNPG backup buckets
   ]
   services = concat(local.required_services, var.manage_dns ? ["dns.googleapis.com"] : [])

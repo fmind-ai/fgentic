@@ -11,6 +11,8 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"strings"
@@ -198,6 +200,14 @@ type Result struct {
 	Files []ResultFile
 	Data  []string
 	Links []ResultLink
+	// TotalTokens is the exact model-token total kagent attributed to a completed Task, read from its
+	// `kagent_usage_metadata.totalTokenCount` metadata (docs/audit.md §157). It is the only reliable
+	// per-delegation usage source available to the bridge — agentgateway's GenAI metrics are aggregate
+	// and deliberately carry no room/context/task label (docs/observability.md §9.1), so per-room token
+	// budgets (#99) meter this field. It is 0 for a bare terminal Message (no task, no usage row), a
+	// non-terminal poll, or a server that does not populate the field; callers must treat 0 as "not
+	// attributable", never as proof of zero spend.
+	TotalTokens int
 }
 
 // ResultFile is one raw-bytes part the agent emitted (an A2A Raw part), a candidate for upload to the
@@ -235,6 +245,7 @@ type Client struct {
 	localHTTPClient  *http.Client
 	remoteHTTPClient *http.Client
 	localResolver    *agentcard.Resolver
+	fediverseBroker  *fediverseBroker
 
 	mu           sync.RWMutex
 	cache        map[string]cachedTarget
@@ -320,6 +331,14 @@ func (c *Client) send(
 ) (Result, error) {
 	if messageID == "" {
 		return Result{}, fmt.Errorf("prepare a2a SendMessage for %s: %w", target.String(), ErrMessageIDRequired)
+	}
+	if target.IsFediverse() {
+		c.mu.RLock()
+		cached := c.cache[target.ID()]
+		c.mu.RUnlock()
+		if cached.ready && cached.fediverse != nil && cached.fediverse.Transport == brokerTransportActivityPub {
+			return c.sendActivityPub(ctx, target, cached.fediverse, messageID, text, contextID, taskID, files)
+		}
 	}
 	client, err := c.clientFor(ctx, target)
 	if err != nil {
@@ -418,6 +437,9 @@ func (c *Client) ResolveAgentCard(ctx context.Context, target Target) (*a2a.Agen
 	if !target.valid() {
 		return nil, fmt.Errorf("resolve agent card: invalid target")
 	}
+	if target.IsFediverse() {
+		return c.resolveFediverseAgentCard(ctx, target)
+	}
 	if target.IsRemote() {
 		return c.resolveRemoteAgentCard(ctx, target)
 	}
@@ -445,7 +467,8 @@ func (c *Client) IsReady(target Target) bool {
 	c.mu.RLock()
 	cached := c.cache[target.ID()]
 	c.mu.RUnlock()
-	return cached.ready && cached.client != nil
+	return cached.ready && (cached.client != nil ||
+		(cached.fediverse != nil && cached.fediverse.Transport == brokerTransportActivityPub))
 }
 
 // clientFor resolves (and caches) an SDK client for a target by fetching its AgentCard. Local cards
@@ -537,20 +560,25 @@ func (c *Client) remoteGeneration(targetID string) *atomic.Uint64 {
 	return generation.(*atomic.Uint64)
 }
 
-// remoteUserTransport returns the RoundTripper for dialing a remote target. Without configured mTLS
-// it reuses the shared remote transport (a userTransport with no API key), preserving existing
-// behavior. With mTLS (#244) it wraps a per-target http.Transport — cloned from DefaultTransport to
-// keep its timeouts/proxy behavior — pinned to the mapping's client certificate and optional server
-// roots, in its own userTransport that likewise carries no local gateway credential.
+// remoteUserTransport returns the RoundTripper for dialing a remote target. Exact operator-pinned
+// routes reuse the shared transport unless they configure mTLS. Discovery-derived routes instead
+// receive a per-target transport that resolves and validates every address at dial time, preventing
+// actor-controlled A2A/Card URLs or DNS rebinding from reaching private services. No remote
+// transport carries the local gateway credential.
 func (c *Client) remoteUserTransport(target Target) http.RoundTripper {
 	tlsConfig := target.clientTLSConfig()
-	if tlsConfig == nil {
+	if tlsConfig == nil && !target.publicOnly {
 		return c.remoteHTTPClient.Transport
 	}
 	if cached, ok := c.remoteTransports.Load(target.ID()); ok {
 		return cached.(http.RoundTripper)
 	}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if target.publicOnly {
+		transport.Proxy = nil
+		transport.DialContext = publicDialContext(net.DefaultResolver, (&net.Dialer{}).DialContext)
+		transport.DialTLSContext = nil
+	}
 	transport.TLSClientConfig = tlsConfig
 	shared, _ := c.remoteTransports.LoadOrStore(target.ID(), &userTransport{base: transport})
 	return shared.(http.RoundTripper)
@@ -674,6 +702,9 @@ func taskResult(t *a2a.Task) Result {
 	}
 	if r.Terminal {
 		r.Text = taskText(t)
+		// Meter exact per-delegation model tokens for per-room budgets (#99) only on a terminal task,
+		// where kagent has attributed final usage. A working poll's metadata is not a final usage row.
+		r.TotalTokens = kagentTotalTokens(t.Metadata)
 		// A finished task's file/data/link products live in its artifacts (SPEC §6): extract them for
 		// the bridge to post as media, deliberately not from status/history (those are working turns).
 		for _, a := range t.Artifacts {
@@ -687,6 +718,27 @@ func taskResult(t *a2a.Task) Result {
 		r.Text = partsText(t.Status.Message.Parts)
 	}
 	return r
+}
+
+// kagentTotalTokens reads kagent's exact per-task token total from a completed Task's metadata
+// (`kagent_usage_metadata.totalTokenCount`, docs/audit.md §157). JSON decoding lands numbers as
+// float64; a missing key, wrong shape, or negative/non-finite value yields 0 (not attributable) so a
+// malformed metadata value can never corrupt the room budget ledger. It reads only the total the
+// bridge budgets against, ignoring the prompt/candidate split.
+func kagentTotalTokens(metadata map[string]any) int {
+	usage, ok := metadata["kagent_usage_metadata"].(map[string]any)
+	if !ok {
+		return 0
+	}
+	total, ok := usage["totalTokenCount"].(float64)
+	if !ok || math.IsNaN(total) || math.IsInf(total, 0) || total <= 0 {
+		return 0
+	}
+	// Bound to MaxInt so an out-of-range provider value cannot overflow the accumulator.
+	if total > float64(math.MaxInt) {
+		return math.MaxInt
+	}
+	return int(total)
 }
 
 // extractParts splits a part list into the bridge's non-text content buckets (#115): Raw parts become

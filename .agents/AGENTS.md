@@ -17,6 +17,7 @@ These instructions are binding repository-wide. A nested `AGENTS.md` adds app-sp
 ## Roadmap and issue workflow
 
 - Current GitHub milestones are the executable roadmap; [docs/roadmap.md](../docs/roadmap.md) is the dated map. Pickup is gated by track labels, not raw milestone order. Work `track/v1` first; do not pick up `track/vision` until v1 ships. Within a track, order `priority/p0` → `priority/p1` → `priority/p2` and sweep wedge epics top-to-bottom.
+- `good first issue` is reserved for human newcomers and excluded from autonomous sweeps, even if the issue also carries `agent-ready`. Skip it unless the human who already owns the cooperative lease explicitly asks for agent assistance within that claim.
 - `agent-ready` means the issue is groomed for autonomous completion, including peer review. `needs-human` is reserved for a genuine terminal gate: spend; an external account or identity action; publication or an upstream PR under the maintainer's name; an external counterparty; legal publication sign-off; an accepted strategic/policy ADR; or hard upstream readiness. A `Human:` bullet names that step. Acceptance checks, internal review, and local-cluster evidence are not `needs-human` gates.
 - Issue claims are cooperative leases. Before editing, check assignees, `status/in-progress`, comments, branches, worktrees, and open PRs. Claim exactly one issue: assign yourself, add `status/in-progress`, and leave a UTC-stamped comment naming the session and branch. Re-read immediately and stop if a competing claim appeared. A claim is stale only after 12 hours without a heartbeat, branch, commit, or PR; document any takeover and release abandoned claims.
 - Follow every issue's Tasks and Acceptance criteria literally. Branch `<type>/<slug>` from current `main` before the first commit; use Conventional Commits with DCO sign-off and no attribution. Keep one concern per branch.
@@ -27,7 +28,7 @@ The detailed label taxonomy, milestone links, claim protocol, review gate, and `
 
 ## Lean repository layout
 
-- `apps/` — independent applications. `matrix-a2a-bridge` is the Go Matrix Application Service; `synapse-federation-policy` is the Python callback module; `activitypub-agent-gateway` is the separate additive ActivityPub transport. Each app owns its module, packaging, tests, and any nested `AGENTS.md`.
+- `apps/` — independent applications. `matrix-a2a-bridge` is the Go Matrix Application Service; `synapse-federation-policy` is the Python callback module; `activitypub-agent-gateway` is the separate additive ActivityPub transport; `matrix-group-sync` is the opt-in GitOps reconciler from Keycloak groups to managed Matrix room membership (ADR 0009). Each app owns its module, packaging, tests, and any nested `AGENTS.md`.
 - `clusters/` — Flux entrypoints and environment overlays: `base`, `local`, `gcp`, `demo`, `federation`, and `federation-constrained`.
 - `infra/` — reusable GitOps layers for namespaces, Matrix, Postgres, gateway, agentgateway, kagent, models, federation, policy, observability, identity, knowledge, optional bridges/admin, and production HA.
 - `evals/` — per-Agent deterministic `golden.json` scenarios and rubrics. `scripts/new-agent.sh` scaffolds them; `mise run test:agents-golden` exercises every fixture against the zero-spend loopback model.
