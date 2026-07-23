@@ -10,14 +10,17 @@ from __future__ import annotations
 
 import http.server
 import json
+import socket
 import sys
 import threading
 import time
 import urllib.request
 from pathlib import Path
+from typing import Any, ClassVar, cast
+from unittest import mock
 
 sys.path.insert(0, str(Path(__file__).parent))
-import receiver  # noqa: E402
+import receiver
 
 ROOM = "!ops:fgentic.localhost"
 
@@ -85,10 +88,180 @@ def test_safe_label_summary_excludes_content() -> None:
     print("ok: safe-label summary excludes content")
 
 
-class _FakeSynapse(http.server.BaseHTTPRequestHandler):
-    received: list[dict] = []
+def _serve(handler: type[http.server.BaseHTTPRequestHandler]) -> receiver._BoundedThreadingHTTPServer:
+    server = receiver._BoundedThreadingHTTPServer(("127.0.0.1", 0), handler)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    return server
 
-    def log_message(self, *_a) -> None:
+
+def _raw_status(
+    server: receiver._BoundedThreadingHTTPServer,
+    request: bytes,
+    *,
+    shutdown_write: bool = True,
+) -> int:
+    address = cast(tuple[str, int], server.server_address)
+    with socket.create_connection(address, timeout=2) as connection:
+        connection.settimeout(2)
+        connection.sendall(request)
+        if shutdown_write:
+            connection.shutdown(socket.SHUT_WR)
+        status_line = connection.makefile("rb").readline()
+    return int(status_line.split()[1])
+
+
+def test_webhook_rejects_invalid_framing_and_oversized_body() -> None:
+    recv = _serve(receiver._Handler)
+    try:
+        assert _raw_status(recv, b"POST / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n") == 411
+        assert (
+            _raw_status(
+                recv,
+                b"POST / HTTP/1.1\r\nHost: test\r\nContent-Length: 2\r\n"
+                b"Content-Length: 2\r\nConnection: close\r\n\r\n{}",
+            )
+            == 400
+        )
+        assert (
+            _raw_status(
+                recv,
+                b"POST / HTTP/1.1\r\nHost: test\r\nContent-Length: 2\r\n"
+                b"Transfer-Encoding: chunked\r\nConnection: close\r\n\r\n{}",
+            )
+            == 400
+        )
+        oversized = receiver._MAX_REQUEST_BYTES + 1
+        assert (
+            _raw_status(
+                recv,
+                f"POST / HTTP/1.1\r\nHost: test\r\nContent-Length: {oversized}\r\nConnection: close\r\n\r\n".encode(),
+            )
+            == 413
+        )
+        print("ok: webhook framing and body size are bounded")
+    finally:
+        recv.shutdown()
+        recv.server_close()
+
+
+def test_webhook_rejects_incomplete_and_slow_body() -> None:
+    with (
+        mock.patch.object(receiver, "_REQUEST_TIMEOUT_SECONDS", 0.1),
+        mock.patch.object(receiver._Handler, "timeout", 0.1),
+    ):
+        recv = _serve(receiver._Handler)
+        try:
+            assert (
+                _raw_status(
+                    recv,
+                    b"POST / HTTP/1.1\r\nHost: test\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{",
+                )
+                == 400
+            )
+            assert (
+                _raw_status(
+                    recv,
+                    b"POST / HTTP/1.1\r\nHost: test\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{",
+                    shutdown_write=False,
+                )
+                == 408
+            )
+            print("ok: incomplete and slow webhook bodies are rejected")
+        finally:
+            recv.shutdown()
+            recv.server_close()
+
+
+class _BlockingHandler(http.server.BaseHTTPRequestHandler):
+    release = threading.Event()
+    lock = threading.Lock()
+    active = 0
+    max_active = 0
+
+    def log_message(self, format: str, *args: Any) -> None:
+        pass
+
+    def do_GET(self) -> None:
+        with self.lock:
+            type(self).active += 1
+            type(self).max_active = max(type(self).max_active, type(self).active)
+        try:
+            self.release.wait(timeout=2)
+            self.send_response(200)
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+        finally:
+            with self.lock:
+                type(self).active -= 1
+
+
+def test_request_concurrency_is_bounded_and_recovers() -> None:
+    _BlockingHandler.release.clear()
+    _BlockingHandler.active = 0
+    _BlockingHandler.max_active = 0
+    recv = _serve(_BlockingHandler)
+    statuses: list[int] = []
+
+    def request() -> None:
+        with urllib.request.urlopen(f"http://127.0.0.1:{recv.server_address[1]}/", timeout=5) as response:
+            statuses.append(response.status)
+
+    clients = [threading.Thread(target=request) for _ in range(receiver._MAX_CONCURRENT_REQUESTS + 1)]
+    try:
+        for client in clients:
+            client.start()
+        deadline = time.monotonic() + 2
+        while _BlockingHandler.active < receiver._MAX_CONCURRENT_REQUESTS:
+            assert time.monotonic() < deadline, "bounded handlers did not become active"
+            time.sleep(0.01)
+        time.sleep(0.05)
+        assert _BlockingHandler.max_active == receiver._MAX_CONCURRENT_REQUESTS
+
+        _BlockingHandler.release.set()
+        for client in clients:
+            client.join(timeout=5)
+            assert not client.is_alive()
+        assert statuses == [200] * len(clients)
+
+        # A fresh request after saturation proves every completed handler released its slot.
+        request()
+        assert statuses[-1] == 200
+        print("ok: request concurrency is bounded and recovers")
+    finally:
+        _BlockingHandler.release.set()
+        recv.shutdown()
+        recv.server_close()
+
+
+def test_thread_start_failure_releases_request_slot() -> None:
+    recv = receiver._BoundedThreadingHTTPServer(("127.0.0.1", 0), receiver._Handler)
+    try:
+        with mock.patch.object(
+            http.server.ThreadingHTTPServer,
+            "process_request",
+            side_effect=RuntimeError("synthetic thread-start failure"),
+        ):
+            try:
+                recv.process_request(None, None)
+            except RuntimeError:
+                pass
+            else:
+                raise AssertionError("synthetic thread-start failure must propagate")
+
+        acquired = [recv._request_slots.acquire(blocking=False) for _ in range(receiver._MAX_CONCURRENT_REQUESTS)]
+        assert all(acquired)
+        assert not recv._request_slots.acquire(blocking=False)
+        for _ in acquired:
+            recv._request_slots.release()
+        print("ok: thread-start failure releases request slot")
+    finally:
+        recv.server_close()
+
+
+class _FakeSynapse(http.server.BaseHTTPRequestHandler):
+    received: ClassVar[list[dict[str, Any]]] = []
+
+    def log_message(self, format: str, *args: Any) -> None:
         pass
 
     def do_PUT(self) -> None:
@@ -106,11 +279,10 @@ def test_webhook_posts_content_free_notice() -> None:
     _FakeSynapse.received = []
     synapse = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeSynapse)
     threading.Thread(target=synapse.serve_forever, daemon=True).start()
-    recv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), receiver._Handler)
-    recv.homeserver = f"http://127.0.0.1:{synapse.server_address[1]}"  # type: ignore[attr-defined]
-    recv.token = "alertbot-token"  # type: ignore[attr-defined]
-    recv.room_id = ROOM  # type: ignore[attr-defined]
-    threading.Thread(target=recv.serve_forever, daemon=True).start()
+    recv = _serve(receiver._Handler)
+    recv.homeserver = f"http://127.0.0.1:{synapse.server_address[1]}"
+    recv.token = "alertbot-token"
+    recv.room_id = ROOM
     try:
         request = urllib.request.Request(
             f"http://127.0.0.1:{recv.server_address[1]}/",
@@ -129,7 +301,9 @@ def test_webhook_posts_content_free_notice() -> None:
         print("ok: webhook posts one content-free m.notice")
     finally:
         synapse.shutdown()
+        synapse.server_close()
         recv.shutdown()
+        recv.server_close()
 
 
 if __name__ == "__main__":
@@ -138,5 +312,9 @@ if __name__ == "__main__":
     test_render_tolerates_malformed_alert()
     test_txn_id_is_stable_but_time_bucketed()
     test_safe_label_summary_excludes_content()
+    test_webhook_rejects_invalid_framing_and_oversized_body()
+    test_webhook_rejects_incomplete_and_slow_body()
+    test_request_concurrency_is_bounded_and_recovers()
+    test_thread_start_failure_releases_request_slot()
     test_webhook_posts_content_free_notice()
     print("alert receiver tests passed")
