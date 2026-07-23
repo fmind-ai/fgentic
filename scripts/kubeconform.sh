@@ -163,20 +163,26 @@ echo "==> Rendering + validating apps/matrix-group-sync/chart"
 # ActivityPub gateway it is not yet wired into the reconciled cluster DAG, so its chart is validated
 # here directly. Render with the PodMonitor + a sample binding + enforce so every gated path renders.
 if [ -d apps/matrix-group-sync/chart ]; then
-  helm template matrix-group-sync apps/matrix-group-sync/chart \
-    --namespace matrix-group-sync \
-    --set metrics.podMonitor.enabled=true \
-    --set config.enforce=true \
-    --set 'bindings.platform.group=/fgentic/agent-access/platform' \
-    --set 'bindings.platform.roomAlias=#agent-platform:fgentic.fmind.ai' \
-    --set 'bindings.platform.agents={agent-k8s,agent-helm}' \
-    | "${KUBECONFORM[@]}"
-  # Schema-validate its self-contained deploy unit (Namespace + HelmRelease + quota) via Flux envsubst.
-  while IFS= read -r manifest; do
-    flux envsubst --strict < "${manifest}"
-    echo "---"
-  done < <(find apps/matrix-group-sync/deploy -type f -name '*.yaml' ! -name 'kustomization.yaml') \
-    | "${KUBECONFORM[@]}"
+	helm template matrix-group-sync apps/matrix-group-sync/chart \
+		--namespace matrix-group-sync \
+		--set metrics.podMonitor.enabled=true \
+		--set config.enforce=true \
+		--set 'bindings.platform.group=/fgentic/agent-access/platform' \
+		--set 'bindings.platform.roomAlias=#agent-platform:fgentic.fmind.ai' \
+		--set 'bindings.platform.agents={agent-k8s,agent-helm}' \
+		| "${KUBECONFORM[@]}"
+	# Schema-validate its self-contained deploy unit (Namespace + HelmRelease + quota) via Flux envsubst.
+	# Capture the find output first (like the ActivityPub block) so its return value is not masked (SC2312).
+	groupsync_manifests="$(find apps/matrix-group-sync/deploy -type f -name '*.yaml' ! -name 'kustomization.yaml' | sort)"
+	[[ -n "${groupsync_manifests}" ]] || {
+		echo "error: matrix-group-sync deploy unit contains no schema-validation manifests" >&2
+		exit 1
+	}
+	while IFS= read -r manifest; do
+		flux envsubst --strict <"${manifest}"
+		echo "---"
+	done <<<"${groupsync_manifests}" \
+		| "${KUBECONFORM[@]}"
 fi
 
 echo "==> Rendering + validating optional mautrix bridge releases"
