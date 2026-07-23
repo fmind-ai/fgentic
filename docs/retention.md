@@ -93,7 +93,8 @@ Inventory and delete the local user's uploads through Synapse's user-media Admin
 
 ### 5. Purge agent and integration state
 
-1. Kagent currently has no merged supported per-user session/task purge in this repository. Track [#100](https://github.com/fmind-ai/fgentic/issues/100); until it lands and is validated, record kagent rows as an unresolved residual rather than performing ad-hoc SQL deletion or claiming erasure.
+1. For a local room/agent conversation, have an authorized invoker or room moderator run `!forget <agent>` (or `/forget <agent>` in a raw Matrix client). The bridge refuses remote mappings, active work, and legacy contexts whose complete owner set is unknown. Otherwise it deletes the kagent session for every recorded Matrix owner, requires each follow-up read to return `404`, and only then drops the bridge context so the next delegation starts fresh. Record the in-room result; a success already means the verified deletion/reset completed. Never substitute ad-hoc SQL.
+1. A local agent mapping may set `maxSessionAge` to apply the same verified reset in bounded sweeps. Omission retains the conversation until explicit forget. A failed deletion keeps the bridge context, while an incomplete pre-governance owner inventory remains an operator-resolved residual rather than a claimed purge.
 1. The bridge clears prompt/result content at terminal transition. Ordinary content-free terminal tombstones become cleanup-eligible after at least 24 hours, while `ambiguous` and `dead` evidence remains indefinitely for investigation. Review those rows by purpose and do not destroy recovery evidence through unsupported SQL.
 1. Review enabled external bridges, MCP servers, model providers, exports, case systems, and downstream log sinks independently. This repository cannot delete their copies.
 
@@ -109,7 +110,7 @@ Close the request only with timestamps and results for MAS deactivation, Synapse
 1. Redaction is a replacement of visible content, not proof that every database row, backup, client cache, notification, search index, screenshot, export, or model/provider copy disappeared.
 1. Room history already replicated to another homeserver is outside unilateral control. [Federation §8.1](federation.md#81-what-matrix-federation-gives--stated-honestly) requires contractual partner deletion duties because cross-server redaction is best effort.
 1. Deactivated MAS session rows, SSO mappings, user records, and other upstream-documented residuals remain for their separate periods or purposes.
-1. Kagent per-user purge is not available until #100 is merged and validated. CloudNativePG backups can retain pre-purge rows until expiry.
+1. `!forget` and `maxSessionAge` are functional local-conversation resets, not physical erasure: kagent soft-deleted rows/events, incomplete legacy owner sets, remote-agent state, and independent agent memory/tool stores remain outside that control. CloudNativePG backups can retain pre-reset rows until expiry.
 1. Content-free does not mean anonymous. Matrix IDs, room/event IDs, timestamps, A2A IDs, IP addresses, and request identifiers can still be personal or linkable data.
 
 ## Audit-record exemption
