@@ -43,26 +43,46 @@ func (g *Gateway) maybeHandleAgentSubscription(w http.ResponseWriter, r *http.Re
 			http.Error(w, "follow has no actor", http.StatusBadRequest)
 			return true
 		}
-		// Transport border (F3 allowlist + F4 signature) gates who may subscribe.
-		if g.border != nil {
-			if d := g.border.VerifyTransport(r.Context(), r, body, string(actorIRI)); !d.Allowed {
-				g.metrics.rejected.WithLabelValues("follow_border_" + d.Reason).Inc()
-				http.Error(w, "forbidden", http.StatusForbidden)
-				return true
-			}
+		if !g.allowAgentSubscription(w, r, body, string(actorIRI), "follow") {
+			return true
 		}
 		g.agentFollow(r.Context(), ghost, string(actorIRI), activity)
 		w.WriteHeader(http.StatusAccepted)
 		return true
 	case vocab.UndoType:
-		if actorIRI != "" {
-			g.followers.remove(agentFollowerKey(ghost), string(actorIRI))
+		if actorIRI == "" {
+			http.Error(w, "undo has no actor", http.StatusBadRequest)
+			return true
 		}
+		if !g.allowAgentSubscription(w, r, body, string(actorIRI), "undo") {
+			return true
+		}
+		g.followers.remove(agentFollowerKey(ghost), string(actorIRI))
 		w.WriteHeader(http.StatusAccepted)
 		return true
 	default:
 		return false
 	}
+}
+
+// allowAgentSubscription applies the same transport-authentication boundary to every follower
+// mutation. The operation is an internal constant used only for the bounded rejection metric.
+func (g *Gateway) allowAgentSubscription(
+	w http.ResponseWriter,
+	r *http.Request,
+	body []byte,
+	actorURI string,
+	operation string,
+) bool {
+	if g.border == nil {
+		return true
+	}
+	if d := g.border.VerifyTransport(r.Context(), r, body, actorURI); !d.Allowed {
+		g.metrics.rejected.WithLabelValues(operation + "_border_" + d.Reason).Inc()
+		http.Error(w, "forbidden", http.StatusForbidden)
+		return false
+	}
+	return true
 }
 
 // agentFollow records a subscriber and delivers a signed Accept to its inbox.

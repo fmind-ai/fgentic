@@ -141,6 +141,102 @@ func TestStatusFeedUndoStopsDelivery(t *testing.T) {
 	}
 }
 
+func TestStatusUndoBorderGated(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	_, invalidPriv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("Generate invalid key: %v", err)
+	}
+	const path = "/ap/agents/agent-docs-qa/inbox"
+	const victimActor = "https://mastodon.example/users/alice"
+	undo := fmt.Sprintf(`{"@context":"https://www.w3.org/ns/activitystreams","type":"Undo","actor":%q,"object":{"type":"Follow","actor":%q,"object":"https://fgentic.localhost/ap/agents/agent-docs-qa"}}`,
+		borderTestActor, borderTestActor)
+	mismatchedUndo := fmt.Sprintf(`{"@context":"https://www.w3.org/ns/activitystreams","type":"Undo","actor":%q,"object":{"type":"Follow","actor":%q,"object":"https://fgentic.localhost/ap/agents/agent-docs-qa"}}`,
+		victimActor, victimActor)
+
+	tests := []struct {
+		name        string
+		policy      string
+		storedActor string
+		request     func(*testing.T) *http.Request
+		wantCode    int
+		wantStored  bool
+	}{
+		{
+			name:   "unsigned",
+			policy: `{"version":1,"allowed_domains":["mastodon.example"]}`,
+			request: func(*testing.T) *http.Request {
+				return httptest.NewRequest(http.MethodPost, "https://fgentic.localhost"+path, strings.NewReader(undo))
+			},
+			wantCode:   http.StatusForbidden,
+			wantStored: true,
+		},
+		{
+			name:   "invalid signature",
+			policy: `{"version":1,"allowed_domains":["mastodon.example"]}`,
+			request: func(t *testing.T) *http.Request {
+				return signedAPRequest(t, invalidPriv, path, []byte(undo))
+			},
+			wantCode:   http.StatusForbidden,
+			wantStored: true,
+		},
+		{
+			name:        "signer does not own activity actor",
+			policy:      `{"version":1,"allowed_domains":["mastodon.example"]}`,
+			storedActor: victimActor,
+			request: func(t *testing.T) *http.Request {
+				return signedAPRequest(t, priv, path, []byte(mismatchedUndo))
+			},
+			wantCode:   http.StatusForbidden,
+			wantStored: true,
+		},
+		{
+			name:   "off allowlist",
+			policy: `{"version":1,"allowed_domains":["other.example"]}`,
+			request: func(t *testing.T) *http.Request {
+				return signedAPRequest(t, priv, path, []byte(undo))
+			},
+			wantCode:   http.StatusForbidden,
+			wantStored: true,
+		},
+		{
+			name:   "allowlisted signature",
+			policy: `{"version":1,"allowed_domains":["mastodon.example"]}`,
+			request: func(t *testing.T) *http.Request {
+				return signedAPRequest(t, priv, path, []byte(undo))
+			},
+			wantCode:   http.StatusAccepted,
+			wantStored: false,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			store := policy.NewStore(writePolicyFile(t, test.policy), slog.Default())
+			verifier := httpsig.NewVerifier(staticResolver{key: pub, owner: borderTestActor}, time.Hour)
+			g, _ := newStatusGateway(t, http.DefaultClient, 6, NewBorder(verifier, store, slog.Default()))
+			storedActor := test.storedActor
+			if storedActor == "" {
+				storedActor = borderTestActor
+			}
+			g.followers.add(agentFollowerKey("agent-docs-qa"), storedActor, storedActor+"/inbox")
+
+			rec := httptest.NewRecorder()
+			g.Handler().ServeHTTP(rec, test.request(t))
+			if rec.Code != test.wantCode {
+				t.Fatalf("Undo code = %d, want %d", rec.Code, test.wantCode)
+			}
+			stored := g.followers.count(agentFollowerKey("agent-docs-qa")) == 1
+			if stored != test.wantStored {
+				t.Fatalf("follower stored = %t, want %t", stored, test.wantStored)
+			}
+		})
+	}
+}
+
 func TestStatusFeedRateLimits(t *testing.T) {
 	peer := newRemotePeer(t, "rate.example.com")
 	g, _ := newStatusGateway(t, peer.client(t), 2, nil) // cap 2 per window
@@ -179,7 +275,7 @@ func TestStatusFollowBorderGated(t *testing.T) {
 
 	g, _ := newStatusGateway(t, http.DefaultClient, 6, border)
 	follow := fmt.Sprintf(`{"@context":"https://www.w3.org/ns/activitystreams","id":"https://mastodon.example/a/1","type":"Follow","actor":%q,"object":"https://fgentic.localhost/ap/agents/agent-docs-qa"}`, borderTestActor)
-	req := signedGroupReq(t, priv, borderTestActor, "/ap/agents/agent-docs-qa/inbox", []byte(follow))
+	req := signedAPRequest(t, priv, "/ap/agents/agent-docs-qa/inbox", []byte(follow))
 	rec := httptest.NewRecorder()
 	g.Handler().ServeHTTP(rec, req)
 
