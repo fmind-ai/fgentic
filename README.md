@@ -67,7 +67,7 @@ The plaintext command fallback works in Matrix clients without ghost-MXID autoco
 | AI data plane / governance | agentgateway (LLM + A2A routing, credential chokepoint)                                                        | `agentgateway-system` |
 | Agents                     | kagent (Agent CRDs served as A2A on `:8083`)                                                                   | `kagent`              |
 | Optional network interop   | Digest-pinned mautrix Slack/Telegram appservices; disabled until selected and accepted                         | `bridges`             |
-| Optional reference IdP     | Keycloak 26.7 via the KeycloakX chart                                                                          | `keycloak`            |
+| Optional reference IdP     | Keycloak 26.7.0 via the KeycloakX chart                                                                        | `keycloak`            |
 | Optional administrator UI  | Ketesa v1.3.0, locked to the local homeserver and authorized by Synapse/MAS ([runbook](docs/admin-console.md)) | `admin`               |
 | Optional self-hosted model | vLLM CPU + pinned Qwen2.5-0.5B demo model                                                                      | `models`              |
 | Optional grounding ingest  | Bounded Git/Markdown acquisition + Docling + authenticated embeddings + scoped state/DML writers               | `knowledge`           |
