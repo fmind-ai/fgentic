@@ -150,3 +150,4 @@ nav:
       - 0019 Synapse media store: adr/0019-synapse-media-store.md
       - 0020 Retain Bash acceptance rigs: adr/0020-retain-bash-acceptance-rigs.md
       - 0021 Pinned key resolution: adr/0021-pinned-key-resolution.md
+      - 0022 Governed user-agent memory: adr/0022-governed-user-agent-memory.md
