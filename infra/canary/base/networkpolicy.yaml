@@ -56,6 +56,9 @@ spec:
         - namespaceSelector:
             matchLabels:
               kubernetes.io/metadata.name: matrix
+          podSelector:
+            matchLabels:
+              k8s.element.io/synapse-instance: ess-synapse
       ports:
         - protocol: TCP
           port: 8008

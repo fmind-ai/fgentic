@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any, ClassVar
 
 PROBE = str(Path(__file__).with_name("probe.py"))
+NETWORK_POLICY = str(Path(__file__).with_name("networkpolicy.yaml"))
 
 sys.path.insert(0, str(Path(__file__).parent))
 import probe  # noqa: E402  (import after sys.path shim)
@@ -100,6 +101,38 @@ def test_reply_correlation_state_is_bounded() -> None:
     else:
         raise AssertionError("reply state must fail closed at its fixed limit")
     print("ok: reply correlation state is bounded")
+
+
+def test_synapse_egress_is_workload_scoped() -> None:
+    rendered = subprocess.run(
+        ["yq", "eval-all", "-o=json", "[.]", NETWORK_POLICY],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    policies = json.loads(rendered.stdout)
+    probe_policy = next(policy for policy in policies if policy["metadata"]["name"] == "canary-probe")
+    synapse_rules = [
+        rule
+        for rule in probe_policy["spec"]["egress"]
+        if rule.get("ports") == [{"protocol": "TCP", "port": 8008}]
+    ]
+    assert synapse_rules == [
+        {
+            "to": [
+                {
+                    "namespaceSelector": {
+                        "matchLabels": {"kubernetes.io/metadata.name": "matrix"},
+                    },
+                    "podSelector": {
+                        "matchLabels": {"k8s.element.io/synapse-instance": "ess-synapse"},
+                    },
+                }
+            ],
+            "ports": [{"protocol": "TCP", "port": 8008}],
+        }
+    ], "canary TCP/8008 egress must select only the ESS Synapse workload"
+    print("ok: Synapse egress is workload scoped")
 
 
 class _FakeMatrix(http.server.BaseHTTPRequestHandler):
@@ -276,6 +309,7 @@ def test_hostile_cursor_never_reaches_failure_log() -> None:
 if __name__ == "__main__":
     test_reply_detection_contract()
     test_reply_correlation_state_is_bounded()
+    test_synapse_egress_is_workload_scoped()
     test_round_trip_success()
     test_round_trip_timeout()
     test_hostile_responses_fail_closed()
