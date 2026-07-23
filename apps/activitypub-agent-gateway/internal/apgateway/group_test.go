@@ -222,7 +222,7 @@ func TestGroupBorderDropsOffAllowlist(t *testing.T) {
 
 	create := fmt.Sprintf(`{"@context":"https://www.w3.org/ns/activitystreams","id":"https://mastodon.example/a/1","type":"Create","actor":%q,"object":{"id":"https://mastodon.example/n/1","type":"Note","attributedTo":%q,"content":"@agent-docs-qa hi"}}`,
 		borderTestActor, borderTestActor)
-	req := signedGroupReq(t, priv, borderTestActor, "/ap/groups/collab/inbox", []byte(create))
+	req := signedAPRequest(t, priv, "/ap/groups/collab/inbox", []byte(create))
 	rec := httptest.NewRecorder()
 	g.Handler().ServeHTTP(rec, req)
 
@@ -249,7 +249,7 @@ func TestGroupBorderDropsOverBudget(t *testing.T) {
 	post := func(id string) int {
 		create := fmt.Sprintf(`{"@context":"https://www.w3.org/ns/activitystreams","id":%q,"type":"Create","actor":%q,"object":{"id":%q,"type":"Note","attributedTo":%q,"content":"@agent-docs-qa hi"}}`,
 			id, borderTestActor, id+"#note", borderTestActor)
-		req := signedGroupReq(t, priv, borderTestActor, "/ap/groups/collab/inbox", []byte(create))
+		req := signedAPRequest(t, priv, "/ap/groups/collab/inbox", []byte(create))
 		rec := httptest.NewRecorder()
 		g.Handler().ServeHTTP(rec, req)
 		return rec.Code
@@ -298,12 +298,12 @@ func TestGroupActorPublishesKey(t *testing.T) {
 	}
 }
 
-// signedGroupReq builds an Ed25519 HTTP-signed POST to a group path for actorURI.
-func signedGroupReq(t *testing.T, priv ed25519.PrivateKey, actorURI, path string, body []byte) *http.Request {
+// signedAPRequest builds an Ed25519 HTTP-signed POST by the shared border-test actor.
+func signedAPRequest(t *testing.T, priv ed25519.PrivateKey, path string, body []byte) *http.Request {
 	t.Helper()
 	req := httptest.NewRequest(http.MethodPost, "https://fgentic.localhost"+path, bytes.NewReader(body))
 	req.Host = "fgentic.localhost"
-	if err := httpsig.Sign(req, body, actorURI+"#main-key", priv, time.Now()); err != nil {
+	if err := httpsig.Sign(req, body, borderTestActor+"#main-key", priv, time.Now()); err != nil {
 		t.Fatalf("sign group request: %v", err)
 	}
 	return req
