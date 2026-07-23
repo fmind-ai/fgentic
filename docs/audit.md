@@ -474,6 +474,20 @@ The optional VictoriaLogs sink remains deliberately deferred rather than appeari
 
 Any mismatch between bridge sender/header, context/session, task/user, or task ID invalidates the attribution claim. Preserve the raw records, stop the review, and investigate for bypass, stale logs, version drift, or tampering. Future distributed tracing can make the gateway join deterministic, but it must propagate a non-forgeable, privacy-reviewed correlation context rather than treating the current header as authentication.
 
+## Break-glass administration
+
+When the upstream IdP is down and administrators recover the identity plane through the [break-glass ladder](identity.md#break-glass-administration-sso-outage-recovery), that privileged use is audited by the same content-bounded streams as ordinary administration — with the same uneven coverage, stated here rather than overclaimed. Break-glass is not an audit exemption and does **not** bypass durable retention ([#157](https://github.com/fmind-ai/fgentic/issues/157)/[#363](https://github.com/fmind-ai/fgentic/issues/363)): the same 90-day retention and operator/auditor access controls in [Retention and access controls](#retention-and-access-controls) apply.
+
+| Break-glass rung                  | Audit source                                                         | What is recorded, content-free                                                                          | Join key  |
+| --------------------------------- | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- | --------- |
+| 2 — Synapse admin action          | `fgentic.admin_action.v1` (pinned Synapse admin request log)         | Acting admin MXID, `action_class`, bounded `target`, and `outcome` for the pinned admin mutation routes | full MXID |
+| 3 — recovery-admin password login | `fgentic.mas_authentication.v1` (MAS `user_session_authentications`) | One successful MAS authentication with `method` = password for the recovery MXID                        | full MXID |
+| 1 — MAS Admin API                 | **None at the pinned versions** — see the non-claim below            | Not attributed: no content-free, non-secret source resolves the acting identity and outcome             | —         |
+
+The MXID join is the same one the rest of this document relies on: a recorded MAS authentication and a later Synapse admin mutation can both be reconciled to the break-glass identity by full `@localpart:server_name`, and neither record carries the request body, target arguments, or credentials.
+
+Rung 1 is the honest limit. As established in [ADR 0018 → Admin-action audit](adr/0018-content-bounded-identity-audit.md#admin-action-audit-455), `fgentic.admin_action.v1` **deliberately does not attribute MAS-plane admin actions** (MAS 1.19.0 request telemetry identifies neither the authenticated caller nor a stable outcome, and session/token operations have no attributable source at the pin), and it never asserts suspend-vs-reactivate direction from the request line. A break-glass operator who must produce an attributable trail should prefer the Synapse-admin (rung 2) or interactive recovery-admin (rung 3) path; rung 1 is the least-audited and its live capture is part of the deferred drill ([#467](https://github.com/fmind-ai/fgentic/issues/467) Task 4), not something the offline core can prove. Whether the enabled MAS Admin API client is itself present in the identity audit is a runtime observation the drill must confirm; do not assume it.
+
 ## Local verification gate
 
 Run the app tests before deploying the audited bridge:
