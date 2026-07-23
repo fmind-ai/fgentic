@@ -38,7 +38,7 @@ chartSources:
   - name: "matrix-a2a-bridge-chart"
     kind: "OCIRepository"
     url: "oci://ghcr.io/fmind-ai/charts/matrix-a2a-bridge"
-    version: "sha256:bbeaa62fe42c891355f3e6261f6af07b64d23c7847d1b6719aca09e5c1c97672"
+    version: "sha256:cc4d646cb0793f282759845e838885c8feae07454a23507767f9dfd39164d10e"
     file: "apps/matrix-a2a-bridge/deploy/helmrelease.yaml"
   - name: "trivy-operator"
     kind: "GitRepository"
@@ -181,8 +181,8 @@ images:
     files:
       - infra/postgres/cluster.yaml
       - infra/postgres/knowledge-schema-v1.yaml
-  - ref: "ghcr.io/fmind-ai/matrix-a2a-bridge:sha-c00e997c962770af1a4e75bf10f09c9cfdf839ea@sha256:077e89cf8f0023c296ee34278eafd1ce05874c60948796bb5dd6a97b60d74d20"
-    digest: "sha256:077e89cf8f0023c296ee34278eafd1ce05874c60948796bb5dd6a97b60d74d20"
+  - ref: "ghcr.io/fmind-ai/matrix-a2a-bridge:sha-d021b3476e4890af1b4fc1269eca4c493324b337@sha256:65e9d91ae70f483158163d40af9ad5fb17d3d660bc24814ee1f32008fe5225fb"
+    digest: "sha256:65e9d91ae70f483158163d40af9ad5fb17d3d660bc24814ee1f32008fe5225fb"
     resolved: true
     files:
       - apps/matrix-a2a-bridge/deploy/helmrelease.yaml
