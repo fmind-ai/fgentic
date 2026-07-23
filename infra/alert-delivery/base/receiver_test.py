@@ -12,6 +12,7 @@ import errno
 import http.server
 import json
 import socket
+import subprocess
 import sys
 import threading
 import time
@@ -23,6 +24,7 @@ from unittest import mock
 sys.path.insert(0, str(Path(__file__).parent))
 import receiver
 
+ENABLED_PROFILE = str(Path(__file__).parents[1] / "profiles" / "enabled")
 ROOM = "!ops:fgentic.localhost"
 
 # An Alertmanager group webhook with content in annotations that MUST NOT leak.
@@ -37,6 +39,78 @@ WEBHOOK = {
         }
     ],
 }
+
+
+def test_network_peers_are_exactly_scoped() -> None:
+    manifest = subprocess.run(
+        ["kubectl", "kustomize", ENABLED_PROFILE],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    rendered = subprocess.run(
+        ["yq", "eval-all", "-o=json", "[.]"],
+        input=manifest.stdout,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    resources = json.loads(rendered.stdout)
+    policy = next(
+        resource
+        for resource in resources
+        if resource["kind"] == "NetworkPolicy" and resource["metadata"]["name"] == "alert-receiver"
+    )
+    assert policy["spec"]["ingress"] == [
+        {
+            "from": [
+                {
+                    "namespaceSelector": {
+                        "matchLabels": {"kubernetes.io/metadata.name": "monitoring"},
+                    },
+                    "podSelector": {
+                        "matchLabels": {
+                            "alertmanager": "kube-prometheus-stack-alertmanager",
+                            "app.kubernetes.io/name": "alertmanager",
+                        },
+                    },
+                }
+            ],
+            "ports": [{"protocol": "TCP", "port": 9095}],
+        }
+    ], "receiver ingress must stay limited to the exact kube-prometheus-stack Alertmanager workload"
+    assert policy["spec"]["egress"] == [
+        {
+            "to": [
+                {
+                    "namespaceSelector": {
+                        "matchLabels": {"kubernetes.io/metadata.name": "kube-system"},
+                    },
+                    "podSelector": {
+                        "matchLabels": {"k8s-app": "kube-dns"},
+                    },
+                }
+            ],
+            "ports": [
+                {"protocol": "UDP", "port": 53},
+                {"protocol": "TCP", "port": 53},
+            ],
+        },
+        {
+            "to": [
+                {
+                    "namespaceSelector": {
+                        "matchLabels": {"kubernetes.io/metadata.name": "matrix"},
+                    },
+                    "podSelector": {
+                        "matchLabels": {"k8s.element.io/synapse-instance": "ess-synapse"},
+                    },
+                }
+            ],
+            "ports": [{"protocol": "TCP", "port": 8008}],
+        },
+    ], "receiver egress must stay limited to CoreDNS and the exact ESS Synapse workload"
+    print("ok: alert receiver network peers are exactly scoped")
 
 
 def test_render_is_content_free() -> None:
@@ -418,6 +492,7 @@ def test_webhook_posts_content_free_notice() -> None:
 
 
 if __name__ == "__main__":
+    test_network_peers_are_exactly_scoped()
     test_render_is_content_free()
     test_render_is_bounded()
     test_render_tolerates_malformed_alert()
