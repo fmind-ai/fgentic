@@ -84,6 +84,7 @@ type Target struct {
 	extensions           []string // sorted, deduped operator-configured extras (excludes token-budget)
 	identityFingerprint  [sha256.Size]byte
 	tls                  *remoteTLS // client-cert material for A2A v1.0 mTLS; nil when unconfigured (#244)
+	publicOnly           bool       // discovery-derived routes reject special-use addresses at dial time
 	activityPubIdentity  ActivityPubIdentity
 	id                   string
 }
@@ -408,6 +409,7 @@ func (t Target) resolvedRemote(endpoint, cardURL string) (Target, error) {
 	resolved.kind = targetKindRemote
 	resolved.address = endpoint
 	resolved.cardURL = cardURL
+	resolved.publicOnly = true
 	resolved.activityPubIdentity = ActivityPubIdentity{}
 	fingerprint := sha256.Sum256([]byte(fmt.Sprintf("%x\x00%s\x00%s", t.identityFingerprint, endpoint, cardURL)))
 	resolved.identityFingerprint = fingerprint

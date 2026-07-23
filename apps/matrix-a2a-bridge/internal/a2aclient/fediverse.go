@@ -90,6 +90,9 @@ func (c *Client) resolveFediverseAgentCard(ctx context.Context, target Target) (
 	}
 	switch resolved.Transport {
 	case brokerTransportA2A:
+		if resolved.ActorID != target.activityPubIdentity.ActorID {
+			return nil, c.quarantineRemote(target, errors.New("broker returned an unpinned ActivityPub actor"))
+		}
 		remote, err := target.resolvedRemote(resolved.A2AEndpoint, resolved.AgentCard)
 		if err != nil {
 			return nil, c.quarantineRemote(target, fmt.Errorf("validate discovered A2A route: %w", err))

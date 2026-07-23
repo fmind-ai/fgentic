@@ -29,6 +29,27 @@ func TestUseFediverseBrokerRejectsPublicEndpoint(t *testing.T) {
 	}
 }
 
+func TestFediverseTargetRejectsBrokerActorMismatch(t *testing.T) {
+	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(fediverseResolution{
+			Transport:   brokerTransportA2A,
+			ActorID:     "https://attacker.example.com/users/agent",
+			A2AEndpoint: "https://a2a.example.com/agent",
+			AgentCard:   "https://a2a.example.com/card",
+		})
+	}))
+	t.Cleanup(broker.Close)
+
+	target := newFediverseTestTarget(t, "https://peer.example.com/users/agent")
+	client := New("http://local.invalid", "local-gateway-secret", slog.New(slog.NewTextHandler(io.Discard, nil)))
+	if err := client.UseFediverseBroker(broker.URL, "broker-secret"); err != nil {
+		t.Fatalf("UseFediverseBroker: %v", err)
+	}
+	if _, err := client.ResolveAgentCard(t.Context(), target); !errors.Is(err, ErrRemoteTargetUntrusted) {
+		t.Fatalf("ResolveAgentCard error = %v, want ErrRemoteTargetUntrusted", err)
+	}
+}
+
 func TestFediverseTargetActivityPubFallback(t *testing.T) {
 	var mu sync.Mutex
 	var brokerHeaders []http.Header
@@ -138,7 +159,11 @@ func TestFediverseTargetUpgradesToPinnedA2AWithoutLocalCredential(t *testing.T) 
 		t.Fatalf("NewFediverseTarget: %v", err)
 	}
 	client := New("http://local.invalid", "local-gateway-secret", slog.New(slog.NewTextHandler(io.Discard, nil)))
-	client.remoteHTTPClient.Transport = &userTransport{base: peer.Client().Transport}
+	resolvedTarget, err := target.resolvedRemote(endpoint, cardURL)
+	if err != nil {
+		t.Fatalf("resolvedRemote fixture: %v", err)
+	}
+	client.remoteTransports.Store(resolvedTarget.ID(), &userTransport{base: peer.Client().Transport})
 	if err := client.UseFediverseBroker(broker.URL, "broker-secret"); err != nil {
 		t.Fatalf("UseFediverseBroker: %v", err)
 	}
@@ -194,7 +219,16 @@ func TestFediverseTargetRouteChangeInvalidatesOldA2AClientBeforeVerification(t *
 		t.Fatalf("NewFediverseTarget: %v", err)
 	}
 	client := New("http://local.invalid", "local-gateway-secret", slog.New(slog.NewTextHandler(io.Discard, nil)))
-	client.remoteHTTPClient.Transport = &userTransport{base: peer.Client().Transport}
+	for _, route := range [][2]string{
+		{initialEndpoint, initialCardURL},
+		{peer.URL + "/a2a-changed", peer.URL + "/card-changed"},
+	} {
+		resolvedTarget, resolveErr := target.resolvedRemote(route[0], route[1])
+		if resolveErr != nil {
+			t.Fatalf("resolvedRemote fixture: %v", resolveErr)
+		}
+		client.remoteTransports.Store(resolvedTarget.ID(), &userTransport{base: peer.Client().Transport})
+	}
 	if err := client.UseFediverseBroker(broker.URL, "broker-secret"); err != nil {
 		t.Fatalf("UseFediverseBroker: %v", err)
 	}
