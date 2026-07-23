@@ -503,7 +503,8 @@ func (b *Bridge) ensureDurablePlaceholder(
 		return nil
 	}
 	intent := b.as.Intent(id.UserID(job.GhostMXID))
-	eventID, err := b.sendDurableNotice(ctx, intent, evt, workingText, job.MatrixPlaceholderTxnID)
+	// The working placeholder is non-terminal, so it carries no result block (nil meta).
+	eventID, err := b.sendDurableNotice(ctx, intent, evt, workingText, job.MatrixPlaceholderTxnID, nil)
 	if err != nil {
 		return err
 	}
@@ -670,6 +671,13 @@ func (b *Bridge) deliverPendingReply(ctx context.Context, job *state.Job) error 
 		b.log.Warn("projecting persisted result after mapping changed", "job_id", job.JobID, "reason", denial)
 	}
 	intent := b.as.Intent(id.UserID(job.GhostMXID))
+	// deliverPendingReply is the durable (production) terminal projection: every branch that sends a
+	// fresh Matrix event is a terminal outcome, so it carries the versioned ai.fgentic.a2a result block
+	// with the durable job's already-recorded outcome and persisted A2A task id (#167). job.A2ATaskID is
+	// the authoritative persisted id for both the success result and any post-A2A failure/cancel notice;
+	// it is empty for a notice refused before A2A. The already-delivered re-projection branches below do
+	// not send, so the block is only attached where a new terminal event is created.
+	terminalMeta := b.newResultMetadata(job.GhostLocalpart, payload.Audit.Outcome, job.A2ATaskID)
 	var eventID id.EventID
 	var stage state.MatrixEventStage
 	var mediaOut, mediaRejected int
@@ -694,7 +702,7 @@ func (b *Bridge) deliverPendingReply(ctx context.Context, job *state.Job) error 
 			ref = &AgentRef{}
 		}
 		var edit bool
-		eventID, edit, mediaOut, mediaRejected, err = b.deliverDurableReply(ctx, intent, evt, *job, ref, result)
+		eventID, edit, mediaOut, mediaRejected, err = b.deliverDurableReply(ctx, intent, evt, *job, ref, result, terminalMeta)
 		mediaRejected += mappingRejected
 		if edit {
 			stage = state.MatrixEventEdit
@@ -705,10 +713,11 @@ func (b *Bridge) deliverPendingReply(ctx context.Context, job *state.Job) error 
 		stage = state.MatrixEventEdit
 		eventID, err = b.editDurableNotice(
 			ctx, intent, evt.RoomID, id.EventID(job.MatrixPlaceholderEventID), payload.Notice, job.MatrixEditTxnID,
+			terminalMeta,
 		)
 	default:
 		stage = state.MatrixEventReply
-		eventID, err = b.sendDurableNotice(ctx, intent, evt, payload.Notice, job.MatrixReplyTxnID)
+		eventID, err = b.sendDurableNotice(ctx, intent, evt, payload.Notice, job.MatrixReplyTxnID, terminalMeta)
 	}
 	if err != nil {
 		return b.retryOrDead(ctx, job, errorMatrixDelivery, err)

@@ -25,7 +25,7 @@ const (
 
 type deadManClient interface {
 	Supported(context.Context) (bool, error)
-	Schedule(context.Context, *appservice.IntentAPI, id.RoomID, id.EventID, string, time.Duration) (id.DelayID, error)
+	Schedule(context.Context, *appservice.IntentAPI, id.RoomID, id.EventID, string, time.Duration, string) (id.DelayID, error)
 	Restart(context.Context, *appservice.IntentAPI, id.DelayID) error
 	Cancel(context.Context, *appservice.IntentAPI, id.DelayID) error
 }
@@ -49,14 +49,19 @@ func (c *matrixDeadManClient) Schedule(
 	placeholder id.EventID,
 	txnID string,
 	delay time.Duration,
+	taskID string,
 ) (id.DelayID, error) {
 	content := &event.MessageEventContent{MsgType: event.MsgNotice, Body: deadManNoticeText}
 	content.GetRelatesTo().SetReplyTo(placeholder)
+	// The homeserver fires this notice only if the bridge stops responding before it cancels the timer,
+	// so it is a terminal outcome from the delegation's perspective: the bridge lost track of the task
+	// (#167). intent.UserID is the ghost's already-full MXID (D6), and taskID is the delegation's task.
+	meta := newResultMetadataForAgent(intent.UserID, outcomeLost, taskID)
 	resp, err := intent.SendMessageEvent(
 		ctx,
 		roomID,
 		event.EventMessage,
-		automatedContent(content),
+		automatedResultContent(content, meta),
 		mautrix.ReqSendEvent{TransactionID: txnID, UnstableDelay: delay},
 	)
 	if err != nil {
@@ -139,7 +144,7 @@ func (b *Bridge) armDeadMan(
 	}
 	jobID := state.JobIDFor(placeholder.String(), intent.UserID.String())
 	txnID := state.MatrixTransactionIDFor(jobID, deadManTransactionStage)
-	delayID, err := b.deadMan.Schedule(ctx, intent, roomID, placeholder, txnID, b.cfg.DeadManSwitchDelay)
+	delayID, err := b.deadMan.Schedule(ctx, intent, roomID, placeholder, txnID, b.cfg.DeadManSwitchDelay, taskID)
 	if err != nil {
 		b.log.Warn("schedule task dead-man switch", "task", taskID, "room", roomID, "reason", "matrix_delayed_event_failed")
 		return nil
@@ -198,6 +203,7 @@ func (b *Bridge) ensureDurableDeadMan(
 		id.EventID(job.MatrixPlaceholderEventID),
 		state.MatrixTransactionIDFor(job.JobID, deadManTransactionStage),
 		b.cfg.DeadManSwitchDelay,
+		job.A2ATaskID,
 	)
 	if err != nil {
 		b.log.Warn("schedule durable task dead-man switch", "job_id", job.JobID, "reason", "matrix_delayed_event_failed")

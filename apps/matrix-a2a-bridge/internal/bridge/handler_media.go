@@ -167,9 +167,13 @@ func (b *Bridge) deliverReply(
 	b.recordRoomBudget(evt.RoomID, res)
 	text, uploads, rejected := b.prepareReply(ctx, intent, localpart, ref, res)
 
+	// deliverReply is the single terminal-SUCCESS chokepoint (both the synchronous and the resumed
+	// long-task paths route here), so the answer always carries the versioned ai.fgentic.a2a result
+	// block with outcome=ok and the delegation's A2A task id (#167).
+	meta := b.newResultMetadata(localpart, outcomeOK, res.TaskID)
 	if placeholder == "" {
-		replyID = b.postReply(ctx, intent, evt, text)
-	} else if b.editReply(ctx, intent, evt.RoomID, placeholder, text) {
+		replyID = b.postReplyResult(ctx, intent, evt, text, meta)
+	} else if b.editReplyResult(ctx, intent, evt.RoomID, placeholder, text, meta) {
 		replyID = placeholder
 	}
 	b.replies.record(agentReplyRef{room: evt.RoomID, event: replyID, ghost: localpart})
