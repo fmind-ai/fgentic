@@ -302,6 +302,18 @@ def _issue_template_files(repository_root: Path = REPOSITORY_ROOT) -> tuple[Path
     )
 
 
+def _discussion_template_files(repository_root: Path = REPOSITORY_ROOT) -> tuple[Path, ...]:
+    """Return every regular YAML discussion-form file."""
+    discussion_directory = repository_root / ".github/DISCUSSION_TEMPLATE"
+    return tuple(
+        sorted(
+            path
+            for path in discussion_directory.iterdir()
+            if path.is_file() and path.suffix.lower() in {".yaml", ".yml"}
+        )
+    )
+
+
 def _issue_templates(repository_root: Path = REPOSITORY_ROOT) -> tuple[Path, ...]:
     """Return YAML and Markdown issue templates, excluding chooser configuration."""
     return tuple(path for path in _issue_template_files(repository_root) if path.name != "config.yml")
@@ -452,11 +464,11 @@ def _issue_template_name_violations(
     return violations
 
 
-def _issue_template_filename_violations(
+def _template_filename_violations(
     sources: tuple[Path, ...],
     repository_root: Path,
 ) -> list[SchemaViolation]:
-    """Return issue-template filenames that collide under GitHub's case-insensitive matching."""
+    """Return template filenames that collide under GitHub's case-insensitive matching."""
     filenames: dict[str, str] = {}
     violations: list[SchemaViolation] = []
     for source in sources:
@@ -872,14 +884,18 @@ def _require_unique_issue_template_names(sources: tuple[Path, ...], repository_r
     raise AssertionError(f"GitHub issue-template name drift:\n{details}")
 
 
-def _require_unique_issue_template_filenames(sources: tuple[Path, ...], repository_root: Path) -> None:
-    """Reject filename collisions across case-insensitive GitHub issue templates."""
-    violations = _issue_template_filename_violations(sources, repository_root)
+def _require_unique_template_filenames(
+    sources: tuple[Path, ...],
+    repository_root: Path,
+    template_kind: str,
+) -> None:
+    """Reject filename collisions across case-insensitive GitHub templates."""
+    violations = _template_filename_violations(sources, repository_root)
     if not violations:
         return
 
     details = "\n".join(f"  {source}: {reason}" for source, reason in violations)
-    raise AssertionError(f"GitHub issue-template filename drift:\n{details}")
+    raise AssertionError(f"GitHub {template_kind} filename drift:\n{details}")
 
 
 def _require_valid_markdown_issue_templates(sources: tuple[Path, ...], repository_root: Path) -> None:
@@ -1165,6 +1181,23 @@ class CommunityRouteIntegrityTest(TestCase):
                 ],
             )
 
+    def test_discovers_yaml_discussion_templates(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            discussion_directory = repository_root / ".github/DISCUSSION_TEMPLATE"
+            discussion_directory.mkdir(parents=True)
+            for name in ("ideas.yml", "q-a.yaml", "notes.md"):
+                (discussion_directory / name).touch()
+            (discussion_directory / "directory.yml").mkdir()
+
+            self.assertEqual(
+                [path.relative_to(repository_root).as_posix() for path in _discussion_template_files(repository_root)],
+                [
+                    ".github/DISCUSSION_TEMPLATE/ideas.yml",
+                    ".github/DISCUSSION_TEMPLATE/q-a.yaml",
+                ],
+            )
+
     def test_rejects_duplicate_issue_template_names(self) -> None:
         with TemporaryDirectory() as temporary:
             repository_root = Path(temporary)
@@ -1234,7 +1267,7 @@ class CommunityRouteIntegrityTest(TestCase):
 
             sources = _issue_template_files(repository_root)
             self.assertEqual(
-                _issue_template_filename_violations(sources, repository_root),
+                _template_filename_violations(sources, repository_root),
                 [
                     (
                         ".github/ISSUE_TEMPLATE/Straße.md",
@@ -1260,7 +1293,7 @@ class CommunityRouteIntegrityTest(TestCase):
                 r"  \.github/ISSUE_TEMPLATE/Straße\.md: "
                 r"filename collides case-insensitively with \.github/ISSUE_TEMPLATE/STRASSE\.md",
             ):
-                _require_unique_issue_template_filenames(sources, repository_root)
+                _require_unique_template_filenames(sources, repository_root, "issue-template")
 
     def test_accepts_casefold_distinct_issue_template_filenames(self) -> None:
         with TemporaryDirectory() as temporary:
@@ -1271,7 +1304,50 @@ class CommunityRouteIntegrityTest(TestCase):
                 (issue_directory / name).touch()
 
             self.assertEqual(
-                _issue_template_filename_violations(_issue_template_files(repository_root), repository_root),
+                _template_filename_violations(_issue_template_files(repository_root), repository_root),
+                [],
+            )
+
+    def test_rejects_case_colliding_discussion_template_filenames(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            discussion_directory = repository_root / ".github/DISCUSSION_TEMPLATE"
+            discussion_directory.mkdir(parents=True)
+            for name in ("Ideas.yml", "ideas.yml", "Straße.yml", "STRASSE.yml"):
+                (discussion_directory / name).touch()
+
+            sources = _discussion_template_files(repository_root)
+            self.assertEqual(
+                _template_filename_violations(sources, repository_root),
+                [
+                    (
+                        ".github/DISCUSSION_TEMPLATE/Straße.yml",
+                        "filename collides case-insensitively with .github/DISCUSSION_TEMPLATE/STRASSE.yml",
+                    ),
+                    (
+                        ".github/DISCUSSION_TEMPLATE/ideas.yml",
+                        "filename collides case-insensitively with .github/DISCUSSION_TEMPLATE/Ideas.yml",
+                    ),
+                ],
+            )
+            with self.assertRaisesRegex(
+                AssertionError,
+                r"GitHub discussion-form filename drift:\n"
+                r"  \.github/DISCUSSION_TEMPLATE/Straße\.yml: "
+                r"filename collides case-insensitively with \.github/DISCUSSION_TEMPLATE/STRASSE\.yml",
+            ):
+                _require_unique_template_filenames(sources, repository_root, "discussion-form")
+
+    def test_accepts_casefold_distinct_discussion_template_filenames(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            discussion_directory = repository_root / ".github/DISCUSSION_TEMPLATE"
+            discussion_directory.mkdir(parents=True)
+            for name in ("ideas.yml", "q-a.yaml"):
+                (discussion_directory / name).touch()
+
+            self.assertEqual(
+                _template_filename_violations(_discussion_template_files(repository_root), repository_root),
                 [],
             )
 
@@ -1626,7 +1702,10 @@ class CommunityRouteIntegrityTest(TestCase):
         _require_unique_issue_template_names(_issue_templates(), REPOSITORY_ROOT)
 
     def test_issue_template_filenames_are_case_insensitively_unique(self) -> None:
-        _require_unique_issue_template_filenames(_issue_template_files(), REPOSITORY_ROOT)
+        _require_unique_template_filenames(_issue_template_files(), REPOSITORY_ROOT, "issue-template")
+
+    def test_discussion_template_filenames_are_case_insensitively_unique(self) -> None:
+        _require_unique_template_filenames(_discussion_template_files(), REPOSITORY_ROOT, "discussion-form")
 
     def test_markdown_issue_templates_have_required_metadata(self) -> None:
         sources = tuple(source for source in _issue_templates() if source.suffix.lower() == ".md")
