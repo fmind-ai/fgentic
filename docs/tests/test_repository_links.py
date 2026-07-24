@@ -73,6 +73,7 @@ _RAILS_TRANSLITERATION.update(
 FORM_ELEMENT_TYPES = frozenset({"checkboxes", "dropdown", "input", "markdown", "textarea", "upload"})
 ISSUE_FORM_KEYS = frozenset({"assignees", "body", "description", "labels", "name", "projects", "title", "type"})
 DISCUSSION_FORM_KEYS = frozenset({"body", "labels", "title"})
+MARKDOWN_ISSUE_TEMPLATE_KEYS = frozenset({"about", "assignees", "labels", "name", "title", "type"})
 FORM_COMMON_ELEMENT_KEYS = frozenset({"attributes", "id", "type", "validations"})
 FORM_ELEMENT_KEYS = {
     "checkboxes": FORM_COMMON_ELEMENT_KEYS,
@@ -345,18 +346,24 @@ def _markdown_issue_template_violations(source: Path, repository_root: Path) -> 
     if match is None:
         return [(source_name, "YAML frontmatter is required")]
 
+    raw_frontmatter = match.group("yaml")
     try:
-        document = yaml.safe_load(match.group("yaml"))
+        node = yaml.compose(raw_frontmatter, Loader=yaml.SafeLoader)
+        document = yaml.safe_load(raw_frontmatter)
     except yaml.YAMLError:
         return [(source_name, "frontmatter must be valid YAML")]
     if not isinstance(document, dict):
         return [(source_name, "frontmatter must be a mapping")]
 
-    violations = [
+    violations = [(source_name, reason) for reason in _duplicate_yaml_key_reasons(node)]
+    violations.extend(
+        (source_name, reason) for reason in _unsupported_yaml_mapping_key_reasons(node, MARKDOWN_ISSUE_TEMPLATE_KEYS)
+    )
+    violations.extend(
         (source_name, f"{key} must be a nonblank string")
         for key in ("name", "about")
         if not _is_nonblank_string(document.get(key))
-    ]
+    )
     name = document.get("name")
     if isinstance(name, str) and name.strip() and len(name.strip()) < 4:
         violations.append((source_name, "name must contain at least 4 characters"))
@@ -404,15 +411,37 @@ def _issue_template_filename_violations(
 
 def _yaml_scalar_key(node: ScalarNode) -> tuple[YamlScalarKey, str]:
     """Return a resolved identity and diagnostic label for one YAML scalar key."""
-    loader = yaml.SafeLoader("")
-    try:
-        value = loader.construct_object(node, deep=True)
-    finally:
-        loader.dispose()
+    if node.tag == "tag:yaml.org,2002:merge":
+        value: object = node.value
+    else:
+        loader = yaml.SafeLoader("")
+        try:
+            value = loader.construct_object(node, deep=True)
+        finally:
+            loader.dispose()
     if not isinstance(value, Hashable):
         raise TypeError(f"YAML scalar key resolved to unhashable {type(value).__name__}")
     label = value if isinstance(value, str) else repr(value)
     return (node.tag, value), label
+
+
+def _unsupported_yaml_mapping_key_reasons(node: Node | None, allowed_keys: frozenset[str]) -> list[str]:
+    """Return unsupported scalar mapping keys using their resolved YAML identities."""
+    if not isinstance(node, MappingNode):
+        return []
+
+    unsupported: dict[YamlScalarKey, str] = {}
+    for key_node, _ in node.value:
+        if not isinstance(key_node, ScalarNode):
+            continue
+        identity, label = _yaml_scalar_key(key_node)
+        value = identity[1]
+        if not isinstance(value, str) or value not in allowed_keys:
+            unsupported.setdefault(identity, label)
+    return [
+        f"{label} is not permitted"
+        for identity, label in sorted(unsupported.items(), key=lambda item: repr(item[0][1]))
+    ]
 
 
 def _duplicate_yaml_key_reasons(node: Node | None, location: str = "") -> list[str]:
@@ -1242,15 +1271,84 @@ class CommunityRouteIntegrityTest(TestCase):
                 ],
             )
 
+    def test_rejects_ambiguous_markdown_issue_template_metadata(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.md"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "---",
+                        "name: First",
+                        "name: Second",
+                        "about: Exercises ambiguous metadata",
+                        "unexpected: ignored typo",
+                        "11: integer key",
+                        "false: non-string key",
+                        "null: null key",
+                        "<<: {}",
+                        "---",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _markdown_issue_template_violations(source, repository_root),
+                [
+                    (".github/ISSUE_TEMPLATE/broken.md", "name is duplicated"),
+                    (".github/ISSUE_TEMPLATE/broken.md", "<< is not permitted"),
+                    (".github/ISSUE_TEMPLATE/broken.md", "unexpected is not permitted"),
+                    (".github/ISSUE_TEMPLATE/broken.md", "11 is not permitted"),
+                    (".github/ISSUE_TEMPLATE/broken.md", "False is not permitted"),
+                    (".github/ISSUE_TEMPLATE/broken.md", "None is not permitted"),
+                ],
+            )
+            with self.assertRaisesRegex(
+                AssertionError,
+                r"GitHub Markdown issue-template metadata drift:\n"
+                r"  \.github/ISSUE_TEMPLATE/broken\.md: name is duplicated",
+            ):
+                _require_valid_markdown_issue_templates((source,), repository_root)
+
     def test_accepts_valid_markdown_issue_template_metadata(self) -> None:
         with TemporaryDirectory() as temporary:
             repository_root = Path(temporary)
             source = repository_root / ".github/ISSUE_TEMPLATE/help.md"
             source.parent.mkdir(parents=True)
-            source.write_text("---\nname: Help\nabout: Ask for assistance\n---\n\n## Details\n", encoding="utf-8")
+            source.write_text(
+                "\n".join(
+                    (
+                        "---",
+                        "name: Help",
+                        "about: Ask for assistance",
+                        'title: "[Help] "',
+                        "labels: help, triage",
+                        "type: task",
+                        "assignees: octocat",
+                        "---",
+                        "",
+                        "## Details",
+                    )
+                ),
+                encoding="utf-8",
+            )
 
             self.assertEqual(_markdown_issue_template_violations(source, repository_root), [])
             self.assertEqual(_issue_template_name(source), "Help")
+
+            duplicate = source.with_name("z-help.yml")
+            duplicate.write_text("name: Help\ndescription: Duplicate chooser name\nbody: []\n", encoding="utf-8")
+            self.assertEqual(
+                _issue_template_name_violations(_issue_templates(repository_root), repository_root),
+                [
+                    (
+                        ".github/ISSUE_TEMPLATE/z-help.yml",
+                        "name duplicates .github/ISSUE_TEMPLATE/help.md: 'Help'",
+                    )
+                ],
+            )
 
     def test_rejects_invalid_issue_chooser_config_structure(self) -> None:
         with TemporaryDirectory() as temporary:
