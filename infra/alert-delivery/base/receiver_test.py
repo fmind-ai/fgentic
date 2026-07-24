@@ -671,10 +671,29 @@ class _FakeSynapse(http.server.BaseHTTPRequestHandler):
             self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
             self.wfile.write(f"{len(body):x}\r\n".encode() + body + b"\r\n0\r\n\r\n")
-        elif self.response_mode == "chunked":
-            self.send_header("Transfer-Encoding", "chunked")
+        elif self.response_mode in {"chunked", "duplicate-transfer-encoding"}:
+            self.send_header("Transfer-Encoding", "ChUnKeD")
+            if self.response_mode == "duplicate-transfer-encoding":
+                self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
             self.wfile.write(f"{len(body):x}\r\n".encode() + body + b"\r\n0\r\n\r\n")
+        elif self.response_mode in {
+            "unsupported-transfer-encoding",
+            "combined-transfer-encoding",
+            "empty-transfer-encoding",
+            "whitespace-transfer-encoding",
+        }:
+            transfer_encoding = {
+                "unsupported-transfer-encoding": "gzip",
+                "combined-transfer-encoding": "gzip, chunked",
+                "empty-transfer-encoding": "",
+                "whitespace-transfer-encoding": "chunked ",
+            }[self.response_mode]
+            self.send_header("Transfer-Encoding", transfer_encoding)
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+            self.close_connection = True
         elif self.response_mode == "trickle":
             body = b'{"x":1}'
             self.send_header("Content-Length", str(len(body)))
@@ -771,6 +790,11 @@ def test_matrix_responses_are_bounded_and_strictly_framed() -> None:
             "incomplete",
             "duplicate-content-length",
             "ambiguous-transfer",
+            "duplicate-transfer-encoding",
+            "unsupported-transfer-encoding",
+            "combined-transfer-encoding",
+            "empty-transfer-encoding",
+            "whitespace-transfer-encoding",
             "absent-content-type",
             "duplicate-content-type",
             "non-json-content-type",

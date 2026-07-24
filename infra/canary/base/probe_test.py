@@ -286,12 +286,30 @@ class _FakeMatrix(http.server.BaseHTTPRequestHandler):
         body = json.dumps(payload).encode() if payload is not None else b""
         self.send_response(status)
         self._send_content_type_headers()
-        self.send_header("Content-Length", str(len(body)))
+        transfer_encodings = {
+            "chunked": ("ChUnKeD",),
+            "duplicate-transfer-encoding": ("chunked", "chunked"),
+            "unsupported-transfer-encoding": ("gzip",),
+            "combined-transfer-encoding": ("gzip, chunked",),
+            "empty-transfer-encoding": ("",),
+            "whitespace-transfer-encoding": ("chunked ",),
+        }.get(self.response_mode)
+        if transfer_encodings is not None:
+            for transfer_encoding in transfer_encodings:
+                self.send_header("Transfer-Encoding", transfer_encoding)
+            if self.response_mode != "chunked":
+                self.send_header("Connection", "close")
+        else:
+            self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         # The hard-deadline test intentionally closes before the slow response.
         with contextlib.suppress(BrokenPipeError):
-            if body:
+            if body and self.response_mode in {"chunked", "duplicate-transfer-encoding"}:
+                self.wfile.write(f"{len(body):x}\r\n".encode() + body + b"\r\n0\r\n\r\n")
+            elif body:
                 self.wfile.write(body)
+        if transfer_encodings is not None and self.response_mode != "chunked":
+            self.close_connection = True
 
     def _send_trickle(self) -> None:
         body = b'{"x":1}'
@@ -516,6 +534,27 @@ def test_hostile_responses_fail_closed() -> None:
     print("ok: hostile Matrix responses fail closed")
 
 
+def test_matrix_transfer_coding_is_strict_and_chunked_is_accepted() -> None:
+    for mode in (
+        "duplicate-transfer-encoding",
+        "unsupported-transfer-encoding",
+        "combined-transfer-encoding",
+        "empty-transfer-encoding",
+        "whitespace-transfer-encoding",
+    ):
+        result = _run_probe_result([], "1", response_mode=mode)
+        assert result.returncode != 0, f"{mode} must fail closed"
+        assert result.stdout == ""
+        assert result.stderr == "canary: POST Matrix response has invalid framing\n"
+
+    timelines = [
+        [_reply(REPLY_EVENT, "⏳ working on it…")],
+        [_edit(REPLY_EVENT, "final answer")],
+    ]
+    assert _run_probe(timelines, "10", response_mode="chunked") == 0
+    print("ok: Matrix transfer coding is strict and chunked-compatible")
+
+
 def test_non_200_success_responses_fail_closed() -> None:
     for mode, method in (
         ("accepted-post", "POST"),
@@ -570,6 +609,7 @@ if __name__ == "__main__":
     test_round_trip_deadline_is_hard()
     test_request_timeout_is_end_to_end()
     test_hostile_responses_fail_closed()
+    test_matrix_transfer_coding_is_strict_and_chunked_is_accepted()
     test_non_200_success_responses_fail_closed()
     test_matrix_content_type_is_strict_and_parameterized_json_is_accepted()
     test_hostile_cursor_never_reaches_failure_log()

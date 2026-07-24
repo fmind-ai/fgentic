@@ -70,6 +70,14 @@ def _is_json_content_type(value: str) -> bool:
     )
 
 
+def _has_supported_transfer_coding(values: list[Any]) -> bool:
+    return not values or (
+        len(values) == 1
+        and isinstance(values[0], str)
+        and values[0].lower() == "chunked"
+    )
+
+
 def _deadline_seconds() -> int:
     raw = os.environ.get("CANARY_DEADLINE_SECONDS", str(_DEFAULT_DEADLINE_SECONDS))
     error = (
@@ -126,12 +134,17 @@ def _request_io(
                 _fail(f"{method} Matrix response has invalid Content-Type")
 
             content_lengths = response.headers.get_all("Content-Length", [])
-            if len(content_lengths) > 1 or (
-                content_lengths
-                and (
-                    not content_lengths[0].isascii()
-                    or not content_lengths[0].isdecimal()
-                    or bool(response.headers.get_all("Transfer-Encoding", []))
+            transfer_encodings = response.headers.get_all("Transfer-Encoding", [])
+            if (
+                len(content_lengths) > 1
+                or not _has_supported_transfer_coding(transfer_encodings)
+                or (
+                    content_lengths
+                    and (
+                        not content_lengths[0].isascii()
+                        or not content_lengths[0].isdecimal()
+                        or bool(transfer_encodings)
+                    )
                 )
             ):
                 _fail(f"{method} Matrix response has invalid framing")
