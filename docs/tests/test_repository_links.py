@@ -53,6 +53,8 @@ FORM_VALIDATION_KEYS = {
     "upload": frozenset({"accept", "required"}),
 }
 CHECKBOX_OPTION_KEYS = frozenset({"label", "required"})
+ISSUE_CHOOSER_KEYS = frozenset({"blank_issues_enabled", "contact_links"})
+ISSUE_CHOOSER_CONTACT_LINK_KEYS = frozenset({"about", "name", "url"})
 RAW_URL_TRAILING_DELIMITERS = ".,;:!?*~}"
 PUBLIC_ENTRYPOINTS = (
     ".agents/AGENTS.md",
@@ -193,6 +195,60 @@ def _unsupported_key_reasons(
         key=repr,
     )
     return [f"{prefix}{key if isinstance(key, str) else repr(key)} is not permitted" for key in unsupported]
+
+
+def _issue_chooser_config_violations(source: Path, repository_root: Path) -> list[SchemaViolation]:
+    """Return violations of GitHub's documented issue chooser configuration."""
+    source_name = _display_path(source, repository_root)
+    document = yaml.safe_load(source.read_text(encoding="utf-8"))
+    if not isinstance(document, dict):
+        return [(source_name, "config must be a mapping")]
+
+    violations = [
+        (source_name, reason)
+        for reason in _unsupported_key_reasons(cast(dict[object, object], document), ISSUE_CHOOSER_KEYS)
+    ]
+    blank_issues_enabled = document.get("blank_issues_enabled")
+    if "blank_issues_enabled" in document and not isinstance(blank_issues_enabled, bool):
+        violations.append((source_name, "blank_issues_enabled must be a Boolean"))
+
+    if "contact_links" not in document:
+        return violations
+    contact_links = document.get("contact_links")
+    if not isinstance(contact_links, list):
+        violations.append((source_name, "contact_links must be an array"))
+        return violations
+
+    for index, contact_link in enumerate(contact_links):
+        location = f"contact_links[{index}]"
+        if not isinstance(contact_link, dict):
+            violations.append((source_name, f"{location} must be a mapping"))
+            continue
+        violations.extend(
+            (source_name, reason)
+            for reason in _unsupported_key_reasons(
+                cast(dict[object, object], contact_link),
+                ISSUE_CHOOSER_CONTACT_LINK_KEYS,
+                location,
+            )
+        )
+        violations.extend(
+            (source_name, f"{location}.{key} must be a nonblank string")
+            for key in ("name", "url", "about")
+            if not _is_nonblank_string(contact_link.get(key))
+        )
+    return violations
+
+
+def _validated_issue_chooser_contact_links(source: Path, repository_root: Path) -> list[dict[str, str]]:
+    """Return contact links after rejecting malformed issue chooser configuration."""
+    violations = _issue_chooser_config_violations(source, repository_root)
+    if violations:
+        details = "\n".join(f"  {source_name}: {reason}" for source_name, reason in violations)
+        raise AssertionError(f"issue chooser configuration drift:\n{details}")
+
+    document = cast("dict[str, object]", yaml.safe_load(source.read_text(encoding="utf-8")))
+    return cast("list[dict[str, str]]", document.get("contact_links", []))
 
 
 def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaViolation]:
@@ -640,6 +696,74 @@ class CommunityRouteIntegrityTest(TestCase):
                 [path.relative_to(repository_root).as_posix() for path in _structured_forms(repository_root)],
                 [".github/DISCUSSION_TEMPLATE/q-a.yml", ".github/ISSUE_TEMPLATE/bug.yml"],
             )
+
+    def test_rejects_invalid_issue_chooser_config_structure(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/config.yml"
+            source.parent.mkdir(parents=True)
+
+            source.write_text("- not a mapping\n", encoding="utf-8")
+            self.assertEqual(
+                _issue_chooser_config_violations(source, repository_root),
+                [(".github/ISSUE_TEMPLATE/config.yml", "config must be a mapping")],
+            )
+
+            source.write_text("contact_links: {}\n", encoding="utf-8")
+            self.assertEqual(
+                _issue_chooser_config_violations(source, repository_root),
+                [(".github/ISSUE_TEMPLATE/config.yml", "contact_links must be an array")],
+            )
+
+            source.write_text("contact_links:\n", encoding="utf-8")
+            self.assertEqual(
+                _issue_chooser_config_violations(source, repository_root),
+                [(".github/ISSUE_TEMPLATE/config.yml", "contact_links must be an array")],
+            )
+
+    def test_rejects_invalid_issue_chooser_config_fields(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/config.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        'blank_issues_enabled: "false"',
+                        "unexpected: true",
+                        "false: invalid top-level key",
+                        "contact_links:",
+                        '  - name: " "',
+                        "    url: false",
+                        "    description: Misspelled about",
+                        "    false: invalid key",
+                        "  - not a mapping",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _issue_chooser_config_violations(source, repository_root),
+                [
+                    (".github/ISSUE_TEMPLATE/config.yml", "unexpected is not permitted"),
+                    (".github/ISSUE_TEMPLATE/config.yml", "False is not permitted"),
+                    (".github/ISSUE_TEMPLATE/config.yml", "blank_issues_enabled must be a Boolean"),
+                    (".github/ISSUE_TEMPLATE/config.yml", "contact_links[0].description is not permitted"),
+                    (".github/ISSUE_TEMPLATE/config.yml", "contact_links[0].False is not permitted"),
+                    (".github/ISSUE_TEMPLATE/config.yml", "contact_links[0].name must be a nonblank string"),
+                    (".github/ISSUE_TEMPLATE/config.yml", "contact_links[0].url must be a nonblank string"),
+                    (".github/ISSUE_TEMPLATE/config.yml", "contact_links[0].about must be a nonblank string"),
+                    (".github/ISSUE_TEMPLATE/config.yml", "contact_links[1] must be a mapping"),
+                ],
+            )
+
+            with self.assertRaisesRegex(
+                AssertionError,
+                r"issue chooser configuration drift:\n"
+                r"  \.github/ISSUE_TEMPLATE/config\.yml: unexpected is not permitted",
+            ):
+                _validated_issue_chooser_contact_links(source, repository_root)
 
     def test_embedded_form_markdown_targets_resolve(self) -> None:
         _require_valid_form_markdown_links(_structured_forms(), REPOSITORY_ROOT)
@@ -1293,9 +1417,8 @@ class CommunityRouteIntegrityTest(TestCase):
 
     def test_structured_discussion_routes_stay_in_sync(self) -> None:
         expected = {path.stem for path in DISCUSSION_TEMPLATE_DIRECTORY.glob("*.yml")}
-        config = cast("dict[str, object]", yaml.safe_load(ISSUE_TEMPLATE_CONFIG.read_text(encoding="utf-8")))
-        contact_links = cast("list[dict[str, object]]", config["contact_links"])
-        config_targets = [url for link in contact_links if isinstance(url := link.get("url"), str)]
+        contact_links = _validated_issue_chooser_contact_links(ISSUE_TEMPLATE_CONFIG, REPOSITORY_ROOT)
+        config_targets = [link["url"] for link in contact_links]
         support_targets = _rendered_targets(SUPPORT_POLICY.read_text(encoding="utf-8"))
 
         self.assertSetEqual(
