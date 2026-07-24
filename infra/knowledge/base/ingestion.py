@@ -307,13 +307,27 @@ def _strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
 
 
 def _read_bounded_bytes(path: Path, max_bytes: int) -> bytes:
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
     try:
-        with path.open("rb") as handle:
-            before = os.fstat(handle.fileno())
-            raw = handle.read(max_bytes + 1)
-            after = os.fstat(handle.fileno())
+        descriptor = os.open(path, flags)
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise IngestionError("ingestion input must be a regular file")
+            chunks: list[bytes] = []
+            remaining = max_bytes + 1
+            while remaining > 0:
+                chunk = os.read(descriptor, min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
     except OSError as error:
         raise IngestionError(f"could not read {path}: {error}") from error
+    raw = b"".join(chunks)
     if not raw or len(raw) > max_bytes:
         raise IngestionError(f"{path} must contain between 1 and {max_bytes} bytes")
     if (
