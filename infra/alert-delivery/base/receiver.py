@@ -223,14 +223,17 @@ def _post_notice(homeserver: str, token: str, room_id: str, body: str) -> None:
     outcomes: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
 
     def deliver() -> None:
+        outcome: BaseException | None = None
         try:
             _post_notice_io(homeserver, token, room_id, body)
-            outcomes.put(None)
         except BaseException as error:
             # Preserve the original exception type across the worker boundary without a traceback.
-            outcomes.put(error)
+            outcome = error
         finally:
             _MATRIX_REQUEST_SLOTS.release()
+        # Publish only after capacity is visible again so the next webhook cannot observe a stale
+        # saturation failure after this delivery has already completed.
+        outcomes.put(outcome)
 
     # urllib's timeout is per blocking socket operation. A bounded daemon worker gives the caller a
     # wall-clock deadline without letting repeated timed-out I/O accumulate unbounded threads.

@@ -827,6 +827,56 @@ def test_matrix_worker_start_failure_releases_slot() -> None:
     print("ok: Matrix worker start failure releases its slot")
 
 
+def test_matrix_worker_releases_slot_before_publishing_outcome() -> None:
+    def delivery(observed: list[BaseException]) -> None:
+        try:
+            receiver._post_notice("http://matrix", "token", ROOM, "notice")
+        except BaseException as error:
+            observed.append(error)
+
+    for delivery_error in (None, receiver.MatrixResponseError("synthetic delivery failure")):
+        class PausedReleaseSemaphore:
+            def __init__(self) -> None:
+                self.inner = threading.BoundedSemaphore(receiver._MAX_CONCURRENT_MATRIX_REQUESTS)
+                self.release_started = threading.Event()
+                self.release_allowed = threading.Event()
+
+            def acquire(self, *, blocking: bool = True) -> bool:
+                return self.inner.acquire(blocking=blocking)
+
+            def release(self) -> None:
+                self.release_started.set()
+                assert self.release_allowed.wait(timeout=1)
+                self.inner.release()
+
+        slots = PausedReleaseSemaphore()
+        observed: list[BaseException] = []
+
+        worker_effect = None if delivery_error is None else delivery_error
+        with (
+            mock.patch.object(receiver, "_MATRIX_REQUEST_SLOTS", slots),
+            mock.patch.object(receiver, "_post_notice_io", side_effect=worker_effect),
+        ):
+            caller = threading.Thread(target=delivery, args=(observed,))
+            caller.start()
+            assert slots.release_started.wait(timeout=1)
+            assert caller.is_alive(), "delivery outcome became visible before its slot was released"
+            slots.release_allowed.set()
+            caller.join(timeout=1)
+            assert not caller.is_alive()
+
+        if delivery_error is None:
+            assert observed == []
+        else:
+            assert len(observed) == 1 and type(observed[0]) is type(delivery_error)
+        acquired = [
+            slots.acquire(blocking=False)
+            for _ in range(receiver._MAX_CONCURRENT_MATRIX_REQUESTS)
+        ]
+        assert all(acquired)
+    print("ok: Matrix worker releases capacity before publishing success or failure")
+
+
 def test_matrix_delivery_timeout_is_end_to_end() -> None:
     _FakeSynapse.received = []
     _FakeSynapse.response_mode = "trickle"
@@ -878,5 +928,6 @@ if __name__ == "__main__":
     test_matrix_responses_are_bounded_and_strictly_framed()
     test_matrix_delivery_workers_are_bounded_and_recover()
     test_matrix_worker_start_failure_releases_slot()
+    test_matrix_worker_releases_slot_before_publishing_outcome()
     test_matrix_delivery_timeout_is_end_to_end()
     print("alert receiver tests passed")
