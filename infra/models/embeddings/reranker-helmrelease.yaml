@@ -99,9 +99,10 @@ spec:
                 from time import sleep
 
                 expected_revision = os.environ["MODEL_REVISION"]
+                expected_marker = f"snapshot-v2:{expected_revision}"
                 marker = Path("/models/bge-reranker-v2-m3/.ready")
                 for _ in range(900):
-                    if marker.is_file() and marker.read_text(encoding="utf-8").strip() == expected_revision:
+                    if marker.is_file() and marker.read_text(encoding="utf-8").strip() == expected_marker:
                         raise SystemExit(0)
                     sleep(2)
                 raise SystemExit("model download did not complete")
