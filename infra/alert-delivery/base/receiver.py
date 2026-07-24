@@ -40,6 +40,8 @@ _MAX_ALERT_NAME_BYTES = 128
 _MAX_SEVERITY_BYTES = 32
 _MAX_LABEL_VALUE_BYTES = 128
 _MAX_GENERATOR_URL_BYTES = 2_048
+_ALERT_STATUSES = frozenset({"firing", "resolved"})
+_STATUS_ICONS = {"firing": "🔔", "resolved": "✅", "unknown": "⚠️"}
 _UNSAFE_TEXT_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
 # Four full header sets stay small beside the interpreter baseline in the 64 MiB container.
 _MAX_HEADER_BYTES = 16_384
@@ -105,6 +107,11 @@ def _clean_scalar(value: object, *, fallback: str, maximum: int) -> str:
     return normalized
 
 
+def _clean_status(value: object, *, fallback: str) -> str:
+    status = _clean_scalar(value, fallback=fallback, maximum=_MAX_STATUS_BYTES)
+    return status if status in _ALERT_STATUSES else fallback
+
+
 def _safe_label_summary(labels: dict) -> str:
     parts = []
     for key in _SAFE_LABELS:
@@ -116,11 +123,11 @@ def _safe_label_summary(labels: dict) -> str:
 
 def _render(payload: dict) -> str:
     """Build one bounded, content-free notice for an Alertmanager group webhook."""
-    status = _clean_scalar(payload.get("status", "firing"), fallback="unknown", maximum=_MAX_STATUS_BYTES)
+    status = _clean_status(payload.get("status"), fallback="unknown")
     alerts = payload.get("alerts", [])
     if not isinstance(alerts, list):
         alerts = []
-    icon = "🔔" if status == "firing" else "✅"
+    icon = _STATUS_ICONS[status]
     header = f"{icon} Alertmanager: {status} ({len(alerts)} alert(s))"
     alert_lines = []
     for alert in alerts[:_MAX_ALERTS]:
@@ -131,7 +138,7 @@ def _render(payload: dict) -> str:
         severity = _clean_scalar(labels.get("severity", "none"), fallback="unknown", maximum=_MAX_SEVERITY_BYTES)
         summary = _safe_label_summary(labels)
         link = _clean_scalar(alert.get("generatorURL", ""), fallback="", maximum=_MAX_GENERATOR_URL_BYTES)
-        alert_status = _clean_scalar(alert.get("status", status), fallback=status, maximum=_MAX_STATUS_BYTES)
+        alert_status = _clean_status(alert.get("status"), fallback=status)
         piece = f"• [{alert_status}] {name} ({severity})"
         if summary:
             piece += f" {summary}"
