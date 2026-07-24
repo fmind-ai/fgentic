@@ -8,7 +8,7 @@ description: The generator decision, authoring checks, and human-gated GitHub Pa
 
 ## 1. Decision
 
-Fgentic publishes the existing `docs/` Markdown tree as a static GitHub Pages site. Markdown stays the only content source; the rendered site is a discoverability and search layer, not a second documentation system.
+After the [one-time publication gate](#3-publication-gate), Fgentic will publish the existing `docs/` Markdown tree as a static GitHub Pages site. Markdown stays the only content source; the rendered site is a discoverability and search layer, not a second documentation system.
 
 The generator is exactly pinned Material for MkDocs 9.7.7 with a committed uv lock. Material entered maintenance mode in November 2025: its maintainers committed to critical bug and security fixes for at least 12 months, but no new features. This known support window is acceptable for the v1 launch because the configuration deliberately avoids custom templates and third-party plugins.
 
