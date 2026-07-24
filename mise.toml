@@ -199,6 +199,7 @@ depends = [
   "check:admission-policies",
   "check:resource-quotas",
   "check:model-catalog",
+  "check:model-cache",
   "check:model-residency",
   "check:mcp-governance",
   "check:audit-attribution",
@@ -300,6 +301,10 @@ run = "bash scripts/test-agent-retire.sh"
 description = "Validate governed model metadata and every tracked provider/model selection"
 dir = "apps/matrix-a2a-bridge"
 run = "go run ./cmd/check-model-catalog --repo-root ../.."
+
+[tasks."check:model-cache"]
+description = "Prove model loaders publish one exact revision-isolated snapshot"
+run = "python infra/models/model_cache_test.py"
 
 [tasks."check:model-residency"]
 description = "Prove classification/residency-aware model routing is fail-closed at the egress chokepoint (#339)"
