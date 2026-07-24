@@ -6,6 +6,7 @@ import copy
 import errno
 import hashlib
 import http.client
+import io
 import json
 import os
 import socket
@@ -758,6 +759,49 @@ def test_manifest_rejects_office_archive_symlink(tmp_path: Path) -> None:
 
     with pytest.raises(ingestion.IngestionError, match="unsafe or duplicate entry"):
         ingestion.load_manifest(manifest_path, source_root)
+
+
+def test_office_archive_validation_uses_exact_bounded_bytes(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source.docx"
+    safe_buffer = io.BytesIO()
+    with zipfile.ZipFile(safe_buffer, "w") as archive:
+        archive.writestr("word/document.xml", "<document/>")
+    safe_content = safe_buffer.getvalue()
+    source.write_bytes(safe_content)
+
+    raced_buffer = io.BytesIO()
+    with zipfile.ZipFile(raced_buffer, "w") as archive:
+        archive.writestr("../escape.xml", "<document/>")
+    raced_content = raced_buffer.getvalue()
+
+    real_read = ingestion._read_bounded_bytes
+    real_validate = ingestion._validate_archive
+    validated: list[bytes] = []
+
+    def race_after_read(path: Path, max_bytes: int) -> bytes:
+        content = real_read(path, max_bytes)
+        path.write_bytes(raced_content)
+        return content
+
+    def record_validation(path: Path, content: bytes) -> None:
+        validated.append(content)
+        real_validate(path, content)
+
+    monkeypatch.setattr(ingestion, "_read_bounded_bytes", race_after_read)
+    monkeypatch.setattr(ingestion, "_validate_archive", record_validation)
+
+    content = ingestion._read_verified_source(
+        source,
+        ingestion.MAX_SOURCE_BYTES,
+        f"sha256:{hashlib.sha256(safe_content).hexdigest()}",
+    )
+
+    assert content == safe_content
+    assert validated == [safe_content]
+    assert source.read_bytes() == raced_content
 
 
 def test_chunks_keep_exact_acl_and_stable_ids_across_acl_changes(tmp_path: Path) -> None:

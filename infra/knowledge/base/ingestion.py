@@ -6,6 +6,7 @@ import argparse
 import hashlib
 import http.client
 import importlib
+import io
 import ipaddress
 import json
 import logging
@@ -586,11 +587,11 @@ def _resolve_source(root: Path, relative: PurePosixPath, max_source_bytes: int) 
     return candidate
 
 
-def _validate_archive(path: Path) -> None:
+def _validate_archive(path: Path, content: bytes) -> None:
     if path.suffix.lower() not in {".docx", ".pptx"}:
         return
     try:
-        with zipfile.ZipFile(path) as archive:
+        with zipfile.ZipFile(io.BytesIO(content)) as archive:
             entries = archive.infolist()
             if not entries or len(entries) > MAX_ARCHIVE_ENTRIES:
                 raise IngestionError(f"archive source must contain between 1 and {MAX_ARCHIVE_ENTRIES} entries")
@@ -627,6 +628,7 @@ def _validate_archive(path: Path) -> None:
 
 def _read_verified_source(path: Path, max_bytes: int, expected_digest: str) -> bytes:
     content = _read_bounded_bytes(path, max_bytes)
+    _validate_archive(path, content)
     actual_digest = f"sha256:{hashlib.sha256(content).hexdigest()}"
     if actual_digest != expected_digest:
         raise IngestionError(f"source content digest does not match manifest: {path}")
@@ -687,7 +689,6 @@ def load_manifest(
         relative = _relative_source_path(source_obj["path"], name=f"{name}.path")
         content_digest = _source_digest(source_obj["digest"], name=f"{name}.digest")
         path = _resolve_source(source_root, relative, max_source_bytes)
-        _validate_archive(path)
         metadata = _source_metadata(source_obj["source"], name=f"{name}.source", corpus=corpus, require_location=False)
         if not isinstance(metadata, SourceMetadata):
             raise AssertionError("source metadata parser returned the wrong type")
@@ -947,7 +948,7 @@ def isolated_source(source_root: Path) -> Path:
         raise IngestionError("could not inspect isolated parser source") from error
     if not 1 <= source_stat.st_size <= MAX_SOURCE_BYTES:
         raise IngestionError(f"isolated source must contain between 1 and {MAX_SOURCE_BYTES} bytes")
-    _validate_archive(source)
+    _validate_archive(source, _read_bounded_bytes(source, MAX_SOURCE_BYTES))
     return source
 
 
