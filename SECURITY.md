@@ -12,7 +12,7 @@ You can expect an acknowledgment within 7 days and a remediation plan or triage 
 
 Security fixes are guaranteed only for the latest published release line. A backport to the immediately preceding line may be offered when the change is low risk and maintainer capacity permits, but it is not promised. Older immutable tags remain available for verification, not maintenance; affected users must upgrade to a fixed release.
 
-This narrow security-fix statement is interim. [Issue #188](https://github.com/fmind-ai/fgentic/issues/188) owns the authoritative adopter release, tested-upgrade, and general support contract. When that contract is published, it supersedes this interim version window rather than creating a second policy.
+The adopter-facing release boundary and general support posture are documented in the [Adopter Release & Upgrade Contract](docs/releases.md) and [Public Surface Stability Contract](docs/stability.md#support-and-tested-upgrade-paths). This section remains authoritative for the security-fix window above; those broader contracts do not promise additional backports. [Issue #188](https://github.com/fmind-ai/fgentic/issues/188) remains open for the first `v0.2.0` publication under that contract and a live tag-to-tag upgrade drill, not for missing source documentation.
 
 ## Handling and disclosure
 
