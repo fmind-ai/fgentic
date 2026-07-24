@@ -28,6 +28,7 @@ SOURCE_PATH_PREFIX = "/gitrepository/flux-system/flux-system/"
 CONNECTOR_ID = "git-markdown"
 
 MAX_API_BYTES = 256 * 1024
+MAX_CA_BYTES = 64 * 1024
 MAX_TOKEN_BYTES = 16 * 1024
 HTTP_TIMEOUT_SECONDS = 30.0
 FILE_MODE = 0o440
@@ -90,13 +91,37 @@ def _integer(value: object, *, name: str, minimum: int, maximum: int) -> int:
 
 
 def _read_file(path: Path, maximum: int) -> bytes:
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
     try:
-        with path.open("rb") as handle:
-            raw = handle.read(maximum + 1)
+        descriptor = os.open(path, flags)
+        try:
+            before = os.fstat(descriptor)
+            if not stat.S_ISREG(before.st_mode):
+                raise AcquisitionError(f"projected file {path.name} must be a regular file")
+            chunks: list[bytes] = []
+            remaining = maximum + 1
+            while remaining > 0:
+                chunk = os.read(descriptor, min(64 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            after = os.fstat(descriptor)
+        finally:
+            os.close(descriptor)
     except OSError as error:
         raise AcquisitionError(f"could not read projected file {path.name}: {error}") from error
+    raw = b"".join(chunks)
     if not raw or len(raw) > maximum:
         raise AcquisitionError(f"projected file {path.name} is empty or oversized")
+    if (
+        before.st_dev != after.st_dev
+        or before.st_ino != after.st_ino
+        or before.st_size != after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+        or after.st_size != len(raw)
+    ):
+        raise AcquisitionError(f"projected file {path.name} changed while it was being read")
     return raw
 
 
@@ -176,7 +201,11 @@ def _api_document(token_file: Path, ca_file: Path) -> JSONObject:
         raise AcquisitionError("projected service-account token is malformed")
 
     try:
-        context = ssl.create_default_context(cafile=str(ca_file))
+        ca_data = _read_file(ca_file, MAX_CA_BYTES).decode("ascii")
+    except UnicodeDecodeError as error:
+        raise AcquisitionError("projected Kubernetes CA is not ASCII") from error
+    try:
+        context = ssl.create_default_context(cadata=ca_data)
     except (OSError, ssl.SSLError) as error:
         raise AcquisitionError(f"could not load projected Kubernetes CA: {error}") from error
     connection = http.client.HTTPSConnection(

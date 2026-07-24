@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import errno
 import http.client
 import importlib.util
+import os
 import socketserver
+import ssl
 import sys
 import threading
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
@@ -63,6 +66,96 @@ def _response(raw: bytes) -> Iterator[http.client.HTTPResponse]:
 
 def _http_response(headers: bytes, body: bytes) -> bytes:
     return b"HTTP/1.1 200 OK\r\n" + headers + b"\r\n" + body
+
+
+def _fifo_reader_error(fifo: Path, operation: Callable[[], object]) -> Exception:
+    os.mkfifo(fifo)
+    finished = threading.Event()
+    errors: list[Exception] = []
+
+    def read_fifo() -> None:
+        try:
+            operation()
+        except Exception as error:
+            errors.append(error)
+        finally:
+            finished.set()
+
+    reader_thread = threading.Thread(target=read_fifo, daemon=True)
+    reader_thread.start()
+    if not finished.wait(timeout=1):
+        try:
+            descriptor = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as error:
+            if error.errno == errno.ENXIO:
+                pytest.fail("projected-file reader did not establish a FIFO reader")
+            raise
+        try:
+            os.write(descriptor, b"blocked")
+        finally:
+            os.close(descriptor)
+        reader_thread.join(timeout=1)
+        if reader_thread.is_alive():
+            pytest.fail("projected-file reader remained blocked after FIFO wake-up")
+        pytest.fail("projected-file reader blocked waiting for a FIFO writer")
+
+    assert len(errors) == 1
+    return errors[0]
+
+
+@pytest.mark.parametrize("fifo_name", ["token", "ca.crt"])
+def test_api_document_rejects_non_regular_projected_files_without_blocking(
+    tmp_path: Path,
+    fifo_name: str,
+) -> None:
+    token_file = tmp_path / "token"
+    ca_file = tmp_path / "ca.crt"
+    regular_file = ca_file if fifo_name == "token" else token_file
+    regular_file.write_text("regular", encoding="ascii")
+    fifo = tmp_path / fifo_name
+
+    error = _fifo_reader_error(fifo, lambda: acquisition._api_document(token_file, ca_file))
+
+    assert isinstance(error, acquisition.AcquisitionError)
+    assert str(error) == f"projected file {fifo_name} must be a regular file"
+
+
+def test_projected_file_reader_accepts_symlink_to_regular_file(tmp_path: Path) -> None:
+    target = tmp_path / "..data" / "token"
+    target.parent.mkdir()
+    target.write_bytes(b"projected")
+    projected = tmp_path / "token"
+    projected.symlink_to(Path("..data/token"))
+
+    assert acquisition._read_file(projected, 16) == b"projected"
+
+
+def test_api_document_reads_bounded_ca_before_constructing_client(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    token_file = tmp_path / "token"
+    ca_file = tmp_path / "ca.crt"
+    reads: list[tuple[Path, int]] = []
+
+    def read_projected(path: Path, maximum: int) -> bytes:
+        reads.append((path, maximum))
+        return b"token" if path == token_file else b"PEM"
+
+    def reject_context(*, cadata: str) -> None:
+        assert cadata == "PEM"
+        raise ssl.SSLError("invalid fixture CA")
+
+    monkeypatch.setattr(acquisition, "_read_file", read_projected)
+    monkeypatch.setattr(acquisition.ssl, "create_default_context", reject_context)
+
+    with pytest.raises(acquisition.AcquisitionError, match="could not load projected Kubernetes CA"):
+        acquisition._api_document(token_file, ca_file)
+
+    assert reads == [
+        (token_file, acquisition.MAX_TOKEN_BYTES),
+        (ca_file, acquisition.MAX_CA_BYTES),
+    ]
 
 
 @pytest.mark.parametrize(
