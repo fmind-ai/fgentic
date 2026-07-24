@@ -557,10 +557,15 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
                         option_location = f"{location}.attributes.options[{option_index}]"
                         if not isinstance(option, str) or not option.strip():
                             violations.append((source_name, f"{option_location} must be a nonblank string"))
-                        elif option in choices:
-                            violations.append((source_name, f"{option_location} is duplicated: {option!r}"))
                         else:
-                            choices.add(option)
+                            if option.casefold() == "none":
+                                violations.append(
+                                    (source_name, f"{option_location} must not use the reserved word 'None'")
+                                )
+                            if option in choices:
+                                violations.append((source_name, f"{option_location} is duplicated: {option!r}"))
+                            else:
+                                choices.add(option)
             elif element_type == "checkboxes":
                 if not isinstance(options, list) or not options:
                     violations.append((source_name, f"{location}.attributes.options must be a nonempty array"))
@@ -1721,6 +1726,54 @@ class CommunityRouteIntegrityTest(TestCase):
                     (".github/ISSUE_TEMPLATE/broken.yml", "body[5].validations.accept must be a string"),
                 ],
             )
+
+    def test_rejects_reserved_dropdown_options_in_structured_forms(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            for directory in ("ISSUE_TEMPLATE", "DISCUSSION_TEMPLATE"):
+                source = repository_root / f".github/{directory}/broken.yml"
+                source.parent.mkdir(parents=True)
+                metadata = (
+                    ("name: Reserved option", "description: Exercises reserved dropdown choices")
+                    if directory == "ISSUE_TEMPLATE"
+                    else ()
+                )
+                source.write_text(
+                    "\n".join(
+                        (
+                            *metadata,
+                            "body:",
+                            "  - type: dropdown",
+                            "    attributes:",
+                            "      label: Choice",
+                            "      options:",
+                            "        - None",
+                            "        - none",
+                            "        - NONE",
+                            "        - None of the above",
+                        )
+                    ),
+                    encoding="utf-8",
+                )
+
+                source_name = f".github/{directory}/broken.yml"
+                self.assertEqual(
+                    _form_schema_violations(source, repository_root),
+                    [
+                        (
+                            source_name,
+                            "body[0].attributes.options[0] must not use the reserved word 'None'",
+                        ),
+                        (
+                            source_name,
+                            "body[0].attributes.options[1] must not use the reserved word 'None'",
+                        ),
+                        (
+                            source_name,
+                            "body[0].attributes.options[2] must not use the reserved word 'None'",
+                        ),
+                    ],
+                )
 
     def test_rejects_invalid_optional_discussion_form_fields(self) -> None:
         with TemporaryDirectory() as temporary:
