@@ -66,6 +66,8 @@ _MEDIA_TYPE = re.compile(
     rf"(?:[ \t]*;[ \t]*(?:{_HTTP_TOKEN}=(?:{_HTTP_TOKEN}|{_HTTP_QUOTED_STRING}))?)*[ \t]*$"
 )
 _HOST_LABEL = re.compile(r"^[A-Za-z0-9](?:[-A-Za-z0-9]{0,61}[A-Za-z0-9])?$")
+_URL_CHARACTERS = re.compile(r"^[A-Za-z0-9._~:/?#\[\]@!$&'()*+,;=%-]+$")
+_INVALID_PERCENT_ESCAPE = re.compile(r"%(?![0-9A-Fa-f]{2})")
 _LISTEN_PORT_ERROR = (
     f"ALERTBOT_LISTEN_PORT must be a canonical ASCII integer from {_MIN_LISTEN_PORT} to {_MAX_LISTEN_PORT}"
 )
@@ -174,7 +176,12 @@ def _valid_hostname(value: str) -> bool:
 
 def _generator_link(value: object) -> str:
     link = _clean_scalar(value, fallback="", maximum=_MAX_GENERATOR_URL_BYTES)
-    if not link or not link.isascii() or any(character.isspace() for character in link) or "\\" in link:
+    if (
+        not link
+        or not link.isascii()
+        or _URL_CHARACTERS.fullmatch(link) is None
+        or _INVALID_PERCENT_ESCAPE.search(link) is not None
+    ):
         return ""
     try:
         parsed = urllib.parse.urlsplit(link)

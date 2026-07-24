@@ -252,6 +252,13 @@ def test_generator_links_require_credential_free_absolute_http_urls() -> None:
         "http://./graph",
         "http://%70rometheus.example/graph",
         "http://prometheus/graph?",
+        "http://prometheus/%",
+        "http://prometheus/%G0SECRET",
+        "http://prometheus/%0GSECRET",
+        "http://prometheus/%GGSECRET",
+        "http://prometheus/<SECRET>",
+        "http://prometheus/{SECRET}",
+        "http://prometheus/|SECRET",
     )
     for link in invalid_links:
         assert receiver._generator_link(link) == ""
