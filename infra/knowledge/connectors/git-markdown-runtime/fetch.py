@@ -231,12 +231,24 @@ def _validated_source_url(value: str) -> SplitResult:
         or port not in {None, 80}
         or parsed.username is not None
         or parsed.password is not None
-        or not parsed.path.startswith(SOURCE_PATH_PREFIX)
+        or not _canonical_source_path(parsed.path)
         or parsed.query
         or parsed.fragment
     ):
         raise AcquisitionError("artifact URL is not the exact in-cluster source-controller route")
     return parsed
+
+
+def _canonical_source_path(value: str) -> bool:
+    if not value.startswith(SOURCE_PATH_PREFIX):
+        return False
+    filename = value.removeprefix(SOURCE_PATH_PREFIX)
+    if not filename.endswith(".tar.gz"):
+        return False
+    stem = filename.removesuffix(".tar.gz")
+    if not stem or stem in {".", ".."}:
+        return False
+    return all(character not in filename for character in ("/", "\\", "%"))
 
 
 def _download_artifact(status: git_markdown.ArtifactStatus) -> bytes:

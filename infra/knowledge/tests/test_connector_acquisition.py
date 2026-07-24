@@ -158,3 +158,55 @@ def test_strict_json_errors_do_not_reflect_upstream_content(raw: bytes, hostile:
 def test_strict_json_requires_an_object_root() -> None:
     with pytest.raises(acquisition.AcquisitionError, match="must be an object"):
         acquisition._strict_json_object(b"[]", name="GitRepository")
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "http://source-controller.flux-system.svc.cluster.local/gitrepository/flux-system/flux-system/latest.tar.gz",
+        "http://source-controller.flux-system.svc.cluster.local.:80"
+        "/gitrepository/flux-system/flux-system/sha-0123456789abcdef.tar.gz",
+    ],
+)
+def test_source_url_accepts_canonical_artifact_paths(url: str) -> None:
+    assert acquisition._validated_source_url(url).geturl() == url
+
+
+@pytest.mark.parametrize(
+    "suffix",
+    [
+        "../private-partner-redacted.tar.gz",
+        "./private-partner-redacted.tar.gz",
+        "%2e%2e/private-partner-redacted.tar.gz",
+        "nested/private-partner-redacted.tar.gz",
+        "/private-partner-redacted.tar.gz",
+        "private%2fpartner-redacted.tar.gz",
+        r"private\partner-redacted.tar.gz",
+        ".tar.gz",
+    ],
+)
+def test_download_rejects_noncanonical_artifact_paths_before_http_construction(
+    monkeypatch: pytest.MonkeyPatch,
+    suffix: str,
+) -> None:
+    constructed = False
+
+    def unexpected_connection(*_args: object, **_kwargs: object) -> None:
+        nonlocal constructed
+        constructed = True
+        raise AssertionError("HTTP connection constructed for an invalid artifact path")
+
+    monkeypatch.setattr(acquisition.http.client, "HTTPConnection", unexpected_connection)
+    status = acquisition.git_markdown.ArtifactStatus(
+        revision="main@sha1:0123456789abcdef",
+        digest=f"sha256:{'0' * 64}",
+        url=(f"http://source-controller.flux-system.svc.cluster.local/gitrepository/flux-system/flux-system/{suffix}"),
+        size=1,
+    )
+
+    with pytest.raises(acquisition.AcquisitionError) as caught:
+        acquisition._download_artifact(status)
+
+    assert str(caught.value) == "artifact URL is not the exact in-cluster source-controller route"
+    assert "private-partner-redacted" not in str(caught.value)
+    assert not constructed
