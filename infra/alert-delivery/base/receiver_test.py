@@ -611,8 +611,20 @@ class _FakeSynapse(http.server.BaseHTTPRequestHandler):
     def do_PUT(self) -> None:
         raw = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
         _FakeSynapse.received.append(json.loads(raw or b"{}"))
-        body = b'{"event_id":"$x"}'
-        self.send_response(200)
+        invalid_bodies = {
+            "malformed-json": b"{",
+            "non-object-json": b"[]",
+            "missing-event-id": b"{}",
+            "empty-event-id": b'{"event_id":""}',
+            "non-string-event-id": b'{"event_id":1}',
+        }
+        body = invalid_bodies.get(self.response_mode, b'{"event_id":"$x"}')
+        status = {"accepted": 202, "no-content": 204}.get(self.response_mode, 200)
+        self.send_response(status)
+        if self.response_mode == "no-content":
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         if self.response_mode == "absent-length":
             self.send_header("Connection", "close")
             self.end_headers()
@@ -751,10 +763,26 @@ def test_matrix_responses_are_bounded_and_strictly_framed() -> None:
                 _FakeSynapse.response_mode = mode
                 assert _post_webhook(recv) == 502, f"{mode} response must fail closed"
 
-        assert len(_FakeSynapse.received) == 9
-        assert errors.getvalue() == "alert-receiver: delivery failed: MatrixResponseError\n" * len(invalid_modes)
+        invalid_success_modes = (
+            "accepted",
+            "no-content",
+            "malformed-json",
+            "non-object-json",
+            "missing-event-id",
+            "empty-event-id",
+            "non-string-event-id",
+        )
+        with contextlib.redirect_stderr(errors):
+            for mode in invalid_success_modes:
+                _FakeSynapse.response_mode = mode
+                assert _post_webhook(recv) == 502, f"{mode} success response must fail closed"
+
+        assert len(_FakeSynapse.received) == 16
+        assert errors.getvalue() == "alert-receiver: delivery failed: MatrixResponseError\n" * (
+            len(invalid_modes) + len(invalid_success_modes)
+        )
         assert "operator-private-value" not in errors.getvalue()
-        print("ok: Matrix send responses are bounded and strictly framed")
+        print("ok: Matrix send responses are bounded, strictly framed, and acknowledge an event")
     finally:
         _FakeSynapse.response_mode = "normal"
         synapse.shutdown()
