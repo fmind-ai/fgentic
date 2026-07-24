@@ -25,6 +25,7 @@ SAME_REPOSITORY_MAIN_PREFIXES = (
     "/fmind-ai/fgentic/tree/main/",
 )
 SAME_REPOSITORY_MAIN_URL = re.compile(r"https://github\.com/fmind-ai/fgentic/(?:blob|tree)/main/[^\s<>()\[\]`\"']+")
+MARKDOWN_FRONTMATTER = re.compile(r"\A---\r?\n(?P<yaml>.*?)\r?\n---(?:\r?\n|\Z)", re.DOTALL)
 FORM_ID = re.compile(r"[A-Za-z0-9_-]+")
 FORM_ELEMENT_TYPES = frozenset({"checkboxes", "dropdown", "input", "markdown", "textarea", "upload"})
 ISSUE_FORM_KEYS = frozenset({"assignees", "body", "description", "labels", "name", "projects", "title", "type"})
@@ -174,6 +175,18 @@ def _structured_forms(repository_root: Path = REPOSITORY_ROOT) -> tuple[Path, ..
     return tuple(sorted((*issue_forms, *discussion_directory.glob("*.yml"))))
 
 
+def _issue_templates(repository_root: Path = REPOSITORY_ROOT) -> tuple[Path, ...]:
+    """Return YAML and Markdown issue templates, excluding chooser configuration."""
+    issue_directory = repository_root / ".github/ISSUE_TEMPLATE"
+    return tuple(
+        sorted(
+            path
+            for path in issue_directory.iterdir()
+            if path.is_file() and path.name != "config.yml" and path.suffix.lower() in {".md", ".yaml", ".yml"}
+        )
+    )
+
+
 def _is_nonblank_string(value: object) -> bool:
     """Return whether a form value is a nonblank string."""
     return isinstance(value, str) and bool(value.strip())
@@ -240,6 +253,42 @@ def _unique_form_identifiers(body: Sequence[object]) -> set[str]:
             continue
         counts[identifier] = counts.get(identifier, 0) + 1
     return {identifier for identifier, count in counts.items() if count == 1}
+
+
+def _issue_template_name(source: Path) -> str | None:
+    """Return the chooser name declared by one YAML or Markdown issue template."""
+    raw_document = source.read_text(encoding="utf-8")
+    if source.suffix.lower() == ".md":
+        match = MARKDOWN_FRONTMATTER.match(raw_document)
+        if match is None:
+            return None
+        raw_document = match.group("yaml")
+
+    document = yaml.safe_load(raw_document)
+    if not isinstance(document, dict) or not _is_nonblank_string(name := document.get("name")):
+        return None
+    return cast(str, name)
+
+
+def _issue_template_name_violations(
+    sources: tuple[Path, ...],
+    repository_root: Path,
+) -> list[SchemaViolation]:
+    """Return duplicate chooser names across YAML and Markdown issue templates."""
+    names: dict[str, str] = {}
+    violations: list[SchemaViolation] = []
+    for source in sources:
+        name = _issue_template_name(source)
+        if name is None:
+            continue
+
+        source_name = _display_path(source, repository_root)
+        previous = names.get(name)
+        if previous is None:
+            names[name] = source_name
+        else:
+            violations.append((source_name, f"name duplicates {previous}: {name!r}"))
+    return violations
 
 
 def _yaml_scalar_key(node: ScalarNode) -> tuple[YamlScalarKey, str]:
@@ -572,6 +621,16 @@ def _require_valid_form_schemas(sources: tuple[Path, ...], repository_root: Path
     raise AssertionError(f"structured GitHub form schema drift:\n{details}")
 
 
+def _require_unique_issue_template_names(sources: tuple[Path, ...], repository_root: Path) -> None:
+    """Reject chooser-name collisions across YAML and Markdown issue templates."""
+    violations = _issue_template_name_violations(sources, repository_root)
+    if not violations:
+        return
+
+    details = "\n".join(f"  {source}: {reason}" for source, reason in violations)
+    raise AssertionError(f"GitHub issue-template name drift:\n{details}")
+
+
 def _issue_form_route_violations(sources: dict[str, list[str]], templates: set[str]) -> list[RouteViolation]:
     """Return invalid same-repository issue-form routes by public source."""
     violations: list[RouteViolation] = []
@@ -808,6 +867,74 @@ class CommunityRouteIntegrityTest(TestCase):
                 [".github/DISCUSSION_TEMPLATE/q-a.yml", ".github/ISSUE_TEMPLATE/bug.yml"],
             )
 
+    def test_discovers_yaml_and_markdown_issue_templates(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            issue_directory = repository_root / ".github/ISSUE_TEMPLATE"
+            issue_directory.mkdir(parents=True)
+            for name in ("bug.md", "config.yml", "feature.yaml", "support.yml", "notes.txt"):
+                (issue_directory / name).touch()
+
+            self.assertEqual(
+                [path.relative_to(repository_root).as_posix() for path in _issue_templates(repository_root)],
+                [
+                    ".github/ISSUE_TEMPLATE/bug.md",
+                    ".github/ISSUE_TEMPLATE/feature.yaml",
+                    ".github/ISSUE_TEMPLATE/support.yml",
+                ],
+            )
+
+    def test_rejects_duplicate_issue_template_names(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            issue_directory = repository_root / ".github/ISSUE_TEMPLATE"
+            issue_directory.mkdir(parents=True)
+            first = issue_directory / "first.yml"
+            markdown = issue_directory / "legacy.md"
+            second = issue_directory / "second.yaml"
+            first.write_text("name: Bug report\n", encoding="utf-8")
+            markdown.write_text("---\nname: Bug report\nabout: Report a defect\n---\n", encoding="utf-8")
+            second.write_text("name: Bug report\n", encoding="utf-8")
+
+            sources = _issue_templates(repository_root)
+            self.assertEqual(
+                _issue_template_name_violations(sources, repository_root),
+                [
+                    (
+                        ".github/ISSUE_TEMPLATE/legacy.md",
+                        "name duplicates .github/ISSUE_TEMPLATE/first.yml: 'Bug report'",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/second.yaml",
+                        "name duplicates .github/ISSUE_TEMPLATE/first.yml: 'Bug report'",
+                    ),
+                ],
+            )
+            with self.assertRaisesRegex(
+                AssertionError,
+                r"GitHub issue-template name drift:\n"
+                r"  \.github/ISSUE_TEMPLATE/legacy\.md: "
+                r"name duplicates \.github/ISSUE_TEMPLATE/first\.yml: 'Bug report'",
+            ):
+                _require_unique_issue_template_names(sources, repository_root)
+
+    def test_accepts_distinct_issue_template_names(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            issue_directory = repository_root / ".github/ISSUE_TEMPLATE"
+            issue_directory.mkdir(parents=True)
+            (issue_directory / "bug.yml").write_text("name: Bug report\n", encoding="utf-8")
+            (issue_directory / "feature.yaml").write_text("name: Feature request\n", encoding="utf-8")
+            (issue_directory / "support.md").write_text(
+                "---\nname: Support request\nabout: Ask for help\n---\n",
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _issue_template_name_violations(_issue_templates(repository_root), repository_root),
+                [],
+            )
+
     def test_rejects_invalid_issue_chooser_config_structure(self) -> None:
         with TemporaryDirectory() as temporary:
             repository_root = Path(temporary)
@@ -947,6 +1074,9 @@ class CommunityRouteIntegrityTest(TestCase):
 
     def test_structured_forms_follow_github_schema(self) -> None:
         _require_valid_form_schemas(_structured_forms(), REPOSITORY_ROOT)
+
+    def test_issue_template_names_are_unique(self) -> None:
+        _require_unique_issue_template_names(_issue_templates(), REPOSITORY_ROOT)
 
     def test_rejects_duplicate_issue_form_keys_at_exact_paths(self) -> None:
         with TemporaryDirectory() as temporary:
