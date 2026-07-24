@@ -63,6 +63,25 @@ class _SlowResponseHandler(socketserver.BaseRequestHandler):
                 return
 
 
+class _BlockedConnection(http.client.HTTPConnection):
+    def __init__(self) -> None:
+        super().__init__("127.0.0.1")
+        self.connect_started = threading.Event()
+        self.release_connect = threading.Event()
+        self.closed = threading.Event()
+
+    @override
+    def connect(self) -> None:
+        self.connect_started.set()
+        self.release_connect.wait(timeout=1)
+        raise TimeoutError
+
+    @override
+    def close(self) -> None:
+        super().close()
+        self.closed.set()
+
+
 @contextmanager
 def _response(raw: bytes) -> Iterator[http.client.HTTPResponse]:
     handler = type("RawResponseHandler", (_RawResponseHandler,), {"response": raw})
@@ -315,7 +334,7 @@ def test_request_deadline_aborts_a_slow_drip_response() -> None:
     try:
         with pytest.raises(acquisition.AcquisitionError) as caught:
             acquisition._request_bytes(
-                connection,
+                lambda _cancelled: connection,
                 "/",
                 {"Accept": "application/octet-stream"},
                 lambda response: acquisition._read_response(response, 4),
@@ -328,6 +347,27 @@ def test_request_deadline_aborts_a_slow_drip_response() -> None:
         server.server_close()
         thread.join(timeout=2)
 
+    assert str(caught.value) == "fixture request exceeded its total deadline"
+    assert elapsed < 0.5
+
+
+def test_request_deadline_does_not_wait_for_blocked_connection_setup() -> None:
+    connection = _BlockedConnection()
+    started = time.monotonic()
+    with pytest.raises(acquisition.AcquisitionError) as caught:
+        acquisition._request_bytes(
+            lambda _cancelled: connection,
+            "/",
+            {},
+            lambda _response: b"unexpected",
+            operation="fixture",
+            timeout_seconds=0.08,
+        )
+    elapsed = time.monotonic() - started
+    connection.release_connect.set()
+
+    assert connection.connect_started.is_set()
+    assert connection.closed.wait(timeout=1)
     assert str(caught.value) == "fixture request exceeded its total deadline"
     assert elapsed < 0.5
 

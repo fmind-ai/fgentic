@@ -19,7 +19,7 @@ import unicodedata
 from collections.abc import Callable, Mapping, Sequence
 from contextlib import suppress
 from pathlib import Path
-from typing import cast
+from typing import cast, override
 from urllib.parse import SplitResult, urlsplit
 
 import git_markdown
@@ -207,8 +207,49 @@ def _abort_connection(connection: http.client.HTTPConnection) -> None:
             sock.shutdown(socket.SHUT_RDWR)
 
 
+class _DeadlineHTTPConnection(http.client.HTTPConnection):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        *,
+        timeout: float,
+        cancelled: threading.Event,
+    ) -> None:
+        super().__init__(host, port, timeout=timeout)
+        self._cancelled = cancelled
+
+    @override
+    def connect(self) -> None:
+        super().connect()
+        if self._cancelled.is_set():
+            _abort_connection(self)
+            raise TimeoutError
+
+
+class _DeadlineHTTPSConnection(http.client.HTTPSConnection):
+    def __init__(
+        self,
+        host: str,
+        port: int,
+        *,
+        timeout: float,
+        context: ssl.SSLContext,
+        cancelled: threading.Event,
+    ) -> None:
+        super().__init__(host, port, timeout=timeout, context=context)
+        self._cancelled = cancelled
+
+    @override
+    def connect(self) -> None:
+        super().connect()
+        if self._cancelled.is_set():
+            _abort_connection(self)
+            raise TimeoutError
+
+
 def _request_bytes(
-    connection: http.client.HTTPConnection,
+    connection_factory: Callable[[threading.Event], http.client.HTTPConnection],
     path: str,
     headers: Mapping[str, str],
     reader: Callable[[http.client.HTTPResponse], bytes],
@@ -217,34 +258,48 @@ def _request_bytes(
     timeout_seconds: float = HTTP_TIMEOUT_SECONDS,
 ) -> bytes:
     expired = threading.Event()
+    finished = threading.Event()
+    connections: list[http.client.HTTPConnection] = []
+    outcomes: list[bytes | BaseException] = []
 
-    def expire() -> None:
+    def request() -> None:
+        connection: http.client.HTTPConnection | None = None
+        try:
+            connection = connection_factory(expired)
+            connections.append(connection)
+            if expired.is_set():
+                return
+            connection.request("GET", path, headers=dict(headers))
+            if expired.is_set():
+                return
+            response = connection.getresponse()
+            outcomes.append(reader(response))
+        except BaseException as error:
+            outcomes.append(error)
+        finally:
+            if connection is not None:
+                connection.close()
+            finished.set()
+
+    worker = threading.Thread(target=request, daemon=True)
+    worker.start()
+    if not finished.wait(timeout=timeout_seconds):
         expired.set()
-        _abort_connection(connection)
-
-    watchdog = threading.Timer(timeout_seconds, expire)
-    watchdog.daemon = True
-    watchdog.start()
-    try:
-        connection.request("GET", path, headers=dict(headers))
-        response = connection.getresponse()
-        raw = reader(response)
-    except AcquisitionError:
-        if expired.is_set():
-            raise AcquisitionError(f"{operation} request exceeded its total deadline") from None
-        raise
-    except (OSError, http.client.HTTPException):
-        if expired.is_set():
-            raise AcquisitionError(f"{operation} request exceeded its total deadline") from None
-        raise AcquisitionError(f"{operation} request failed") from None
-    finally:
-        watchdog.cancel()
-        connection.close()
-        watchdog.join()
-
-    if expired.is_set():
+        if connections:
+            _abort_connection(connections[0])
         raise AcquisitionError(f"{operation} request exceeded its total deadline")
-    return raw
+
+    worker.join()
+    if not outcomes:
+        raise AcquisitionError(f"{operation} request failed")
+    outcome = outcomes[0]
+    if isinstance(outcome, bytes):
+        return outcome
+    if isinstance(outcome, AcquisitionError):
+        raise outcome
+    if isinstance(outcome, (OSError, http.client.HTTPException)):
+        raise AcquisitionError(f"{operation} request failed") from None
+    raise outcome
 
 
 def _api_document(token_file: Path, ca_file: Path) -> JSONObject:
@@ -263,14 +318,14 @@ def _api_document(token_file: Path, ca_file: Path) -> JSONObject:
         context = ssl.create_default_context(cadata=ca_data)
     except (OSError, ssl.SSLError) as error:
         raise AcquisitionError(f"could not load projected Kubernetes CA: {error}") from error
-    connection = http.client.HTTPSConnection(
-        API_HOST,
-        443,
-        timeout=HTTP_TIMEOUT_SECONDS,
-        context=context,
-    )
     raw = _request_bytes(
-        connection,
+        lambda cancelled: _DeadlineHTTPSConnection(
+            API_HOST,
+            443,
+            timeout=HTTP_TIMEOUT_SECONDS,
+            context=context,
+            cancelled=cancelled,
+        ),
         API_PATH,
         {
             "Accept": "application/json",
@@ -371,7 +426,6 @@ def _canonical_source_path(value: str) -> bool:
 def _download_artifact(status: git_markdown.ArtifactStatus) -> bytes:
     parsed = _validated_source_url(status.url)
     host = cast(str, parsed.hostname)
-    connection = http.client.HTTPConnection(host, parsed.port or 80, timeout=HTTP_TIMEOUT_SECONDS)
 
     def read_artifact(response: http.client.HTTPResponse) -> bytes:
         if response.status != http.client.OK:
@@ -379,7 +433,12 @@ def _download_artifact(status: git_markdown.ArtifactStatus) -> bytes:
         return _read_response(response, status.size)
 
     raw = _request_bytes(
-        connection,
+        lambda cancelled: _DeadlineHTTPConnection(
+            host,
+            parsed.port or 80,
+            timeout=HTTP_TIMEOUT_SECONDS,
+            cancelled=cancelled,
+        ),
         parsed.path,
         {"Accept": "application/gzip, application/octet-stream"},
         read_artifact,
