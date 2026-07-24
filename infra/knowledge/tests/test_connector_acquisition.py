@@ -139,6 +139,55 @@ def test_response_reader_rejects_declared_truncation_without_reflecting_body() -
 
 
 @pytest.mark.parametrize(
+    "content_type_headers",
+    [
+        b"",
+        b"Content-Type: application/json\r\nContent-Type: application/json\r\n",
+        b"Content-Type: text/plain\r\n",
+        b"Content-Type: application/json; charset\r\n",
+        b"Content-Type: application/json; charset=\r\n",
+        b"Content-Type: application/json; charset =utf-8\r\n",
+        b'Content-Type: application/json; charset="utf-8\r\n',
+    ],
+    ids=[
+        "missing",
+        "duplicate",
+        "non-json",
+        "missing-parameter-value",
+        "empty-parameter-value",
+        "whitespace-before-equals",
+        "unterminated-quoted-string",
+    ],
+)
+def test_api_response_rejects_invalid_media_type_before_body_read(
+    monkeypatch: pytest.MonkeyPatch,
+    content_type_headers: bytes,
+) -> None:
+    read = False
+
+    def unexpected_read(_response: http.client.HTTPResponse, _maximum: int) -> bytes:
+        nonlocal read
+        read = True
+        raise AssertionError("response body read for an invalid media type")
+
+    monkeypatch.setattr(acquisition, "_read_response", unexpected_read)
+    headers = content_type_headers + b"Content-Length: 6\r\n"
+    with (
+        _response(_http_response(headers, b"secret")) as response,
+        pytest.raises(acquisition.AcquisitionError, match="unexpected media type"),
+    ):
+        acquisition._read_api_response(response)
+
+    assert not read
+
+
+def test_api_response_accepts_parameterized_json_media_type() -> None:
+    headers = b'Content-Type: Application/JSON;;; charset="utf-8"; profile=flux;\r\nContent-Length: 2\r\n'
+    with _response(_http_response(headers, b"{}")) as response:
+        assert acquisition._read_api_response(response) == b"{}"
+
+
+@pytest.mark.parametrize(
     ("raw", "hostile"),
     [
         (b'{"safe":1,"hostile-duplicate-key":2,"hostile-duplicate-key":3}', "hostile-duplicate-key"),
