@@ -1,7 +1,7 @@
 """Keep public repository links and community routes consistent."""
 
 import re
-from collections.abc import Hashable
+from collections.abc import Hashable, Sequence
 from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -200,6 +200,48 @@ def _unsupported_key_reasons(
     return [f"{prefix}{key if isinstance(key, str) else repr(key)} is not permitted" for key in unsupported]
 
 
+def _ambiguous_form_label_reason(
+    label: object,
+    location: str,
+    identifier: object,
+    unique_identifiers: set[str],
+    labels: dict[str, str],
+) -> str | None:
+    """Return a stable diagnostic when no valid ID differentiates a repeated label."""
+    if (
+        not isinstance(label, str)
+        or not label.strip()
+        or (isinstance(identifier, str) and identifier in unique_identifiers)
+    ):
+        return None
+
+    previous = labels.get(label)
+    if previous is None:
+        labels[label] = location
+        return None
+    return f"{location} duplicates {previous}: {label!r}"
+
+
+def _unique_form_identifiers(body: Sequence[object]) -> set[str]:
+    """Return syntactically valid non-Markdown IDs that occur exactly once."""
+    counts: dict[str, int] = {}
+    for element in body:
+        if not isinstance(element, dict):
+            continue
+        element_type = element.get("type")
+        identifier = element.get("id")
+        if (
+            not isinstance(element_type, str)
+            or element_type not in FORM_ELEMENT_TYPES
+            or element_type == "markdown"
+            or not isinstance(identifier, str)
+            or FORM_ID.fullmatch(identifier) is None
+        ):
+            continue
+        counts[identifier] = counts.get(identifier, 0) + 1
+    return {identifier for identifier, count in counts.items() if count == 1}
+
+
 def _yaml_scalar_key(node: ScalarNode) -> tuple[YamlScalarKey, str]:
     """Return a resolved identity and diagnostic label for one YAML scalar key."""
     loader = yaml.SafeLoader("")
@@ -343,7 +385,9 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
         violations.append((source_name, "body must be an array"))
         return violations
 
+    unique_identifiers = _unique_form_identifiers(body)
     identifiers: set[str] = set()
+    labels: dict[str, str] = {}
     has_input = False
     for index, element in enumerate(body):
         location = f"body[{index}]"
@@ -400,6 +444,16 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
                 violations.append(
                     (source_name, f"{location}.attributes.{required_attribute} must be a nonblank string")
                 )
+            elif element_type != "markdown" and (
+                reason := _ambiguous_form_label_reason(
+                    attributes.get("label"),
+                    f"{location}.attributes.label",
+                    identifier,
+                    unique_identifiers,
+                    labels,
+                )
+            ):
+                violations.append((source_name, reason))
 
             text_attributes = {
                 "checkboxes": ("description",),
@@ -473,6 +527,14 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
                             violations.append((source_name, f"{option_location}.label is duplicated: {label!r}"))
                         else:
                             choices.add(label)
+                            if reason := _ambiguous_form_label_reason(
+                                label,
+                                f"{option_location}.label",
+                                identifier,
+                                unique_identifiers,
+                                labels,
+                            ):
+                                violations.append((source_name, reason))
 
         validations = element.get("validations")
         if "validations" not in FORM_ELEMENT_KEYS[element_type]:
@@ -900,6 +962,7 @@ class CommunityRouteIntegrityTest(TestCase):
                         "body:",
                         "  - type: input",
                         "    type: textarea",
+                        "    id: details",
                         "    attributes:",
                         "      label: First",
                         "      label: Second",
@@ -907,6 +970,7 @@ class CommunityRouteIntegrityTest(TestCase):
                         "      required: false",
                         "      required: true",
                         "  - type: checkboxes",
+                        "    id: choices",
                         "    attributes:",
                         "      label: Choices",
                         "      options:",
@@ -954,6 +1018,130 @@ class CommunityRouteIntegrityTest(TestCase):
                 _form_schema_violations(source, repository_root),
                 [(".github/DISCUSSION_TEMPLATE/broken.yml", "title is duplicated")],
             )
+
+    def test_rejects_ambiguous_issue_form_labels(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Broken",
+                        "description: Exercises ambiguous labels",
+                        "body:",
+                        "  - type: input",
+                        "    attributes:",
+                        "      label: Details",
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: Details",
+                        "  - type: checkboxes",
+                        "    attributes:",
+                        "      label: Confirmation",
+                        "      options:",
+                        "        - label: Details",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[1].attributes.label duplicates body[0].attributes.label: 'Details'",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[2].attributes.options[0].label duplicates body[0].attributes.label: 'Details'",
+                    ),
+                ],
+            )
+
+    def test_duplicate_ids_do_not_hide_ambiguous_labels(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Broken",
+                        "description: Exercises duplicated IDs and labels",
+                        "body:",
+                        "  - type: input",
+                        "    id: repeated",
+                        "    attributes:",
+                        "      label: Details",
+                        "  - type: textarea",
+                        "    id: repeated",
+                        "    attributes:",
+                        "      label: Details",
+                        "  - type: input",
+                        "    id: repeated-checkbox",
+                        "    attributes:",
+                        "      label: Evidence",
+                        "  - type: checkboxes",
+                        "    id: repeated-checkbox",
+                        "    attributes:",
+                        "      label: Confirmation",
+                        "      options:",
+                        "        - label: Evidence",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[1].id is duplicated: 'repeated'"),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[1].attributes.label duplicates body[0].attributes.label: 'Details'",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[3].id is duplicated: 'repeated-checkbox'",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[3].attributes.options[0].label duplicates body[2].attributes.label: 'Evidence'",
+                    ),
+                ],
+            )
+
+    def test_accepts_repeated_discussion_labels_differentiated_by_ids(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/DISCUSSION_TEMPLATE/valid.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "body:",
+                        "  - type: input",
+                        "    id: first",
+                        "    attributes:",
+                        "      label: Details",
+                        "  - type: textarea",
+                        "    id: second",
+                        "    attributes:",
+                        "      label: Details",
+                        "  - type: checkboxes",
+                        "    id: confirmation",
+                        "    attributes:",
+                        "      label: Details",
+                        "      options:",
+                        "        - label: Details",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(_form_schema_violations(source, repository_root), [])
 
     def test_rejects_invalid_issue_form_structure_and_elements(self) -> None:
         with TemporaryDirectory() as temporary:
