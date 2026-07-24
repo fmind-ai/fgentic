@@ -12,6 +12,7 @@ import ssl
 import stat
 import sys
 import threading
+import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
@@ -47,6 +48,19 @@ class _RawResponseHandler(socketserver.BaseRequestHandler):
 class _LoopbackServer(socketserver.ThreadingTCPServer):
     allow_reuse_address = True
     daemon_threads = True
+
+
+class _SlowResponseHandler(socketserver.BaseRequestHandler):
+    @override
+    def handle(self) -> None:
+        self.request.recv(64 * 1024)
+        self.request.sendall(b"HTTP/1.1 200 OK\r\nContent-Length: 4\r\n\r\n")
+        for byte in b"slow":
+            time.sleep(0.04)
+            try:
+                self.request.sendall(bytes([byte]))
+            except OSError:
+                return
 
 
 @contextmanager
@@ -290,6 +304,32 @@ def test_response_reader_rejects_ambiguous_or_unsupported_framing(
 def test_response_reader_accepts_exact_content_length() -> None:
     with _response(_http_response(b"Content-Length: 2\r\n", b"ok")) as response:
         assert acquisition._read_response(response, 2) == b"ok"
+
+
+def test_request_deadline_aborts_a_slow_drip_response() -> None:
+    server = _LoopbackServer(("127.0.0.1", 0), _SlowResponseHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    connection = http.client.HTTPConnection("127.0.0.1", server.server_address[1], timeout=1)
+    started = time.monotonic()
+    try:
+        with pytest.raises(acquisition.AcquisitionError) as caught:
+            acquisition._request_bytes(
+                connection,
+                "/",
+                {"Accept": "application/octet-stream"},
+                lambda response: acquisition._read_response(response, 4),
+                operation="fixture",
+                timeout_seconds=0.08,
+            )
+        elapsed = time.monotonic() - started
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert str(caught.value) == "fixture request exceeded its total deadline"
+    assert elapsed < 0.5
 
 
 def test_response_reader_accepts_content_length_with_optional_whitespace() -> None:

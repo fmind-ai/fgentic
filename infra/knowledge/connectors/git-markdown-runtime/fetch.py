@@ -10,11 +10,14 @@ import json
 import os
 import re
 import shutil
+import socket
 import ssl
 import stat
 import tempfile
+import threading
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
+from contextlib import suppress
 from pathlib import Path
 from typing import cast
 from urllib.parse import SplitResult, urlsplit
@@ -197,6 +200,53 @@ def _read_api_response(response: http.client.HTTPResponse) -> bytes:
     return _read_response(response, MAX_API_BYTES)
 
 
+def _abort_connection(connection: http.client.HTTPConnection) -> None:
+    sock = connection.sock
+    if sock is not None:
+        with suppress(OSError):
+            sock.shutdown(socket.SHUT_RDWR)
+
+
+def _request_bytes(
+    connection: http.client.HTTPConnection,
+    path: str,
+    headers: Mapping[str, str],
+    reader: Callable[[http.client.HTTPResponse], bytes],
+    *,
+    operation: str,
+    timeout_seconds: float = HTTP_TIMEOUT_SECONDS,
+) -> bytes:
+    expired = threading.Event()
+
+    def expire() -> None:
+        expired.set()
+        _abort_connection(connection)
+
+    watchdog = threading.Timer(timeout_seconds, expire)
+    watchdog.daemon = True
+    watchdog.start()
+    try:
+        connection.request("GET", path, headers=dict(headers))
+        response = connection.getresponse()
+        raw = reader(response)
+    except AcquisitionError:
+        if expired.is_set():
+            raise AcquisitionError(f"{operation} request exceeded its total deadline") from None
+        raise
+    except (OSError, http.client.HTTPException):
+        if expired.is_set():
+            raise AcquisitionError(f"{operation} request exceeded its total deadline") from None
+        raise AcquisitionError(f"{operation} request failed") from None
+    finally:
+        watchdog.cancel()
+        connection.close()
+        watchdog.join()
+
+    if expired.is_set():
+        raise AcquisitionError(f"{operation} request exceeded its total deadline")
+    return raw
+
+
 def _api_document(token_file: Path, ca_file: Path) -> JSONObject:
     try:
         token = _read_file(token_file, MAX_TOKEN_BYTES).decode("ascii")
@@ -219,21 +269,16 @@ def _api_document(token_file: Path, ca_file: Path) -> JSONObject:
         timeout=HTTP_TIMEOUT_SECONDS,
         context=context,
     )
-    try:
-        connection.request(
-            "GET",
-            API_PATH,
-            headers={
-                "Accept": "application/json",
-                "Authorization": f"Bearer {token}",
-            },
-        )
-        response = connection.getresponse()
-        raw = _read_api_response(response)
-    except (OSError, ssl.SSLError, http.client.HTTPException):
-        raise AcquisitionError("Kubernetes API request failed") from None
-    finally:
-        connection.close()
+    raw = _request_bytes(
+        connection,
+        API_PATH,
+        {
+            "Accept": "application/json",
+            "Authorization": f"Bearer {token}",
+        },
+        _read_api_response,
+        operation="Kubernetes API",
+    )
 
     return _strict_json_object(raw, name="GitRepository")
 
@@ -327,16 +372,19 @@ def _download_artifact(status: git_markdown.ArtifactStatus) -> bytes:
     parsed = _validated_source_url(status.url)
     host = cast(str, parsed.hostname)
     connection = http.client.HTTPConnection(host, parsed.port or 80, timeout=HTTP_TIMEOUT_SECONDS)
-    try:
-        connection.request("GET", parsed.path, headers={"Accept": "application/gzip, application/octet-stream"})
-        response = connection.getresponse()
+
+    def read_artifact(response: http.client.HTTPResponse) -> bytes:
         if response.status != http.client.OK:
             raise AcquisitionError(f"source-controller returned HTTP {response.status}")
-        raw = _read_response(response, status.size)
-    except (OSError, http.client.HTTPException):
-        raise AcquisitionError("source-controller request failed") from None
-    finally:
-        connection.close()
+        return _read_response(response, status.size)
+
+    raw = _request_bytes(
+        connection,
+        parsed.path,
+        {"Accept": "application/gzip, application/octet-stream"},
+        read_artifact,
+        operation="source-controller",
+    )
     if len(raw) != status.size:
         raise AcquisitionError("artifact byte length differs from Flux status")
     return raw
