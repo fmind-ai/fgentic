@@ -333,8 +333,14 @@ jobs:
           EOF
             if [[ -z "${issue_number}" ]]; then
               gh issue create --repo "${GITHUB_REPOSITORY}" --title "${TRACKING_TITLE}" \
-                --label area/ci --label bug --body-file "${report_file}"
+                --label area/ci --label kind/fix --label priority/p1 --label track/v1 \
+                --body-file "${report_file}"
             else
+              # Keep the operational tracker visible in the canonical v1 queue. Deliberately do
+              # not add agent-ready: the mixed runtime failures still require owner triage.
+              gh issue edit "${issue_number}" --repo "${GITHUB_REPOSITORY}" \
+                --add-label area/ci --add-label kind/fix --add-label priority/p1 \
+                --add-label track/v1
               if [[ "$(gh issue view "${issue_number}" --repo "${GITHUB_REPOSITORY}" \
                 --json state --jq .state)" == "CLOSED" ]]; then
                 gh issue reopen "${issue_number}" --repo "${GITHUB_REPOSITORY}"

@@ -102,6 +102,17 @@ yq -e '
   .jobs.report.permissions.issues == "write" and
   ([.jobs.report.steps[] |
     select(((.run // "") | contains("gh issue create")) and
+      ((.run // "") | contains("--label area/ci")) and
+      ((.run // "") | contains("--label kind/fix")) and
+      ((.run // "") | contains("--label priority/p1")) and
+      ((.run // "") | contains("--label track/v1")) and
+      ((.run // "") | contains("gh issue edit")) and
+      ((.run // "") | contains("--add-label area/ci")) and
+      ((.run // "") | contains("--add-label kind/fix")) and
+      ((.run // "") | contains("--add-label priority/p1")) and
+      ((.run // "") | contains("--add-label track/v1")) and
+      (((.run // "") | contains("--label agent-ready")) | not) and
+      (((.run // "") | contains("--add-label agent-ready")) | not) and
       ((.run // "") | contains("gh issue reopen")) and
       ((.run // "") | contains("gh issue comment")) and
       ((.run // "") | contains("gh issue close")) and
