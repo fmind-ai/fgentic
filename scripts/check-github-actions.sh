@@ -30,6 +30,54 @@ failed=false
 remote_pattern='^[[:alnum:]_.-]+/[[:alnum:]_.-]+(/[[:alnum:]_.-]+)*@[0-9a-f]{40}$'
 versioned_line_pattern='^[[:space:]]*uses:[[:space:]]+[[:alnum:]_.-]+/[[:alnum:]_.-]+(/[[:alnum:]_.-]+)*@[0-9a-f]{40}[[:space:]]+#[[:space:]]+v[0-9]+([.][0-9]+){0,2}[[:space:]]*$'
 
+aggregate_setup_count="$(
+	yq -o=json '.jobs.check.steps' "${root_dir}/.github/workflows/ci.yml" | jq '
+	  [.[] |
+	    select((.uses | type) == "string" and
+	      (.uses | ascii_downcase | startswith("jdx/mise-action@")) and
+	      .name == "Install mise system")] |
+	  length
+	'
+)"
+if [[ "${aggregate_setup_count}" -ne 1 ]]; then
+	echo "error: .github/workflows/ci.yml: expected exactly one aggregate mise setup; got ${aggregate_setup_count}" >&2
+	exit 1
+fi
+
+canonical_setup_index="$(
+	yq -o=json '.jobs.check.steps' "${root_dir}/.github/workflows/ci.yml" | jq -r '
+	  to_entries[] |
+	  select((.value.uses | type) == "string" and
+	    (.value.uses | ascii_downcase | startswith("jdx/mise-action@")) and
+	    .value.name == "Install mise system") |
+	  .key
+	'
+)"
+canonical_mise_field="check.steps[${canonical_setup_index}].with.version"
+canonical_mise_raw="$(
+	yq -o=json ".jobs.check.steps[${canonical_setup_index}]" \
+		"${root_dir}/.github/workflows/ci.yml" | jq -r '
+		  if ((.with | type) == "object" and (.with | has("version")))
+		    then (.with.version | tojson)
+		    else "<missing>"
+		  end
+		'
+)"
+canonical_mise_version="$(
+	yq -o=json ".jobs.check.steps[${canonical_setup_index}]" \
+		"${root_dir}/.github/workflows/ci.yml" | jq -r '
+		  if ((.with | type) == "object" and (.with.version | type) == "string")
+		    then .with.version
+		    else ""
+		  end
+		'
+)"
+if [[ ! "${canonical_mise_version}" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
+	echo "error: .github/workflows/ci.yml: ${canonical_mise_field} needs an exact numeric mise version; got ${canonical_mise_raw}" >&2
+	exit 1
+fi
+readonly canonical_mise_version
+
 for workflow in "${workflows[@]}"; do
 	# Every workflow must opt out of repository-default token scopes. Job overrides are
 	# optional, but any declared permissions must remain an explicit, reviewable map.
@@ -149,6 +197,35 @@ for workflow in "${workflows[@]}"; do
 			failed=true
 		fi
 	done <<<"${uses_list}"
+
+	# The action revision pins installer code, not the mise executable it downloads. Keep every
+	# workflow on the aggregate CI setup's exact known-good version so auxiliary jobs cannot float.
+	mise_version_rows="$(
+		yq -o=json '.jobs' "${workflow}" | jq -r \
+			--arg required_version "${canonical_mise_version}" '
+		  to_entries[] as $job |
+		  ($job.value.steps // [] | to_entries[]) as $step |
+		  $step.value as $value |
+		  select(($value | type) == "object" and ($value.uses | type) == "string") |
+		  select($value.uses | ascii_downcase | startswith("jdx/mise-action@")) |
+		  select(($value.with | type) != "object" or
+		    ($value.with.version | type) != "string" or
+		    $value.with.version != $required_version) |
+		  [
+		    ($job.key + ".steps[" + ($step.key | tostring) + "].with.version"),
+		    (if (($value.with | type) == "object" and ($value.with | has("version")))
+		      then ($value.with.version | tojson)
+		      else "<missing>"
+		    end)
+		  ] |
+		  @tsv
+		'
+	)"
+	while IFS=$'\t' read -r field version; do
+		[[ -n "${field}" ]] || continue
+		echo "error: ${workflow#"${root_dir}/"}: ${field} must match exact aggregate mise version ${canonical_mise_version}; got ${version}" >&2
+		failed=true
+	done <<<"${mise_version_rows}"
 
 	# Bounded jobs install only the tools they execute. The aggregate CI check intentionally
 	# resolves the root inventory because it runs the complete format/check/test vocabulary.
@@ -433,20 +510,6 @@ for workflow in "${workflows[@]}"; do
 	done <<<"${runner_rows}"
 done
 
-aggregate_setup_count="$(
-	yq -o=json '.jobs.check.steps' "${root_dir}/.github/workflows/ci.yml" | jq '
-	  [.[] |
-	    select((.uses | type) == "string" and
-	      (.uses | ascii_downcase | startswith("jdx/mise-action@")) and
-	      .name == "Install mise system")] |
-	  length
-	'
-)"
-if [[ "${aggregate_setup_count}" -ne 1 ]]; then
-	echo "error: .github/workflows/ci.yml: expected exactly one aggregate mise setup; got ${aggregate_setup_count}" >&2
-	exit 1
-fi
-
 if ! mise --cd "${root_dir}" tasks info install:apps --json | jq -e '
   .depends == [] and
   .run == [
@@ -468,4 +531,4 @@ if ! yq --exit-status \
 fi
 
 [[ "${failed}" == false ]] || exit 1
-echo "GitHub Actions pinning, actionable-artifact, bounded-artifact, container-digest, permission-map, checkout-hardening, named-job-and-step, Bash-pipefail, template-boundary, bounded-runtime, pinned-runner, concurrency, scoped-mise-setup, and serialized-install contracts passed (${#workflows[@]} workflows)"
+echo "GitHub Actions pinning, actionable-artifact, bounded-artifact, container-digest, permission-map, checkout-hardening, named-job-and-step, Bash-pipefail, template-boundary, bounded-runtime, pinned-runner, concurrency, exact-mise-runtime, scoped-mise-setup, and serialized-install contracts passed (${#workflows[@]} workflows)"
