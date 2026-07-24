@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import errno
 import hashlib
 import http.client
 import json
@@ -148,12 +149,19 @@ def test_bounded_reader_rejects_fifo_without_waiting_for_writer(tmp_path: Path) 
     reader = threading.Thread(target=read_fifo, daemon=True)
     reader.start()
     if not finished.wait(timeout=1):
-        descriptor = os.open(fifo, os.O_WRONLY)
+        try:
+            descriptor = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
+        except OSError as error:
+            if error.errno == errno.ENXIO:
+                pytest.fail("bounded reader did not establish a FIFO reader")
+            raise
         try:
             os.write(descriptor, b"{}")
         finally:
             os.close(descriptor)
         reader.join(timeout=1)
+        if reader.is_alive():
+            pytest.fail("bounded reader remained blocked after FIFO wake-up")
         pytest.fail("bounded reader blocked waiting for a FIFO writer")
 
     assert len(errors) == 1
