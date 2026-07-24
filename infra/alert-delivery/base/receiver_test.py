@@ -57,9 +57,7 @@ def test_network_peers_are_exactly_scoped() -> None:
     )
     resources = json.loads(rendered.stdout)
     policies = {
-        resource["metadata"]["name"]: resource["spec"]
-        for resource in resources
-        if resource["kind"] == "NetworkPolicy"
+        resource["metadata"]["name"]: resource["spec"] for resource in resources if resource["kind"] == "NetworkPolicy"
     }
     assert policies == {
         "alert-delivery-default-deny": {
@@ -130,6 +128,11 @@ def test_network_peers_are_exactly_scoped() -> None:
 
 def test_render_is_content_free() -> None:
     body = receiver._render(WEBHOOK)
+    assert body == (
+        "🔔 Alertmanager: firing (1 alert(s))\n"
+        "• [firing] LLMTokenBurnHigh (warning) namespace=monitoring"
+        " — http://prometheus/graph?g0.expr=x"
+    )
     # The alert name, severity, safe namespace label, and the link are present.
     assert "LLMTokenBurnHigh" in body and "warning" in body and "namespace=monitoring" in body
     assert "http://prometheus/graph" in body
@@ -145,6 +148,50 @@ def test_render_is_bounded() -> None:
     assert body.count("• ") == receiver._MAX_ALERTS, "alert list must be bounded"
     assert "and 30 more" in body
     print("ok: render is bounded")
+
+
+def test_render_replaces_malformed_projected_values() -> None:
+    body = receiver._render(
+        {
+            "status": "firing\nSECRET-STATUS",
+            "alerts": [
+                {
+                    "status": "\ud800",
+                    "labels": {
+                        "alertname": "é" * (receiver._MAX_ALERT_NAME_BYTES // 2 + 1),
+                        "severity": "warn\u202eing",
+                        "namespace": "monitoring\nSECRET-LABEL",
+                        "job_name": "before\u2028after",
+                    },
+                    "generatorURL": "http://prometheus/before\u2029after",
+                }
+            ],
+        }
+    )
+    assert body == "✅ Alertmanager: unknown (1 alert(s))\n• [unknown] unknown (unknown)"
+    assert "SECRET" not in body
+    body.encode("utf-8")
+    print("ok: malformed projected values use content-free fallbacks")
+
+
+def test_render_notice_bytes_are_bounded() -> None:
+    alerts = [
+        {
+            "status": "firing",
+            "labels": {
+                "alertname": "A" * receiver._MAX_ALERT_NAME_BYTES,
+                "severity": "S" * receiver._MAX_SEVERITY_BYTES,
+                **{key: "V" * receiver._MAX_LABEL_VALUE_BYTES for key in receiver._SAFE_LABELS},
+            },
+            "generatorURL": "http://prometheus/" + "x" * (receiver._MAX_GENERATOR_URL_BYTES - 18),
+        }
+        for _ in range(receiver._MAX_ALERTS + 5)
+    ]
+    body = receiver._render({"status": "firing", "alerts": alerts})
+    assert len(body.encode("utf-8")) <= receiver._MAX_NOTICE_BYTES
+    assert "… and 5 more" in body
+    assert "omitted by notice byte limit" in body
+    print("ok: rendered notice has a final UTF-8 byte bound")
 
 
 def test_render_tolerates_malformed_alert() -> None:
@@ -499,6 +546,32 @@ def test_webhook_posts_content_free_notice() -> None:
         assert "LLMTokenBurnHigh" in posted["body"]
         assert "SECRET-PROMPT-CONTENT-should-never-leak" not in posted["body"]
         print("ok: webhook posts one content-free m.notice")
+
+        bounded_webhook = {
+            "status": "firing",
+            "alerts": [
+                {
+                    "status": "firing",
+                    "labels": {"alertname": f"Alert{i}", "namespace": "n" * receiver._MAX_LABEL_VALUE_BYTES},
+                    "generatorURL": "http://prometheus/" + "x" * 1_000,
+                }
+                for i in range(receiver._MAX_ALERTS)
+            ],
+        }
+        bounded_request = urllib.request.Request(
+            f"http://127.0.0.1:{recv.server_address[1]}/",
+            data=json.dumps(bounded_webhook).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        with urllib.request.urlopen(bounded_request, timeout=5) as response:
+            assert response.status == 200
+        time.sleep(0.2)
+        assert len(_FakeSynapse.received) == 2
+        bounded_notice = _FakeSynapse.received[1]["body"]
+        assert len(bounded_notice.encode("utf-8")) <= receiver._MAX_NOTICE_BYTES
+        assert "omitted by notice byte limit" in bounded_notice
+        print("ok: webhook posts a byte-bounded notice")
     finally:
         synapse.shutdown()
         synapse.server_close()
@@ -510,6 +583,8 @@ if __name__ == "__main__":
     test_network_peers_are_exactly_scoped()
     test_render_is_content_free()
     test_render_is_bounded()
+    test_render_replaces_malformed_projected_values()
+    test_render_notice_bytes_are_bounded()
     test_render_tolerates_malformed_alert()
     test_txn_id_is_stable_but_time_bucketed()
     test_safe_label_summary_excludes_content()

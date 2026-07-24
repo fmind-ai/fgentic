@@ -24,6 +24,7 @@ import socket
 import sys
 import threading
 import time
+import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -32,6 +33,14 @@ from typing import Any, cast
 # Low-cardinality, non-content labels safe to surface (never message text / user identifiers).
 _SAFE_LABELS = ("namespace", "job_name", "cronjob", "gen_ai_system", "resource_kind")
 _MAX_ALERTS = 20  # bound the fan-out so an alert storm becomes a bounded stream, never a flood.
+# Leave ample room for the Matrix event envelope below the homeserver's request/event limits.
+_MAX_NOTICE_BYTES = 16_384
+_MAX_STATUS_BYTES = 16
+_MAX_ALERT_NAME_BYTES = 128
+_MAX_SEVERITY_BYTES = 32
+_MAX_LABEL_VALUE_BYTES = 128
+_MAX_GENERATOR_URL_BYTES = 2_048
+_UNSAFE_TEXT_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
 # Four full header sets stay small beside the interpreter baseline in the 64 MiB container.
 _MAX_HEADER_BYTES = 16_384
 _MAX_REQUEST_BYTES = 65_536
@@ -49,36 +58,71 @@ def _env(name: str, default: str | None = None) -> str:
     return value
 
 
+def _clean_scalar(value: object, *, fallback: str, maximum: int) -> str:
+    if not isinstance(value, str):
+        return fallback
+    try:
+        normalized = unicodedata.normalize("NFC", value)
+        encoded = normalized.encode("utf-8")
+    except UnicodeError:
+        return fallback
+    if (
+        normalized != value
+        or not normalized
+        or normalized != normalized.strip()
+        or len(encoded) > maximum
+        or any(unicodedata.category(character) in _UNSAFE_TEXT_CATEGORIES for character in normalized)
+    ):
+        return fallback
+    return normalized
+
+
 def _safe_label_summary(labels: dict) -> str:
-    parts = [f"{key}={labels[key]}" for key in _SAFE_LABELS if isinstance(labels.get(key), str)]
+    parts = []
+    for key in _SAFE_LABELS:
+        value = _clean_scalar(labels.get(key), fallback="", maximum=_MAX_LABEL_VALUE_BYTES)
+        if value:
+            parts.append(f"{key}={value}")
     return " ".join(parts)
 
 
 def _render(payload: dict) -> str:
     """Build one bounded, content-free notice for an Alertmanager group webhook."""
-    status = payload.get("status", "firing")
+    status = _clean_scalar(payload.get("status", "firing"), fallback="unknown", maximum=_MAX_STATUS_BYTES)
     alerts = payload.get("alerts", [])
     if not isinstance(alerts, list):
         alerts = []
     icon = "🔔" if status == "firing" else "✅"
-    lines = [f"{icon} Alertmanager: {status} ({len(alerts)} alert(s))"]
+    header = f"{icon} Alertmanager: {status} ({len(alerts)} alert(s))"
+    alert_lines = []
     for alert in alerts[:_MAX_ALERTS]:
         if not isinstance(alert, dict):
             continue  # tolerate a malformed element without dropping the whole delivery
         labels = alert.get("labels", {}) if isinstance(alert.get("labels"), dict) else {}
-        name = labels.get("alertname", "unknown")
-        severity = labels.get("severity", "none")
+        name = _clean_scalar(labels.get("alertname", "unknown"), fallback="unknown", maximum=_MAX_ALERT_NAME_BYTES)
+        severity = _clean_scalar(labels.get("severity", "none"), fallback="unknown", maximum=_MAX_SEVERITY_BYTES)
         summary = _safe_label_summary(labels)
-        link = alert.get("generatorURL", "")
-        piece = f"• [{alert.get('status', status)}] {name} ({severity})"
+        link = _clean_scalar(alert.get("generatorURL", ""), fallback="", maximum=_MAX_GENERATOR_URL_BYTES)
+        alert_status = _clean_scalar(alert.get("status", status), fallback=status, maximum=_MAX_STATUS_BYTES)
+        piece = f"• [{alert_status}] {name} ({severity})"
         if summary:
             piece += f" {summary}"
         if isinstance(link, str) and link.startswith("http"):
             piece += f" — {link}"
-        lines.append(piece)
-    if len(alerts) > _MAX_ALERTS:
-        lines.append(f"… and {len(alerts) - _MAX_ALERTS} more")
-    return "\n".join(lines)
+        alert_lines.append(piece)
+
+    count_omitted = max(0, len(alerts) - _MAX_ALERTS)
+    for included in range(len(alert_lines), -1, -1):
+        byte_omitted = len(alert_lines) - included
+        lines = [header, *alert_lines[:included]]
+        if count_omitted:
+            lines.append(f"… and {count_omitted} more")
+        if byte_omitted:
+            lines.append(f"… {byte_omitted} alert(s) omitted by notice byte limit")
+        notice = "\n".join(lines)
+        if len(notice.encode("utf-8")) <= _MAX_NOTICE_BYTES:
+            return notice
+    raise AssertionError("alert notice header exceeds its fixed byte bound")
 
 
 def _post_notice(homeserver: str, token: str, room_id: str, body: str) -> None:
