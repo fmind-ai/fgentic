@@ -28,7 +28,8 @@ SAME_REPOSITORY_MAIN_PREFIXES = (
 SAME_REPOSITORY_MAIN_URL = re.compile(r"https://github\.com/fmind-ai/fgentic/(?:blob|tree)/main/[^\s<>()\[\]`\"']+")
 MARKDOWN_FRONTMATTER = re.compile(r"\A---\r?\n(?P<yaml>.*?)\r?\n---(?:\r?\n|\Z)", re.DOTALL)
 FORM_ID = re.compile(r"[A-Za-z0-9_-]+")
-FORBIDDEN_TEXT_LABEL_WORD = re.compile(r"\bpassword\b", re.IGNORECASE)
+# Unlike \b, these Unicode-alphanumeric boundaries treat underscores as separators.
+FORBIDDEN_TEXT_LABEL_WORD = re.compile(r"(?<![^\W_])password(?![^\W_])", re.IGNORECASE)
 PROJECT_REFERENCE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}/[1-9][0-9]*")
 _RAILS_TRANSLITERATION_SOURCE = (
     "ÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ\u00d7ØÙÚÛÜÝàáâãäåçèéêëìíîïðñòóôõ"
@@ -1414,6 +1415,14 @@ class CommunityRouteIntegrityTest(TestCase):
                             "    attributes:",
                             "      label: Do not enter your PASSWORD here",
                             "  - type: input",
+                            "    id: underscore-before",
+                            "    attributes:",
+                            "      label: Enter_password",
+                            "  - type: textarea",
+                            "    id: underscore-after",
+                            "    attributes:",
+                            "      label: password_reset",
+                            "  - type: input",
                             "    id: passwordless",
                             "    attributes:",
                             "      label: Passwordless authentication",
@@ -1433,6 +1442,8 @@ class CommunityRouteIntegrityTest(TestCase):
                     [
                         (relative_path, "body[0].attributes.label contains forbidden word 'password'"),
                         (relative_path, "body[1].attributes.label contains forbidden word 'password'"),
+                        (relative_path, "body[2].attributes.label contains forbidden word 'password'"),
+                        (relative_path, "body[3].attributes.label contains forbidden word 'password'"),
                     ],
                 )
 
