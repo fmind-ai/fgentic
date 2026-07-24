@@ -42,7 +42,7 @@ GROUP_RE = re.compile(
     r"[a-z0-9](?:[-a-z0-9]{0,61}[a-z0-9])?$"
 )
 LOCALPART_RE = re.compile(r"^[a-z0-9._=/+-]+$")
-HOST_RE = re.compile(r"^[A-Za-z0-9.-]+$")
+DNS_HOST_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[-A-Za-z0-9]{0,61}[A-Za-z0-9])?$")
 IPV4_SHAPED_RE = re.compile(r"^[0-9]{1,3}(?:\.[0-9]{1,3}){3}$")
 PORT_RE = re.compile(r"^[0-9]{1,5}$")
 DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
@@ -718,7 +718,7 @@ def _full_mxid(value: object, *, name: str) -> str:
         except ValueError:
             if IPV4_SHAPED_RE.fullmatch(host) is not None:
                 raise ConnectorError(f"{name} has an invalid IPv4 server name") from None
-            if HOST_RE.fullmatch(host) is None:
+            if not _valid_dns_host(host):
                 raise ConnectorError(f"{name} has an invalid server name") from None
         else:
             if address.version != 4:
@@ -726,6 +726,11 @@ def _full_mxid(value: object, *, name: str) -> str:
     if not _valid_port(port):
         raise ConnectorError(f"{name} has an invalid server port")
     return mxid
+
+
+def _valid_dns_host(raw: str) -> bool:
+    host = raw.removesuffix(".")
+    return bool(host) and all(DNS_HOST_LABEL_RE.fullmatch(label) is not None for label in host.split("."))
 
 
 def _valid_port(raw: str | None) -> bool:
