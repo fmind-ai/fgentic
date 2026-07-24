@@ -1,6 +1,7 @@
 """Keep public repository links and community routes consistent."""
 
 import re
+from collections.abc import Hashable
 from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -10,6 +11,7 @@ from urllib.parse import parse_qs, unquote, urlsplit
 
 import yaml
 from markdown import markdown as render_markdown
+from yaml.nodes import MappingNode, Node, ScalarNode, SequenceNode
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DISCUSSION_TEMPLATE_DIRECTORY = REPOSITORY_ROOT / ".github/DISCUSSION_TEMPLATE"
@@ -72,6 +74,7 @@ PUBLIC_ENTRYPOINTS = (
 type LinkViolation = tuple[str, str, str]
 type RouteViolation = tuple[str, str, str]
 type SchemaViolation = tuple[str, str]
+type YamlScalarKey = tuple[str, Hashable]
 
 
 class _RenderedTargetParser(HTMLParser):
@@ -197,17 +200,65 @@ def _unsupported_key_reasons(
     return [f"{prefix}{key if isinstance(key, str) else repr(key)} is not permitted" for key in unsupported]
 
 
+def _yaml_scalar_key(node: ScalarNode) -> tuple[YamlScalarKey, str]:
+    """Return a resolved identity and diagnostic label for one YAML scalar key."""
+    loader = yaml.SafeLoader("")
+    try:
+        value = loader.construct_object(node, deep=True)
+    finally:
+        loader.dispose()
+    if not isinstance(value, Hashable):
+        raise TypeError(f"YAML scalar key resolved to unhashable {type(value).__name__}")
+    label = value if isinstance(value, str) else repr(value)
+    return (node.tag, value), label
+
+
+def _duplicate_yaml_key_reasons(node: Node | None, location: str = "") -> list[str]:
+    """Return stable exact-path diagnostics for duplicate scalar mapping keys."""
+    if isinstance(node, SequenceNode):
+        return [
+            reason
+            for index, child in enumerate(node.value)
+            for reason in _duplicate_yaml_key_reasons(child, f"{location}[{index}]")
+        ]
+    if not isinstance(node, MappingNode):
+        return []
+
+    reasons: list[str] = []
+    seen: set[YamlScalarKey] = set()
+    for key_node, value_node in node.value:
+        child_location = location
+        if isinstance(key_node, ScalarNode):
+            identity, label = _yaml_scalar_key(key_node)
+            child_location = f"{location}.{label}" if location else label
+            if identity in seen:
+                reasons.append(f"{child_location} is duplicated")
+            else:
+                seen.add(identity)
+        reasons.extend(_duplicate_yaml_key_reasons(value_node, child_location))
+    return reasons
+
+
+def _load_structured_yaml(source: Path, repository_root: Path) -> tuple[object, list[SchemaViolation]]:
+    """Compose YAML to reject duplicate keys before constructing its document."""
+    raw_document = source.read_text(encoding="utf-8")
+    source_name = _display_path(source, repository_root)
+    node = yaml.compose(raw_document, Loader=yaml.SafeLoader)
+    violations = [(source_name, reason) for reason in _duplicate_yaml_key_reasons(node)]
+    return yaml.safe_load(raw_document), violations
+
+
 def _issue_chooser_config_violations(source: Path, repository_root: Path) -> list[SchemaViolation]:
     """Return violations of GitHub's documented issue chooser configuration."""
     source_name = _display_path(source, repository_root)
-    document = yaml.safe_load(source.read_text(encoding="utf-8"))
+    document, violations = _load_structured_yaml(source, repository_root)
     if not isinstance(document, dict):
-        return [(source_name, "config must be a mapping")]
+        return [*violations, (source_name, "config must be a mapping")]
 
-    violations = [
+    violations.extend(
         (source_name, reason)
         for reason in _unsupported_key_reasons(cast(dict[object, object], document), ISSUE_CHOOSER_KEYS)
-    ]
+    )
     blank_issues_enabled = document.get("blank_issues_enabled")
     if "blank_issues_enabled" in document and not isinstance(blank_issues_enabled, bool):
         violations.append((source_name, "blank_issues_enabled must be a Boolean"))
@@ -254,16 +305,14 @@ def _validated_issue_chooser_contact_links(source: Path, repository_root: Path) 
 def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaViolation]:
     """Return violations of GitHub's documented structured-form contract."""
     source_name = _display_path(source, repository_root)
-    document = yaml.safe_load(source.read_text(encoding="utf-8"))
+    document, violations = _load_structured_yaml(source, repository_root)
     if not isinstance(document, dict):
-        return [(source_name, "form must be a mapping")]
+        return [*violations, (source_name, "form must be a mapping")]
+    document = cast("dict[object, object]", document)
 
     is_issue_form = source.parent.name == "ISSUE_TEMPLATE"
     allowed_form_keys = ISSUE_FORM_KEYS if is_issue_form else DISCUSSION_FORM_KEYS
-    violations: list[SchemaViolation] = [
-        (source_name, reason)
-        for reason in _unsupported_key_reasons(cast(dict[object, object], document), allowed_form_keys)
-    ]
+    violations.extend((source_name, reason) for reason in _unsupported_key_reasons(document, allowed_form_keys))
     violations.extend(
         [
             (source_name, f"{key} must be a nonblank string")
@@ -765,11 +814,146 @@ class CommunityRouteIntegrityTest(TestCase):
             ):
                 _validated_issue_chooser_contact_links(source, repository_root)
 
+    def test_rejects_duplicate_issue_chooser_keys(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/config.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "blank_issues_enabled: false",
+                        "blank_issues_enabled: true",
+                        "contact_links:",
+                        "  - name: First",
+                        "    name: Second",
+                        "    url: https://example.com",
+                        "    about: Help",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _issue_chooser_config_violations(source, repository_root),
+                [
+                    (".github/ISSUE_TEMPLATE/config.yml", "blank_issues_enabled is duplicated"),
+                    (".github/ISSUE_TEMPLATE/config.yml", "contact_links[0].name is duplicated"),
+                ],
+            )
+
+    def test_compares_duplicate_scalar_keys_by_resolved_tag_and_value(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/config.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "false: first Boolean",
+                        "FALSE: second Boolean",
+                        '"false": quoted string',
+                        "11: decimal integer",
+                        "0xB: hexadecimal integer",
+                        '"11": quoted integer',
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            document, violations = _load_structured_yaml(source, repository_root)
+
+            self.assertEqual(
+                violations,
+                [
+                    (".github/ISSUE_TEMPLATE/config.yml", "False is duplicated"),
+                    (".github/ISSUE_TEMPLATE/config.yml", "11 is duplicated"),
+                ],
+            )
+            self.assertEqual(
+                document,
+                {
+                    False: "second Boolean",
+                    "false": "quoted string",
+                    11: "hexadecimal integer",
+                    "11": "quoted integer",
+                },
+            )
+
     def test_embedded_form_markdown_targets_resolve(self) -> None:
         _require_valid_form_markdown_links(_structured_forms(), REPOSITORY_ROOT)
 
     def test_structured_forms_follow_github_schema(self) -> None:
         _require_valid_form_schemas(_structured_forms(), REPOSITORY_ROOT)
+
+    def test_rejects_duplicate_issue_form_keys_at_exact_paths(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: First",
+                        "name: Second",
+                        "description: Exercises duplicate keys",
+                        "body:",
+                        "  - type: input",
+                        "    type: textarea",
+                        "    attributes:",
+                        "      label: First",
+                        "      label: Second",
+                        "    validations:",
+                        "      required: false",
+                        "      required: true",
+                        "  - type: checkboxes",
+                        "    attributes:",
+                        "      label: Choices",
+                        "      options:",
+                        "        - label: First",
+                        "          label: Second",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (".github/ISSUE_TEMPLATE/broken.yml", "name is duplicated"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[0].type is duplicated"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[0].attributes.label is duplicated"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[0].validations.required is duplicated"),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[1].attributes.options[0].label is duplicated",
+                    ),
+                ],
+            )
+
+    def test_rejects_duplicate_discussion_form_keys(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/DISCUSSION_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        'title: "[First] "',
+                        'title: "[Second] "',
+                        "body:",
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: Proposal",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [(".github/DISCUSSION_TEMPLATE/broken.yml", "title is duplicated")],
+            )
 
     def test_rejects_invalid_issue_form_structure_and_elements(self) -> None:
         with TemporaryDirectory() as temporary:
