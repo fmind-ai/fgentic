@@ -812,12 +812,16 @@ def _dns_label(value: object, *, name: str) -> str:
 def _clean_text(value: object, *, name: str, max_bytes: int) -> str:
     if not isinstance(value, str):
         raise MaterializationError(f"{name} must be a string")
-    normalized = unicodedata.normalize("NFC", value)
+    try:
+        normalized = unicodedata.normalize("NFC", value)
+        encoded = normalized.encode()
+    except UnicodeError:
+        raise MaterializationError(f"{name} must be valid Unicode text") from None
     if normalized != value:
         raise MaterializationError(f"{name} must already use NFC normalization")
     if not normalized or normalized != normalized.strip():
         raise MaterializationError(f"{name} must be non-empty with no surrounding whitespace")
-    if len(normalized.encode()) > max_bytes:
+    if len(encoded) > max_bytes:
         raise MaterializationError(f"{name} exceeds {max_bytes} UTF-8 bytes")
     if any(unicodedata.category(character).startswith("C") for character in normalized):
         raise MaterializationError(f"{name} contains a control or format character")
