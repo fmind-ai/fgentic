@@ -125,6 +125,8 @@ Set `llm_provider: vllm` and `llm_model: Qwen/Qwen2.5-0.5B-Instruct`. The select
 
 A one-shot loader writes the approximately 1 GB model snapshot to a 3 GiB PVC. Only that prompt-free Job may reach public HTTPS; the serving Pod mounts the cache read-only, enables Hugging Face and vLLM offline/telemetry-off modes, and receives no egress allowance. Agentgateway's vLLM-profile policy additionally limits its proxy to cluster DNS, its XDS control plane, vLLM, and kagent. The loader's public TCP 443 rule is necessarily address-based because portable Kubernetes NetworkPolicy cannot allow an HTTPS FQDN and its CDN aliases.
 
+The loader accepts only a full lowercase Git revision and stages each download in a fresh hidden snapshot directory. After `snapshot_download` succeeds, it writes `.ready` as `snapshot-v2:<revision>`, creates a relative serving symlink, and atomically replaces the public model path. A failed download or publication preserves the last published snapshot, and a later retry restores an interrupted legacy-directory migration before downloading again. Superseded snapshots and legacy staging are removed only after a new snapshot is published and validated, so a revision change cannot leave stale files from the previous pin in the serving tree.
+
 The reference is deliberately small: 2 CPU/4 GiB requested, 4 CPU/6 GiB limited, 1 GiB KV cache, 4K context, and one concurrent sequence. `Qwen2.5-0.5B-Instruct` makes local sovereignty demonstrable, not production model quality: expect slow CPU generation and materially weaker answers than the API defaults. A useful 7B/8B model needs roughly 14–16 GB for BF16 weights plus runtime/KV memory and normally a 24 GB GPU; an always-on cloud GPU would exceed the project's USD 85/month ceiling, so the GCP reference stays on Vertex.
 
 #### GPU production override
@@ -173,8 +175,8 @@ extraVolumes:
 The paired cache and routing changes are mandatory:
 
 1. Resize and rename the PVC to `qwen2-5-7b-model` with `25Gi`; the StorageClass must let the CPU loader detach and the GPU node attach it.
-1. Keep the pinned CPU loader image and its no-token boundary, but download `Qwen/Qwen2.5-7B-Instruct` at revision `a09a35458c702b33eeacc393d103063234e8bc28` into `/models/qwen2.5-7b-instruct`. Set its deadline to `5400`, request `100m` CPU/`256Mi`, limit it to 1 CPU/1 GiB, and write the same revision to `.ready` only after `snapshot_download` returns.
-1. Point the engine init-container marker and model mount at the new path and claim. Use the pinned GPU image above for the init container, allow it up to 3,600 seconds to observe `.ready`, and keep both model mounts read-only.
+1. Keep the pinned CPU loader image and its no-token boundary, but download `Qwen/Qwen2.5-7B-Instruct` at revision `a09a35458c702b33eeacc393d103063234e8bc28` into a fresh revision-isolated snapshot for `/models/qwen2.5-7b-instruct`. Set its deadline to `5400`, request `100m` CPU/`256Mi`, limit it to 1 CPU/1 GiB, and atomically publish the relative serving symlink only after writing `snapshot-v2:a09a35458c702b33eeacc393d103063234e8bc28` to `.ready`.
+1. Point the engine init-container marker and model mount at the new path and claim. Use the pinned GPU image above for the init container, allow it up to 3,600 seconds to observe the exact versioned marker, and keep both model mounts read-only.
 1. Set `llm_model` to `Qwen/Qwen2.5-7B-Instruct`, change the backend host to `vllm-qwen2-5-7b-engine-service.models.svc.cluster.local`, and update the NetworkPolicy probe's expected Service name.
 1. Raise the HelmRelease timeout from `30m` to `90m` and the `agentgateway-provider` Flux timeout from `45m` to at least `90m`; a first 15+ GiB model download must not look like a failed rollout.
 
@@ -238,7 +240,7 @@ The enabled profile deploys the vLLM Production Stack chart `0.1.11` and CPU run
 
 vLLM v0.25.1 uses `--runner pooling` to auto-detect the embedding architecture (bge-m3) and the cross-encoder scorer (bge-reranker-v2-m3, `num_labels == 1` → `/score` + `/rerank`).
 
-Each engine's one-shot, prompt-free loader Job writes its pinned snapshot (~5 GiB PVC) and is the only Pod allowed public HTTPS; the serving Pods mount the cache read-only, run Hugging Face and vLLM offline/telemetry-off, and receive no egress allowance. Stable Services `knowledge-embeddings.models.svc.cluster.local:8000` and `knowledge-reranker.models…:8000` honour the #332 ingestion consumer contract (`bge-m3-1024-v1`, 1024 dimensions, `max_model_len=8192`) so callers never see the local model path.
+Each engine's one-shot, prompt-free loader Job writes its pinned snapshot (~5 GiB PVC) and is the only Pod allowed public HTTPS; the serving Pods mount the cache read-only, run Hugging Face and vLLM offline/telemetry-off, and receive no egress allowance. Both loaders use the same revision-isolated publication contract as chat vLLM: stage a fresh directory, write the exact `snapshot-v2:<revision>` marker, atomically replace a relative serving symlink, retain the last published snapshot on failure, recover interrupted legacy migration, and garbage-collect older snapshots only after successful publication. Stable Services `knowledge-embeddings.models.svc.cluster.local:8000` and `knowledge-reranker.models…:8000` honour the #332 ingestion consumer contract (`bge-m3-1024-v1`, 1024 dimensions, `max_model_len=8192`) so callers never see the local model path.
 
 CPU envelope (constrained-profile sizing; override per node): embeddings requests 2 CPU / 4 GiB, limits 4 CPU / 6 GiB; the reranker requests 1 CPU / 3 GiB, limits 3 CPU / 5 GiB; `float32`, one tensor-parallel shard, four concurrent sequences each. Expect slow CPU inference — this proves sovereign grounding, not throughput.
 
@@ -246,7 +248,7 @@ CPU envelope (constrained-profile sizing; override per node): embeddings request
 
 Routes and authorization are consumer-owned: ingestion's `/v1/embeddings` + `/tokenize` route and API-key policy ship in `infra/knowledge/base` (#332); permission-aware retrieval (#333) owns the reranker route. The opt-in runtime delivered by #340 comprises only the runtime, the two governed catalog entries, and the fail-closed proxy-to-model NetworkPolicy edge.
 
-Offline gates prove structure: `check:manifests` renders both engines through the pinned chart and schema-validates every manifest, and `check:model-catalog` validates the two governed entries. Live serving acceptance — `/health`, `/v1/embeddings` and `/rerank` responses, agentgateway-only reachability with a blocked direct/external path, a Prometheus scrape, and the NetworkPolicy conformance probe — requires a cluster with real memory headroom and remains capture work once the runtime is enabled on a verified policy engine.
+Offline gates prove structure: `check:manifests` renders both engines through the pinned chart and schema-validates every manifest, `check:model-catalog` validates the two governed entries, and `check:model-cache` executes all three embedded loaders with fake downloads against temporary filesystems to prove exact-revision publication, failure recovery, migration, and garbage collection without a cluster or network request. Live serving acceptance — `/health`, `/v1/embeddings` and `/rerank` responses, agentgateway-only reachability with a blocked direct/external path, a Prometheus scrape, and the NetworkPolicy conformance probe — requires a cluster with real memory headroom and remains capture work once the runtime is enabled on a verified policy engine.
 
 ### Mistral La Plateforme
 
