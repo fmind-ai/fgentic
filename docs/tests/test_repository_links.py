@@ -27,7 +27,7 @@ SAME_REPOSITORY_MAIN_PREFIXES = (
 SAME_REPOSITORY_MAIN_URL = re.compile(r"https://github\.com/fmind-ai/fgentic/(?:blob|tree)/main/[^\s<>()\[\]`\"']+")
 MARKDOWN_FRONTMATTER = re.compile(r"\A---\r?\n(?P<yaml>.*?)\r?\n---(?:\r?\n|\Z)", re.DOTALL)
 FORM_ID = re.compile(r"[A-Za-z0-9_-]+")
-PROJECT_REFERENCE = re.compile(r"[^/,\s]+/[1-9][0-9]*")
+PROJECT_REFERENCE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}/[1-9][0-9]*")
 FORM_ELEMENT_TYPES = frozenset({"checkboxes", "dropdown", "input", "markdown", "textarea", "upload"})
 ISSUE_FORM_KEYS = frozenset({"assignees", "body", "description", "labels", "name", "projects", "title", "type"})
 DISCUSSION_FORM_KEYS = frozenset({"body", "labels", "title"})
@@ -430,15 +430,17 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
         if key in document and not _is_nonblank_string_collection(document[key])
     )
     projects = document.get("projects")
-    if is_issue_form and "projects" in document and _is_nonblank_string_collection(projects):
-        project_references = projects.split(",") if isinstance(projects, str) else cast("list[str]", projects)
+    if is_issue_form and isinstance(projects, (str, list)):
+        project_references = projects.split(",") if isinstance(projects, str) else projects
         violations.extend(
             (
                 source_name,
                 f"projects[{index}] must use PROJECT-OWNER/PROJECT-NUMBER: {reference!r}",
             )
             for index, reference in enumerate(project_references)
-            if PROJECT_REFERENCE.fullmatch(reference.strip()) is None
+            if isinstance(reference, str)
+            and reference.strip()
+            and PROJECT_REFERENCE.fullmatch(reference.strip()) is None
         )
 
     body = document.get("body")
@@ -1412,6 +1414,10 @@ class CommunityRouteIntegrityTest(TestCase):
                         "  - octo-org/project",
                         "  - octo-org/0",
                         "  - octo-org/1/extra",
+                        "  - '@octo/1'",
+                        "  - -octo/1",
+                        "  - octo-/1",
+                        "  - octo--org/1",
                         "body:",
                         "  - type: textarea",
                         "    attributes:",
@@ -1447,6 +1453,56 @@ class CommunityRouteIntegrityTest(TestCase):
                     (
                         ".github/ISSUE_TEMPLATE/broken.yml",
                         "projects[5] must use PROJECT-OWNER/PROJECT-NUMBER: 'octo-org/1/extra'",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "projects[6] must use PROJECT-OWNER/PROJECT-NUMBER: '@octo/1'",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "projects[7] must use PROJECT-OWNER/PROJECT-NUMBER: '-octo/1'",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "projects[8] must use PROJECT-OWNER/PROJECT-NUMBER: 'octo-/1'",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "projects[9] must use PROJECT-OWNER/PROJECT-NUMBER: 'octo--org/1'",
+                    ),
+                ],
+            )
+
+    def test_reports_project_syntax_beside_collection_errors(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Broken projects",
+                        "description: Exercises mixed project errors",
+                        'projects: "missing, "',
+                        "body:",
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: Details",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "projects must be a nonblank comma-delimited string or an array of nonblank strings",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "projects[0] must use PROJECT-OWNER/PROJECT-NUMBER: 'missing'",
                     ),
                 ],
             )
