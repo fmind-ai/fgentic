@@ -648,6 +648,17 @@ class _FakeSynapse(http.server.BaseHTTPRequestHandler):
             self.send_header("Transfer-Encoding", "chunked")
             self.end_headers()
             self.wfile.write(f"{len(body):x}\r\n".encode() + body + b"\r\n0\r\n\r\n")
+        elif self.response_mode == "trickle":
+            body = b'{"x":1}'
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            for byte in body:
+                try:
+                    self.wfile.write(bytes([byte]))
+                    self.wfile.flush()
+                except (BrokenPipeError, ConnectionResetError):
+                    break
+                time.sleep(0.05)
         else:
             self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
@@ -752,6 +763,148 @@ def test_matrix_responses_are_bounded_and_strictly_framed() -> None:
         recv.server_close()
 
 
+def test_matrix_delivery_workers_are_bounded_and_recover() -> None:
+    release = threading.Event()
+    calls = 0
+    calls_lock = threading.Lock()
+
+    def blocking_delivery(*_args: object) -> None:
+        nonlocal calls
+        with calls_lock:
+            calls += 1
+        release.wait(timeout=2)
+
+    with (
+        mock.patch.object(receiver, "_MATRIX_REQUEST_TIMEOUT_SECONDS", 0.05),
+        mock.patch.object(receiver, "_post_notice_io", side_effect=blocking_delivery),
+    ):
+        for _ in range(receiver._MAX_CONCURRENT_MATRIX_REQUESTS):
+            try:
+                receiver._post_notice("http://matrix", "token", ROOM, "notice")
+            except TimeoutError:
+                pass
+            else:
+                raise AssertionError("a retained Matrix worker must reach its wall-clock deadline")
+
+        try:
+            receiver._post_notice("http://matrix", "token", ROOM, "notice")
+        except TimeoutError:
+            pass
+        else:
+            raise AssertionError("a saturated Matrix worker pool must fail closed")
+        assert calls == receiver._MAX_CONCURRENT_MATRIX_REQUESTS
+
+        release.set()
+        deadline = time.monotonic() + 1
+        while True:
+            try:
+                receiver._post_notice("http://matrix", "token", ROOM, "notice")
+                break
+            except TimeoutError:
+                assert time.monotonic() < deadline, "Matrix worker capacity did not recover"
+                time.sleep(0.01)
+        assert calls == receiver._MAX_CONCURRENT_MATRIX_REQUESTS + 1
+    print("ok: Matrix delivery workers are bounded and recover")
+
+
+def test_matrix_worker_start_failure_releases_slot() -> None:
+    with mock.patch.object(threading.Thread, "start", side_effect=RuntimeError("synthetic start failure")):
+        try:
+            receiver._post_notice("http://matrix", "token", ROOM, "notice")
+        except receiver.MatrixResponseError:
+            pass
+        else:
+            raise AssertionError("a Matrix worker start failure must fail closed")
+
+    acquired = [
+        receiver._MATRIX_REQUEST_SLOTS.acquire(blocking=False)
+        for _ in range(receiver._MAX_CONCURRENT_MATRIX_REQUESTS)
+    ]
+    assert all(acquired)
+    assert not receiver._MATRIX_REQUEST_SLOTS.acquire(blocking=False)
+    for _ in acquired:
+        receiver._MATRIX_REQUEST_SLOTS.release()
+    print("ok: Matrix worker start failure releases its slot")
+
+
+def test_matrix_worker_releases_slot_before_publishing_outcome() -> None:
+    def delivery(observed: list[BaseException]) -> None:
+        try:
+            receiver._post_notice("http://matrix", "token", ROOM, "notice")
+        except BaseException as error:
+            observed.append(error)
+
+    for delivery_error in (None, receiver.MatrixResponseError("synthetic delivery failure")):
+        class PausedReleaseSemaphore:
+            def __init__(self) -> None:
+                self.inner = threading.BoundedSemaphore(receiver._MAX_CONCURRENT_MATRIX_REQUESTS)
+                self.release_started = threading.Event()
+                self.release_allowed = threading.Event()
+
+            def acquire(self, *, blocking: bool = True) -> bool:
+                return self.inner.acquire(blocking=blocking)
+
+            def release(self) -> None:
+                self.release_started.set()
+                assert self.release_allowed.wait(timeout=1)
+                self.inner.release()
+
+        slots = PausedReleaseSemaphore()
+        observed: list[BaseException] = []
+
+        worker_effect = None if delivery_error is None else delivery_error
+        with (
+            mock.patch.object(receiver, "_MATRIX_REQUEST_SLOTS", slots),
+            mock.patch.object(receiver, "_post_notice_io", side_effect=worker_effect),
+        ):
+            caller = threading.Thread(target=delivery, args=(observed,))
+            caller.start()
+            assert slots.release_started.wait(timeout=1)
+            assert caller.is_alive(), "delivery outcome became visible before its slot was released"
+            slots.release_allowed.set()
+            caller.join(timeout=1)
+            assert not caller.is_alive()
+
+        if delivery_error is None:
+            assert observed == []
+        else:
+            assert len(observed) == 1 and type(observed[0]) is type(delivery_error)
+        acquired = [
+            slots.acquire(blocking=False)
+            for _ in range(receiver._MAX_CONCURRENT_MATRIX_REQUESTS)
+        ]
+        assert all(acquired)
+    print("ok: Matrix worker releases capacity before publishing success or failure")
+
+
+def test_matrix_delivery_timeout_is_end_to_end() -> None:
+    _FakeSynapse.received = []
+    _FakeSynapse.response_mode = "trickle"
+    synapse = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeSynapse)
+    threading.Thread(target=synapse.serve_forever, daemon=True).start()
+    recv = _serve(receiver._Handler)
+    recv.homeserver = f"http://127.0.0.1:{synapse.server_address[1]}"
+    recv.token = "alertbot-token"
+    recv.room_id = ROOM
+    errors = io.StringIO()
+    started = time.monotonic()
+    try:
+        with (
+            mock.patch.object(receiver, "_MATRIX_REQUEST_TIMEOUT_SECONDS", 0.1),
+            contextlib.redirect_stderr(errors),
+        ):
+            assert _post_webhook(recv) == 502
+        assert time.monotonic() - started < 0.3
+        assert errors.getvalue() == "alert-receiver: delivery failed: TimeoutError\n"
+        print("ok: Matrix delivery timeout is an end-to-end wall-clock bound")
+    finally:
+        _FakeSynapse.response_mode = "normal"
+        synapse.shutdown()
+        synapse.server_close()
+        recv.shutdown()
+        recv.server_close()
+
+
 if __name__ == "__main__":
     test_listen_port_is_bounded_and_content_free()
     test_rendered_ports_are_aligned()
@@ -773,4 +926,8 @@ if __name__ == "__main__":
     test_thread_start_failure_releases_request_slot()
     test_webhook_posts_content_free_notice()
     test_matrix_responses_are_bounded_and_strictly_framed()
+    test_matrix_delivery_workers_are_bounded_and_recover()
+    test_matrix_worker_start_failure_releases_slot()
+    test_matrix_worker_releases_slot_before_publishing_outcome()
+    test_matrix_delivery_timeout_is_end_to_end()
     print("alert receiver tests passed")
