@@ -34,6 +34,8 @@ _UNSUCCESSFUL_BODIES = ("⏳ working on it…", "(the agent returned no content)
 _PROVENANCE_BANNER = "--- BEGIN FGENTIC BRIDGE PROVENANCE ---"
 _MAX_RESPONSE_BYTES = 262_144
 _MAX_REPLY_STATE = 32
+_DEFAULT_DEADLINE_SECONDS = 120
+_MAX_DEADLINE_SECONDS = 150
 
 
 def _env(name: str) -> str:
@@ -46,6 +48,26 @@ def _env(name: str) -> str:
 def _fail(message: str) -> Never:
     print(f"canary: {message}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def _deadline_seconds() -> int:
+    raw = os.environ.get("CANARY_DEADLINE_SECONDS", str(_DEFAULT_DEADLINE_SECONDS))
+    error = (
+        "CANARY_DEADLINE_SECONDS must be a canonical ASCII integer "
+        f"from 1 to {_MAX_DEADLINE_SECONDS}"
+    )
+    if not raw.isascii() or not raw.isdecimal():
+        _fail(error)
+
+    # Normalize before int() so an oversized decimal cannot hit Python's digit limit. Requiring the
+    # canonical representation also rejects padding and leading zeroes instead of silently fixing it.
+    normalized = raw.lstrip("0") or "0"
+    if len(normalized) > len(str(_MAX_DEADLINE_SECONDS)):
+        _fail(error)
+    value = int(normalized)
+    if raw != str(value) or not 1 <= value <= _MAX_DEADLINE_SECONDS:
+        _fail(error)
+    return value
 
 
 def _request(method: str, url: str, token: str | None, body: dict | None) -> dict:
@@ -189,7 +211,7 @@ def main() -> int:
     password = _env("CANARY_PASSWORD")
     room_id = _env("CANARY_ROOM_ID")
     ghost = _env("CANARY_TARGET_MXID")
-    deadline_seconds = int(os.environ.get("CANARY_DEADLINE_SECONDS", "120"))
+    deadline_seconds = _deadline_seconds()
 
     login = _request(
         "POST",
