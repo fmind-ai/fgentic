@@ -460,6 +460,9 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
         if is_issue_form
         else []
     )
+    name = document.get("name")
+    if is_issue_form and isinstance(name, str) and name.strip() and len(name.strip()) < 4:
+        violations.append((source_name, "name must contain at least 4 characters"))
     string_keys = ("title", "type") if is_issue_form else ("title",)
     violations.extend(
         (source_name, f"{key} must be a nonblank string")
@@ -1615,6 +1618,39 @@ class CommunityRouteIntegrityTest(TestCase):
                     ),
                 ],
             )
+
+    def test_rejects_issue_form_names_shorter_than_four_characters(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/boundary.yml"
+            source.parent.mkdir(parents=True)
+            for name in ("A", "AB", "ABC", " ABCD "):
+                with self.subTest(name=name):
+                    source.write_text(
+                        "\n".join(
+                            (
+                                f"name: {name!r}",
+                                "description: Exercises issue-form name length",
+                                "body:",
+                                "  - type: textarea",
+                                "    attributes:",
+                                "      label: Details",
+                            )
+                        ),
+                        encoding="utf-8",
+                    )
+
+                    expected = (
+                        []
+                        if len(name.strip()) == 4
+                        else [
+                            (
+                                ".github/ISSUE_TEMPLATE/boundary.yml",
+                                "name must contain at least 4 characters",
+                            )
+                        ]
+                    )
+                    self.assertEqual(_form_schema_violations(source, repository_root), expected)
 
     def test_accepts_empty_form_metadata_arrays(self) -> None:
         with TemporaryDirectory() as temporary:
