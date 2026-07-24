@@ -249,6 +249,8 @@ def test_api_document_reads_bounded_ca_before_constructing_client(
             b"secret",
             "HTTP response transfer coding is unsupported",
         ),
+        (b"Transfer-Encoding: \vchunked\v\r\n", b"secret", "HTTP response transfer coding is unsupported"),
+        (b"Transfer-Encoding: \fchunked\f\r\n", b"secret", "HTTP response transfer coding is unsupported"),
     ],
     ids=[
         "duplicate-content-length",
@@ -258,6 +260,8 @@ def test_api_document_reads_bounded_ca_before_constructing_client(
         "huge-content-length",
         "unsupported-transfer-encoding",
         "multiple-transfer-codings",
+        "vertical-tab-transfer-encoding",
+        "form-feed-transfer-encoding",
     ],
 )
 def test_response_reader_rejects_ambiguous_or_unsupported_framing(
@@ -284,8 +288,13 @@ def test_response_reader_accepts_content_length_with_optional_whitespace() -> No
         assert acquisition._read_response(response, 2) == b"ok"
 
 
-def test_response_reader_accepts_canonical_chunked_body() -> None:
-    raw = _http_response(b"Transfer-Encoding: chunked\r\n", b"2\r\nok\r\n0\r\n\r\n")
+@pytest.mark.parametrize(
+    "header",
+    [b"Transfer-Encoding: chunked\r\n", b"Transfer-Encoding: \tchunked \t\r\n"],
+    ids=["canonical", "optional-whitespace"],
+)
+def test_response_reader_decodes_chunked_body(header: bytes) -> None:
+    raw = _http_response(header, b"2\r\nok\r\n0\r\n\r\n")
     with _response(raw) as response:
         assert acquisition._read_response(response, 2) == b"ok"
 
