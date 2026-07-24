@@ -21,6 +21,7 @@ import http.client
 import http.server
 import json
 import os
+import queue
 import socket
 import sys
 import threading
@@ -49,7 +50,10 @@ _UNSAFE_TEXT_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
 _MAX_HEADER_BYTES = 16_384
 _MAX_REQUEST_BYTES = 65_536
 _MAX_CONCURRENT_REQUESTS = 4
+_MAX_CONCURRENT_MATRIX_REQUESTS = 4
 _REQUEST_TIMEOUT_SECONDS = 5.0
+_MATRIX_REQUEST_TIMEOUT_SECONDS = 15.0
+_MATRIX_REQUEST_SLOTS = threading.BoundedSemaphore(_MAX_CONCURRENT_MATRIX_REQUESTS)
 _DEFAULT_LISTEN_PORT = 9_095
 _MIN_LISTEN_PORT = 1_024
 _MAX_LISTEN_PORT = 65_535
@@ -191,7 +195,7 @@ def _discard_matrix_response(response: Any) -> None:
         raise MatrixResponseError
 
 
-def _post_notice(homeserver: str, token: str, room_id: str, body: str) -> None:
+def _post_notice_io(homeserver: str, token: str, room_id: str, body: str) -> None:
     encoded_room = urllib.parse.quote(room_id, safe="")
     # Transaction id = deterministic body digest + a coarse (5-min) time bucket. Alertmanager retries
     # a failed webhook within seconds, so a retry of the SAME delivery lands in the same bucket ->
@@ -208,8 +212,41 @@ def _post_notice(homeserver: str, token: str, room_id: str, body: str) -> None:
     request.add_header("Content-Type", "application/json")
     request.add_header("Authorization", f"Bearer {token}")
     # The homeserver URL is an operator-owned ConfigMap value and NetworkPolicy permits only Synapse.
-    with urllib.request.urlopen(request, timeout=15) as response:
+    with urllib.request.urlopen(request, timeout=_MATRIX_REQUEST_TIMEOUT_SECONDS) as response:
         _discard_matrix_response(response)
+
+
+def _post_notice(homeserver: str, token: str, room_id: str, body: str) -> None:
+    if not _MATRIX_REQUEST_SLOTS.acquire(blocking=False):
+        raise TimeoutError
+
+    outcomes: queue.Queue[BaseException | None] = queue.Queue(maxsize=1)
+
+    def deliver() -> None:
+        try:
+            _post_notice_io(homeserver, token, room_id, body)
+            outcomes.put(None)
+        except BaseException as error:
+            # Preserve the original exception type across the worker boundary without a traceback.
+            outcomes.put(error)
+        finally:
+            _MATRIX_REQUEST_SLOTS.release()
+
+    # urllib's timeout is per blocking socket operation. A bounded daemon worker gives the caller a
+    # wall-clock deadline without letting repeated timed-out I/O accumulate unbounded threads.
+    worker = threading.Thread(target=deliver, daemon=True)
+    try:
+        worker.start()
+    except RuntimeError as error:
+        _MATRIX_REQUEST_SLOTS.release()
+        raise MatrixResponseError from error
+
+    try:
+        outcome = outcomes.get(timeout=_MATRIX_REQUEST_TIMEOUT_SECONDS)
+    except queue.Empty:
+        raise TimeoutError from None
+    if isinstance(outcome, BaseException):
+        raise outcome
 
 
 class _BoundedThreadingHTTPServer(http.server.ThreadingHTTPServer):
