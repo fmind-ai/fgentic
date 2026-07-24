@@ -6,6 +6,7 @@ from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from typing import cast
+from unicodedata import normalize
 from unittest import TestCase
 from urllib.parse import parse_qs, unquote, urlsplit
 
@@ -28,6 +29,45 @@ SAME_REPOSITORY_MAIN_URL = re.compile(r"https://github\.com/fmind-ai/fgentic/(?:
 MARKDOWN_FRONTMATTER = re.compile(r"\A---\r?\n(?P<yaml>.*?)\r?\n---(?:\r?\n|\Z)", re.DOTALL)
 FORM_ID = re.compile(r"[A-Za-z0-9_-]+")
 PROJECT_REFERENCE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}/[1-9][0-9]*")
+_RAILS_TRANSLITERATION_SOURCE = (
+    "ÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ\u00d7ØÙÚÛÜÝàáâãäåçèéêëìíîïðñòóôõ"
+    "öøùúûüýÿĀāĂăĄąĆćĈĉĊċČčĎďĐđĒēĔĕĖėĘęĚěĜĝĞğĠġĢģĤĥĦħĨĩ"
+    "ĪīĬĭĮįİıĴĵĶķĸĹĺĻļĽľĿŀŁłŃńŅņŇňŌōŎŏŐőŔŕŖŗŘřŚśŜŝŞşŠšŢ"
+    "ţŤťŦŧŨũŪūŬŭŮůŰűŲųŴŵŶŷŸŹźŻżŽžǪǫǬǭ"
+)
+_RAILS_TRANSLITERATION_TARGET = (
+    "AAAAAACEEEEIIIIDNOOOOOxOUUUUYaaaaaaceeeeiiiidnoooo"
+    "oouuuuyyAaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIi"
+    "IiIiIiIiJjKkkLlLlLlLlLlNnNnNnOoOoOoRrRrRrSsSsSsSsT"
+    "tTtTtUuUuUuUuUuUuWwYyYZzZzZzOoOo"
+)
+_RAILS_TRANSLITERATION = {
+    ord(source): target
+    for source, target in zip(
+        _RAILS_TRANSLITERATION_SOURCE,
+        _RAILS_TRANSLITERATION_TARGET,
+        strict=True,
+    )
+}
+_RAILS_TRANSLITERATION.update(
+    str.maketrans(
+        {
+            "Æ": "AE",
+            "Þ": "Th",
+            "ß": "ss",
+            "ẞ": "SS",
+            "æ": "ae",
+            "þ": "th",
+            "Ĳ": "IJ",
+            "ĳ": "ij",
+            "ŉ": "'n",
+            "Ŋ": "NG",
+            "ŋ": "ng",
+            "Œ": "OE",
+            "œ": "oe",
+        }
+    )
+)
 FORM_ELEMENT_TYPES = frozenset({"checkboxes", "dropdown", "input", "markdown", "textarea", "upload"})
 ISSUE_FORM_KEYS = frozenset({"assignees", "body", "description", "labels", "name", "projects", "title", "type"})
 DISCUSSION_FORM_KEYS = frozenset({"body", "labels", "title"})
@@ -214,26 +254,30 @@ def _unsupported_key_reasons(
     return [f"{prefix}{key if isinstance(key, str) else repr(key)} is not permitted" for key in unsupported]
 
 
-def _ambiguous_form_label_reason(
-    label: object,
+def _parameterized_form_label(label: str) -> str:
+    """Return the effective GitHub form reference derived from a label."""
+    transliterated = normalize("NFC", label).translate(_RAILS_TRANSLITERATION)
+    transliterated = re.sub(r"[^\x00-\x7f]", "?", transliterated)
+    reference = re.sub(r"[^A-Za-z0-9_-]+", "-", transliterated)
+    return re.sub(r"-{2,}", "-", reference).strip("-").lower()
+
+
+def _form_reference_reason(
+    reference: str,
+    value: str,
     location: str,
-    identifier: object,
-    unique_identifiers: set[str],
-    labels: dict[str, str],
+    references: dict[str, tuple[str, str]],
 ) -> str | None:
-    """Return a stable diagnostic when no valid ID differentiates a repeated label."""
-    if (
-        not isinstance(label, str)
-        or not label.strip()
-        or (isinstance(identifier, str) and identifier in unique_identifiers)
-    ):
+    """Return a stable diagnostic when two inputs resolve to the same reference."""
+    previous = references.get(reference)
+    if previous is None:
+        references[reference] = location, value
         return None
 
-    previous = labels.get(label)
-    if previous is None:
-        labels[label] = location
-        return None
-    return f"{location} duplicates {previous}: {label!r}"
+    previous_location, previous_value = previous
+    if location.endswith(".label") and previous_location.endswith(".label") and value == previous_value:
+        return f"{location} duplicates {previous_location}: {value!r}"
+    return f"{location} resolves to reference {reference!r}, already used by {previous_location}"
 
 
 def _unique_form_identifiers(body: Sequence[object]) -> set[str]:
@@ -450,7 +494,7 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
 
     unique_identifiers = _unique_form_identifiers(body)
     identifiers: set[str] = set()
-    labels: dict[str, str] = {}
+    references: dict[str, tuple[str, str]] = {}
     has_input = False
     for index, element in enumerate(body):
         location = f"body[{index}]"
@@ -507,16 +551,16 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
                 violations.append(
                     (source_name, f"{location}.attributes.{required_attribute} must be a nonblank string")
                 )
-            elif element_type != "markdown" and (
-                reason := _ambiguous_form_label_reason(
-                    attributes.get("label"),
-                    f"{location}.attributes.label",
-                    identifier,
-                    unique_identifiers,
-                    labels,
-                )
-            ):
-                violations.append((source_name, reason))
+            elif element_type != "markdown":
+                label = cast(str, attributes.get("label"))
+                if isinstance(identifier, str) and identifier in unique_identifiers:
+                    reference = identifier
+                    reference_location = f"{location}.id"
+                else:
+                    reference = _parameterized_form_label(label)
+                    reference_location = f"{location}.attributes.label"
+                if reason := _form_reference_reason(reference, label, reference_location, references):
+                    violations.append((source_name, reason))
 
             text_attributes = {
                 "checkboxes": ("description",),
@@ -570,7 +614,7 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
                 if not isinstance(options, list) or not options:
                     violations.append((source_name, f"{location}.attributes.options must be a nonempty array"))
                 else:
-                    choices = set()
+                    choices: dict[str, tuple[str, str]] = {}
                     for option_index, option in enumerate(options):
                         option_location = f"{location}.attributes.options[{option_index}]"
                         label = option.get("label") if isinstance(option, dict) else None
@@ -591,16 +635,30 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
                             violations.append((source_name, f"{option_location}.required must be a Boolean"))
                         if not isinstance(label, str) or not label.strip():
                             violations.append((source_name, f"{option_location}.label must be a nonblank string"))
-                        elif label in choices:
-                            violations.append((source_name, f"{option_location}.label is duplicated: {label!r}"))
                         else:
-                            choices.add(label)
-                            if reason := _ambiguous_form_label_reason(
-                                label,
-                                f"{option_location}.label",
-                                identifier,
-                                unique_identifiers,
-                                labels,
+                            option_label_location = f"{option_location}.label"
+                            option_reference = _parameterized_form_label(label)
+                            previous_choice = choices.get(option_reference)
+                            if previous_choice is None:
+                                choices[option_reference] = option_label_location, label
+                                reason = None
+                            elif previous_choice[1] == label:
+                                reason = f"{option_label_location} is duplicated: {label!r}"
+                            else:
+                                reason = (
+                                    f"{option_label_location} resolves to reference {option_reference!r}, "
+                                    f"already used by {previous_choice[0]}"
+                                )
+                            if reason or (
+                                not (isinstance(identifier, str) and identifier in unique_identifiers)
+                                and (
+                                    reason := _form_reference_reason(
+                                        option_reference,
+                                        label,
+                                        option_label_location,
+                                        references,
+                                    )
+                                )
                             ):
                                 violations.append((source_name, reason))
 
@@ -1208,6 +1266,123 @@ class CommunityRouteIntegrityTest(TestCase):
                     ),
                 ],
             )
+
+    def test_parameterizes_form_labels_like_rails(self) -> None:
+        self.assertEqual(_parameterized_form_label("Ærøskøbing"), "aeroskobing")
+        self.assertEqual(_parameterized_form_label("foo🚀bar"), "foo-bar")
+        self.assertEqual(_parameterized_form_label("straße"), "strasse")
+        self.assertEqual(_parameterized_form_label("Ǫresund"), "oresund")
+        self.assertEqual(_parameterized_form_label("ø"), "o")
+        self.assertEqual(_parameterized_form_label("?"), "")
+
+    def test_rejects_colliding_parameterized_form_references(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Broken",
+                        "description: Exercises colliding effective references",
+                        "body:",
+                        "  - type: input",
+                        "    attributes:",
+                        "      label: Name?",
+                        "  - type: input",
+                        "    id: name",
+                        "    attributes:",
+                        "      label: Name???????",
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: Contact details!",
+                        "  - type: dropdown",
+                        "    attributes:",
+                        "      label: Contact details?",
+                        "      options:",
+                        "        - Email",
+                        "  - type: checkboxes",
+                        "    id: confirmation",
+                        "    attributes:",
+                        "      label: Confirmation",
+                        "      options:",
+                        "        - label: Ready?",
+                        "        - label: Ready!!!!",
+                        "  - type: input",
+                        "    attributes:",
+                        "      label: Ærøskøbing",
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: AEroskobing",
+                        "  - type: input",
+                        "    attributes:",
+                        "      label: foo🚀bar",
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: foo-bar",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[1].id resolves to reference 'name', already used by body[0].attributes.label",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[3].attributes.label resolves to reference 'contact-details', "
+                        "already used by body[2].attributes.label",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[4].attributes.options[1].label resolves to reference 'ready', "
+                        "already used by body[4].attributes.options[0].label",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[6].attributes.label resolves to reference 'aeroskobing', "
+                        "already used by body[5].attributes.label",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[8].attributes.label resolves to reference 'foo-bar', "
+                        "already used by body[7].attributes.label",
+                    ),
+                ],
+            )
+
+    def test_accepts_similar_labels_differentiated_by_unique_ids(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/DISCUSSION_TEMPLATE/valid.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "body:",
+                        "  - type: input",
+                        "    attributes:",
+                        "      label: Name?",
+                        "  - type: input",
+                        "    id: your-name",
+                        "    attributes:",
+                        "      label: Name???????",
+                        "  - type: checkboxes",
+                        "    id: confirmation",
+                        "    attributes:",
+                        "      label: Confirmation",
+                        "      options:",
+                        "        - label: Name!!!!",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(_form_schema_violations(source, repository_root), [])
 
     def test_duplicate_ids_do_not_hide_ambiguous_labels(self) -> None:
         with TemporaryDirectory() as temporary:
