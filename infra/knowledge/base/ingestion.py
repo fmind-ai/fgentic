@@ -97,6 +97,7 @@ MEDIA_TYPE_RE = re.compile(
     rf"^[ \t]*(?P<type>{HTTP_TCHAR_RE})/(?P<subtype>{HTTP_TCHAR_RE})"
     rf"(?:[ \t]*;[ \t]*(?:{HTTP_TCHAR_RE}=(?:{HTTP_TCHAR_RE}|{HTTP_QUOTED_STRING_RE}))?)*[ \t]*$"
 )
+BEARER_AUTHORIZATION_RE = re.compile(r"Bearer [-A-Za-z0-9._~+/]+=*")
 
 
 class IngestionError(ValueError):
@@ -1721,12 +1722,7 @@ def read_authorization(path: Path) -> str:
         value = raw.decode("ascii")
     except UnicodeDecodeError as error:
         raise IngestionError("workload authorization must be ASCII") from error
-    if (
-        not value.startswith("Bearer ")
-        or len(value) <= len("Bearer ")
-        or value != value.strip()
-        or any(character.isspace() for character in value[len("Bearer ") :])
-    ):
+    if BEARER_AUTHORIZATION_RE.fullmatch(value) is None:
         raise IngestionError("workload authorization must be one exact Bearer credential")
     return value
 

@@ -1566,14 +1566,116 @@ def test_embedding_vector_rejects_non_float32_values(value: object) -> None:
         ingestion._embedding_vector(values, name="embedding")
 
 
-def test_workload_authorization_is_bounded_and_exact(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "value",
+    [
+        "Bearer workload-key",
+        "Bearer abc.DEF_123~+/",
+        "Bearer abc+/_~.-0123===",
+    ],
+    ids=["opaque", "complete-alphabet", "terminal-padding"],
+)
+def test_workload_authorization_accepts_rfc6750_b64token(tmp_path: Path, value: str) -> None:
     credential = tmp_path / "authorization"
-    credential.write_text("Bearer workload-key", encoding="ascii")
-    assert ingestion.read_authorization(credential) == "Bearer workload-key"
+    credential.write_text(value, encoding="ascii")
 
-    credential.write_text("Bearer workload-key\n", encoding="ascii")
-    with pytest.raises(ingestion.IngestionError, match="exact Bearer"):
+    assert ingestion.read_authorization(credential) == value
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        b"Bearer ",
+        b"bearer token",
+        b"Bearer token\n",
+        b"Bearer tok en",
+        b"Bearer token\x00",
+        b"Bearer token\x7f",
+        b'Bearer token"',
+        b"Bearer token,",
+        b"Bearer =token",
+        b"Bearer token=tail",
+    ],
+    ids=[
+        "empty",
+        "wrong-scheme",
+        "newline",
+        "embedded-space",
+        "null",
+        "delete-control",
+        "quote",
+        "comma",
+        "leading-padding",
+        "non-terminal-padding",
+    ],
+)
+def test_workload_authorization_rejects_non_b64token_without_reflection(tmp_path: Path, value: bytes) -> None:
+    credential = tmp_path / "authorization"
+    credential.write_bytes(value)
+
+    with pytest.raises(ingestion.IngestionError) as caught:
         ingestion.read_authorization(credential)
+
+    assert str(caught.value) == "workload authorization must be one exact Bearer credential"
+
+
+@pytest.mark.parametrize(
+    ("value", "message"),
+    [
+        (b"Bearer caf\xc3\xa9", "must be ASCII"),
+        (b"Bearer " + b"a" * ingestion.MAX_AUTHORIZATION_BYTES, "must contain between"),
+    ],
+    ids=["non-ascii", "oversized"],
+)
+def test_workload_authorization_preserves_ascii_and_size_bounds(
+    tmp_path: Path,
+    value: bytes,
+    message: str,
+) -> None:
+    credential = tmp_path / "authorization"
+    credential.write_bytes(value)
+
+    with pytest.raises(ingestion.IngestionError, match=message) as caught:
+        ingestion.read_authorization(credential)
+
+    assert "caf" not in str(caught.value)
+    assert "a" * 64 not in str(caught.value)
+
+
+def test_embed_cli_rejects_invalid_authorization_before_request_path(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    credential = tmp_path / "authorization"
+    credential.write_bytes(b"Bearer private,credential")
+    called = False
+
+    def unexpected_embed(*_args: object, **_kwargs: object) -> tuple[int, int]:
+        nonlocal called
+        called = True
+        raise AssertionError("embed path reached for an invalid workload credential")
+
+    monkeypatch.setattr(ingestion, "embed_plan", unexpected_embed)
+
+    assert (
+        ingestion.main(
+            [
+                "embed",
+                "--plan",
+                str(tmp_path / "plan.jsonl"),
+                "--output",
+                str(tmp_path / "output.jsonl"),
+                "--authorization-file",
+                str(credential),
+                "--checkpoint-root",
+                str(tmp_path / "checkpoint"),
+            ]
+        )
+        == 2
+    )
+    assert not called
+    assert "private,credential" not in caplog.text
 
 
 def test_production_embedding_call_requires_workload_credential(tmp_path: Path) -> None:
