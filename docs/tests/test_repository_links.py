@@ -27,6 +27,7 @@ SAME_REPOSITORY_MAIN_PREFIXES = (
 SAME_REPOSITORY_MAIN_URL = re.compile(r"https://github\.com/fmind-ai/fgentic/(?:blob|tree)/main/[^\s<>()\[\]`\"']+")
 MARKDOWN_FRONTMATTER = re.compile(r"\A---\r?\n(?P<yaml>.*?)\r?\n---(?:\r?\n|\Z)", re.DOTALL)
 FORM_ID = re.compile(r"[A-Za-z0-9_-]+")
+PROJECT_REFERENCE = re.compile(r"[^/,\s]+/[1-9][0-9]*")
 FORM_ELEMENT_TYPES = frozenset({"checkboxes", "dropdown", "input", "markdown", "textarea", "upload"})
 ISSUE_FORM_KEYS = frozenset({"assignees", "body", "description", "labels", "name", "projects", "title", "type"})
 DISCUSSION_FORM_KEYS = frozenset({"body", "labels", "title"})
@@ -428,6 +429,17 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
         for key in collection_keys
         if key in document and not _is_nonblank_string_collection(document[key])
     )
+    projects = document.get("projects")
+    if is_issue_form and "projects" in document and _is_nonblank_string_collection(projects):
+        project_references = projects.split(",") if isinstance(projects, str) else cast("list[str]", projects)
+        violations.extend(
+            (
+                source_name,
+                f"projects[{index}] must use PROJECT-OWNER/PROJECT-NUMBER: {reference!r}",
+            )
+            for index, reference in enumerate(project_references)
+            if PROJECT_REFERENCE.fullmatch(reference.strip()) is None
+        )
 
     body = document.get("body")
     if not isinstance(body, list):
@@ -1382,6 +1394,85 @@ class CommunityRouteIntegrityTest(TestCase):
             )
 
             self.assertEqual(_form_schema_violations(source, repository_root), [])
+
+    def test_rejects_invalid_issue_form_project_references(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Broken projects",
+                        "description: Exercises malformed project references",
+                        "projects:",
+                        "  - missing",
+                        "  - /1",
+                        "  - octo-org/",
+                        "  - octo-org/project",
+                        "  - octo-org/0",
+                        "  - octo-org/1/extra",
+                        "body:",
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: Details",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "projects[0] must use PROJECT-OWNER/PROJECT-NUMBER: 'missing'",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "projects[1] must use PROJECT-OWNER/PROJECT-NUMBER: '/1'",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "projects[2] must use PROJECT-OWNER/PROJECT-NUMBER: 'octo-org/'",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "projects[3] must use PROJECT-OWNER/PROJECT-NUMBER: 'octo-org/project'",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "projects[4] must use PROJECT-OWNER/PROJECT-NUMBER: 'octo-org/0'",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "projects[5] must use PROJECT-OWNER/PROJECT-NUMBER: 'octo-org/1/extra'",
+                    ),
+                ],
+            )
+
+    def test_accepts_valid_issue_form_project_references(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/valid.yml"
+            source.parent.mkdir(parents=True)
+            for projects in ('projects: "octo-org/1, octocat/44"', "projects:\n  - octo-org/1\n  - octocat/44"):
+                source.write_text(
+                    "\n".join(
+                        (
+                            "name: Valid projects",
+                            "description: Exercises valid project references",
+                            projects,
+                            "body:",
+                            "  - type: textarea",
+                            "    attributes:",
+                            "      label: Details",
+                        )
+                    ),
+                    encoding="utf-8",
+                )
+
+                self.assertEqual(_form_schema_violations(source, repository_root), [])
 
     def test_rejects_invalid_discussion_form_metadata(self) -> None:
         with TemporaryDirectory() as temporary:
