@@ -10,7 +10,7 @@ Accumulate operator-facing changes here as they land on `main`. When a release i
 
 ## Summary
 
-No operator-facing migration is required beyond pinning the release tag and reconciling.
+The next release automatically migrates every enabled self-hosted model-cache PVC to the revision-isolated [`snapshot-v2` publication contract](../models.md#self-hosted-vllm) during reconciliation. No configuration, secret, or pre-upgrade action is required.
 
 ## Config and values migrations
 
@@ -22,11 +22,11 @@ No operator-facing migration is required beyond pinning the release tag and reco
 
 ## Manual steps
 
-- None.
+- No pre-upgrade action. After reconciliation, wait for each enabled one-shot model loader Job to succeed and its serving Pod to become Ready before judging model availability. Do not delete the retained cache PVC or rewrite its `.ready` marker.
 
 ## Rollback
 
-- Pin the previous release tag in the Flux `GitRepository` and let Flux reconcile.
+- Pin the previous release tag in the Flux `GitRepository` and let Flux reconcile. A pre-`snapshot-v2` loader does not recognize the new readiness marker and can re-download the configured revision before its serving Pod becomes Ready; keep the loader's existing prompt-free public HTTPS path available and let that Job finish.
 
 ## BOM delta
 
