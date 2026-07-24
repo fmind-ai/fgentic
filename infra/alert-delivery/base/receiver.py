@@ -22,6 +22,7 @@ import http.server
 import json
 import os
 import queue
+import re
 import socket
 import sys
 import threading
@@ -57,6 +58,12 @@ _MATRIX_REQUEST_SLOTS = threading.BoundedSemaphore(_MAX_CONCURRENT_MATRIX_REQUES
 _DEFAULT_LISTEN_PORT = 9_095
 _MIN_LISTEN_PORT = 1_024
 _MAX_LISTEN_PORT = 65_535
+_HTTP_TOKEN = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
+_HTTP_QUOTED_STRING = r'"(?:[\t !#-\[\]-~\x80-\xff]|\\[\t !-~\x80-\xff])*"'
+_MEDIA_TYPE = re.compile(
+    rf"^[ \t]*(?P<type>{_HTTP_TOKEN})/(?P<subtype>{_HTTP_TOKEN})"
+    rf"(?:[ \t]*;[ \t]*(?:{_HTTP_TOKEN}=(?:{_HTTP_TOKEN}|{_HTTP_QUOTED_STRING}))?)*[ \t]*$"
+)
 _LISTEN_PORT_ERROR = (
     f"ALERTBOT_LISTEN_PORT must be a canonical ASCII integer from {_MIN_LISTEN_PORT} to {_MAX_LISTEN_PORT}"
 )
@@ -64,6 +71,15 @@ _LISTEN_PORT_ERROR = (
 
 class MatrixResponseError(Exception):
     """The Matrix send response violated the receiver's bounded framing contract."""
+
+
+def _is_json_content_type(value: str) -> bool:
+    match = _MEDIA_TYPE.fullmatch(value)
+    return (
+        match is not None
+        and match.group("type").lower() == "application"
+        and match.group("subtype").lower() == "json"
+    )
 
 
 def _env(name: str, default: str | None = None) -> str:
@@ -172,6 +188,14 @@ def _render(payload: dict) -> str:
 
 def _validate_matrix_response(response: Any) -> None:
     if response.status != 200:
+        raise MatrixResponseError
+
+    content_types = response.headers.get_all("Content-Type", [])
+    if (
+        len(content_types) != 1
+        or not isinstance(content_types[0], str)
+        or not _is_json_content_type(content_types[0])
+    ):
         raise MatrixResponseError
 
     content_lengths = response.headers.get_all("Content-Length", [])

@@ -20,6 +20,7 @@ import http.client
 import json
 import os
 import queue
+import re
 import secrets
 import sys
 import threading
@@ -40,6 +41,12 @@ _DEFAULT_DEADLINE_SECONDS = 120
 _MAX_DEADLINE_SECONDS = 150
 _DEFAULT_REQUEST_TIMEOUT_SECONDS = 15.0
 _MAX_SYNC_TIMEOUT_MILLISECONDS = 5_000
+_HTTP_TOKEN = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
+_HTTP_QUOTED_STRING = r'"(?:[\t !#-\[\]-~\x80-\xff]|\\[\t !-~\x80-\xff])*"'
+_MEDIA_TYPE = re.compile(
+    rf"^[ \t]*(?P<type>{_HTTP_TOKEN})/(?P<subtype>{_HTTP_TOKEN})"
+    rf"(?:[ \t]*;[ \t]*(?:{_HTTP_TOKEN}=(?:{_HTTP_TOKEN}|{_HTTP_QUOTED_STRING}))?)*[ \t]*$"
+)
 
 
 def _env(name: str) -> str:
@@ -52,6 +59,15 @@ def _env(name: str) -> str:
 def _fail(message: str) -> Never:
     print(f"canary: {message}", file=sys.stderr)
     raise SystemExit(1)
+
+
+def _is_json_content_type(value: str) -> bool:
+    match = _MEDIA_TYPE.fullmatch(value)
+    return (
+        match is not None
+        and match.group("type").lower() == "application"
+        and match.group("subtype").lower() == "json"
+    )
 
 
 def _deadline_seconds() -> int:
@@ -100,6 +116,14 @@ def _request_io(
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             if response.status != 200:
                 _fail(f"{method} Matrix response has unexpected HTTP status")
+
+            content_types = response.headers.get_all("Content-Type", [])
+            if (
+                len(content_types) != 1
+                or not isinstance(content_types[0], str)
+                or not _is_json_content_type(content_types[0])
+            ):
+                _fail(f"{method} Matrix response has invalid Content-Type")
 
             content_lengths = response.headers.get_all("Content-Length", [])
             if len(content_lengths) > 1 or (

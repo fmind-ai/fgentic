@@ -268,10 +268,24 @@ class _FakeMatrix(http.server.BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # silence
         pass
 
+    def _send_content_type_headers(self) -> None:
+        content_types = {
+            "absent-content-type": (),
+            "duplicate-content-type": ("application/json", "application/json"),
+            "non-json-content-type": ("text/plain",),
+            "missing-content-type-parameter-value": ("application/json; charset",),
+            "unterminated-content-type-parameter": ('application/json; profile="ops',),
+            "space-before-content-type-parameter-equals": ("application/json; charset =UTF-8",),
+            "space-after-content-type-parameter-equals": ("application/json; charset= UTF-8",),
+            "parameterized-content-type": ('Application/JSON; ; profile="ops;canary";;charset=UTF-8;',),
+        }.get(self.response_mode, ("application/json",))
+        for content_type in content_types:
+            self.send_header("Content-Type", content_type)
+
     def _send(self, payload: dict | None, *, status: int = 200) -> None:
         body = json.dumps(payload).encode() if payload is not None else b""
         self.send_response(status)
-        self.send_header("Content-Type", "application/json")
+        self._send_content_type_headers()
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         # The hard-deadline test intentionally closes before the slow response.
@@ -282,7 +296,7 @@ class _FakeMatrix(http.server.BaseHTTPRequestHandler):
     def _send_trickle(self) -> None:
         body = b'{"x":1}'
         self.send_response(200)
-        self.send_header("Content-Type", "application/json")
+        self._send_content_type_headers()
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         for byte in body:
@@ -294,39 +308,45 @@ class _FakeMatrix(http.server.BaseHTTPRequestHandler):
     def _send_hostile_login(self) -> bool:
         if self.response_mode == "absent-length-oversized":
             self.send_response(200)
-            self.send_header("Content-Type", "application/json")
+            self._send_content_type_headers()
             self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(b"{" + b"x" * probe._MAX_RESPONSE_BYTES)
         elif self.response_mode == "declared-oversized":
             self.send_response(200)
+            self._send_content_type_headers()
             self.send_header("Content-Length", str(probe._MAX_RESPONSE_BYTES + 1))
             self.send_header("Connection", "close")
             self.end_headers()
         elif self.response_mode == "incomplete":
             self.send_response(200)
+            self._send_content_type_headers()
             self.send_header("Content-Length", "10")
             self.send_header("Connection", "close")
             self.end_headers()
             self.wfile.write(b"{}")
         elif self.response_mode == "malformed-json":
             self.send_response(200)
+            self._send_content_type_headers()
             self.send_header("Content-Length", "1")
             self.end_headers()
             self.wfile.write(b"{")
         elif self.response_mode == "non-object-json":
             self.send_response(200)
+            self._send_content_type_headers()
             self.send_header("Content-Length", "2")
             self.end_headers()
             self.wfile.write(b"[]")
         elif self.response_mode == "recursive-json":
             body = b'{"x":' + b"[" * 2_000 + b"0" + b"]" * 2_000 + b"}"
             self.send_response(200)
+            self._send_content_type_headers()
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
         elif self.response_mode == "duplicate-content-length":
             self.send_response(200)
+            self._send_content_type_headers()
             self.send_header("Content-Length", "2")
             self.send_header("Content-Length", "2")
             self.end_headers()
@@ -368,6 +388,7 @@ class _FakeMatrix(http.server.BaseHTTPRequestHandler):
             time.sleep(2.5)
         if self.response_mode == "hostile-cursor":
             self.send_response(200)
+            self._send_content_type_headers()
             self.send_header("Content-Length", "1")
             self.end_headers()
             self.wfile.write(b"{")
@@ -508,6 +529,29 @@ def test_non_200_success_responses_fail_closed() -> None:
     print("ok: non-200 Matrix success responses fail closed")
 
 
+def test_matrix_content_type_is_strict_and_parameterized_json_is_accepted() -> None:
+    for mode in (
+        "absent-content-type",
+        "duplicate-content-type",
+        "non-json-content-type",
+        "missing-content-type-parameter-value",
+        "unterminated-content-type-parameter",
+        "space-before-content-type-parameter-equals",
+        "space-after-content-type-parameter-equals",
+    ):
+        result = _run_probe_result([], "1", response_mode=mode)
+        assert result.returncode != 0, f"{mode} must fail closed"
+        assert result.stdout == ""
+        assert result.stderr == "canary: POST Matrix response has invalid Content-Type\n"
+
+    timelines = [
+        [_reply(REPLY_EVENT, "⏳ working on it…")],
+        [_edit(REPLY_EVENT, "final answer")],
+    ]
+    assert _run_probe(timelines, "10", response_mode="parameterized-content-type") == 0
+    print("ok: Matrix JSON response media type is strict and parameter-compatible")
+
+
 def test_hostile_cursor_never_reaches_failure_log() -> None:
     result = _run_probe_result([], "1", response_mode="hostile-cursor")
     assert result.returncode != 0
@@ -527,5 +571,6 @@ if __name__ == "__main__":
     test_request_timeout_is_end_to_end()
     test_hostile_responses_fail_closed()
     test_non_200_success_responses_fail_closed()
+    test_matrix_content_type_is_strict_and_parameterized_json_is_accepted()
     test_hostile_cursor_never_reaches_failure_log()
     print("canary probe tests passed")
