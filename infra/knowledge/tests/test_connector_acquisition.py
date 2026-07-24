@@ -148,6 +148,9 @@ def test_response_reader_rejects_declared_truncation_without_reflecting_body() -
         b"Content-Type: application/json; charset=\r\n",
         b"Content-Type: application/json; charset =utf-8\r\n",
         b'Content-Type: application/json; charset="utf-8\r\n',
+        b"Content-Type: application/json;\r\n",
+        b"Content-Type: application/json;;charset=utf-8\r\n",
+        b"Content-Type: application/json; ; charset=utf-8\r\n",
     ],
     ids=[
         "missing",
@@ -157,6 +160,9 @@ def test_response_reader_rejects_declared_truncation_without_reflecting_body() -
         "empty-parameter-value",
         "whitespace-before-equals",
         "unterminated-quoted-string",
+        "trailing-semicolon",
+        "consecutive-semicolons",
+        "whitespace-only-parameter",
     ],
 )
 def test_api_response_rejects_invalid_media_type_before_body_read(
@@ -182,7 +188,7 @@ def test_api_response_rejects_invalid_media_type_before_body_read(
 
 
 def test_api_response_accepts_parameterized_json_media_type() -> None:
-    headers = b'Content-Type: Application/JSON;;; charset="utf-8"; profile=flux;\r\nContent-Length: 2\r\n'
+    headers = b'Content-Type: Application/JSON; charset="utf-8"; profile=flux\r\nContent-Length: 2\r\n'
     with _response(_http_response(headers, b"{}")) as response:
         assert acquisition._read_api_response(response) == b"{}"
 
