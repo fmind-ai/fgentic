@@ -28,3 +28,10 @@ body:
     attributes:
       label: Logs / evidence
       description: Relevant bridge/Synapse/agentgateway logs. Redact secrets and personal data.
+  - type: checkboxes
+    id: redaction
+    attributes:
+      label: Public evidence
+      options:
+        - label: I removed credentials, tokens, personal data, private room content, and internal hostnames from the information above.
+          required: true
