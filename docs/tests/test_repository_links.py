@@ -214,8 +214,15 @@ def _structured_forms(repository_root: Path = REPOSITORY_ROOT) -> tuple[Path, ..
     """Return issue and discussion forms that can embed rendered Markdown."""
     issue_directory = repository_root / ".github/ISSUE_TEMPLATE"
     discussion_directory = repository_root / ".github/DISCUSSION_TEMPLATE"
-    issue_forms = (path for path in issue_directory.glob("*.yml") if path.name != "config.yml")
-    return tuple(sorted((*issue_forms, *discussion_directory.glob("*.yml"))))
+    issue_forms = (
+        path
+        for path in issue_directory.glob("*")
+        if path.is_file() and path.name != "config.yml" and path.suffix.lower() in {".yaml", ".yml"}
+    )
+    discussion_forms = (
+        path for path in discussion_directory.glob("*") if path.is_file() and path.suffix.lower() in {".yaml", ".yml"}
+    )
+    return tuple(sorted((*issue_forms, *discussion_forms)))
 
 
 def _issue_templates(repository_root: Path = REPOSITORY_ROOT) -> tuple[Path, ...]:
@@ -443,6 +450,9 @@ def _validated_issue_chooser_contact_links(source: Path, repository_root: Path) 
 def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaViolation]:
     """Return violations of GitHub's documented structured-form contract."""
     source_name = _display_path(source, repository_root)
+    if source.suffix.lower() == ".yaml":
+        return [(source_name, "structured forms must use the .yml extension")]
+
     document, violations = _load_structured_yaml(source, repository_root)
     if not isinstance(document, dict):
         return [*violations, (source_name, "form must be a mapping")]
@@ -943,12 +953,19 @@ class CommunityRouteIntegrityTest(TestCase):
             issue_directory.mkdir(parents=True)
             discussion_directory.mkdir(parents=True)
             (issue_directory / "bug.yml").touch()
+            (issue_directory / "hidden.yaml").touch()
             (issue_directory / "config.yml").touch()
             (discussion_directory / "q-a.yml").touch()
+            (discussion_directory / "ideas.yaml").touch()
 
             self.assertEqual(
                 [path.relative_to(repository_root).as_posix() for path in _structured_forms(repository_root)],
-                [".github/DISCUSSION_TEMPLATE/q-a.yml", ".github/ISSUE_TEMPLATE/bug.yml"],
+                [
+                    ".github/DISCUSSION_TEMPLATE/ideas.yaml",
+                    ".github/DISCUSSION_TEMPLATE/q-a.yml",
+                    ".github/ISSUE_TEMPLATE/bug.yml",
+                    ".github/ISSUE_TEMPLATE/hidden.yaml",
+                ],
             )
 
     def test_discovers_yaml_and_markdown_issue_templates(self) -> None:
@@ -1158,6 +1175,47 @@ class CommunityRouteIntegrityTest(TestCase):
 
     def test_structured_forms_follow_github_schema(self) -> None:
         _require_valid_form_schemas(_structured_forms(), REPOSITORY_ROOT)
+
+    def test_rejects_yaml_form_extensions(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            for directory in ("ISSUE_TEMPLATE", "DISCUSSION_TEMPLATE"):
+                for suffix in (".yaml", ".yml"):
+                    with self.subTest(directory=directory, suffix=suffix):
+                        source = repository_root / f".github/{directory}/form{suffix}"
+                        source.parent.mkdir(parents=True, exist_ok=True)
+                        metadata = (
+                            (
+                                "name: Visible form",
+                                "description: Exercises structured form extensions",
+                            )
+                            if directory == "ISSUE_TEMPLATE"
+                            else ()
+                        )
+                        source.write_text(
+                            "\n".join(
+                                (
+                                    *metadata,
+                                    "body:",
+                                    "  - type: textarea",
+                                    "    attributes:",
+                                    "      label: Details",
+                                )
+                            ),
+                            encoding="utf-8",
+                        )
+
+                        expected = (
+                            [
+                                (
+                                    f".github/{directory}/form.yaml",
+                                    "structured forms must use the .yml extension",
+                                )
+                            ]
+                            if suffix == ".yaml"
+                            else []
+                        )
+                        self.assertEqual(_form_schema_violations(source, repository_root), expected)
 
     def test_issue_template_names_are_unique(self) -> None:
         _require_unique_issue_template_names(_issue_templates(), REPOSITORY_ROOT)
