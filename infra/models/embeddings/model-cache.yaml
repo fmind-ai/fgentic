@@ -68,9 +68,11 @@ spec:
             - -c
           args:
             - |
+              import fcntl
               import os
               import re
               import shutil
+              import stat
               import tempfile
               from pathlib import Path
 
@@ -86,6 +88,24 @@ spec:
               snapshot_prefix = f".{target.name}-{revision}-"
               next_link = root / f".{target.name}.next"
               legacy = root / f".{target.name}.legacy"
+              lock_path = root / f".{target.name}.lock"
+
+              lock_flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NONBLOCK
+              if hasattr(os, "O_NOFOLLOW"):
+                  lock_flags |= os.O_NOFOLLOW
+              try:
+                  lock_descriptor = os.open(lock_path, lock_flags, 0o600)
+              except OSError as error:
+                  raise SystemExit(f"could not open model cache lock: {error}") from error
+              try:
+                  if not stat.S_ISREG(os.fstat(lock_descriptor).st_mode):
+                      raise SystemExit("model cache lock must be a regular file")
+                  os.fchmod(lock_descriptor, 0o600)
+                  fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+              except BaseException:
+                  os.close(lock_descriptor)
+                  lock_descriptor = -1
+                  raise
 
               # snapshot_download(local_dir=...) pulls current files but does not delete files
               # removed upstream. Publish a fresh directory so every ready target is one exact pin.
@@ -159,6 +179,8 @@ spec:
                   if candidate != current:
                       remove(candidate)
               remove(root / f".{target.name}.legacy")
+              os.close(lock_descriptor)
+              lock_descriptor = -1
           env:
             - name: HOME
               value: /tmp
@@ -239,9 +261,11 @@ spec:
             - -c
           args:
             - |
+              import fcntl
               import os
               import re
               import shutil
+              import stat
               import tempfile
               from pathlib import Path
 
@@ -257,6 +281,24 @@ spec:
               snapshot_prefix = f".{target.name}-{revision}-"
               next_link = root / f".{target.name}.next"
               legacy = root / f".{target.name}.legacy"
+              lock_path = root / f".{target.name}.lock"
+
+              lock_flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NONBLOCK
+              if hasattr(os, "O_NOFOLLOW"):
+                  lock_flags |= os.O_NOFOLLOW
+              try:
+                  lock_descriptor = os.open(lock_path, lock_flags, 0o600)
+              except OSError as error:
+                  raise SystemExit(f"could not open model cache lock: {error}") from error
+              try:
+                  if not stat.S_ISREG(os.fstat(lock_descriptor).st_mode):
+                      raise SystemExit("model cache lock must be a regular file")
+                  os.fchmod(lock_descriptor, 0o600)
+                  fcntl.flock(lock_descriptor, fcntl.LOCK_EX)
+              except BaseException:
+                  os.close(lock_descriptor)
+                  lock_descriptor = -1
+                  raise
 
               # snapshot_download(local_dir=...) pulls current files but does not delete files
               # removed upstream. Publish a fresh directory so every ready target is one exact pin.
@@ -330,6 +372,8 @@ spec:
                   if candidate != current:
                       remove(candidate)
               remove(root / f".{target.name}.legacy")
+              os.close(lock_descriptor)
+              lock_descriptor = -1
           env:
             - name: HOME
               value: /tmp

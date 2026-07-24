@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import fcntl
 import os
 import re
 import sys
@@ -53,6 +54,8 @@ def _run_loader(
     root: Path,
     revision: str,
     download: Callable[..., None],
+    *,
+    nonblocking_lock: bool = False,
 ) -> None:
     testable = script.replace(
         'root = Path("/models")',
@@ -60,6 +63,14 @@ def _run_loader(
     )
     if testable == script:
         raise AssertionError("loader no longer declares the canonical /models root")
+    if nonblocking_lock:
+        original = "fcntl.flock(lock_descriptor, fcntl.LOCK_EX)"
+        testable = testable.replace(
+            original,
+            "fcntl.flock(lock_descriptor, fcntl.LOCK_EX | fcntl.LOCK_NB)",
+        )
+        if original in testable:
+            raise AssertionError("loader lock could not be made nonblocking for the contention test")
     module = types.ModuleType("huggingface_hub")
     module.snapshot_download = download
     with (
@@ -70,7 +81,13 @@ def _run_loader(
         ),
         mock.patch.dict(sys.modules, {"huggingface_hub": module}),
     ):
-        exec(compile(testable, "<model-loader>", "exec"), {"__name__": "__main__"})
+        namespace: dict[str, object] = {"__name__": "__main__"}
+        try:
+            exec(compile(testable, "<model-loader>", "exec"), namespace)
+        finally:
+            descriptor = namespace.get("lock_descriptor")
+            if type(descriptor) is int and descriptor >= 0:
+                os.close(descriptor)
 
 
 def _successful_download(
@@ -95,6 +112,50 @@ def _successful_download(
 
 
 class ModelCacheContractTest(unittest.TestCase):
+    def test_loader_transactions_are_serialized_per_target(self) -> None:
+        scripts = _loader_scripts()
+        self.assertEqual(len(scripts), 3)
+        for script in scripts:
+            target_name = re.search(r'target = root / "([^"]+)"', script)
+            repo_id = re.search(r'repo_id="([^"]+)"', script)
+            if target_name is None or repo_id is None:
+                raise AssertionError("loader omits its target or Hugging Face repository")
+
+            with self.subTest(target=target_name.group(1)), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                lock_path = root / f".{target_name.group(1)}.lock"
+                held_lock = os.open(lock_path, os.O_RDWR | os.O_CREAT | os.O_CLOEXEC, 0o600)
+                fcntl.flock(held_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try:
+                    with self.assertRaises(BlockingIOError):
+                        _run_loader(
+                            script,
+                            root,
+                            "a" * 40,
+                            lambda **_kwargs: self.fail("contending loader reached download"),
+                            nonblocking_lock=True,
+                        )
+                finally:
+                    os.close(held_lock)
+
+                unrelated_lock = os.open(
+                    root / ".unrelated-model.lock",
+                    os.O_RDWR | os.O_CREAT | os.O_CLOEXEC,
+                    0o600,
+                )
+                fcntl.flock(unrelated_lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                calls: list[tuple[str, str]] = []
+                try:
+                    _run_loader(
+                        script,
+                        root,
+                        "a" * 40,
+                        _successful_download(self, repo_id.group(1), calls),
+                    )
+                finally:
+                    os.close(unrelated_lock)
+                self.assertEqual(calls, [(repo_id.group(1), "a" * 40)])
+
     def test_all_loaders_publish_one_exact_revision_snapshot(self) -> None:
         scripts = _loader_scripts()
         self.assertEqual(len(scripts), 3)
