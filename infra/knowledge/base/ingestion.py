@@ -91,6 +91,12 @@ IPV4_SHAPED_RE = re.compile(r"^[0-9]{1,3}(?:\.[0-9]{1,3}){3}$")
 PORT_RE = re.compile(r"^[0-9]{1,5}$")
 CHUNK_ID_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
 SOURCE_DIGEST_RE = re.compile(r"^sha256:[0-9a-f]{64}$")
+HTTP_TCHAR_RE = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
+HTTP_QUOTED_STRING_RE = r'"(?:[\t !#-\[\]-~\x80-\xff]|\\[\t !-~\x80-\xff])*"'
+MEDIA_TYPE_RE = re.compile(
+    rf"^[ \t]*(?P<type>{HTTP_TCHAR_RE})/(?P<subtype>{HTTP_TCHAR_RE})"
+    rf"(?:[ \t]*;[ \t]*(?:{HTTP_TCHAR_RE}=(?:{HTTP_TCHAR_RE}|{HTTP_QUOTED_STRING_RE}))?)*[ \t]*$"
+)
 
 
 class IngestionError(ValueError):
@@ -1295,6 +1301,16 @@ def _declared_response_length(
     return None
 
 
+def _has_json_content_type(response: http.client.HTTPResponse) -> bool:
+    content_types = response.headers.get_all("Content-Type", [])
+    if len(content_types) != 1 or not isinstance(content_types[0], str):
+        return False
+    match = MEDIA_TYPE_RE.fullmatch(content_types[0])
+    return (
+        match is not None and match.group("type").lower() == "application" and match.group("subtype").lower() == "json"
+    )
+
+
 def _post_bounded_json(
     endpoint: EmbeddingsEndpoint,
     *,
@@ -1348,7 +1364,10 @@ def _post_bounded_json(
             max_response_bytes=max_response_bytes,
             operation=operation,
         )
-        content_type = response.getheader("Content-Type", "").split(";", 1)[0].strip().lower()
+        if response.status != 200:
+            raise IngestionError(f"{operation} backend returned HTTP {response.status}")
+        if not _has_json_content_type(response):
+            raise IngestionError(f"{operation} backend returned a non-JSON content type")
         raw_buffer = bytearray()
         while len(raw_buffer) <= max_response_bytes:
             chunk = response.read1(min(64 * 1024, max_response_bytes + 1 - len(raw_buffer)))
@@ -1366,10 +1385,6 @@ def _post_bounded_json(
         watchdog.join()
     if deadline.expired.is_set():
         raise IngestionError(f"{operation} request exceeded its bounded deadline")
-    if response.status != 200:
-        raise IngestionError(f"{operation} backend returned HTTP {response.status}")
-    if content_type != "application/json":
-        raise IngestionError(f"{operation} backend returned a non-JSON content type")
     if len(raw) > max_response_bytes:
         raise IngestionError(f"{operation} response exceeds {max_response_bytes} bytes")
     if declared_length is not None and len(raw) != declared_length:
