@@ -301,7 +301,7 @@ def _strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     result: dict[str, object] = {}
     for key, value in pairs:
         if key in result:
-            raise IngestionError(f"duplicate JSON object key: {key}")
+            raise IngestionError("duplicate JSON object key")
         result[key] = value
     return result
 
