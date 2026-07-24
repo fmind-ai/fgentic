@@ -708,13 +708,15 @@ def _read_regular_path(path: Path, *, max_bytes: int, allow_empty: bool = False)
         raise MaterializationError(f"could not inspect required regular file {path}: {error}") from error
     if not stat.S_ISREG(before_path.st_mode):
         raise MaterializationError(f"required path must be a regular file, never a symlink or special file: {path}")
-    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0)
+    flags = os.O_RDONLY | getattr(os, "O_CLOEXEC", 0) | getattr(os, "O_NOFOLLOW", 0) | getattr(os, "O_NONBLOCK", 0)
     try:
         descriptor = os.open(path, flags)
     except OSError as error:
         raise MaterializationError(f"could not open required regular file {path}: {error}") from error
     try:
         before = os.fstat(descriptor)
+        if not stat.S_ISREG(before.st_mode):
+            raise MaterializationError(f"required path must be a regular file, never a symlink or special file: {path}")
         chunks: list[bytes] = []
         remaining = max_bytes + 1
         while remaining > 0:
