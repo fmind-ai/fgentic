@@ -33,13 +33,13 @@ _RAILS_TRANSLITERATION_SOURCE = (
     "ÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ\u00d7ØÙÚÛÜÝàáâãäåçèéêëìíîïðñòóôõ"
     "öøùúûüýÿĀāĂăĄąĆćĈĉĊċČčĎďĐđĒēĔĕĖėĘęĚěĜĝĞğĠġĢģĤĥĦħĨĩ"
     "ĪīĬĭĮįİıĴĵĶķĸĹĺĻļĽľĿŀŁłŃńŅņŇňŌōŎŏŐőŔŕŖŗŘřŚśŜŝŞşŠšŢ"
-    "ţŤťŦŧŨũŪūŬŭŮůŰűŲųŴŵŶŷŸŹźŻżŽž"
+    "ţŤťŦŧŨũŪūŬŭŮůŰűŲųŴŵŶŷŸŹźŻżŽžǪǫǬǭ"
 )
 _RAILS_TRANSLITERATION_TARGET = (
     "AAAAAACEEEEIIIIDNOOOOOxOUUUUYaaaaaaceeeeiiiidnoooo"
     "oouuuuyyAaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIi"
     "IiIiIiIiJjKkkLlLlLlLlLlNnNnNnOoOoOoRrRrRrSsSsSsSsT"
-    "tTtTtUuUuUuUuUuUuWwYyYZzZzZz"
+    "tTtTtUuUuUuUuUuUuWwYyYZzZzZzOoOo"
 )
 _RAILS_TRANSLITERATION = {
     ord(source): target
@@ -1271,6 +1271,7 @@ class CommunityRouteIntegrityTest(TestCase):
         self.assertEqual(_parameterized_form_label("Ærøskøbing"), "aeroskobing")
         self.assertEqual(_parameterized_form_label("foo🚀bar"), "foo-bar")
         self.assertEqual(_parameterized_form_label("straße"), "strasse")
+        self.assertEqual(_parameterized_form_label("Ǫresund"), "oresund")
         self.assertEqual(_parameterized_form_label("ø"), "o")
         self.assertEqual(_parameterized_form_label("?"), "")
 
