@@ -16,7 +16,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from types import ModuleType
-from typing import ClassVar, override
+from typing import ClassVar, cast, override
 
 import pytest
 
@@ -421,6 +421,58 @@ def test_artifact_status_preserves_canonical_revision() -> None:
     revision = f"main@sha1:{'a' * 40}"
 
     assert acquisition._artifact_status(_git_repository_document(revision)).revision == revision
+
+
+@pytest.mark.parametrize(
+    "observed_generation",
+    [True, False, 1.0, None],
+    ids=["true", "false", "float", "missing"],
+)
+def test_acquire_rejects_non_integer_ready_generation_before_artifact_download(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    observed_generation: object,
+) -> None:
+    document = _git_repository_document(f"main@sha1:{'a' * 40}")
+    status = cast(dict[str, object], document["status"])
+    conditions = cast(list[dict[str, object]], status["conditions"])
+    condition = conditions[0]
+    condition["observedGeneration"] = observed_generation
+    downloaded = False
+
+    def unexpected_download(_status: object) -> bytes:
+        nonlocal downloaded
+        downloaded = True
+        raise AssertionError("artifact download reached for a non-integer Ready generation")
+
+    monkeypatch.setattr(acquisition, "_api_document", lambda _token, _ca: document)
+    monkeypatch.setattr(acquisition, "_download_artifact", unexpected_download)
+
+    with pytest.raises(acquisition.AcquisitionError) as caught:
+        acquisition.acquire(tmp_path / "output", tmp_path / "token", tmp_path / "ca")
+
+    assert str(caught.value) == "Ready condition.observedGeneration must be an integer in 1..9223372036854775807"
+    assert str(observed_generation) not in str(caught.value)
+    assert not downloaded
+
+
+@pytest.mark.parametrize(
+    "conditions",
+    [
+        [],
+        [{"type": "Ready", "status": "True", "observedGeneration": 2}],
+    ],
+    ids=["missing", "stale"],
+)
+def test_artifact_status_rejects_missing_or_stale_ready_condition(conditions: list[object]) -> None:
+    document = _git_repository_document(f"main@sha1:{'a' * 40}")
+    status = cast(dict[str, object], document["status"])
+    status["conditions"] = conditions
+
+    with pytest.raises(acquisition.AcquisitionError) as caught:
+        acquisition._artifact_status(document)
+
+    assert str(caught.value) == "GitRepository does not have one current Ready=True condition"
 
 
 @pytest.mark.parametrize(

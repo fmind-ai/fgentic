@@ -263,7 +263,15 @@ def _artifact_status(document: Mapping[str, object]) -> git_markdown.ArtifactSta
         for condition in conditions
         if isinstance(condition, dict) and condition.get("type") == "Ready"
     ]
-    if len(ready) != 1 or ready[0].get("status") != "True" or ready[0].get("observedGeneration") != generation:
+    if len(ready) != 1 or ready[0].get("status") != "True":
+        raise AcquisitionError("GitRepository does not have one current Ready=True condition")
+    ready_observed = _integer(
+        ready[0].get("observedGeneration"),
+        name="Ready condition.observedGeneration",
+        minimum=1,
+        maximum=2**63 - 1,
+    )
+    if ready_observed != generation:
         raise AcquisitionError("GitRepository does not have one current Ready=True condition")
 
     artifact = _object(status.get("artifact"), name="GitRepository.status.artifact")
