@@ -329,10 +329,38 @@ def _issue_template_name(source: Path) -> str | None:
             return None
         raw_document = match.group("yaml")
 
-    document = yaml.safe_load(raw_document)
+    try:
+        document = yaml.safe_load(raw_document)
+    except yaml.YAMLError:
+        return None
     if not isinstance(document, dict) or not _is_nonblank_string(name := document.get("name")):
         return None
     return cast(str, name)
+
+
+def _markdown_issue_template_violations(source: Path, repository_root: Path) -> list[SchemaViolation]:
+    """Return missing or invalid required Markdown issue-template metadata."""
+    source_name = _display_path(source, repository_root)
+    match = MARKDOWN_FRONTMATTER.match(source.read_text(encoding="utf-8"))
+    if match is None:
+        return [(source_name, "YAML frontmatter is required")]
+
+    try:
+        document = yaml.safe_load(match.group("yaml"))
+    except yaml.YAMLError:
+        return [(source_name, "frontmatter must be valid YAML")]
+    if not isinstance(document, dict):
+        return [(source_name, "frontmatter must be a mapping")]
+
+    violations = [
+        (source_name, f"{key} must be a nonblank string")
+        for key in ("name", "about")
+        if not _is_nonblank_string(document.get(key))
+    ]
+    name = document.get("name")
+    if isinstance(name, str) and name.strip() and len(name.strip()) < 4:
+        violations.append((source_name, "name must contain at least 4 characters"))
+    return violations
 
 
 def _issue_template_name_violations(
@@ -764,6 +792,18 @@ def _require_unique_issue_template_filenames(sources: tuple[Path, ...], reposito
     raise AssertionError(f"GitHub issue-template filename drift:\n{details}")
 
 
+def _require_valid_markdown_issue_templates(sources: tuple[Path, ...], repository_root: Path) -> None:
+    """Reject Markdown issue templates without GitHub's required chooser metadata."""
+    violations = [
+        violation for source in sources for violation in _markdown_issue_template_violations(source, repository_root)
+    ]
+    if not violations:
+        return
+
+    details = "\n".join(f"  {source}: {reason}" for source, reason in violations)
+    raise AssertionError(f"GitHub Markdown issue-template metadata drift:\n{details}")
+
+
 def _issue_form_route_violations(sources: dict[str, list[str]], templates: set[str]) -> list[RouteViolation]:
     """Return invalid same-repository issue-form routes by public source."""
     violations: list[RouteViolation] = []
@@ -1145,6 +1185,73 @@ class CommunityRouteIntegrityTest(TestCase):
                 [],
             )
 
+    def test_rejects_invalid_markdown_issue_template_frontmatter(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            issue_directory = repository_root / ".github/ISSUE_TEMPLATE"
+            issue_directory.mkdir(parents=True)
+            malformed = issue_directory / "malformed.md"
+            missing = issue_directory / "missing.md"
+            sequence = issue_directory / "sequence.md"
+            malformed.write_text("---\nname: [broken\n---\n", encoding="utf-8")
+            missing.write_text("# No frontmatter\n", encoding="utf-8")
+            sequence.write_text("---\n- not a mapping\n---\n", encoding="utf-8")
+
+            sources = tuple(sorted((malformed, missing, sequence)))
+            self.assertEqual(
+                [
+                    violation
+                    for source in sources
+                    for violation in _markdown_issue_template_violations(source, repository_root)
+                ],
+                [
+                    (".github/ISSUE_TEMPLATE/malformed.md", "frontmatter must be valid YAML"),
+                    (".github/ISSUE_TEMPLATE/missing.md", "YAML frontmatter is required"),
+                    (".github/ISSUE_TEMPLATE/sequence.md", "frontmatter must be a mapping"),
+                ],
+            )
+            with self.assertRaisesRegex(
+                AssertionError,
+                r"GitHub Markdown issue-template metadata drift:\n"
+                r"  \.github/ISSUE_TEMPLATE/malformed\.md: frontmatter must be valid YAML",
+            ):
+                _require_valid_markdown_issue_templates(sources, repository_root)
+            self.assertIsNone(_issue_template_name(malformed))
+
+    def test_rejects_invalid_markdown_issue_template_metadata_fields(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.md"
+            source.parent.mkdir(parents=True)
+            source.write_text('---\nname: " Bug "\nabout: " "\n---\n', encoding="utf-8")
+
+            self.assertEqual(
+                _markdown_issue_template_violations(source, repository_root),
+                [
+                    (".github/ISSUE_TEMPLATE/broken.md", "about must be a nonblank string"),
+                    (".github/ISSUE_TEMPLATE/broken.md", "name must contain at least 4 characters"),
+                ],
+            )
+
+            source.write_text("---\nname: false\n---\n", encoding="utf-8")
+            self.assertEqual(
+                _markdown_issue_template_violations(source, repository_root),
+                [
+                    (".github/ISSUE_TEMPLATE/broken.md", "name must be a nonblank string"),
+                    (".github/ISSUE_TEMPLATE/broken.md", "about must be a nonblank string"),
+                ],
+            )
+
+    def test_accepts_valid_markdown_issue_template_metadata(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/help.md"
+            source.parent.mkdir(parents=True)
+            source.write_text("---\nname: Help\nabout: Ask for assistance\n---\n\n## Details\n", encoding="utf-8")
+
+            self.assertEqual(_markdown_issue_template_violations(source, repository_root), [])
+            self.assertEqual(_issue_template_name(source), "Help")
+
     def test_rejects_invalid_issue_chooser_config_structure(self) -> None:
         with TemporaryDirectory() as temporary:
             repository_root = Path(temporary)
@@ -1361,6 +1468,10 @@ class CommunityRouteIntegrityTest(TestCase):
 
     def test_issue_template_filenames_are_case_insensitively_unique(self) -> None:
         _require_unique_issue_template_filenames(_issue_template_files(), REPOSITORY_ROOT)
+
+    def test_markdown_issue_templates_have_required_metadata(self) -> None:
+        sources = tuple(source for source in _issue_templates() if source.suffix.lower() == ".md")
+        _require_valid_markdown_issue_templates(sources, REPOSITORY_ROOT)
 
     def test_rejects_duplicate_issue_form_keys_at_exact_paths(self) -> None:
         with TemporaryDirectory() as temporary:
