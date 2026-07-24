@@ -44,20 +44,36 @@ if [[ "${aggregate_setup_count}" -ne 1 ]]; then
 	exit 1
 fi
 
-canonical_mise_version="$(
+canonical_setup_index="$(
 	yq -o=json '.jobs.check.steps' "${root_dir}/.github/workflows/ci.yml" | jq -r '
-	  .[] |
-	  select((.uses | type) == "string" and
-	    (.uses | ascii_downcase | startswith("jdx/mise-action@")) and
-	    .name == "Install mise system") |
-	  if ((.with | type) == "object" and (.with.version | type) == "string")
-	    then .with.version
-	    else ""
-	  end
+	  to_entries[] |
+	  select((.value.uses | type) == "string" and
+	    (.value.uses | ascii_downcase | startswith("jdx/mise-action@")) and
+	    .value.name == "Install mise system") |
+	  .key
 	'
 )"
+canonical_mise_field="check.steps[${canonical_setup_index}].with.version"
+canonical_mise_raw="$(
+	yq -o=json ".jobs.check.steps[${canonical_setup_index}]" \
+		"${root_dir}/.github/workflows/ci.yml" | jq -r '
+		  if ((.with | type) == "object" and (.with | has("version")))
+		    then (.with.version | tojson)
+		    else "<missing>"
+		  end
+		'
+)"
+canonical_mise_version="$(
+	yq -o=json ".jobs.check.steps[${canonical_setup_index}]" \
+		"${root_dir}/.github/workflows/ci.yml" | jq -r '
+		  if ((.with | type) == "object" and (.with.version | type) == "string")
+		    then .with.version
+		    else ""
+		  end
+		'
+)"
 if [[ ! "${canonical_mise_version}" =~ ^[0-9]+[.][0-9]+[.][0-9]+$ ]]; then
-	echo "error: .github/workflows/ci.yml: aggregate mise setup needs an exact numeric with.version; got ${canonical_mise_version:-<missing>}" >&2
+	echo "error: .github/workflows/ci.yml: ${canonical_mise_field} needs an exact numeric mise version; got ${canonical_mise_raw}" >&2
 	exit 1
 fi
 readonly canonical_mise_version
