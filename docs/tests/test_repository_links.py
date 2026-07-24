@@ -226,8 +226,37 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
                     (source_name, f"{location}.attributes.{required_attribute} must be a nonblank string")
                 )
 
+            text_attributes = {
+                "checkboxes": ("description",),
+                "dropdown": ("description",),
+                "input": ("description", "placeholder", "value"),
+                "markdown": (),
+                "textarea": ("description", "placeholder", "value", "render"),
+                "upload": ("description",),
+            }[element_type]
+            violations.extend(
+                (source_name, f"{location}.attributes.{key} must be a string")
+                for key in text_attributes
+                if key in attributes and not isinstance(attributes.get(key), str)
+            )
+
             options = attributes.get("options")
             if element_type == "dropdown":
+                multiple = attributes.get("multiple")
+                if "multiple" in attributes and not isinstance(multiple, bool):
+                    violations.append((source_name, f"{location}.attributes.multiple must be a Boolean"))
+
+                default = attributes.get("default")
+                if "default" in attributes and (isinstance(default, bool) or not isinstance(default, int)):
+                    violations.append((source_name, f"{location}.attributes.default must be an integer"))
+                elif (
+                    isinstance(default, int)
+                    and isinstance(options, list)
+                    and options
+                    and not 0 <= default < len(options)
+                ):
+                    violations.append((source_name, f"{location}.attributes.default must index an available option"))
+
                 if not isinstance(options, list) or not options:
                     violations.append((source_name, f"{location}.attributes.options must be a nonempty array"))
                 else:
@@ -268,6 +297,9 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
             required = validations.get("required")
             if "required" in validations and not isinstance(required, bool):
                 violations.append((source_name, f"{location}.validations.required must be a Boolean"))
+            accept = validations.get("accept")
+            if element_type == "upload" and "accept" in validations and not isinstance(accept, str):
+                violations.append((source_name, f"{location}.validations.accept must be a string"))
 
     if not has_input:
         violations.append((source_name, "body must contain at least one non-Markdown field"))
@@ -754,6 +786,173 @@ class CommunityRouteIntegrityTest(TestCase):
                     ),
                 ],
             )
+
+    def test_rejects_invalid_optional_issue_form_fields(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Broken",
+                        "description: Exercises invalid optional element fields",
+                        "body:",
+                        "  - type: input",
+                        "    attributes:",
+                        "      label: Contact",
+                        "      description: true",
+                        "      placeholder: []",
+                        "      value: {}",
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: Logs",
+                        "      render: false",
+                        "  - type: dropdown",
+                        "    attributes:",
+                        "      label: Version",
+                        "      description: 1",
+                        '      multiple: "false"',
+                        "      default: true",
+                        "      options:",
+                        "        - Stable",
+                        "  - type: dropdown",
+                        "    attributes:",
+                        "      label: Channel",
+                        "      default: 1",
+                        "      options:",
+                        "        - Stable",
+                        "  - type: checkboxes",
+                        "    attributes:",
+                        "      label: Agreement",
+                        "      description: false",
+                        "      options:",
+                        "        - label: I agree",
+                        "  - type: upload",
+                        "    attributes:",
+                        "      label: Evidence",
+                        "      description: []",
+                        "    validations:",
+                        "      accept:",
+                        "        - .png",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[0].attributes.description must be a string"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[0].attributes.placeholder must be a string"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[0].attributes.value must be a string"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[1].attributes.render must be a string"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[2].attributes.description must be a string"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[2].attributes.multiple must be a Boolean"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[2].attributes.default must be an integer"),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[3].attributes.default must index an available option",
+                    ),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[4].attributes.description must be a string"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[5].attributes.description must be a string"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[5].validations.accept must be a string"),
+                ],
+            )
+
+    def test_rejects_invalid_optional_discussion_form_fields(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/DISCUSSION_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "body:",
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: Proposal",
+                        "      placeholder: true",
+                        "  - type: dropdown",
+                        "    attributes:",
+                        "      label: Area",
+                        "      multiple: 1",
+                        "      options:",
+                        "        - Documentation",
+                        "  - type: upload",
+                        "    attributes:",
+                        "      label: Evidence",
+                        "    validations:",
+                        "      accept: false",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (
+                        ".github/DISCUSSION_TEMPLATE/broken.yml",
+                        "body[0].attributes.placeholder must be a string",
+                    ),
+                    (
+                        ".github/DISCUSSION_TEMPLATE/broken.yml",
+                        "body[1].attributes.multiple must be a Boolean",
+                    ),
+                    (
+                        ".github/DISCUSSION_TEMPLATE/broken.yml",
+                        "body[2].validations.accept must be a string",
+                    ),
+                ],
+            )
+
+    def test_accepts_valid_optional_form_fields(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/valid.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Valid",
+                        "description: Exercises valid optional element fields",
+                        "body:",
+                        "  - type: input",
+                        "    attributes:",
+                        "      label: Contact",
+                        '      description: ""',
+                        '      placeholder: ""',
+                        '      value: ""',
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: Logs",
+                        '      render: ""',
+                        "  - type: dropdown",
+                        "    attributes:",
+                        "      label: Version",
+                        "      multiple: false",
+                        "      default: 0",
+                        "      options:",
+                        "        - Stable",
+                        "  - type: checkboxes",
+                        "    attributes:",
+                        "      label: Agreement",
+                        '      description: ""',
+                        "      options:",
+                        "        - label: I agree",
+                        "  - type: upload",
+                        "    attributes:",
+                        "      label: Evidence",
+                        '      description: ""',
+                        "    validations:",
+                        '      accept: ""',
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(_form_schema_violations(source, repository_root), [])
 
     def test_rejects_non_boolean_checkbox_option_requirement(self) -> None:
         with TemporaryDirectory() as temporary:
