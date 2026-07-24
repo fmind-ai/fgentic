@@ -1,7 +1,7 @@
 """Keep public repository links and community routes consistent."""
 
 import re
-from collections.abc import Hashable
+from collections.abc import Hashable, Sequence
 from html.parser import HTMLParser
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -204,13 +204,14 @@ def _ambiguous_form_label_reason(
     label: object,
     location: str,
     identifier: object,
+    unique_identifiers: set[str],
     labels: dict[str, str],
 ) -> str | None:
     """Return a stable diagnostic when no valid ID differentiates a repeated label."""
     if (
         not isinstance(label, str)
         or not label.strip()
-        or (isinstance(identifier, str) and FORM_ID.fullmatch(identifier) is not None)
+        or (isinstance(identifier, str) and identifier in unique_identifiers)
     ):
         return None
 
@@ -219,6 +220,26 @@ def _ambiguous_form_label_reason(
         labels[label] = location
         return None
     return f"{location} duplicates {previous}: {label!r}"
+
+
+def _unique_form_identifiers(body: Sequence[object]) -> set[str]:
+    """Return syntactically valid non-Markdown IDs that occur exactly once."""
+    counts: dict[str, int] = {}
+    for element in body:
+        if not isinstance(element, dict):
+            continue
+        element_type = element.get("type")
+        identifier = element.get("id")
+        if (
+            not isinstance(element_type, str)
+            or element_type not in FORM_ELEMENT_TYPES
+            or element_type == "markdown"
+            or not isinstance(identifier, str)
+            or FORM_ID.fullmatch(identifier) is None
+        ):
+            continue
+        counts[identifier] = counts.get(identifier, 0) + 1
+    return {identifier for identifier, count in counts.items() if count == 1}
 
 
 def _yaml_scalar_key(node: ScalarNode) -> tuple[YamlScalarKey, str]:
@@ -364,6 +385,7 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
         violations.append((source_name, "body must be an array"))
         return violations
 
+    unique_identifiers = _unique_form_identifiers(body)
     identifiers: set[str] = set()
     labels: dict[str, str] = {}
     has_input = False
@@ -427,6 +449,7 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
                     attributes.get("label"),
                     f"{location}.attributes.label",
                     identifier,
+                    unique_identifiers,
                     labels,
                 )
             ):
@@ -508,6 +531,7 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
                                 label,
                                 f"{option_location}.label",
                                 identifier,
+                                unique_identifiers,
                                 labels,
                             ):
                                 violations.append((source_name, reason))
@@ -1032,6 +1056,59 @@ class CommunityRouteIntegrityTest(TestCase):
                     (
                         ".github/ISSUE_TEMPLATE/broken.yml",
                         "body[2].attributes.options[0].label duplicates body[0].attributes.label: 'Details'",
+                    ),
+                ],
+            )
+
+    def test_duplicate_ids_do_not_hide_ambiguous_labels(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Broken",
+                        "description: Exercises duplicated IDs and labels",
+                        "body:",
+                        "  - type: input",
+                        "    id: repeated",
+                        "    attributes:",
+                        "      label: Details",
+                        "  - type: textarea",
+                        "    id: repeated",
+                        "    attributes:",
+                        "      label: Details",
+                        "  - type: input",
+                        "    id: repeated-checkbox",
+                        "    attributes:",
+                        "      label: Evidence",
+                        "  - type: checkboxes",
+                        "    id: repeated-checkbox",
+                        "    attributes:",
+                        "      label: Confirmation",
+                        "      options:",
+                        "        - label: Evidence",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[1].id is duplicated: 'repeated'"),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[1].attributes.label duplicates body[0].attributes.label: 'Details'",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[3].id is duplicated: 'repeated-checkbox'",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[3].attributes.options[0].label duplicates body[2].attributes.label: 'Evidence'",
                     ),
                 ],
             )
