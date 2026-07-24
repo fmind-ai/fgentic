@@ -105,6 +105,13 @@ ISSUE_CHOOSER_KEYS = frozenset({"blank_issues_enabled", "contact_links"})
 ISSUE_CHOOSER_CONTACT_LINK_KEYS = frozenset({"about", "name", "url"})
 RAW_URL_TRAILING_DELIMITERS = ".,;:!?*~}"
 PULL_REQUEST_TEMPLATE_HEADINGS = ("What", "Why", "How", "Test plan")
+PULL_REQUEST_TEMPLATE_TASKS = (
+    "mise run check passes",
+    "mise run test passes",
+    "Required hosted CI checks pass on the final pushed head",
+    "Peer review is complete; all actionable findings are addressed",
+    "Commits are DCO signed-off (git commit -s)",
+)
 PUBLIC_ENTRYPOINTS = (
     ".agents/AGENTS.md",
     ".github/PULL_REQUEST_TEMPLATE.md",
@@ -121,6 +128,7 @@ PUBLIC_ENTRYPOINTS = (
 type LinkViolation = tuple[str, str, str]
 type RouteViolation = tuple[str, str, str]
 type SchemaViolation = tuple[str, str]
+type RenderedTask = tuple[str, str, bool]
 type YamlScalarKey = tuple[str, Hashable]
 
 
@@ -172,6 +180,64 @@ class _RenderedHeadingParser(HTMLParser):
             self._heading_parts = None
 
 
+class _RenderedTaskListParser(HTMLParser):
+    """Collect rendered task-list items with their level-two section."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.tasks: list[RenderedTask] = []
+        self._section = ""
+        self._heading_parts: list[str] | None = None
+        self._task_parts: list[str] | None = None
+        self._task_section = ""
+        self._task_checked = False
+        self._task_has_checkbox = False
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        attributes = dict(attrs)
+        if tag == "h2":
+            self._finish_heading()
+            self._heading_parts = []
+        elif tag == "li" and "task-list-item" in (attributes.get("class") or "").split():
+            self._finish_task()
+            self._task_parts = []
+            self._task_section = self._section
+        elif tag == "input" and self._task_parts is not None and attributes.get("type") == "checkbox":
+            self._task_has_checkbox = True
+            self._task_checked = "checked" in attributes
+
+    def handle_data(self, data: str) -> None:
+        if self._heading_parts is not None:
+            self._heading_parts.append(data)
+        if self._task_parts is not None:
+            self._task_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "h2":
+            self._finish_heading()
+        elif tag == "li":
+            self._finish_task()
+
+    def close(self) -> None:
+        super().close()
+        self._finish_heading()
+        self._finish_task()
+
+    def _finish_heading(self) -> None:
+        if self._heading_parts is not None:
+            self._section = " ".join("".join(self._heading_parts).split())
+            self._heading_parts = None
+
+    def _finish_task(self) -> None:
+        if self._task_parts is not None and self._task_has_checkbox:
+            label = " ".join("".join(self._task_parts).split())
+            self.tasks.append((self._task_section, label, self._task_checked))
+        self._task_parts = None
+        self._task_section = ""
+        self._task_checked = False
+        self._task_has_checkbox = False
+
+
 def _rendered_targets(markdown: str) -> list[str]:
     """Return targets that Markdown renders as links or images."""
     parser = _RenderedTargetParser()
@@ -185,6 +251,19 @@ def _rendered_level_two_headings(markdown: str) -> list[str]:
     parser.feed(render_markdown(markdown, extensions=["pymdownx.superfences", "md_in_html", "tables"]))
     parser.close()
     return parser.headings
+
+
+def _rendered_tasks(markdown: str) -> list[RenderedTask]:
+    """Return rendered task-list items with their level-two section."""
+    parser = _RenderedTaskListParser()
+    parser.feed(
+        render_markdown(
+            markdown,
+            extensions=["pymdownx.superfences", "pymdownx.tasklist", "md_in_html", "tables"],
+        )
+    )
+    parser.close()
+    return parser.tasks
 
 
 def _pull_request_template_heading_violations(
@@ -202,6 +281,33 @@ def _pull_request_template_heading_violations(
         (
             _display_path(source, repository_root),
             f"level-two headings must be exactly {expected}; found {actual}",
+        )
+    ]
+
+
+def _format_rendered_task(task: RenderedTask) -> str:
+    """Return one rendered task in a stable diagnostic form."""
+    section, label, checked = task
+    marker = "x" if checked else " "
+    return f"{section}: [{marker}] {label}"
+
+
+def _pull_request_template_task_violations(
+    source: Path,
+    repository_root: Path,
+) -> list[SchemaViolation]:
+    """Return drift from the required pull request verification checklist."""
+    tasks = _rendered_tasks(source.read_text(encoding="utf-8"))
+    expected_tasks = [("Test plan", label, False) for label in PULL_REQUEST_TEMPLATE_TASKS]
+    if tasks == expected_tasks:
+        return []
+
+    expected = " -> ".join(_format_rendered_task(task) for task in expected_tasks)
+    actual = " -> ".join(_format_rendered_task(task) for task in tasks) if tasks else "<none>"
+    return [
+        (
+            _display_path(source, repository_root),
+            f"verification checklist must be exactly {expected}; found {actual}",
         )
     ]
 
@@ -1797,6 +1903,91 @@ class CommunityRouteIntegrityTest(TestCase):
 
     def test_pull_request_template_has_required_headings(self) -> None:
         self.assertEqual(_pull_request_template_heading_violations(PULL_REQUEST_TEMPLATE, REPOSITORY_ROOT), [])
+
+    def test_rejects_pull_request_template_checklist_drift(self) -> None:
+        required = [("Test plan", label, False) for label in PULL_REQUEST_TEMPLATE_TASKS]
+        invalid_tasks = (
+            ("missing", required[:-1]),
+            ("duplicate", [required[0], required[0], *required[1:]]),
+            ("reordered", [required[1], required[0], *required[2:]]),
+            ("extra", [*required, ("Test plan", "Release notes are updated", False)]),
+            ("checked", [("Test plan", required[0][1], True), *required[1:]]),
+        )
+        expected = " -> ".join(_format_rendered_task(task) for task in required)
+        for name, tasks in invalid_tasks:
+            with self.subTest(name=name), TemporaryDirectory() as temporary:
+                repository_root = Path(temporary)
+                source = repository_root / ".github/PULL_REQUEST_TEMPLATE.md"
+                source.parent.mkdir(parents=True)
+                checklist = "\n".join(f"- [{'x' if checked else ' '}] {label}" for _, label, checked in tasks)
+                source.write_text(f"## Test plan\n\n{checklist}\n", encoding="utf-8")
+
+                actual = " -> ".join(_format_rendered_task(task) for task in tasks)
+                self.assertEqual(
+                    _pull_request_template_task_violations(source, repository_root),
+                    [
+                        (
+                            ".github/PULL_REQUEST_TEMPLATE.md",
+                            f"verification checklist must be exactly {expected}; found {actual}",
+                        )
+                    ],
+                )
+
+    def test_accepts_required_pull_request_template_checklist(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/PULL_REQUEST_TEMPLATE.md"
+            source.parent.mkdir(parents=True)
+            checklist = "\n".join(f"- [ ] {label}" for label in PULL_REQUEST_TEMPLATE_TASKS)
+            source.write_text(
+                "\n".join(
+                    (
+                        "## Test plan",
+                        "",
+                        checklist,
+                        "",
+                        "```markdown",
+                        "- [ ] Task-list-shaped example",
+                        "```",
+                        "",
+                        "> ```markdown",
+                        "> - [x] Nested task-list-shaped example",
+                        "> ```",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _rendered_tasks(source.read_text(encoding="utf-8")),
+                [("Test plan", label, False) for label in PULL_REQUEST_TEMPLATE_TASKS],
+            )
+            self.assertEqual(_pull_request_template_task_violations(source, repository_root), [])
+
+    def test_rejects_pull_request_checklist_outside_test_plan(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/PULL_REQUEST_TEMPLATE.md"
+            source.parent.mkdir(parents=True)
+            checklist = "\n".join(f"- [ ] {label}" for label in PULL_REQUEST_TEMPLATE_TASKS)
+            source.write_text(f"## Why\n\n{checklist}\n\n## Test plan\n", encoding="utf-8")
+
+            expected = " -> ".join(
+                _format_rendered_task(("Test plan", label, False)) for label in PULL_REQUEST_TEMPLATE_TASKS
+            )
+            actual = " -> ".join(_format_rendered_task(("Why", label, False)) for label in PULL_REQUEST_TEMPLATE_TASKS)
+            self.assertEqual(
+                _pull_request_template_task_violations(source, repository_root),
+                [
+                    (
+                        ".github/PULL_REQUEST_TEMPLATE.md",
+                        f"verification checklist must be exactly {expected}; found {actual}",
+                    )
+                ],
+            )
+
+    def test_pull_request_template_has_required_checklist(self) -> None:
+        self.assertEqual(_pull_request_template_task_violations(PULL_REQUEST_TEMPLATE, REPOSITORY_ROOT), [])
 
     def test_rejects_duplicate_issue_form_keys_at_exact_paths(self) -> None:
         with TemporaryDirectory() as temporary:
