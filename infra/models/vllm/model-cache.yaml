@@ -71,6 +71,8 @@ spec:
               target = root / "qwen2.5-0.5b-instruct"
               marker_value = f"snapshot-v2:{revision}"
               snapshot_prefix = f".{target.name}-{revision}-"
+              next_link = root / f".{target.name}.next"
+              legacy = root / f".{target.name}.legacy"
 
               # snapshot_download(local_dir=...) pulls current files but does not delete files
               # removed upstream. Publish a fresh directory so every ready target is one exact pin.
@@ -98,13 +100,18 @@ spec:
                       return None
                   return snapshot
 
+              # A pod can be terminated after moving a legacy directory but before publishing
+              # its replacement symlink. Restore that last known-good tree before any retry.
+              if not target.exists() and not target.is_symlink() and legacy.exists():
+                  if legacy.is_symlink() or not legacy.is_dir():
+                      raise SystemExit("orphaned legacy model cache is not a directory")
+                  legacy.rename(target)
+
               current = published_snapshot()
               if current is None:
                   snapshot = Path(
                       tempfile.mkdtemp(prefix=snapshot_prefix, suffix=".snapshot", dir=root)
                   )
-                  next_link = root / f".{target.name}.next"
-                  legacy = root / f".{target.name}.legacy"
                   migrated = False
                   published = False
                   try:

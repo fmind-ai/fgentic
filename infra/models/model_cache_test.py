@@ -113,7 +113,33 @@ class ModelCacheContractTest(unittest.TestCase):
 
                 target.mkdir()
                 (target / ".ready").write_text(f"{old_revision}\n", encoding="utf-8")
+                (target / "weights.bin").write_text(old_revision, encoding="utf-8")
                 (target / "stale-from-old-revision").write_text("stale", encoding="utf-8")
+
+                # Simulate termination after the legacy directory was moved away but before
+                # the replacement serving symlink was published.
+                legacy = root / f".{target.name}.legacy"
+                interrupted_snapshot = root / f".{target.name}-{current_revision}-interrupted.snapshot"
+                target.rename(legacy)
+                interrupted_snapshot.mkdir()
+                (root / f".{target.name}.next").symlink_to(
+                    interrupted_snapshot.name,
+                    target_is_directory=True,
+                )
+
+                def failed_legacy_retry(*, local_dir: Path, **_kwargs: object) -> None:
+                    (local_dir / "partial.bin").write_text("partial", encoding="utf-8")
+                    raise RuntimeError("synthetic legacy retry failure")
+
+                with self.assertRaisesRegex(RuntimeError, "synthetic legacy retry"):
+                    _run_loader(script, root, current_revision, failed_legacy_retry)
+
+                self.assertTrue(target.is_dir())
+                self.assertFalse(target.is_symlink())
+                self.assertEqual((target / "weights.bin").read_text(encoding="utf-8"), old_revision)
+                self.assertEqual((target / ".ready").read_text(encoding="utf-8").strip(), old_revision)
+                self.assertFalse(legacy.exists())
+                self.assertFalse((root / f".{target.name}.next").exists())
 
                 calls: list[tuple[str, str]] = []
                 expected_repo_id = repo_id.group(1)
