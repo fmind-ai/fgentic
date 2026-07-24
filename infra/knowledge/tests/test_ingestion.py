@@ -14,7 +14,7 @@ import zipfile
 from collections.abc import Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any, ClassVar, cast, override
 from unittest import mock
 
@@ -196,6 +196,43 @@ def test_manifest_rejects_malformed_matrix_dns_server_names(tmp_path: Path, serv
         ingestion.load_manifest(manifest_path, source_root)
 
     assert server_name not in str(caught.value)
+
+
+@pytest.mark.parametrize("source_path", ["matrix.md", "docs/matrix.md"])
+def test_manifest_preserves_canonical_source_paths(tmp_path: Path, source_path: str) -> None:
+    document = valid_manifest()
+    document["sources"][0]["path"] = source_path
+    manifest_path, source_root = write_bundle(tmp_path, document)
+    source = source_root.joinpath(*PurePosixPath(source_path).parts)
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(MATRIX_SOURCE, encoding="utf-8")
+
+    manifest = ingestion.load_manifest(manifest_path, source_root)
+
+    assert manifest.sources[0].relative_path.as_posix() == source_path
+
+
+@pytest.mark.parametrize(
+    "source_path",
+    [
+        "./matrix.md",
+        "docs//matrix.md",
+        "docs/./matrix.md",
+        "matrix.md/",
+    ],
+)
+def test_manifest_rejects_noncanonical_source_paths(tmp_path: Path, source_path: str) -> None:
+    document = valid_manifest()
+    document["sources"][0]["path"] = source_path
+    manifest_path, source_root = write_bundle(tmp_path, document)
+    source = source_root.joinpath(*PurePosixPath(source_path).parts)
+    source.parent.mkdir(parents=True, exist_ok=True)
+    source.write_text(MATRIX_SOURCE, encoding="utf-8")
+
+    with pytest.raises(ingestion.IngestionError, match="canonical contained relative path") as caught:
+        ingestion.load_manifest(manifest_path, source_root)
+
+    assert source_path not in str(caught.value)
 
 
 @pytest.mark.parametrize(
