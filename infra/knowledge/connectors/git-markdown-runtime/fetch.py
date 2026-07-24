@@ -243,7 +243,7 @@ def _canonical_source_path(value: str) -> bool:
     if not value.startswith(SOURCE_PATH_PREFIX):
         return False
     filename = value.removeprefix(SOURCE_PATH_PREFIX)
-    if not filename.endswith(".tar.gz"):
+    if len(filename) > 255 or not filename.endswith(".tar.gz"):
         return False
     stem = filename.removesuffix(".tar.gz")
     if not stem or not stem.isascii() or not stem[0].isalnum():
