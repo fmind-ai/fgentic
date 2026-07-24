@@ -23,7 +23,7 @@ terraform = "1.15.8"
 helm = "4.2.3"
 jq = "1.8.2"
 xh = "0.26.1"
-"github:helm-unittest/helm-unittest" = { version = "1.1.1", rename_exe = "helm-unittest" }
+"github:helm-unittest/helm-unittest" = { version = "1.1.2", rename_exe = "helm-unittest" }
 kind = "0.32.0"
 k3d = "5.9.0"
 k9s = "0.51.0"
