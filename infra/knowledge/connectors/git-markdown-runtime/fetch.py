@@ -8,6 +8,7 @@ import hashlib
 import http.client
 import json
 import os
+import re
 import shutil
 import ssl
 import stat
@@ -32,6 +33,12 @@ HTTP_TIMEOUT_SECONDS = 30.0
 FILE_MODE = 0o440
 DIRECTORY_MODE = 0o550
 WRITABLE_DIRECTORY_MODE = 0o770
+HTTP_TCHAR_RE = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
+HTTP_QUOTED_STRING_RE = r'"(?:[\t !#-\[\]-~\x80-\xff]|\\[\t !-~\x80-\xff])*"'
+MEDIA_TYPE_RE = re.compile(
+    rf"^[ \t]*(?P<type>{HTTP_TCHAR_RE})/(?P<subtype>{HTTP_TCHAR_RE})"
+    rf"(?:[ \t]*;[ \t]*(?:{HTTP_TCHAR_RE}=(?:{HTTP_TCHAR_RE}|{HTTP_QUOTED_STRING_RE}))?)*[ \t]*$"
+)
 
 type JSONObject = dict[str, object]
 
@@ -142,6 +149,24 @@ def _strict_json_object(raw: bytes, *, name: str) -> JSONObject:
     return _object(document, name=name)
 
 
+def _has_json_content_type(response: http.client.HTTPResponse) -> bool:
+    content_types = response.headers.get_all("Content-Type", [])
+    if len(content_types) != 1 or not isinstance(content_types[0], str):
+        return False
+    match = MEDIA_TYPE_RE.fullmatch(content_types[0])
+    return (
+        match is not None and match.group("type").lower() == "application" and match.group("subtype").lower() == "json"
+    )
+
+
+def _read_api_response(response: http.client.HTTPResponse) -> bytes:
+    if response.status != http.client.OK:
+        raise AcquisitionError(f"Kubernetes API returned HTTP {response.status}")
+    if not _has_json_content_type(response):
+        raise AcquisitionError("Kubernetes API returned an unexpected media type")
+    return _read_response(response, MAX_API_BYTES)
+
+
 def _api_document(token_file: Path, ca_file: Path) -> JSONObject:
     try:
         token = _read_file(token_file, MAX_TOKEN_BYTES).decode("ascii")
@@ -170,12 +195,7 @@ def _api_document(token_file: Path, ca_file: Path) -> JSONObject:
             },
         )
         response = connection.getresponse()
-        if response.status != http.client.OK:
-            raise AcquisitionError(f"Kubernetes API returned HTTP {response.status}")
-        media_type = response.getheader("Content-Type", "").split(";", 1)[0].strip().lower()
-        if media_type != "application/json":
-            raise AcquisitionError("Kubernetes API returned an unexpected media type")
-        raw = _read_response(response, MAX_API_BYTES)
+        raw = _read_api_response(response)
     except (OSError, ssl.SSLError, http.client.HTTPException):
         raise AcquisitionError("Kubernetes API request failed") from None
     finally:
