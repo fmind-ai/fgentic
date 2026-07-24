@@ -6,6 +6,7 @@ import copy
 import hashlib
 import http.client
 import json
+import os
 import socket
 import stat
 import threading
@@ -128,6 +129,46 @@ def build_bound_records(
     raw_root = tmp_path / f"raw-{len(list(tmp_path.glob('raw-*'))):06d}"
     ingestion.write_raw_record_groups(raw_root, raw_groups)
     return ingestion.bind_raw_records(manifest, raw_root)
+
+
+def test_bounded_reader_rejects_fifo_without_waiting_for_writer(tmp_path: Path) -> None:
+    fifo = tmp_path / "manifest.json"
+    os.mkfifo(fifo)
+    finished = threading.Event()
+    errors: list[Exception] = []
+
+    def read_fifo() -> None:
+        try:
+            ingestion._read_bounded_bytes(fifo, 16)
+        except Exception as error:
+            errors.append(error)
+        finally:
+            finished.set()
+
+    reader = threading.Thread(target=read_fifo, daemon=True)
+    reader.start()
+    if not finished.wait(timeout=1):
+        descriptor = os.open(fifo, os.O_WRONLY)
+        try:
+            os.write(descriptor, b"{}")
+        finally:
+            os.close(descriptor)
+        reader.join(timeout=1)
+        pytest.fail("bounded reader blocked waiting for a FIFO writer")
+
+    assert len(errors) == 1
+    assert isinstance(errors[0], ingestion.IngestionError)
+    assert str(errors[0]) == "ingestion input must be a regular file"
+
+
+def test_bounded_reader_accepts_symlink_to_regular_file(tmp_path: Path) -> None:
+    target = tmp_path / "..data" / "manifest.json"
+    target.parent.mkdir()
+    target.write_bytes(b"{}")
+    projected = tmp_path / "manifest.json"
+    projected.symlink_to(Path("..data") / "manifest.json")
+
+    assert ingestion._read_bounded_bytes(projected, 16) == b"{}"
 
 
 def test_manifest_normalizes_acl_and_validates_every_source(tmp_path: Path) -> None:
