@@ -11,11 +11,13 @@ from __future__ import annotations
 import errno
 import http.server
 import json
+import os
 import socket
 import subprocess
 import sys
 import threading
 import time
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Any, ClassVar, cast
@@ -41,7 +43,7 @@ WEBHOOK = {
 }
 
 
-def test_network_peers_are_exactly_scoped() -> None:
+def _render_enabled_profile() -> list[dict[str, Any]]:
     manifest = subprocess.run(
         ["kubectl", "kustomize", ENABLED_PROFILE],
         check=True,
@@ -55,7 +57,78 @@ def test_network_peers_are_exactly_scoped() -> None:
         capture_output=True,
         text=True,
     )
-    resources = json.loads(rendered.stdout)
+    return cast(list[dict[str, Any]], json.loads(rendered.stdout))
+
+
+def test_listen_port_is_bounded_and_content_free() -> None:
+    with mock.patch.dict(receiver.os.environ, {}, clear=True):
+        assert receiver._listen_port() == 9_095
+    for raw, expected in (("1024", 1_024), ("9095", 9_095), ("65535", 65_535)):
+        with mock.patch.dict(receiver.os.environ, {"ALERTBOT_LISTEN_PORT": raw}, clear=True):
+            assert receiver._listen_port() == expected
+
+    expected_error = (
+        "alert-receiver: ALERTBOT_LISTEN_PORT must be a canonical ASCII integer from 1024 to 65535\n"
+    )
+    invalid_values = (
+        "",
+        "0",
+        "1",
+        "1023",
+        "-1",
+        "+1024",
+        "01024",
+        " 1024",
+        "1024 ",
+        "١٠٢٤",
+        "65536",
+        "operator-private-value",
+        "9" * 10_000,
+    )
+    for raw in invalid_values:
+        process = subprocess.run(
+            [sys.executable, str(Path(receiver.__file__))],
+            env={**os.environ, "ALERTBOT_LISTEN_PORT": raw},
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        assert process.returncode == 1
+        assert process.stdout == ""
+        assert process.stderr == expected_error
+        if raw == "operator-private-value":
+            assert raw not in process.stderr
+        assert "Traceback" not in process.stderr
+    print("ok: listen port is canonical, bounded, and content-free")
+
+
+def test_rendered_ports_are_aligned() -> None:
+    resources = _render_enabled_profile()
+    by_identity = {(resource["kind"], resource["metadata"]["name"]): resource for resource in resources}
+    config = by_identity[("ConfigMap", "alert-receiver-config")]
+    deployment = by_identity[("Deployment", "alert-receiver")]
+    service = by_identity[("Service", "alert-receiver")]
+    policy = by_identity[("NetworkPolicy", "alert-receiver")]
+    alertmanager = by_identity[("AlertmanagerConfig", "matrix-ops")]
+
+    container_port = deployment["spec"]["template"]["spec"]["containers"][0]["ports"][0]
+    service_port = service["spec"]["ports"][0]
+    webhook_url = alertmanager["spec"]["receivers"][0]["webhookConfigs"][0]["url"]
+    ports = {
+        int(config["data"]["ALERTBOT_LISTEN_PORT"]),
+        container_port["containerPort"],
+        service_port["port"],
+        policy["spec"]["ingress"][0]["ports"][0]["port"],
+        urllib.parse.urlsplit(webhook_url).port,
+    }
+    assert config["data"]["ALERTBOT_LISTEN_PORT"] == str(receiver._DEFAULT_LISTEN_PORT)
+    assert container_port["name"] == service_port["targetPort"] == "webhook"
+    assert ports == {receiver._DEFAULT_LISTEN_PORT}
+    print("ok: rendered alert delivery ports are aligned")
+
+
+def test_network_peers_are_exactly_scoped() -> None:
+    resources = _render_enabled_profile()
     policies = {
         resource["metadata"]["name"]: resource["spec"] for resource in resources if resource["kind"] == "NetworkPolicy"
     }
@@ -580,6 +653,8 @@ def test_webhook_posts_content_free_notice() -> None:
 
 
 if __name__ == "__main__":
+    test_listen_port_is_bounded_and_content_free()
+    test_rendered_ports_are_aligned()
     test_network_peers_are_exactly_scoped()
     test_render_is_content_free()
     test_render_is_bounded()

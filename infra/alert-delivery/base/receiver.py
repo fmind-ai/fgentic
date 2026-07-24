@@ -28,7 +28,7 @@ import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
-from typing import Any, cast
+from typing import Any, NoReturn, cast
 
 # Low-cardinality, non-content labels safe to surface (never message text / user identifiers).
 _SAFE_LABELS = ("namespace", "job_name", "cronjob", "gen_ai_system", "resource_kind")
@@ -46,6 +46,12 @@ _MAX_HEADER_BYTES = 16_384
 _MAX_REQUEST_BYTES = 65_536
 _MAX_CONCURRENT_REQUESTS = 4
 _REQUEST_TIMEOUT_SECONDS = 5.0
+_DEFAULT_LISTEN_PORT = 9_095
+_MIN_LISTEN_PORT = 1_024
+_MAX_LISTEN_PORT = 65_535
+_LISTEN_PORT_ERROR = (
+    f"ALERTBOT_LISTEN_PORT must be a canonical ASCII integer from {_MIN_LISTEN_PORT} to {_MAX_LISTEN_PORT}"
+)
 
 
 def _env(name: str, default: str | None = None) -> str:
@@ -56,6 +62,28 @@ def _env(name: str, default: str | None = None) -> str:
         print(f"alert-receiver: required environment variable {name} is missing", file=sys.stderr)
         raise SystemExit(1)
     return value
+
+
+def _invalid_listen_port() -> NoReturn:
+    print(f"alert-receiver: {_LISTEN_PORT_ERROR}", file=sys.stderr)
+    raise SystemExit(1)
+
+
+def _listen_port() -> int:
+    raw = os.environ.get("ALERTBOT_LISTEN_PORT")
+    if raw is None:
+        return _DEFAULT_LISTEN_PORT
+    if not raw.isascii() or not raw.isdecimal():
+        _invalid_listen_port()
+
+    # Normalize before int() so an oversized decimal cannot hit Python's digit limit.
+    normalized = raw.lstrip("0") or "0"
+    if len(normalized) > len(str(_MAX_LISTEN_PORT)):
+        _invalid_listen_port()
+    port = int(normalized)
+    if raw != str(port) or not _MIN_LISTEN_PORT <= port <= _MAX_LISTEN_PORT:
+        _invalid_listen_port()
+    return port
 
 
 def _clean_scalar(value: object, *, fallback: str, maximum: int) -> str:
@@ -354,10 +382,10 @@ class _Handler(http.server.BaseHTTPRequestHandler):
 
 
 def main() -> int:
+    port = _listen_port()
     homeserver = _env("ALERTBOT_HOMESERVER_URL").rstrip("/")
     token = _env("ALERTBOT_ACCESS_TOKEN")
     room_id = _env("ALERTBOT_OPS_ROOM_ID")
-    port = int(_env("ALERTBOT_LISTEN_PORT", "9095"))
     # NetworkPolicy restricts this in-cluster listener to the Alertmanager namespace.
     server = _BoundedThreadingHTTPServer(("0.0.0.0", port), _Handler)
     server.homeserver = homeserver
