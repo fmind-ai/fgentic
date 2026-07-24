@@ -29,6 +29,45 @@ SAME_REPOSITORY_MAIN_URL = re.compile(r"https://github\.com/fmind-ai/fgentic/(?:
 MARKDOWN_FRONTMATTER = re.compile(r"\A---\r?\n(?P<yaml>.*?)\r?\n---(?:\r?\n|\Z)", re.DOTALL)
 FORM_ID = re.compile(r"[A-Za-z0-9_-]+")
 PROJECT_REFERENCE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}/[1-9][0-9]*")
+_RAILS_TRANSLITERATION_SOURCE = (
+    "ÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ\u00d7ØÙÚÛÜÝàáâãäåçèéêëìíîïðñòóôõ"
+    "öøùúûüýÿĀāĂăĄąĆćĈĉĊċČčĎďĐđĒēĔĕĖėĘęĚěĜĝĞğĠġĢģĤĥĦħĨĩ"
+    "ĪīĬĭĮįİıĴĵĶķĸĹĺĻļĽľĿŀŁłŃńŅņŇňŌōŎŏŐőŔŕŖŗŘřŚśŜŝŞşŠšŢ"
+    "ţŤťŦŧŨũŪūŬŭŮůŰűŲųŴŵŶŷŸŹźŻżŽž"
+)
+_RAILS_TRANSLITERATION_TARGET = (
+    "AAAAAACEEEEIIIIDNOOOOOxOUUUUYaaaaaaceeeeiiiidnoooo"
+    "oouuuuyyAaAaAaCcCcCcCcDdDdEeEeEeEeEeGgGgGgGgHhHhIi"
+    "IiIiIiIiJjKkkLlLlLlLlLlNnNnNnOoOoOoRrRrRrSsSsSsSsT"
+    "tTtTtUuUuUuUuUuUuWwYyYZzZzZz"
+)
+_RAILS_TRANSLITERATION = {
+    ord(source): target
+    for source, target in zip(
+        _RAILS_TRANSLITERATION_SOURCE,
+        _RAILS_TRANSLITERATION_TARGET,
+        strict=True,
+    )
+}
+_RAILS_TRANSLITERATION.update(
+    str.maketrans(
+        {
+            "Æ": "AE",
+            "Þ": "Th",
+            "ß": "ss",
+            "ẞ": "SS",
+            "æ": "ae",
+            "þ": "th",
+            "Ĳ": "IJ",
+            "ĳ": "ij",
+            "ŉ": "'n",
+            "Ŋ": "NG",
+            "ŋ": "ng",
+            "Œ": "OE",
+            "œ": "oe",
+        }
+    )
+)
 FORM_ELEMENT_TYPES = frozenset({"checkboxes", "dropdown", "input", "markdown", "textarea", "upload"})
 ISSUE_FORM_KEYS = frozenset({"assignees", "body", "description", "labels", "name", "projects", "title", "type"})
 DISCUSSION_FORM_KEYS = frozenset({"body", "labels", "title"})
@@ -217,7 +256,8 @@ def _unsupported_key_reasons(
 
 def _parameterized_form_label(label: str) -> str:
     """Return the effective GitHub form reference derived from a label."""
-    transliterated = normalize("NFKD", label).encode("ascii", "ignore").decode()
+    transliterated = normalize("NFC", label).translate(_RAILS_TRANSLITERATION)
+    transliterated = re.sub(r"[^\x00-\x7f]", "?", transliterated)
     reference = re.sub(r"[^A-Za-z0-9_-]+", "-", transliterated)
     return re.sub(r"-{2,}", "-", reference).strip("-").lower()
 
@@ -1227,6 +1267,13 @@ class CommunityRouteIntegrityTest(TestCase):
                 ],
             )
 
+    def test_parameterizes_form_labels_like_rails(self) -> None:
+        self.assertEqual(_parameterized_form_label("Ærøskøbing"), "aeroskobing")
+        self.assertEqual(_parameterized_form_label("foo🚀bar"), "foo-bar")
+        self.assertEqual(_parameterized_form_label("straße"), "strasse")
+        self.assertEqual(_parameterized_form_label("ø"), "o")
+        self.assertEqual(_parameterized_form_label("?"), "")
+
     def test_rejects_colliding_parameterized_form_references(self) -> None:
         with TemporaryDirectory() as temporary:
             repository_root = Path(temporary)
@@ -1260,6 +1307,18 @@ class CommunityRouteIntegrityTest(TestCase):
                         "      options:",
                         "        - label: Ready?",
                         "        - label: Ready!!!!",
+                        "  - type: input",
+                        "    attributes:",
+                        "      label: Ærøskøbing",
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: AEroskobing",
+                        "  - type: input",
+                        "    attributes:",
+                        "      label: foo🚀bar",
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: foo-bar",
                     )
                 ),
                 encoding="utf-8",
@@ -1281,6 +1340,16 @@ class CommunityRouteIntegrityTest(TestCase):
                         ".github/ISSUE_TEMPLATE/broken.yml",
                         "body[4].attributes.options[1].label resolves to reference 'ready', "
                         "already used by body[4].attributes.options[0].label",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[6].attributes.label resolves to reference 'aeroskobing', "
+                        "already used by body[5].attributes.label",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[8].attributes.label resolves to reference 'foo-bar', "
+                        "already used by body[7].attributes.label",
                     ),
                 ],
             )
