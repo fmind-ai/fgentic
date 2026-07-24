@@ -460,8 +460,8 @@ def _relative_source_path(value: object, *, name: str) -> PurePosixPath:
     if "\\" in raw:
         raise IngestionError(f"{name} must use POSIX separators")
     path = PurePosixPath(raw)
-    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
-        raise IngestionError(f"{name} must be a contained relative path")
+    if path.is_absolute() or raw != path.as_posix() or any(part in {"", ".", ".."} for part in path.parts):
+        raise IngestionError(f"{name} must be a canonical contained relative path")
     if path.suffix.lower() not in ALLOWED_DOCUMENT_SUFFIXES:
         raise IngestionError(f"{name} has an unsupported document suffix")
     return path
