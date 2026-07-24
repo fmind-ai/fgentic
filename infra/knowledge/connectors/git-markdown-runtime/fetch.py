@@ -249,7 +249,15 @@ class _DeadlineHTTPSConnection(http.client.HTTPSConnection):
             raise TimeoutError
         if self.sock is None:
             raise OSError("HTTPS connection did not establish a socket")
-        self.sock = self._tls_context.wrap_socket(self.sock, server_hostname=self.host)
+        self.sock = self._tls_context.wrap_socket(
+            self.sock,
+            server_hostname=self.host,
+            do_handshake_on_connect=False,
+        )
+        if self._cancelled.is_set():
+            _abort_connection(self)
+            raise TimeoutError
+        self.sock.do_handshake()
         if self._cancelled.is_set():
             _abort_connection(self)
             raise TimeoutError

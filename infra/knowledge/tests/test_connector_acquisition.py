@@ -87,10 +87,29 @@ class _RejectTLSContext:
     def __init__(self) -> None:
         self.wrapped = False
 
-    def wrap_socket(self, sock: socket.socket, *, server_hostname: str) -> socket.socket:
-        del server_hostname
+    def wrap_socket(
+        self,
+        sock: socket.socket,
+        *,
+        server_hostname: str,
+        do_handshake_on_connect: bool,
+    ) -> socket.socket:
+        del server_hostname, do_handshake_on_connect
         self.wrapped = True
         return sock
+
+
+class _SilentTLSHandler(socketserver.BaseRequestHandler):
+    client_hello = threading.Event()
+    disconnected = threading.Event()
+
+    @override
+    def handle(self) -> None:
+        if self.request.recv(64 * 1024):
+            self.client_hello.set()
+        while self.request.recv(64 * 1024):
+            pass
+        self.disconnected.set()
 
 
 @contextmanager
@@ -410,6 +429,44 @@ def test_https_connection_skips_tls_after_tcp_completes_past_deadline(
         server.close()
 
     assert not context.wrapped
+
+
+def test_request_deadline_aborts_an_active_tls_handshake() -> None:
+    _SilentTLSHandler.client_hello.clear()
+    _SilentTLSHandler.disconnected.clear()
+    server = _LoopbackServer(("127.0.0.1", 0), _SilentTLSHandler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    context = ssl.create_default_context()
+    context.check_hostname = False
+    context.verify_mode = ssl.CERT_NONE
+    started = time.monotonic()
+    try:
+        with pytest.raises(acquisition.AcquisitionError) as caught:
+            acquisition._request_bytes(
+                lambda cancelled: acquisition._DeadlineHTTPSConnection(
+                    "127.0.0.1",
+                    server.server_address[1],
+                    timeout=1,
+                    context=context,
+                    cancelled=cancelled,
+                ),
+                "/",
+                {},
+                lambda _response: b"unexpected",
+                operation="fixture",
+                timeout_seconds=0.08,
+            )
+        elapsed = time.monotonic() - started
+        assert _SilentTLSHandler.client_hello.wait(timeout=0.5)
+        assert _SilentTLSHandler.disconnected.wait(timeout=0.5)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=2)
+
+    assert str(caught.value) == "fixture request exceeded its total deadline"
+    assert elapsed < 0.5
 
 
 def test_response_reader_accepts_content_length_with_optional_whitespace() -> None:
