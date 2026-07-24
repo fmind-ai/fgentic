@@ -114,8 +114,8 @@ def _issue_form_route_error(target: str, templates: set[str]) -> str | None:
     return None
 
 
-def _discussion_markdown(path: Path) -> str:
-    """Return Markdown blocks embedded in one structured discussion form."""
+def _form_markdown(path: Path) -> str:
+    """Return Markdown blocks embedded in one structured GitHub form."""
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(document, dict) or not isinstance(body := document.get("body"), list):
         return ""
@@ -128,6 +128,14 @@ def _discussion_markdown(path: Path) -> str:
         if isinstance(attributes, dict) and isinstance(value := attributes.get("value"), str):
             blocks.append(value)
     return "\n".join(blocks)
+
+
+def _structured_forms(repository_root: Path = REPOSITORY_ROOT) -> tuple[Path, ...]:
+    """Return issue and discussion forms that can embed rendered Markdown."""
+    issue_directory = repository_root / ".github/ISSUE_TEMPLATE"
+    discussion_directory = repository_root / ".github/DISCUSSION_TEMPLATE"
+    issue_forms = (path for path in issue_directory.glob("*.yml") if path.name != "config.yml")
+    return tuple(sorted((*issue_forms, *discussion_directory.glob("*.yml"))))
 
 
 def _issue_form_route_violations(sources: dict[str, list[str]], templates: set[str]) -> list[RouteViolation]:
@@ -189,14 +197,11 @@ def _tracked_target(target: str, source: Path, repository_root: Path) -> Path | 
     return None
 
 
-def _link_violations(source: Path, repository_root: Path) -> list[LinkViolation]:
-    """Return missing and repository-escaping tracked targets in one source."""
+def _markdown_link_violations(markdown: str, source: Path, repository_root: Path) -> list[LinkViolation]:
+    """Return missing and repository-escaping tracked targets in Markdown."""
     source_name = _display_path(source, repository_root)
-    if not source.is_file():
-        return [(source_name, "(source)", "source file is missing")]
-
     violations: list[LinkViolation] = []
-    for target in _tracked_targets(source.read_text(encoding="utf-8")):
+    for target in _tracked_targets(markdown):
         candidate = _tracked_target(target, source, repository_root)
         if candidate is None:
             continue
@@ -209,9 +214,30 @@ def _link_violations(source: Path, repository_root: Path) -> list[LinkViolation]
     return violations
 
 
+def _link_violations(source: Path, repository_root: Path) -> list[LinkViolation]:
+    """Return missing and repository-escaping tracked targets in one source."""
+    if not source.is_file():
+        return [(_display_path(source, repository_root), "(source)", "source file is missing")]
+    return _markdown_link_violations(source.read_text(encoding="utf-8"), source, repository_root)
+
+
 def _require_valid_links(sources: tuple[Path, ...], repository_root: Path) -> None:
     """Reject public Markdown whose rendered local targets do not resolve."""
     violations = [violation for source in sources for violation in _link_violations(source, repository_root)]
+    if not violations:
+        return
+
+    details = "\n".join(f"  {source}: {target} ({reason})" for source, target, reason in violations)
+    raise AssertionError(f"repository Markdown link drift:\n{details}")
+
+
+def _require_valid_form_markdown_links(sources: tuple[Path, ...], repository_root: Path) -> None:
+    """Reject broken tracked targets in Markdown blocks embedded in forms."""
+    violations = [
+        violation
+        for source in sources
+        for violation in _markdown_link_violations(_form_markdown(source), source, repository_root)
+    ]
     if not violations:
         return
 
@@ -332,6 +358,61 @@ class RepositoryLinkIntegrityTest(TestCase):
 class CommunityRouteIntegrityTest(TestCase):
     """Reject drift between structured forms and their public routes."""
 
+    def test_discovers_issue_and_discussion_forms(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            issue_directory = repository_root / ".github/ISSUE_TEMPLATE"
+            discussion_directory = repository_root / ".github/DISCUSSION_TEMPLATE"
+            issue_directory.mkdir(parents=True)
+            discussion_directory.mkdir(parents=True)
+            (issue_directory / "bug.yml").touch()
+            (issue_directory / "config.yml").touch()
+            (discussion_directory / "q-a.yml").touch()
+
+            self.assertEqual(
+                [path.relative_to(repository_root).as_posix() for path in _structured_forms(repository_root)],
+                [".github/DISCUSSION_TEMPLATE/q-a.yml", ".github/ISSUE_TEMPLATE/bug.yml"],
+            )
+
+    def test_embedded_form_markdown_targets_resolve(self) -> None:
+        _require_valid_form_markdown_links(_structured_forms(), REPOSITORY_ROOT)
+
+    def test_reports_broken_embedded_form_markdown_against_its_source(self) -> None:
+        canonical_existing = "https://github.com/fmind-ai/fgentic/blob/main/docs/guide.md"
+        local_existing = "../../docs/guide.md"
+        local_missing = "../../docs/missing.md"
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/DISCUSSION_TEMPLATE/q-a.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        'title: "[Question] "',
+                        "body:",
+                        "  - type: markdown",
+                        "    attributes:",
+                        "      value: |",
+                        f"        [Canonical guide]({canonical_existing})",
+                        f"        [Local guide]({local_existing})",
+                        f"        [Missing]({local_missing})",
+                    )
+                ),
+                encoding="utf-8",
+            )
+            guide = repository_root / "docs/guide.md"
+            guide.parent.mkdir()
+            guide.touch()
+
+            with self.assertRaisesRegex(
+                AssertionError,
+                r"repository Markdown link drift:\n"
+                r"  \.github/DISCUSSION_TEMPLATE/q-a\.yml: "
+                r"\.\./\.\./docs/missing\.md "
+                r"\(target does not exist\)",
+            ):
+                _require_valid_form_markdown_links((source,), repository_root)
+
     def test_structured_discussion_routes_stay_in_sync(self) -> None:
         expected = {path.stem for path in DISCUSSION_TEMPLATE_DIRECTORY.glob("*.yml")}
         config = cast("dict[str, object]", yaml.safe_load(ISSUE_TEMPLATE_CONFIG.read_text(encoding="utf-8")))
@@ -355,7 +436,7 @@ class CommunityRouteIntegrityTest(TestCase):
         sources = {
             ".github/SUPPORT.md": _rendered_targets(SUPPORT_POLICY.read_text(encoding="utf-8")),
             **{
-                path.relative_to(REPOSITORY_ROOT).as_posix(): _rendered_targets(_discussion_markdown(path))
+                path.relative_to(REPOSITORY_ROOT).as_posix(): _rendered_targets(_form_markdown(path))
                 for path in sorted(DISCUSSION_TEMPLATE_DIRECTORY.glob("*.yml"))
             },
         }
