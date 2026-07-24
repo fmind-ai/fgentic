@@ -27,13 +27,14 @@ FORM_ID = re.compile(r"[A-Za-z0-9_-]+")
 FORM_ELEMENT_TYPES = frozenset({"checkboxes", "dropdown", "input", "markdown", "textarea", "upload"})
 ISSUE_FORM_KEYS = frozenset({"assignees", "body", "description", "labels", "name", "projects", "title", "type"})
 DISCUSSION_FORM_KEYS = frozenset({"body", "labels", "title"})
+FORM_COMMON_ELEMENT_KEYS = frozenset({"attributes", "id", "type", "validations"})
 FORM_ELEMENT_KEYS = {
-    "checkboxes": frozenset({"attributes", "id", "type", "validations"}),
-    "dropdown": frozenset({"attributes", "id", "type", "validations"}),
-    "input": frozenset({"attributes", "id", "type", "validations"}),
+    "checkboxes": FORM_COMMON_ELEMENT_KEYS,
+    "dropdown": FORM_COMMON_ELEMENT_KEYS,
+    "input": FORM_COMMON_ELEMENT_KEYS,
     "markdown": frozenset({"attributes", "type"}),
-    "textarea": frozenset({"attributes", "id", "type", "validations"}),
-    "upload": frozenset({"attributes", "id", "type", "validations"}),
+    "textarea": FORM_COMMON_ELEMENT_KEYS,
+    "upload": FORM_COMMON_ELEMENT_KEYS,
 }
 FORM_ATTRIBUTE_KEYS = {
     "checkboxes": frozenset({"description", "label", "options"}),
@@ -246,20 +247,24 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
             continue
 
         element_type = element.get("type")
+        allowed_element_keys = (
+            FORM_ELEMENT_KEYS[element_type]
+            if isinstance(element_type, str) and element_type in FORM_ELEMENT_TYPES
+            else FORM_COMMON_ELEMENT_KEYS
+        )
+        unsupported_element_keys = _unsupported_key_reasons(
+            cast(dict[object, object], element),
+            allowed_element_keys,
+            location,
+        )
         if not isinstance(element_type, str) or element_type not in FORM_ELEMENT_TYPES:
             violations.append((source_name, f"{location}.type is unsupported: {element_type!r}"))
+            violations.extend((source_name, reason) for reason in unsupported_element_keys)
             continue
         if element_type != "markdown":
             has_input = True
 
-        violations.extend(
-            (source_name, reason)
-            for reason in _unsupported_key_reasons(
-                cast(dict[object, object], element),
-                FORM_ELEMENT_KEYS[element_type],
-                location,
-            )
-        )
+        violations.extend((source_name, reason) for reason in unsupported_element_keys)
 
         identifier = element.get("id")
         if (
@@ -1121,6 +1126,45 @@ class CommunityRouteIntegrityTest(TestCase):
                     (".github/DISCUSSION_TEMPLATE/broken.yml", "body[0].id is not permitted"),
                     (".github/DISCUSSION_TEMPLATE/broken.yml", "body[0].validations is not permitted"),
                     (".github/DISCUSSION_TEMPLATE/broken.yml", "body[1].validations.accept is not permitted"),
+                ],
+            )
+
+    def test_rejects_unsupported_keys_with_invalid_element_types(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Broken",
+                        "description: Exercises invalid element types with unsupported keys",
+                        "body:",
+                        "  - type: button",
+                        "    placehoder: missed",
+                        "    false: missed-too",
+                        "    attributes:",
+                        "      label: Action",
+                        "  - validation: {}",
+                        "    attributes:",
+                        "      label: Missing type",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[0].type is unsupported: 'button'"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[0].placehoder is not permitted"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[0].False is not permitted"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[1].type is unsupported: None"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[1].validation is not permitted"),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body must contain at least one non-Markdown field",
+                    ),
                 ],
             )
 
