@@ -17,6 +17,7 @@ Standard library only, so it runs from the already-pinned python:3.14-slim image
 from __future__ import annotations
 
 import hashlib
+import http.client
 import http.server
 import json
 import os
@@ -35,6 +36,7 @@ _SAFE_LABELS = ("namespace", "job_name", "cronjob", "gen_ai_system", "resource_k
 _MAX_ALERTS = 20  # bound the fan-out so an alert storm becomes a bounded stream, never a flood.
 # Leave ample room for the Matrix event envelope below the homeserver's request/event limits.
 _MAX_NOTICE_BYTES = 16_384
+_MAX_MATRIX_RESPONSE_BYTES = 16_384
 _MAX_STATUS_BYTES = 16
 _MAX_ALERT_NAME_BYTES = 128
 _MAX_SEVERITY_BYTES = 32
@@ -54,6 +56,10 @@ _MAX_LISTEN_PORT = 65_535
 _LISTEN_PORT_ERROR = (
     f"ALERTBOT_LISTEN_PORT must be a canonical ASCII integer from {_MIN_LISTEN_PORT} to {_MAX_LISTEN_PORT}"
 )
+
+
+class MatrixResponseError(Exception):
+    """The Matrix send response violated the receiver's bounded framing contract."""
 
 
 def _env(name: str, default: str | None = None) -> str:
@@ -160,6 +166,31 @@ def _render(payload: dict) -> str:
     raise AssertionError("alert notice header exceeds its fixed byte bound")
 
 
+def _discard_matrix_response(response: Any) -> None:
+    content_lengths = response.headers.get_all("Content-Length", [])
+    transfer_encodings = response.headers.get_all("Transfer-Encoding", [])
+    if len(content_lengths) > 1 or (content_lengths and transfer_encodings):
+        raise MatrixResponseError
+
+    declared_length: int | None = None
+    if content_lengths:
+        raw_length = content_lengths[0]
+        if not raw_length.isascii() or not raw_length.isdecimal():
+            raise MatrixResponseError
+        normalized_length = raw_length.lstrip("0") or "0"
+        if len(normalized_length) > len(str(_MAX_MATRIX_RESPONSE_BYTES)):
+            raise MatrixResponseError
+        declared_length = int(normalized_length)
+        if declared_length > _MAX_MATRIX_RESPONSE_BYTES:
+            raise MatrixResponseError
+
+    body = response.read(_MAX_MATRIX_RESPONSE_BYTES + 1)
+    if len(body) > _MAX_MATRIX_RESPONSE_BYTES:
+        raise MatrixResponseError
+    if declared_length is not None and len(body) != declared_length:
+        raise MatrixResponseError
+
+
 def _post_notice(homeserver: str, token: str, room_id: str, body: str) -> None:
     encoded_room = urllib.parse.quote(room_id, safe="")
     # Transaction id = deterministic body digest + a coarse (5-min) time bucket. Alertmanager retries
@@ -178,7 +209,7 @@ def _post_notice(homeserver: str, token: str, room_id: str, body: str) -> None:
     request.add_header("Authorization", f"Bearer {token}")
     # The homeserver URL is an operator-owned ConfigMap value and NetworkPolicy permits only Synapse.
     with urllib.request.urlopen(request, timeout=15) as response:
-        response.read()
+        _discard_matrix_response(response)
 
 
 class _BoundedThreadingHTTPServer(http.server.ThreadingHTTPServer):
@@ -380,7 +411,13 @@ class _Handler(http.server.BaseHTTPRequestHandler):
         server = cast(_BoundedThreadingHTTPServer, self.server)
         try:
             _post_notice(server.homeserver, server.token, server.room_id, _render(payload))
-        except (urllib.error.URLError, TimeoutError, ValueError) as error:
+        except (
+            MatrixResponseError,
+            http.client.HTTPException,
+            urllib.error.URLError,
+            TimeoutError,
+            ValueError,
+        ) as error:
             # Fail visibly to Alertmanager (it retries) but keep the log content-free.
             print(f"alert-receiver: delivery failed: {type(error).__name__}", file=sys.stderr)
             self._reply(502)

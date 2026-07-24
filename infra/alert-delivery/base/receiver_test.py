@@ -8,8 +8,10 @@ discipline of the canary's probe_test.py.
 
 from __future__ import annotations
 
+import contextlib
 import errno
 import http.server
+import io
 import json
 import os
 import socket
@@ -17,6 +19,7 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -600,6 +603,7 @@ def test_thread_start_failure_releases_request_slot() -> None:
 
 class _FakeSynapse(http.server.BaseHTTPRequestHandler):
     received: ClassVar[list[dict[str, Any]]] = []
+    response_mode = "normal"
 
     def log_message(self, format: str, *args: Any) -> None:
         pass
@@ -609,14 +613,65 @@ class _FakeSynapse(http.server.BaseHTTPRequestHandler):
         _FakeSynapse.received.append(json.loads(raw or b"{}"))
         body = b'{"event_id":"$x"}'
         self.send_response(200)
-        self.send_header("Content-Type", "application/json")
-        self.send_header("Content-Length", str(len(body)))
-        self.end_headers()
-        self.wfile.write(body)
+        if self.response_mode == "absent-length":
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.response_mode == "absent-length-oversized":
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(b"operator-private-value" + b"x" * receiver._MAX_MATRIX_RESPONSE_BYTES)
+        elif self.response_mode == "declared-oversized":
+            self.send_header("Content-Length", str(receiver._MAX_MATRIX_RESPONSE_BYTES + 1))
+            self.send_header("Connection", "close")
+            self.end_headers()
+        elif self.response_mode == "huge-content-length":
+            self.send_header("Content-Length", "9" * 10_000)
+            self.send_header("Connection", "close")
+            self.end_headers()
+        elif self.response_mode == "incomplete":
+            self.send_header("Content-Length", str(len(body) + 1))
+            self.send_header("Connection", "close")
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.response_mode == "duplicate-content-length":
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+        elif self.response_mode == "ambiguous-transfer":
+            self.send_header("Content-Length", str(len(body)))
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            self.wfile.write(f"{len(body):x}\r\n".encode() + body + b"\r\n0\r\n\r\n")
+        elif self.response_mode == "chunked":
+            self.send_header("Transfer-Encoding", "chunked")
+            self.end_headers()
+            self.wfile.write(f"{len(body):x}\r\n".encode() + body + b"\r\n0\r\n\r\n")
+        else:
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+
+def _post_webhook(recv: receiver._BoundedThreadingHTTPServer, payload: dict[str, Any] = WEBHOOK) -> int:
+    request = urllib.request.Request(
+        f"http://127.0.0.1:{recv.server_address[1]}/",
+        data=json.dumps(payload).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            return response.status
+    except urllib.error.HTTPError as error:
+        return error.code
 
 
 def test_webhook_posts_content_free_notice() -> None:
     _FakeSynapse.received = []
+    _FakeSynapse.response_mode = "normal"
     synapse = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeSynapse)
     threading.Thread(target=synapse.serve_forever, daemon=True).start()
     recv = _serve(receiver._Handler)
@@ -624,14 +679,7 @@ def test_webhook_posts_content_free_notice() -> None:
     recv.token = "alertbot-token"
     recv.room_id = ROOM
     try:
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{recv.server_address[1]}/",
-            data=json.dumps(WEBHOOK).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(request, timeout=5) as response:
-            assert response.status == 200
+        assert _post_webhook(recv) == 200
         time.sleep(0.2)
         assert len(_FakeSynapse.received) == 1, "one notice per group webhook"
         posted = _FakeSynapse.received[0]
@@ -651,14 +699,7 @@ def test_webhook_posts_content_free_notice() -> None:
                 for i in range(receiver._MAX_ALERTS)
             ],
         }
-        bounded_request = urllib.request.Request(
-            f"http://127.0.0.1:{recv.server_address[1]}/",
-            data=json.dumps(bounded_webhook).encode(),
-            headers={"Content-Type": "application/json"},
-            method="POST",
-        )
-        with urllib.request.urlopen(bounded_request, timeout=5) as response:
-            assert response.status == 200
+        assert _post_webhook(recv, bounded_webhook) == 200
         time.sleep(0.2)
         assert len(_FakeSynapse.received) == 2
         bounded_notice = _FakeSynapse.received[1]["body"]
@@ -666,6 +707,45 @@ def test_webhook_posts_content_free_notice() -> None:
         assert "omitted by notice byte limit" in bounded_notice
         print("ok: webhook posts a byte-bounded notice")
     finally:
+        synapse.shutdown()
+        synapse.server_close()
+        recv.shutdown()
+        recv.server_close()
+
+
+def test_matrix_responses_are_bounded_and_strictly_framed() -> None:
+    _FakeSynapse.received = []
+    synapse = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeSynapse)
+    threading.Thread(target=synapse.serve_forever, daemon=True).start()
+    recv = _serve(receiver._Handler)
+    recv.homeserver = f"http://127.0.0.1:{synapse.server_address[1]}"
+    recv.token = "alertbot-token"
+    recv.room_id = ROOM
+    try:
+        for mode in ("normal", "absent-length", "chunked"):
+            _FakeSynapse.response_mode = mode
+            assert _post_webhook(recv) == 200, f"bounded {mode} response must succeed"
+
+        invalid_modes = (
+            "absent-length-oversized",
+            "declared-oversized",
+            "huge-content-length",
+            "incomplete",
+            "duplicate-content-length",
+            "ambiguous-transfer",
+        )
+        errors = io.StringIO()
+        with contextlib.redirect_stderr(errors):
+            for mode in invalid_modes:
+                _FakeSynapse.response_mode = mode
+                assert _post_webhook(recv) == 502, f"{mode} response must fail closed"
+
+        assert len(_FakeSynapse.received) == 9
+        assert errors.getvalue() == "alert-receiver: delivery failed: MatrixResponseError\n" * len(invalid_modes)
+        assert "operator-private-value" not in errors.getvalue()
+        print("ok: Matrix send responses are bounded and strictly framed")
+    finally:
+        _FakeSynapse.response_mode = "normal"
         synapse.shutdown()
         synapse.server_close()
         recv.shutdown()
@@ -692,4 +772,5 @@ if __name__ == "__main__":
     test_request_concurrency_is_bounded_and_recovers()
     test_thread_start_failure_releases_request_slot()
     test_webhook_posts_content_free_notice()
+    test_matrix_responses_are_bounded_and_strictly_framed()
     print("alert receiver tests passed")
