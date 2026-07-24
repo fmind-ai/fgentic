@@ -170,7 +170,10 @@ def _render(payload: dict) -> str:
     raise AssertionError("alert notice header exceeds its fixed byte bound")
 
 
-def _discard_matrix_response(response: Any) -> None:
+def _validate_matrix_response(response: Any) -> None:
+    if response.status != 200:
+        raise MatrixResponseError
+
     content_lengths = response.headers.get_all("Content-Length", [])
     transfer_encodings = response.headers.get_all("Transfer-Encoding", [])
     if len(content_lengths) > 1 or (content_lengths and transfer_encodings):
@@ -193,6 +196,15 @@ def _discard_matrix_response(response: Any) -> None:
         raise MatrixResponseError
     if declared_length is not None and len(body) != declared_length:
         raise MatrixResponseError
+    try:
+        payload = json.loads(body)
+    except (RecursionError, ValueError):
+        raise MatrixResponseError from None
+    if not isinstance(payload, dict):
+        raise MatrixResponseError
+    event_id = payload.get("event_id")
+    if not isinstance(event_id, str) or not event_id:
+        raise MatrixResponseError
 
 
 def _post_notice_io(homeserver: str, token: str, room_id: str, body: str) -> None:
@@ -213,7 +225,7 @@ def _post_notice_io(homeserver: str, token: str, room_id: str, body: str) -> Non
     request.add_header("Authorization", f"Bearer {token}")
     # The homeserver URL is an operator-owned ConfigMap value and NetworkPolicy permits only Synapse.
     with urllib.request.urlopen(request, timeout=_MATRIX_REQUEST_TIMEOUT_SECONDS) as response:
-        _discard_matrix_response(response)
+        _validate_matrix_response(response)
 
 
 def _post_notice(homeserver: str, token: str, room_id: str, body: str) -> None:
