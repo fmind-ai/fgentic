@@ -17,7 +17,7 @@ Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md). For usag
 1. Choose an open [`good first issue`](https://github.com/fmind-ai/fgentic/issues?q=state%3Aopen%20label%3A%22good%20first%20issue%22). Read its full Tasks and Acceptance criteria; check its assignees, `status/in-progress` label, claim comments, related branches, and open PRs; then comment with your intent and branch only when no active claim exists. A maintainer will confirm there is no competing worktree, assign the issue, and mark the lease before you start.
 1. Run `mise run install`, make only the issue-sized change, and use the smallest focused checks while iterating. The installed hooks run the canonical repository gates before your commit and push complete.
 1. Certify the Developer Certificate of Origin with `git commit -s` on every commit. This adds your own `Signed-off-by` trailer; it is not a CLA or an attribution trailer.
-1. Push your branch and open a pull request using the repository template. Explain What / Why / How / Test plan, use `Fixes #N`, keep the PR focused, and respond to CI and review findings. Maintainers squash-merge accepted PRs.
+1. Push your branch and open a pull request using the repository template. Explain What / Why / How / Test plan, use `Fixes #N`, and keep the PR focused. Before merge, the final pushed head must pass required hosted CI and peer review with all actionable findings addressed. For `agent-ready` work, a peer coding agent owns review while maintainers spot-check asynchronously. Maintainers squash-merge accepted PRs.
 
 If the pool is empty, do not relabel an arbitrary issue yourself. Comment on [#191](https://github.com/fmind-ai/fgentic/issues/191) so a maintainer can select work whose context, risk, and acceptance boundary are genuinely suitable for a newcomer.
 
@@ -33,7 +33,7 @@ Maintainers review the pool once per calendar quarter and record the audit on [#
 1. **Code standards:** Go (default) and Python; type-safe, small composable units, errors wrapped with `%w`, no ignored errors, no tech debt. Match the surrounding code's conventions.
 1. **Secrets:** never commit plaintext secrets — SOPS-encrypted `*.sops.yaml` only (gitleaks enforces this pre-commit).
 1. **Commits:** [Conventional Commits](https://www.conventionalcommits.org/) (`feat:`, `fix:`, `refactor:`, `chore:`, …) with **DCO sign-off** (`git commit -s`). No CLA. No AI-attribution trailers.
-1. **Pull requests:** one concern per PR; fill the PR template (What / Why / How / Test plan); link the issue with closing keywords (`Fixes #N`). PRs are squash-merged.
+1. **Pull requests:** one concern per PR; fill the PR template (What / Why / How / Test plan); link the issue with closing keywords (`Fixes #N`). The final pushed head must pass required hosted CI and peer review with all actionable findings addressed before the PR is squash-merged.
 
 `mise run check` includes Helm unit tests for the bridge chart, strict offline `flux build kustomization` renders for both `clusters/local` and `clusters/gcp`, and kubeconform validation of those renders. A chart conditional, overlay patch, or unresolved post-build variable therefore fails before Flux sees it. The empty `clusters/gcp/flux-system` Kustomization is an offline-validation placeholder; the spend-gated GKE bootstrap replaces it with the generated Flux controllers and sync manifests.
 
