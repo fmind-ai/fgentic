@@ -96,11 +96,14 @@ def _request(method: str, url: str, token: str | None, body: dict | None) -> dic
 
 
 def _successful_body(body: object) -> bool:
-    if not isinstance(body, str) or not body.strip():
+    if not isinstance(body, str):
         return False
-    if body.startswith(_UNSUCCESSFUL_PREFIXES) or body.startswith(_PROVENANCE_BANNER):
+    normalized = body.strip()
+    if not normalized:
         return False
-    return body not in _UNSUCCESSFUL_BODIES
+    if normalized.startswith(_UNSUCCESSFUL_PREFIXES) or normalized.startswith(_PROVENANCE_BANNER):
+        return False
+    return normalized not in _UNSUCCESSFUL_BODIES
 
 
 class _ReplyTracker:

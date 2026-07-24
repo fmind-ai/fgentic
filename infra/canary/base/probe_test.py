@@ -64,6 +64,7 @@ def test_reply_detection_contract() -> None:
     assert probe._reply_succeeded(async_timeline, GHOST, PROBE_EVENT), "edited async reply must count"
     # Fast synchronous path: a single m.notice reply with a real body, no edit.
     assert probe._reply_succeeded([_reply(REPLY_EVENT, "the answer")], GHOST, PROBE_EVENT)
+    assert probe._reply_succeeded([_reply(REPLY_EVENT, "  the answer  ")], GHOST, PROBE_EVENT)
     # Only a placeholder, no edit yet -> not successful.
     assert not probe._reply_succeeded([_reply(REPLY_EVENT, "⏳ working on it…")], GHOST, PROBE_EVENT)
     # Reply to a DIFFERENT event does not count.
@@ -71,7 +72,21 @@ def test_reply_detection_contract() -> None:
     # A different sender does not count.
     assert not probe._reply_succeeded([_reply(REPLY_EVENT, "answer", sender="@x:y")], GHOST, PROBE_EVENT)
     # An edit whose new body is an error/blocked/empty placeholder is not successful.
-    for bad in ("⚠️ blocked", "🛑 refused", "(the agent returned no content)", ""):
+    for bad in (
+        "⚠️ blocked",
+        "  ⚠️ blocked  ",
+        "🛑 refused",
+        "\t🛑 refused\n",
+        "(the agent returned no content)",
+        "  (the agent returned no content)\t",
+        probe._PROVENANCE_BANNER,
+        f"\n{probe._PROVENANCE_BANNER}\n",
+        "",
+        " \t\n",
+    ):
+        assert not probe._reply_succeeded([_reply(REPLY_EVENT, bad)], GHOST, PROBE_EVENT), (
+            f"direct failure body {bad!r} must not count"
+        )
         assert not probe._reply_succeeded(
             [_reply(REPLY_EVENT, "⏳ working on it…"), _edit(REPLY_EVENT, bad)], GHOST, PROBE_EVENT
         ), f"error edit body {bad!r} must not count"
