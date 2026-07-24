@@ -37,6 +37,7 @@ jobs:
       - name: Install demo toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
         with:
+          version: 2026.7.11 # pin: keep the toolchain on the known-good mise (see ci.yml)
           install_args: flux2 jq k3d kubectl ripgrep yq
       - name: Configure Docker Buildx
         uses: docker/setup-buildx-action@bb05f3f5519dd87d3ba754cc423b652a5edd6d2c # v4
@@ -163,6 +164,7 @@ jobs:
       - name: Install policy toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
         with:
+          version: 2026.7.11 # pin: keep the toolchain on the known-good mise (see ci.yml)
           install_args: flux2 go helm jq k3d kind kubeconform kubectl ripgrep xh yq
       - name: Verify A2A authorization boundary
         id: a2a
@@ -256,6 +258,7 @@ jobs:
       - name: Install scanner toolchain
         uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
         with:
+          version: 2026.7.11 # pin: keep the toolchain on the known-good mise (see ci.yml)
           install_args: helm jq k3d kubectl ripgrep yq
       - name: Verify continuous vulnerability scanning
         id: trivy_operator
