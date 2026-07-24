@@ -98,6 +98,9 @@ def _request_io(
         request.add_header("Authorization", f"Bearer {token}")
     try:
         with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
+            if response.status != 200:
+                _fail(f"{method} Matrix response has unexpected HTTP status")
+
             content_lengths = response.headers.get_all("Content-Length", [])
             if len(content_lengths) > 1 or (
                 content_lengths

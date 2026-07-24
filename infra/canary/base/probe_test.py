@@ -268,15 +268,16 @@ class _FakeMatrix(http.server.BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:  # silence
         pass
 
-    def _send(self, payload: dict) -> None:
-        body = json.dumps(payload).encode()
-        self.send_response(200)
+    def _send(self, payload: dict | None, *, status: int = 200) -> None:
+        body = json.dumps(payload).encode() if payload is not None else b""
+        self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         # The hard-deadline test intentionally closes before the slow response.
         with contextlib.suppress(BrokenPipeError):
-            self.wfile.write(body)
+            if body:
+                self.wfile.write(body)
 
     def _send_trickle(self) -> None:
         body = b'{"x":1}'
@@ -339,17 +340,25 @@ class _FakeMatrix(http.server.BaseHTTPRequestHandler):
         self.rfile.read(int(self.headers.get("Content-Length", "0")))
         if self.path.endswith("/login") and self._send_hostile_login():
             return
-        self._send({"access_token": "canary-token"} if self.path.endswith("/login") else {})
+        status = 202 if self.response_mode == "accepted-post" else 200
+        self._send(
+            {"access_token": "canary-token"} if self.path.endswith("/login") else {},
+            status=status,
+        )
 
     def do_PUT(self) -> None:
         self.rfile.read(int(self.headers.get("Content-Length", "0")))
-        self._send({"event_id": PROBE_EVENT})
+        status = 202 if self.response_mode == "accepted-put" else 200
+        self._send({"event_id": PROBE_EVENT}, status=status)
 
     def do_GET(self) -> None:
         if self.response_mode == "trickle-response":
             self._send_trickle()
             return
         if "since=" not in self.path:
+            if self.response_mode == "no-content-get":
+                self._send(None, status=204)
+                return
             cursor = "attacker-secret" if self.response_mode == "hostile-cursor" else "s0"
             self._send({"next_batch": cursor})  # initial cursor, no events yet
             return
@@ -486,6 +495,19 @@ def test_hostile_responses_fail_closed() -> None:
     print("ok: hostile Matrix responses fail closed")
 
 
+def test_non_200_success_responses_fail_closed() -> None:
+    for mode, method in (
+        ("accepted-post", "POST"),
+        ("no-content-get", "GET"),
+        ("accepted-put", "PUT"),
+    ):
+        result = _run_probe_result([], "1", response_mode=mode)
+        assert result.returncode != 0, f"{mode} must fail closed"
+        assert result.stdout == ""
+        assert result.stderr == f"canary: {method} Matrix response has unexpected HTTP status\n"
+    print("ok: non-200 Matrix success responses fail closed")
+
+
 def test_hostile_cursor_never_reaches_failure_log() -> None:
     result = _run_probe_result([], "1", response_mode="hostile-cursor")
     assert result.returncode != 0
@@ -504,5 +526,6 @@ if __name__ == "__main__":
     test_round_trip_deadline_is_hard()
     test_request_timeout_is_end_to_end()
     test_hostile_responses_fail_closed()
+    test_non_200_success_responses_fail_closed()
     test_hostile_cursor_never_reaches_failure_log()
     print("canary probe tests passed")
