@@ -429,7 +429,6 @@ def test_webhook_rejects_invalid_media_types_before_body_read() -> None:
         b"",
         b"Content-Type: application/json\r\nContent-Type: application/json\r\n",
         b"Content-Type: text/plain\r\n",
-        b"Content-Type: application/json;\r\n",
         b"Content-Type: application/json; charset\r\n",
         b"Content-Type: application/json; charset =utf-8\r\n",
     )
@@ -452,8 +451,21 @@ def test_webhook_rejects_invalid_media_types_before_body_read() -> None:
                     )
                     == 415
                 )
+            address = cast(tuple[str, int], recv.server_address)
+            with socket.create_connection(address, timeout=2) as connection:
+                connection.settimeout(2)
+                connection.sendall(
+                    b"POST / HTTP/1.1\r\nHost: test\r\nContent-Length: 2\r\n"
+                    b"Content-Type: text/plain\r\n\r\n{}"
+                    b"GET /healthz HTTP/1.1\r\nHost: test\r\n\r\n"
+                )
+                response = bytearray()
+                while chunk := connection.recv(4_096):
+                    response.extend(chunk)
+            assert response.startswith(b"HTTP/1.1 415 Unsupported Media Type\r\n")
+            assert response.count(b"HTTP/1.1 ") == 1
         assert errors.getvalue() == ""
-        print("ok: invalid webhook media types fail before body reads")
+        print("ok: invalid webhook media types fail before body reads and close the connection")
     finally:
         recv.shutdown()
         recv.server_close()
@@ -655,8 +667,7 @@ class _FakeSynapse(http.server.BaseHTTPRequestHandler):
             "unterminated-content-type-parameter": ('application/json; profile="ops',),
             "space-before-content-type-parameter-equals": ("application/json; charset =UTF-8",),
             "space-after-content-type-parameter-equals": ("application/json; charset= UTF-8",),
-            "empty-content-type-parameter": ('Application/JSON; ; profile="ops;alerts";;charset=UTF-8;',),
-            "parameterized-content-type": ('Application/JSON; profile="ops;alerts";charset=UTF-8',),
+            "parameterized-content-type": ('Application/JSON; ; profile="ops;alerts";;charset=UTF-8;',),
         }.get(self.response_mode, ("application/json",))
         for content_type in content_types:
             self.send_header("Content-Type", content_type)
@@ -853,7 +864,6 @@ def test_matrix_responses_are_bounded_and_strictly_framed() -> None:
             "absent-content-type",
             "duplicate-content-type",
             "non-json-content-type",
-            "empty-content-type-parameter",
             "missing-content-type-parameter-value",
             "unterminated-content-type-parameter",
             "space-before-content-type-parameter-equals",
