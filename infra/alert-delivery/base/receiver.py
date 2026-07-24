@@ -481,9 +481,21 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.connection.settimeout(self.timeout)
         return bytes(body)
 
+    def _has_json_content_type(self) -> bool:
+        content_types = self.headers.get_all("Content-Type", [])
+        if (
+            len(content_types) == 1
+            and isinstance(content_types[0], str)
+            and _is_json_content_type(content_types[0])
+        ):
+            return True
+        self.close_connection = True
+        self._reply(415)
+        return False
+
     def do_POST(self) -> None:
         size = self._request_size()
-        if size is None:
+        if size is None or not self._has_json_content_type():
             return
         raw = self._read_body(size)
         if raw is None:

@@ -423,6 +423,54 @@ def test_webhook_rejects_invalid_framing_and_oversized_body() -> None:
         recv.server_close()
 
 
+def test_webhook_rejects_invalid_media_types_before_body_read() -> None:
+    recv = _serve(receiver._Handler)
+    media_type_headers = (
+        b"",
+        b"Content-Type: application/json\r\nContent-Type: application/json\r\n",
+        b"Content-Type: text/plain\r\n",
+        b"Content-Type: application/json; charset\r\n",
+        b"Content-Type: application/json; charset =utf-8\r\n",
+    )
+    try:
+        with (
+            mock.patch.object(
+                receiver._Handler,
+                "_read_body",
+                side_effect=AssertionError("invalid media type reached body read"),
+            ),
+            contextlib.redirect_stderr(io.StringIO()) as errors,
+        ):
+            for headers in media_type_headers:
+                assert (
+                    _raw_status(
+                        recv,
+                        b"POST / HTTP/1.1\r\nHost: test\r\nContent-Length: 2\r\n"
+                        + headers
+                        + b"Connection: close\r\n\r\n{}",
+                    )
+                    == 415
+                )
+            address = cast(tuple[str, int], recv.server_address)
+            with socket.create_connection(address, timeout=2) as connection:
+                connection.settimeout(2)
+                connection.sendall(
+                    b"POST / HTTP/1.1\r\nHost: test\r\nContent-Length: 2\r\n"
+                    b"Content-Type: text/plain\r\n\r\n{}"
+                    b"GET /healthz HTTP/1.1\r\nHost: test\r\n\r\n"
+                )
+                response = bytearray()
+                while chunk := connection.recv(4_096):
+                    response.extend(chunk)
+            assert response.startswith(b"HTTP/1.1 415 Unsupported Media Type\r\n")
+            assert response.count(b"HTTP/1.1 ") == 1
+        assert errors.getvalue() == ""
+        print("ok: invalid webhook media types fail before body reads and close the connection")
+    finally:
+        recv.shutdown()
+        recv.server_close()
+
+
 def test_request_headers_are_bounded() -> None:
     recv = _serve(receiver._Handler)
     prefix = b"GET /healthz HTTP/1.1\r\nHost: test\r\nX-Fill: "
@@ -497,14 +545,16 @@ def test_webhook_rejects_incomplete_and_slow_body() -> None:
             assert (
                 _raw_status(
                     recv,
-                    b"POST / HTTP/1.1\r\nHost: test\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{",
+                    b"POST / HTTP/1.1\r\nHost: test\r\nContent-Length: 2\r\n"
+                    b"Content-Type: application/json\r\nConnection: close\r\n\r\n{",
                 )
                 == 400
             )
             assert (
                 _raw_status(
                     recv,
-                    b"POST / HTTP/1.1\r\nHost: test\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{",
+                    b"POST / HTTP/1.1\r\nHost: test\r\nContent-Length: 2\r\n"
+                    b"Content-Type: application/json\r\nConnection: close\r\n\r\n{",
                     shutdown_write=False,
                 )
                 == 408
@@ -711,11 +761,16 @@ class _FakeSynapse(http.server.BaseHTTPRequestHandler):
             self.wfile.write(body)
 
 
-def _post_webhook(recv: receiver._BoundedThreadingHTTPServer, payload: dict[str, Any] = WEBHOOK) -> int:
+def _post_webhook(
+    recv: receiver._BoundedThreadingHTTPServer,
+    payload: dict[str, Any] = WEBHOOK,
+    *,
+    content_type: str = "application/json",
+) -> int:
     request = urllib.request.Request(
         f"http://127.0.0.1:{recv.server_address[1]}/",
         data=json.dumps(payload).encode(),
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": content_type},
         method="POST",
     )
     try:
@@ -744,6 +799,17 @@ def test_webhook_posts_content_free_notice() -> None:
         assert "SECRET-PROMPT-CONTENT-should-never-leak" not in posted["body"]
         print("ok: webhook posts one content-free m.notice")
 
+        assert (
+            _post_webhook(
+                recv,
+                content_type='Application/JSON; profile="alertmanager"; charset=UTF-8',
+            )
+            == 200
+        )
+        time.sleep(0.2)
+        assert len(_FakeSynapse.received) == 2
+        print("ok: parameterized JSON webhook media type is accepted")
+
         bounded_webhook = {
             "status": "firing",
             "alerts": [
@@ -757,8 +823,8 @@ def test_webhook_posts_content_free_notice() -> None:
         }
         assert _post_webhook(recv, bounded_webhook) == 200
         time.sleep(0.2)
-        assert len(_FakeSynapse.received) == 2
-        bounded_notice = _FakeSynapse.received[1]["body"]
+        assert len(_FakeSynapse.received) == 3
+        bounded_notice = _FakeSynapse.received[2]["body"]
         assert len(bounded_notice.encode("utf-8")) <= receiver._MAX_NOTICE_BYTES
         assert "omitted by notice byte limit" in bounded_notice
         print("ok: webhook posts a byte-bounded notice")
@@ -993,6 +1059,7 @@ if __name__ == "__main__":
     test_safe_label_summary_excludes_content()
     test_raw_status_tolerates_only_peer_closed_shutdown()
     test_webhook_rejects_invalid_framing_and_oversized_body()
+    test_webhook_rejects_invalid_media_types_before_body_read()
     test_request_headers_are_bounded()
     test_slow_headers_release_all_request_slots()
     test_webhook_rejects_incomplete_and_slow_body()
