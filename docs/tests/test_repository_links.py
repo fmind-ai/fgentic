@@ -18,6 +18,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 DISCUSSION_TEMPLATE_DIRECTORY = REPOSITORY_ROOT / ".github/DISCUSSION_TEMPLATE"
 ISSUE_TEMPLATE_DIRECTORY = REPOSITORY_ROOT / ".github/ISSUE_TEMPLATE"
 ISSUE_TEMPLATE_CONFIG = REPOSITORY_ROOT / ".github/ISSUE_TEMPLATE/config.yml"
+PULL_REQUEST_TEMPLATE = REPOSITORY_ROOT / ".github/PULL_REQUEST_TEMPLATE.md"
 SUPPORT_POLICY = REPOSITORY_ROOT / ".github/SUPPORT.md"
 NEW_DISCUSSION_PATH = "/fmind-ai/fgentic/discussions/new"
 NEW_ISSUE_PATH = "/fmind-ai/fgentic/issues/new"
@@ -103,6 +104,7 @@ CHECKBOX_OPTION_KEYS = frozenset({"label", "required"})
 ISSUE_CHOOSER_KEYS = frozenset({"blank_issues_enabled", "contact_links"})
 ISSUE_CHOOSER_CONTACT_LINK_KEYS = frozenset({"about", "name", "url"})
 RAW_URL_TRAILING_DELIMITERS = ".,;:!?*~}"
+PULL_REQUEST_TEMPLATE_HEADINGS = ("What", "Why", "How", "Test plan")
 PUBLIC_ENTRYPOINTS = (
     ".agents/AGENTS.md",
     ".github/PULL_REQUEST_TEMPLATE.md",
@@ -138,11 +140,70 @@ class _RenderedTargetParser(HTMLParser):
                 self.targets.append(value)
 
 
+class _RenderedHeadingParser(HTMLParser):
+    """Collect rendered level-two heading text."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.headings: list[str] = []
+        self._heading_parts: list[str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        del attrs
+        if tag == "h2":
+            self._finish_heading()
+            self._heading_parts = []
+
+    def handle_data(self, data: str) -> None:
+        if self._heading_parts is not None:
+            self._heading_parts.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag == "h2":
+            self._finish_heading()
+
+    def close(self) -> None:
+        super().close()
+        self._finish_heading()
+
+    def _finish_heading(self) -> None:
+        if self._heading_parts is not None:
+            self.headings.append("".join(self._heading_parts).strip())
+            self._heading_parts = None
+
+
 def _rendered_targets(markdown: str) -> list[str]:
     """Return targets that Markdown renders as links or images."""
     parser = _RenderedTargetParser()
     parser.feed(render_markdown(markdown, extensions=["fenced_code", "md_in_html", "tables"]))
     return parser.targets
+
+
+def _rendered_level_two_headings(markdown: str) -> list[str]:
+    """Return level-two headings from rendered Markdown."""
+    parser = _RenderedHeadingParser()
+    parser.feed(render_markdown(markdown, extensions=["pymdownx.superfences", "md_in_html", "tables"]))
+    parser.close()
+    return parser.headings
+
+
+def _pull_request_template_heading_violations(
+    source: Path,
+    repository_root: Path,
+) -> list[SchemaViolation]:
+    """Return drift from the required pull request template sections."""
+    headings = _rendered_level_two_headings(source.read_text(encoding="utf-8"))
+    if tuple(headings) == PULL_REQUEST_TEMPLATE_HEADINGS:
+        return []
+
+    expected = " -> ".join(PULL_REQUEST_TEMPLATE_HEADINGS)
+    actual = " -> ".join(headings) if headings else "<none>"
+    return [
+        (
+            _display_path(source, repository_root),
+            f"level-two headings must be exactly {expected}; found {actual}",
+        )
+    ]
 
 
 def _tracked_targets(markdown: str) -> list[str]:
@@ -1570,6 +1631,93 @@ class CommunityRouteIntegrityTest(TestCase):
     def test_markdown_issue_templates_have_required_metadata(self) -> None:
         sources = tuple(source for source in _issue_templates() if source.suffix.lower() == ".md")
         _require_valid_markdown_issue_templates(sources, REPOSITORY_ROOT)
+
+    def test_rejects_pull_request_template_heading_drift(self) -> None:
+        invalid_headings = (
+            ("missing", ("What", "Why", "Test plan")),
+            ("duplicate", ("What", "Why", "Why", "How", "Test plan")),
+            ("reordered", ("Why", "What", "How", "Test plan")),
+            ("extra", ("What", "Why", "How", "Review", "Test plan")),
+            ("empty", ()),
+        )
+        for name, headings in invalid_headings:
+            with self.subTest(name=name), TemporaryDirectory() as temporary:
+                repository_root = Path(temporary)
+                source = repository_root / ".github/PULL_REQUEST_TEMPLATE.md"
+                source.parent.mkdir(parents=True)
+                source.write_text("\n\n".join(f"## {heading}" for heading in headings), encoding="utf-8")
+
+                expected = " -> ".join(headings) if headings else "<none>"
+                self.assertEqual(
+                    _pull_request_template_heading_violations(source, repository_root),
+                    [
+                        (
+                            ".github/PULL_REQUEST_TEMPLATE.md",
+                            f"level-two headings must be exactly What -> Why -> How -> Test plan; found {expected}",
+                        )
+                    ],
+                )
+
+    def test_accepts_required_pull_request_template_headings(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/PULL_REQUEST_TEMPLATE.md"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "## What",
+                        "",
+                        "```markdown",
+                        "## Heading-shaped example",
+                        "```",
+                        "",
+                        "> ```markdown",
+                        "> ## Heading-shaped nested example",
+                        "> ```",
+                        "",
+                        "## Why",
+                        "",
+                        "## *How*",
+                        "",
+                        "## Test `plan`",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _rendered_level_two_headings(source.read_text(encoding="utf-8")),
+                list(PULL_REQUEST_TEMPLATE_HEADINGS),
+            )
+            self.assertEqual(_pull_request_template_heading_violations(source, repository_root), [])
+
+    def test_rejects_malformed_raw_html_pull_request_headings(self) -> None:
+        cases = (
+            ("unclosed", "<h2>Review", "Review"),
+            ("nested", "<h2>Review<h2>Security</h2>", "Review -> Security"),
+        )
+        required = "\n\n".join(f"## {heading}" for heading in PULL_REQUEST_TEMPLATE_HEADINGS)
+        for name, raw_html, extra_headings in cases:
+            with self.subTest(name=name), TemporaryDirectory() as temporary:
+                repository_root = Path(temporary)
+                source = repository_root / ".github/PULL_REQUEST_TEMPLATE.md"
+                source.parent.mkdir(parents=True)
+                source.write_text(f"{required}\n\n{raw_html}\n", encoding="utf-8")
+
+                self.assertEqual(
+                    _pull_request_template_heading_violations(source, repository_root),
+                    [
+                        (
+                            ".github/PULL_REQUEST_TEMPLATE.md",
+                            "level-two headings must be exactly What -> Why -> How -> Test plan; "
+                            f"found What -> Why -> How -> Test plan -> {extra_headings}",
+                        )
+                    ],
+                )
+
+    def test_pull_request_template_has_required_headings(self) -> None:
+        self.assertEqual(_pull_request_template_heading_violations(PULL_REQUEST_TEMPLATE, REPOSITORY_ROOT), [])
 
     def test_rejects_duplicate_issue_form_keys_at_exact_paths(self) -> None:
         with TemporaryDirectory() as temporary:
