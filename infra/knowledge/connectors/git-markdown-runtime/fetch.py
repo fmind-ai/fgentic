@@ -378,6 +378,34 @@ def _write_new(path: Path, content: bytes, mode: int = FILE_MODE) -> None:
         os.close(descriptor)
 
 
+def _open_lock(path: Path) -> int:
+    flags = os.O_RDWR | os.O_CREAT | os.O_CLOEXEC | os.O_NONBLOCK
+    if hasattr(os, "O_NOFOLLOW"):
+        flags |= os.O_NOFOLLOW
+    try:
+        descriptor = os.open(path, flags, 0o660)
+    except OSError:
+        raise AcquisitionError("acquisition lock must be a regular file") from None
+    try:
+        opened = os.fstat(descriptor)
+        named = path.lstat()
+        if (
+            not stat.S_ISREG(opened.st_mode)
+            or not stat.S_ISREG(named.st_mode)
+            or opened.st_dev != named.st_dev
+            or opened.st_ino != named.st_ino
+        ):
+            raise AcquisitionError("acquisition lock must be a regular file")
+        os.fchmod(descriptor, 0o660)
+    except OSError:
+        os.close(descriptor)
+        raise AcquisitionError("acquisition lock must be a regular file") from None
+    except BaseException:
+        os.close(descriptor)
+        raise
+    return descriptor
+
+
 def _write_temporary(directory: Path, prefix: str, content: bytes, mode: int = FILE_MODE) -> Path:
     descriptor, temporary_name = tempfile.mkstemp(prefix=prefix, dir=directory)
     temporary = Path(temporary_name)
@@ -535,9 +563,12 @@ def _publish_snapshot(output_root: Path, connector: git_markdown.GitMarkdownConn
 def acquire(output_root: Path, token_file: Path, ca_file: Path) -> None:
     _ensure_directory(output_root, WRITABLE_DIRECTORY_MODE)
     lock_path = output_root / ".lock"
-    with lock_path.open("a+b") as lock:
-        lock_path.chmod(0o660)
-        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+    lock = _open_lock(lock_path)
+    try:
+        try:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+        except OSError:
+            raise AcquisitionError("could not acquire the acquisition lock") from None
         document = _api_document(token_file, ca_file)
         status = _artifact_status(document)
         artifact = _download_artifact(status)
@@ -556,6 +587,8 @@ def acquire(output_root: Path, token_file: Path, ca_file: Path) -> None:
             _publish_blocked(output_root, status)
             raise
         _publish_snapshot(output_root, connector)
+    finally:
+        os.close(lock)
 
 
 def _parser() -> argparse.ArgumentParser:

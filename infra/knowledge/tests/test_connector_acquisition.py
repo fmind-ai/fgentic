@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import errno
+import fcntl
 import http.client
 import importlib.util
 import os
 import socketserver
 import ssl
+import stat
 import sys
 import threading
 from collections.abc import Callable, Iterator
@@ -128,6 +130,73 @@ def test_projected_file_reader_accepts_symlink_to_regular_file(tmp_path: Path) -
     projected.symlink_to(Path("..data/token"))
 
     assert acquisition._read_file(projected, 16) == b"projected"
+
+
+def test_acquire_rejects_symlinked_lock_without_touching_target(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    target = tmp_path / "outside"
+    target.write_bytes(b"preserve")
+    target.chmod(0o600)
+    (output_root / ".lock").symlink_to(target)
+    requested = False
+
+    def unexpected_request(_token: Path, _ca: Path) -> dict[str, object]:
+        nonlocal requested
+        requested = True
+        raise AssertionError("Kubernetes API reached through a symlinked lock")
+
+    monkeypatch.setattr(acquisition, "_api_document", unexpected_request)
+
+    with pytest.raises(acquisition.AcquisitionError, match="lock must be a regular file"):
+        acquisition.acquire(output_root, tmp_path / "token", tmp_path / "ca.crt")
+
+    assert not requested
+    assert target.read_bytes() == b"preserve"
+    assert stat.S_IMODE(target.stat().st_mode) == 0o600
+
+
+def test_acquire_rejects_fifo_lock_without_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    output_root = tmp_path / "output"
+    output_root.mkdir()
+    os.mkfifo(output_root / ".lock")
+    requested = False
+
+    def unexpected_request(_token: Path, _ca: Path) -> dict[str, object]:
+        nonlocal requested
+        requested = True
+        raise AssertionError("Kubernetes API reached through a FIFO lock")
+
+    monkeypatch.setattr(acquisition, "_api_document", unexpected_request)
+
+    with pytest.raises(acquisition.AcquisitionError, match="lock must be a regular file"):
+        acquisition.acquire(output_root, tmp_path / "token", tmp_path / "ca.crt")
+
+    assert not requested
+
+
+def test_acquisition_lock_remains_persistent_and_exclusive(tmp_path: Path) -> None:
+    lock_path = tmp_path / ".lock"
+    first = acquisition._open_lock(lock_path)
+    try:
+        fcntl.flock(first, fcntl.LOCK_EX)
+        second = acquisition._open_lock(lock_path)
+        try:
+            with pytest.raises(BlockingIOError):
+                fcntl.flock(second, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        finally:
+            os.close(second)
+    finally:
+        os.close(first)
+
+    assert lock_path.is_file()
+    assert stat.S_IMODE(lock_path.stat().st_mode) == 0o660
 
 
 def test_api_document_reads_bounded_ca_before_constructing_client(
