@@ -12,6 +12,7 @@ import shutil
 import ssl
 import stat
 import tempfile
+import unicodedata
 from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import cast
@@ -61,7 +62,16 @@ def _object(value: object, *, name: str) -> JSONObject:
 def _string(value: object, *, name: str, maximum: int) -> str:
     if not isinstance(value, str) or not value or value != value.strip():
         raise AcquisitionError(f"{name} must be a non-empty trimmed string")
-    if len(value.encode()) > maximum or any(ord(character) < 32 for character in value):
+    try:
+        normalized = unicodedata.normalize("NFC", value)
+        encoded = normalized.encode()
+    except UnicodeError:
+        raise AcquisitionError(f"{name} is not bounded clean text") from None
+    if (
+        normalized != value
+        or len(encoded) > maximum
+        or any(unicodedata.category(character).startswith("C") for character in normalized)
+    ):
         raise AcquisitionError(f"{name} is not bounded clean text")
     return value
 
