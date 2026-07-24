@@ -135,6 +135,11 @@ def _declared_response_length(response: http.client.HTTPResponse, maximum: int) 
     if transfer_encodings:
         if transfer_encodings[0].strip(" \t").lower() != "chunked":
             raise AcquisitionError("HTTP response transfer coding is unsupported")
+        # HTTPResponse recognizes only the unpadded spelling during begin(). Enable the
+        # decoder after strict HTTP OWS validation so accepted framing and body reads agree.
+        response.chunked = True
+        response.chunk_left = None
+        response.length = None
         return None
     if not content_lengths:
         return None
