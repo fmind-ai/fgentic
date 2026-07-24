@@ -223,6 +223,39 @@ def test_full_snapshot_then_noop_advances_only_the_complete_cursor() -> None:
     }
 
 
+def test_shared_acl_digest_is_computed_once(monkeypatch: pytest.MonkeyPatch) -> None:
+    acl_payload = git_markdown._canonical_json(
+        {
+            "classification": "approved_non_public",
+            "allowed_principals": [{"kind": "matrix", "principal": "@alice:org-a.example"}],
+            "allowed_groups": [],
+        }
+    )
+    digest_calls = 0
+    digest = git_markdown._digest
+
+    def count_acl_digest(value: bytes) -> str:
+        nonlocal digest_calls
+        if value == acl_payload:
+            digest_calls += 1
+        return digest(value)
+
+    monkeypatch.setattr(git_markdown, "_digest", count_acl_digest)
+
+    connector = build_connector(
+        {
+            "docs/alpha.md": b"# Alpha\n",
+            "docs/zeta.md": b"# Zeta\n",
+        }
+    )
+    acl_digests = {
+        connector.fetch_source(reference.source_id).acl_digest for reference in connector.enumerate_sources()
+    }
+
+    assert digest_calls == 1
+    assert acl_digests == {digest(acl_payload)}
+
+
 def test_content_change_selects_present_action() -> None:
     previous = build_connector({"docs/guide.md": b"# Guide\n\nOld.\n"})
     desired = build_connector({"docs/guide.md": b"# Guide\n\nNew.\n"})

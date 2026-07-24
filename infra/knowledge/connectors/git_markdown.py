@@ -214,6 +214,7 @@ class GitMarkdownConnector:
         manifest = _load_manifest(manifest_raw)
         corpus = _dns_label(manifest["corpus"], name="manifest.corpus")
         acl = _manifest_acl(manifest)
+        acl_digest = _digest(_canonical_json(acl.as_dict()))
         source_paths = _reference_markdown_paths(files)
 
         sources: list[SourceDocument] = []
@@ -247,7 +248,7 @@ class GitMarkdownConnector:
                     content=content,
                     content_digest=content_digest,
                     acl=acl,
-                    acl_digest=_digest(_canonical_json(acl.as_dict())),
+                    acl_digest=acl_digest,
                 )
             )
 
