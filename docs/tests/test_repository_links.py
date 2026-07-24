@@ -28,6 +28,8 @@ SAME_REPOSITORY_MAIN_PREFIXES = (
 SAME_REPOSITORY_MAIN_URL = re.compile(r"https://github\.com/fmind-ai/fgentic/(?:blob|tree)/main/[^\s<>()\[\]`\"']+")
 MARKDOWN_FRONTMATTER = re.compile(r"\A---\r?\n(?P<yaml>.*?)\r?\n---(?:\r?\n|\Z)", re.DOTALL)
 FORM_ID = re.compile(r"[A-Za-z0-9_-]+")
+# Unlike \b, these Unicode-alphanumeric boundaries treat underscores as separators.
+FORBIDDEN_TEXT_LABEL_WORD = re.compile(r"(?<![^\W_])password(?![^\W_])", re.IGNORECASE)
 PROJECT_REFERENCE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}/[1-9][0-9]*")
 _RAILS_TRANSLITERATION_SOURCE = (
     "ÀÁÂÃÄÅÇÈÉÊËÌÍÎÏÐÑÒÓÔÕÖ\u00d7ØÙÚÛÜÝàáâãäåçèéêëìíîïðñòóôõ"
@@ -553,6 +555,8 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
                 )
             elif element_type != "markdown":
                 label = cast(str, attributes.get("label"))
+                if element_type in {"input", "textarea"} and FORBIDDEN_TEXT_LABEL_WORD.search(label):
+                    violations.append((source_name, f"{location}.attributes.label contains forbidden word 'password'"))
                 if isinstance(identifier, str) and identifier in unique_identifiers:
                     reference = identifier
                     reference_location = f"{location}.id"
@@ -1383,6 +1387,65 @@ class CommunityRouteIntegrityTest(TestCase):
             )
 
             self.assertEqual(_form_schema_violations(source, repository_root), [])
+
+    def test_rejects_documented_forbidden_text_field_labels(self) -> None:
+        templates = (
+            (
+                ".github/ISSUE_TEMPLATE/broken.yml",
+                ("name: Broken", "description: Exercises forbidden labels"),
+            ),
+            (".github/DISCUSSION_TEMPLATE/broken.yml", ()),
+        )
+        for relative_path, metadata in templates:
+            with self.subTest(relative_path=relative_path), TemporaryDirectory() as temporary:
+                repository_root = Path(temporary)
+                source = repository_root / relative_path
+                source.parent.mkdir(parents=True)
+                source.write_text(
+                    "\n".join(
+                        (
+                            *metadata,
+                            "body:",
+                            "  - type: input",
+                            "    id: credential",
+                            "    attributes:",
+                            "      label: Password",
+                            "  - type: textarea",
+                            "    id: warning",
+                            "    attributes:",
+                            "      label: Do not enter your PASSWORD here",
+                            "  - type: input",
+                            "    id: underscore-before",
+                            "    attributes:",
+                            "      label: Enter_password",
+                            "  - type: textarea",
+                            "    id: underscore-after",
+                            "    attributes:",
+                            "      label: password_reset",
+                            "  - type: input",
+                            "    id: passwordless",
+                            "    attributes:",
+                            "      label: Passwordless authentication",
+                            "  - type: dropdown",
+                            "    id: category",
+                            "    attributes:",
+                            "      label: Password",
+                            "      options:",
+                            "        - Reset",
+                        )
+                    ),
+                    encoding="utf-8",
+                )
+
+                self.assertEqual(
+                    _form_schema_violations(source, repository_root),
+                    [
+                        (relative_path, "body[0].attributes.label contains forbidden word 'password'"),
+                        (relative_path, "body[1].attributes.label contains forbidden word 'password'"),
+                        (relative_path, "body[2].attributes.label contains forbidden word 'password'"),
+                        (relative_path, "body[3].attributes.label contains forbidden word 'password'"),
+                    ],
+                )
 
     def test_duplicate_ids_do_not_hide_ambiguous_labels(self) -> None:
         with TemporaryDirectory() as temporary:
