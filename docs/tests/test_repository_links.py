@@ -226,6 +226,12 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
                     for option_index, option in enumerate(options):
                         option_location = f"{location}.attributes.options[{option_index}]"
                         label = option.get("label") if isinstance(option, dict) else None
+                        if (
+                            isinstance(option, dict)
+                            and "required" in option
+                            and not isinstance(option.get("required"), bool)
+                        ):
+                            violations.append((source_name, f"{option_location}.required must be a Boolean"))
                         if not isinstance(label, str) or not label.strip():
                             violations.append((source_name, f"{option_location}.label must be a nonblank string"))
                         elif label in choices:
@@ -622,6 +628,38 @@ class CommunityRouteIntegrityTest(TestCase):
                         ".github/ISSUE_TEMPLATE/broken.yml",
                         "body[6].validations.required must be a Boolean",
                     ),
+                ],
+            )
+
+    def test_rejects_non_boolean_checkbox_option_requirement(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Broken",
+                        "description: Exercises an invalid checkbox option requirement",
+                        "body:",
+                        "  - type: checkboxes",
+                        "    attributes:",
+                        "      label: Public evidence",
+                        "      options:",
+                        "        - label: I removed private content.",
+                        '          required: "true"',
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[0].attributes.options[0].required must be a Boolean",
+                    )
                 ],
             )
 
