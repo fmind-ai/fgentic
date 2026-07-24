@@ -608,6 +608,16 @@ class _FakeSynapse(http.server.BaseHTTPRequestHandler):
     def log_message(self, format: str, *args: Any) -> None:
         pass
 
+    def _send_content_type_headers(self) -> None:
+        content_types = {
+            "absent-content-type": (),
+            "duplicate-content-type": ("application/json", "application/json"),
+            "non-json-content-type": ("text/plain",),
+            "parameterized-content-type": ("Application/JSON; charset=UTF-8",),
+        }.get(self.response_mode, ("application/json",))
+        for content_type in content_types:
+            self.send_header("Content-Type", content_type)
+
     def do_PUT(self) -> None:
         raw = self.rfile.read(int(self.headers.get("Content-Length", "0") or "0"))
         _FakeSynapse.received.append(json.loads(raw or b"{}"))
@@ -621,6 +631,7 @@ class _FakeSynapse(http.server.BaseHTTPRequestHandler):
         body = invalid_bodies.get(self.response_mode, b'{"event_id":"$x"}')
         status = {"accepted": 202, "no-content": 204}.get(self.response_mode, 200)
         self.send_response(status)
+        self._send_content_type_headers()
         if self.response_mode == "no-content":
             self.send_header("Content-Length", "0")
             self.end_headers()
@@ -672,7 +683,6 @@ class _FakeSynapse(http.server.BaseHTTPRequestHandler):
                     break
                 time.sleep(0.05)
         else:
-            self.send_header("Content-Type", "application/json")
             self.send_header("Content-Length", str(len(body)))
             self.end_headers()
             self.wfile.write(body)
@@ -745,7 +755,8 @@ def test_matrix_responses_are_bounded_and_strictly_framed() -> None:
     recv.token = "alertbot-token"
     recv.room_id = ROOM
     try:
-        for mode in ("normal", "absent-length", "chunked"):
+        valid_modes = ("normal", "absent-length", "chunked", "parameterized-content-type")
+        for mode in valid_modes:
             _FakeSynapse.response_mode = mode
             assert _post_webhook(recv) == 200, f"bounded {mode} response must succeed"
 
@@ -756,6 +767,9 @@ def test_matrix_responses_are_bounded_and_strictly_framed() -> None:
             "incomplete",
             "duplicate-content-length",
             "ambiguous-transfer",
+            "absent-content-type",
+            "duplicate-content-type",
+            "non-json-content-type",
         )
         errors = io.StringIO()
         with contextlib.redirect_stderr(errors):
@@ -777,7 +791,7 @@ def test_matrix_responses_are_bounded_and_strictly_framed() -> None:
                 _FakeSynapse.response_mode = mode
                 assert _post_webhook(recv) == 502, f"{mode} success response must fail closed"
 
-        assert len(_FakeSynapse.received) == 16
+        assert len(_FakeSynapse.received) == len(valid_modes) + len(invalid_modes) + len(invalid_success_modes)
         assert errors.getvalue() == "alert-receiver: delivery failed: MatrixResponseError\n" * (
             len(invalid_modes) + len(invalid_success_modes)
         )

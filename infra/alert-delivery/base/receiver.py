@@ -174,6 +174,10 @@ def _validate_matrix_response(response: Any) -> None:
     if response.status != 200:
         raise MatrixResponseError
 
+    content_types = response.headers.get_all("Content-Type", [])
+    if len(content_types) != 1 or content_types[0].split(";", 1)[0].strip().lower() != "application/json":
+        raise MatrixResponseError
+
     content_lengths = response.headers.get_all("Content-Length", [])
     transfer_encodings = response.headers.get_all("Transfer-Encoding", [])
     if len(content_lengths) > 1 or (content_lengths and transfer_encodings):

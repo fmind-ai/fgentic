@@ -101,6 +101,10 @@ def _request_io(
             if response.status != 200:
                 _fail(f"{method} Matrix response has unexpected HTTP status")
 
+            content_types = response.headers.get_all("Content-Type", [])
+            if len(content_types) != 1 or content_types[0].split(";", 1)[0].strip().lower() != "application/json":
+                _fail(f"{method} Matrix response has invalid Content-Type")
+
             content_lengths = response.headers.get_all("Content-Length", [])
             if len(content_lengths) > 1 or (
                 content_lengths
