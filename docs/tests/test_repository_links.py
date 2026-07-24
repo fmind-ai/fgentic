@@ -146,6 +146,13 @@ def _is_nonblank_string(value: object) -> bool:
     return isinstance(value, str) and bool(value.strip())
 
 
+def _is_nonblank_string_collection(value: object) -> bool:
+    """Return whether form metadata is a nonblank string collection."""
+    if isinstance(value, str):
+        return all(part.strip() for part in value.split(","))
+    return isinstance(value, list) and all(_is_nonblank_string(item) for item in value)
+
+
 def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaViolation]:
     """Return violations of GitHub's documented structured-form contract."""
     source_name = _display_path(source, repository_root)
@@ -162,6 +169,21 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
         ]
         if is_issue_form
         else []
+    )
+    string_keys = ("title", "type") if is_issue_form else ("title",)
+    violations.extend(
+        (source_name, f"{key} must be a nonblank string")
+        for key in string_keys
+        if key in document and not _is_nonblank_string(document[key])
+    )
+    collection_keys = ("labels", "assignees", "projects") if is_issue_form else ("labels",)
+    violations.extend(
+        (
+            source_name,
+            f"{key} must be a nonblank comma-delimited string or an array of nonblank strings",
+        )
+        for key in collection_keys
+        if key in document and not _is_nonblank_string_collection(document[key])
     )
 
     body = document.get("body")
@@ -541,6 +563,108 @@ class CommunityRouteIntegrityTest(TestCase):
                     (".github/ISSUE_TEMPLATE/broken.yml", "body[0].type is unsupported: 'button'"),
                     (".github/ISSUE_TEMPLATE/broken.yml", "body[1].id is invalid: 'bad.id'"),
                     (".github/ISSUE_TEMPLATE/broken.yml", "body[3].id is duplicated: 'repeated'"),
+                ],
+            )
+
+    def test_rejects_invalid_issue_form_metadata(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Broken",
+                        "description: Exercises invalid issue metadata",
+                        "title: true",
+                        'type: ""',
+                        "labels: {}",
+                        "assignees:",
+                        "  - octocat",
+                        '  - " "',
+                        'projects: "octo-org/1, "',
+                        "body:",
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: Details",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (".github/ISSUE_TEMPLATE/broken.yml", "title must be a nonblank string"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "type must be a nonblank string"),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "labels must be a nonblank comma-delimited string or an array of nonblank strings",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "assignees must be a nonblank comma-delimited string or an array of nonblank strings",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "projects must be a nonblank comma-delimited string or an array of nonblank strings",
+                    ),
+                ],
+            )
+
+    def test_accepts_empty_form_metadata_arrays(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/empty.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Empty metadata",
+                        "description: Exercises documented empty arrays",
+                        "labels: []",
+                        "assignees: []",
+                        "projects: []",
+                        "body:",
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: Details",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(_form_schema_violations(source, repository_root), [])
+
+    def test_rejects_invalid_discussion_form_metadata(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/DISCUSSION_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "title: false",
+                        "labels:",
+                        "  - Ideas",
+                        "  - false",
+                        "body:",
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: Proposal",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (".github/DISCUSSION_TEMPLATE/broken.yml", "title must be a nonblank string"),
+                    (
+                        ".github/DISCUSSION_TEMPLATE/broken.yml",
+                        "labels must be a nonblank comma-delimited string or an array of nonblank strings",
+                    ),
                 ],
             )
 
