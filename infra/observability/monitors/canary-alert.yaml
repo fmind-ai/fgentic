@@ -30,13 +30,17 @@ spec:
               last 15 minutes. The delegation plane is broken even if no user has hit it yet — check
               the bridge, agentgateway/kagent route, appservice registration, and model credential.
         - alert: SyntheticCanaryStale
-          # The CronJob has not scheduled a canary Job in 30 minutes (6x the 5-minute schedule):
-          # it is suspended, its controller is stuck, or the cluster cannot place the Pod. Keyed on
-          # kube_cronjob_status_last_schedule_time, which persists with the CronJob object (unlike
-          # the per-Job completion series, which is garbage-collected), so a stopped canary keeps
-          # alerting instead of self-silencing. A run that schedules but fails is caught by the
-          # failing alert above.
+          # The CronJob has not scheduled a canary Job in 30 minutes (6x the 5-minute schedule), or
+          # its exact schedule metric is absent. The absent branch keeps a deleted CronJob or lost
+          # telemetry from self-silencing the control. A run that schedules but fails is caught by
+          # the failing alert above.
           expr: >-
+            max by (namespace) (
+              absent(
+                kube_cronjob_status_last_schedule_time{namespace="canary", cronjob="delegation-canary"}
+              )
+            )
+            or
             time() - max by (namespace) (
               kube_cronjob_status_last_schedule_time{namespace="canary", cronjob="delegation-canary"}
             ) > 1800
