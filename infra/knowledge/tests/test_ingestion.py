@@ -152,6 +152,53 @@ def test_manifest_accepts_one_exact_partner_group_source(tmp_path: Path) -> None
 
 
 @pytest.mark.parametrize(
+    "principal",
+    [
+        "@alice:matrix.org",
+        "@alice:MATRIX.ORG",
+        "@alice:matrix-host.example",
+        f"@alice:{'a' * 63}.example.org",
+        "@alice:matrix.org.",
+        "@alice:matrix.org:8448",
+        "@alice:1.2.3.4",
+        "@alice:1.2.3.4:8448",
+        "@alice:[2001:db8::1]",
+        "@alice:[2001:db8::1]:8448",
+    ],
+)
+def test_manifest_preserves_valid_matrix_server_name_forms(tmp_path: Path, principal: str) -> None:
+    document = valid_manifest()
+    document["sources"][0]["allowed_principals"] = [{"kind": "matrix", "principal": principal}]
+    manifest_path, source_root = write_bundle(tmp_path, document)
+
+    manifest = ingestion.load_manifest(manifest_path, source_root)
+
+    assert manifest.sources[0].allowed_principals == (ingestion.Principal(kind="matrix", principal=principal),)
+
+
+@pytest.mark.parametrize(
+    "server_name",
+    [
+        ".example.org",
+        "example..org",
+        "-example.org",
+        "example-.org",
+        "example.org..",
+        f"{'a' * 64}.example.org",
+    ],
+)
+def test_manifest_rejects_malformed_matrix_dns_server_names(tmp_path: Path, server_name: str) -> None:
+    document = valid_manifest()
+    document["sources"][0]["allowed_principals"] = [{"kind": "matrix", "principal": f"@alice:{server_name}"}]
+    manifest_path, source_root = write_bundle(tmp_path, document)
+
+    with pytest.raises(ingestion.IngestionError, match="invalid server name") as caught:
+        ingestion.load_manifest(manifest_path, source_root)
+
+    assert server_name not in str(caught.value)
+
+
+@pytest.mark.parametrize(
     ("mutation", "message"),
     [
         (lambda doc: doc["sources"][0].pop("classification"), "missing required fields"),
