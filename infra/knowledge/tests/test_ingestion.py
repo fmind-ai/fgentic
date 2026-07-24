@@ -1329,8 +1329,20 @@ def test_tokenizer_response_accepts_exact_chunked_framing() -> None:
         ("text/plain",),
         ("application/json; charset",),
         ("application/json; charset =utf-8",),
+        ("application/json;",),
+        ("application/json;;charset=utf-8",),
+        ("application/json; ; charset=utf-8",),
     ],
-    ids=["missing", "duplicate", "non-json", "missing-parameter-value", "space-before-parameter-equals"],
+    ids=[
+        "missing",
+        "duplicate",
+        "non-json",
+        "missing-parameter-value",
+        "space-before-parameter-equals",
+        "trailing-semicolon",
+        "consecutive-semicolons",
+        "whitespace-only-parameter",
+    ],
 )
 def test_tokenizer_response_rejects_invalid_media_types_before_body_read(
     content_types: tuple[str, ...],
@@ -1357,9 +1369,10 @@ def test_tokenizer_response_rejects_invalid_media_types_before_body_read(
     assert EmbeddingHandler.calls == []
 
 
-def test_embedding_response_rejects_invalid_media_type_before_body_read() -> None:
+@pytest.mark.parametrize("content_type", ["text/plain", "application/json;"])
+def test_embedding_response_rejects_invalid_media_type_before_body_read(content_type: str) -> None:
     with embedding_server() as url:
-        EmbeddingHandler.embedding_content_types = ("text/plain",)
+        EmbeddingHandler.embedding_content_types = (content_type,)
         with (
             mock.patch.object(
                 http.client.HTTPResponse,

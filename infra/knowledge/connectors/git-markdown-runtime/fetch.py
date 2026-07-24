@@ -37,7 +37,7 @@ HTTP_TCHAR_RE = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
 HTTP_QUOTED_STRING_RE = r'"(?:[\t !#-\[\]-~\x80-\xff]|\\[\t !-~\x80-\xff])*"'
 MEDIA_TYPE_RE = re.compile(
     rf"^[ \t]*(?P<type>{HTTP_TCHAR_RE})/(?P<subtype>{HTTP_TCHAR_RE})"
-    rf"(?:[ \t]*;[ \t]*(?:{HTTP_TCHAR_RE}=(?:{HTTP_TCHAR_RE}|{HTTP_QUOTED_STRING_RE}))?)*[ \t]*$"
+    rf"(?:[ \t]*;[ \t]*{HTTP_TCHAR_RE}=(?:{HTTP_TCHAR_RE}|{HTTP_QUOTED_STRING_RE}))*[ \t]*$"
 )
 
 type JSONObject = dict[str, object]
