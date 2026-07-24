@@ -12,6 +12,7 @@ import socket
 import stat
 import threading
 import time
+import traceback
 import zipfile
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
@@ -446,15 +447,40 @@ def test_manifest_rejects_ambiguous_security_metadata(
         ingestion.load_manifest(manifest_path, source_root)
 
 
-def test_manifest_rejects_duplicate_json_keys(tmp_path: Path) -> None:
+def test_manifest_rejects_duplicate_json_keys_without_reflection(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
     manifest_path, source_root = write_bundle(tmp_path)
+    hostile_key = "attacker\nforged-log"
+    encoded_key = json.dumps(hostile_key)
     manifest_path.write_text(
-        '{"schema_version":1,"schema_version":1,"corpus":"reference-docs","sources":[]}',
+        f"{{{encoded_key}:1,{encoded_key}:2}}",
         encoding="utf-8",
     )
 
-    with pytest.raises(ingestion.IngestionError, match="duplicate JSON object key"):
+    with pytest.raises(ingestion.IngestionError) as caught:
         ingestion.load_manifest(manifest_path, source_root)
+
+    assert "duplicate JSON object key" in str(caught.value)
+    assert hostile_key not in str(caught.value)
+    assert "forged-log" not in "".join(traceback.format_exception(caught.value))
+
+    assert (
+        ingestion.main(
+            [
+                "validate",
+                "--manifest",
+                str(manifest_path),
+                "--source-root",
+                str(source_root),
+            ]
+        )
+        == 2
+    )
+    assert "duplicate JSON object key" in caplog.text
+    assert hostile_key not in caplog.text
+    assert "forged-log" not in caplog.text
 
 
 def test_manifest_rejects_json_escaped_surrogate_as_ingestion_error(tmp_path: Path) -> None:
@@ -893,6 +919,20 @@ def test_jsonl_reader_accepts_symlink_to_regular_file(tmp_path: Path) -> None:
     projected.symlink_to(Path("..data") / "chunks.jsonl")
 
     assert ingestion.read_raw_records(projected) == [{"ordinal": 1, "content": "bounded"}]
+
+
+def test_jsonl_reader_rejects_duplicate_keys_without_reflection(tmp_path: Path) -> None:
+    path = tmp_path / "chunks.jsonl"
+    hostile_key = "attacker\nforged-log"
+    encoded_key = json.dumps(hostile_key)
+    path.write_text(f"{{{encoded_key}:1,{encoded_key}:2}}\n", encoding="utf-8")
+
+    with pytest.raises(ingestion.IngestionError) as caught:
+        list(ingestion._read_jsonl_values(path))
+
+    assert str(caught.value) == "JSONL line 1 is invalid"
+    assert hostile_key not in str(caught.value)
+    assert "forged-log" not in "".join(traceback.format_exception(caught.value))
 
 
 def test_jsonl_reader_rejects_json_escaped_surrogate_as_ingestion_error(tmp_path: Path) -> None:
