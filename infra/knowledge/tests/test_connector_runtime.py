@@ -464,6 +464,32 @@ def test_rejects_symlinked_blob(tmp_path: Path) -> None:
         )
 
 
+def test_rejects_blob_raced_to_fifo_without_blocking(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    path = tmp_path / "blob"
+    path.write_bytes(b"# Trusted\n")
+    real_open = os.open
+    raced = False
+
+    def racing_open(target: os.PathLike[str] | str, flags: int, *args: Any, **kwargs: Any) -> int:
+        nonlocal raced
+        if Path(target) == path and not raced:
+            assert flags & os.O_NONBLOCK
+            raced = True
+            path.unlink()
+            os.mkfifo(path)
+        return real_open(target, flags, *args, **kwargs)
+
+    monkeypatch.setattr(connector_runtime.os, "open", racing_open)
+    with pytest.raises(connector_runtime.MaterializationError) as caught:
+        connector_runtime._read_regular_path(path, max_bytes=64)
+
+    assert raced
+    assert str(caught.value) == f"required path must be a regular file, never a symlink or special file: {path}"
+
+
 @pytest.mark.parametrize("action_kind", ["tombstone", "noop"])
 def test_rejects_tombstone_and_noop_actions(tmp_path: Path, action_kind: str) -> None:
     connector = connector_for("docs/source.md", b"# Trusted\n")
