@@ -62,7 +62,7 @@ _HTTP_TOKEN = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
 _HTTP_QUOTED_STRING = r'"(?:[\t !#-\[\]-~\x80-\xff]|\\[\t !-~\x80-\xff])*"'
 _MEDIA_TYPE = re.compile(
     rf"^[ \t]*(?P<type>{_HTTP_TOKEN})/(?P<subtype>{_HTTP_TOKEN})"
-    rf"(?:[ \t]*;[ \t]*{_HTTP_TOKEN}[ \t]*=[ \t]*(?:{_HTTP_TOKEN}|{_HTTP_QUOTED_STRING}))*[ \t]*$"
+    rf"(?:[ \t]*;[ \t]*(?:{_HTTP_TOKEN}=(?:{_HTTP_TOKEN}|{_HTTP_QUOTED_STRING}))?)*[ \t]*$"
 )
 _LISTEN_PORT_ERROR = (
     f"ALERTBOT_LISTEN_PORT must be a canonical ASCII integer from {_MIN_LISTEN_PORT} to {_MAX_LISTEN_PORT}"
