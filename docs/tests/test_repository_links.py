@@ -151,6 +151,7 @@ class _RenderedHeadingParser(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         del attrs
         if tag == "h2":
+            self._finish_heading()
             self._heading_parts = []
 
     def handle_data(self, data: str) -> None:
@@ -158,7 +159,15 @@ class _RenderedHeadingParser(HTMLParser):
             self._heading_parts.append(data)
 
     def handle_endtag(self, tag: str) -> None:
-        if tag == "h2" and self._heading_parts is not None:
+        if tag == "h2":
+            self._finish_heading()
+
+    def close(self) -> None:
+        super().close()
+        self._finish_heading()
+
+    def _finish_heading(self) -> None:
+        if self._heading_parts is not None:
             self.headings.append("".join(self._heading_parts).strip())
             self._heading_parts = None
 
@@ -173,7 +182,8 @@ def _rendered_targets(markdown: str) -> list[str]:
 def _rendered_level_two_headings(markdown: str) -> list[str]:
     """Return level-two headings from rendered Markdown."""
     parser = _RenderedHeadingParser()
-    parser.feed(render_markdown(markdown, extensions=["fenced_code", "md_in_html", "tables"]))
+    parser.feed(render_markdown(markdown, extensions=["pymdownx.superfences", "md_in_html", "tables"]))
+    parser.close()
     return parser.headings
 
 
@@ -1662,6 +1672,10 @@ class CommunityRouteIntegrityTest(TestCase):
                         "## Heading-shaped example",
                         "```",
                         "",
+                        "> ```markdown",
+                        "> ## Heading-shaped nested example",
+                        "> ```",
+                        "",
                         "## Why",
                         "",
                         "## *How*",
@@ -1677,6 +1691,30 @@ class CommunityRouteIntegrityTest(TestCase):
                 list(PULL_REQUEST_TEMPLATE_HEADINGS),
             )
             self.assertEqual(_pull_request_template_heading_violations(source, repository_root), [])
+
+    def test_rejects_malformed_raw_html_pull_request_headings(self) -> None:
+        cases = (
+            ("unclosed", "<h2>Review", "Review"),
+            ("nested", "<h2>Review<h2>Security</h2>", "Review -> Security"),
+        )
+        required = "\n\n".join(f"## {heading}" for heading in PULL_REQUEST_TEMPLATE_HEADINGS)
+        for name, raw_html, extra_headings in cases:
+            with self.subTest(name=name), TemporaryDirectory() as temporary:
+                repository_root = Path(temporary)
+                source = repository_root / ".github/PULL_REQUEST_TEMPLATE.md"
+                source.parent.mkdir(parents=True)
+                source.write_text(f"{required}\n\n{raw_html}\n", encoding="utf-8")
+
+                self.assertEqual(
+                    _pull_request_template_heading_violations(source, repository_root),
+                    [
+                        (
+                            ".github/PULL_REQUEST_TEMPLATE.md",
+                            "level-two headings must be exactly What -> Why -> How -> Test plan; "
+                            f"found What -> Why -> How -> Test plan -> {extra_headings}",
+                        )
+                    ],
+                )
 
     def test_pull_request_template_has_required_headings(self) -> None:
         self.assertEqual(_pull_request_template_heading_violations(PULL_REQUEST_TEMPLATE, REPOSITORY_ROOT), [])
