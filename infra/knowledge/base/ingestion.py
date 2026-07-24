@@ -1333,7 +1333,9 @@ def _declared_response_length(
     if content_lengths:
         if len(content_lengths) != 1:
             raise IngestionError(f"{operation} backend returned ambiguous response framing")
-        raw_length = content_lengths[0].strip()
+        # HTTP optional whitespace is exactly SP / HTAB. Do not let Python's broader Unicode
+        # whitespace normalization turn malformed framing into a trusted decimal length.
+        raw_length = content_lengths[0].strip(" \t")
         if not raw_length.isascii() or not raw_length.isdecimal():
             raise IngestionError(f"{operation} backend returned invalid response framing")
         normalized_length = raw_length.lstrip("0") or "0"
@@ -1343,8 +1345,14 @@ def _declared_response_length(
         if declared_length > max_response_bytes:
             raise IngestionError(f"{operation} response exceeds {max_response_bytes} bytes")
         return declared_length
-    if transfer_encodings and (len(transfer_encodings) != 1 or transfer_encodings[0].strip().lower() != "chunked"):
-        raise IngestionError(f"{operation} backend returned unsupported response framing")
+    if transfer_encodings:
+        if len(transfer_encodings) != 1 or transfer_encodings[0].strip(" \t").lower() != "chunked":
+            raise IngestionError(f"{operation} backend returned unsupported response framing")
+        # HTTPResponse recognizes only the unpadded spelling during begin(). Enable the
+        # decoder after stricter HTTP OWS validation so accepted framing and body reads agree.
+        response.chunked = True
+        response.chunk_left = None
+        response.length = None
     return None
 
 
