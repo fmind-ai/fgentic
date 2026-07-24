@@ -62,7 +62,7 @@ _HTTP_TOKEN = r"[!#$%&'*+\-.^_`|~0-9A-Za-z]+"
 _HTTP_QUOTED_STRING = r'"(?:[\t !#-\[\]-~\x80-\xff]|\\[\t !-~\x80-\xff])*"'
 _MEDIA_TYPE = re.compile(
     rf"^[ \t]*(?P<type>{_HTTP_TOKEN})/(?P<subtype>{_HTTP_TOKEN})"
-    rf"(?:[ \t]*;[ \t]*(?:{_HTTP_TOKEN}=(?:{_HTTP_TOKEN}|{_HTTP_QUOTED_STRING}))?)*[ \t]*$"
+    rf"(?:[ \t]*;[ \t]*{_HTTP_TOKEN}=(?:{_HTTP_TOKEN}|{_HTTP_QUOTED_STRING}))*[ \t]*$"
 )
 _LISTEN_PORT_ERROR = (
     f"ALERTBOT_LISTEN_PORT must be a canonical ASCII integer from {_MIN_LISTEN_PORT} to {_MAX_LISTEN_PORT}"
@@ -481,9 +481,21 @@ class _Handler(http.server.BaseHTTPRequestHandler):
             self.connection.settimeout(self.timeout)
         return bytes(body)
 
+    def _has_json_content_type(self) -> bool:
+        content_types = self.headers.get_all("Content-Type", [])
+        if (
+            len(content_types) == 1
+            and isinstance(content_types[0], str)
+            and _is_json_content_type(content_types[0])
+        ):
+            return True
+        self.close_connection = True
+        self._reply(415)
+        return False
+
     def do_POST(self) -> None:
         size = self._request_size()
-        if size is None:
+        if size is None or not self._has_json_content_type():
             return
         raw = self._read_body(size)
         if raw is None:
