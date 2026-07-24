@@ -1096,6 +1096,7 @@ class CommunityRouteIntegrityTest(TestCase):
                 "CONFIG.YML",
                 "STRASSE.md",
                 "Straße.md",
+                "alpha.YML",
                 "alpha.yml",
                 "config.yml",
             ):
@@ -1108,6 +1109,10 @@ class CommunityRouteIntegrityTest(TestCase):
                     (
                         ".github/ISSUE_TEMPLATE/Straße.md",
                         "filename collides case-insensitively with .github/ISSUE_TEMPLATE/STRASSE.md",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/alpha.YML",
+                        "filename collides case-insensitively with .github/ISSUE_TEMPLATE/Alpha.yml",
                     ),
                     (
                         ".github/ISSUE_TEMPLATE/alpha.yml",
