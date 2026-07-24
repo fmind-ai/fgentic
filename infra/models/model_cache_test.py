@@ -62,7 +62,7 @@ def _run_loader(
     revision: str,
     download: Callable[..., None],
     *,
-    before_unlock: Callable[[], None] | None = None,
+    after_transaction: Callable[[], None] | None = None,
 ) -> None:
     testable = script.replace(
         'root = Path("/models")',
@@ -70,11 +70,11 @@ def _run_loader(
     )
     if testable == script:
         raise AssertionError("loader no longer declares the canonical /models root")
-    if before_unlock is not None:
-        original = "os.close(lock_descriptor)\nlock_descriptor = -1"
+    if after_transaction is not None:
+        original = 'remove(root / f".{target.name}.legacy")'
         if testable.count(original) != 1:
-            raise AssertionError("loader no longer has one exact transaction unlock boundary")
-        testable = testable.replace(original, f"before_unlock()\n{original}", 1)
+            raise AssertionError("loader no longer has one exact final garbage-collection boundary")
+        testable = testable.replace(original, f"{original}\nafter_transaction()", 1)
     module = types.ModuleType("huggingface_hub")
     module.snapshot_download = download
     with (
@@ -87,7 +87,7 @@ def _run_loader(
     ):
         namespace: dict[str, object] = {
             "__name__": "__main__",
-            "before_unlock": before_unlock,
+            "after_transaction": after_transaction,
         }
         try:
             exec(compile(testable, "<model-loader>", "exec"), namespace)
@@ -112,7 +112,7 @@ def _loader_child(
         download_started.set()
         (local_dir / "weights.bin").write_text(revision, encoding="utf-8")
 
-    def wait_before_unlock() -> None:
+    def wait_after_transaction() -> None:
         transaction_complete.set()
         if not release.wait(10):
             raise TimeoutError("test did not release the loader transaction")
@@ -122,7 +122,7 @@ def _loader_child(
         root,
         revision,
         download,
-        before_unlock=wait_before_unlock,
+        after_transaction=wait_after_transaction,
     )
 
 
@@ -159,6 +159,8 @@ class ModelCacheContractTest(unittest.TestCase):
 
             with self.subTest(target=target_name.group(1)), tempfile.TemporaryDirectory() as temporary:
                 root = Path(temporary)
+                stale_snapshot = root / f".{target_name.group(1)}-stale.snapshot"
+                stale_snapshot.mkdir()
                 first_started = context.Event()
                 first_download = context.Event()
                 first_complete = context.Event()
@@ -196,6 +198,10 @@ class ModelCacheContractTest(unittest.TestCase):
                     self.assertTrue(first_started.wait(5))
                     self.assertTrue(first_download.wait(5))
                     self.assertTrue(first_complete.wait(5))
+                    target = root / target_name.group(1)
+                    self.assertTrue(target.is_symlink())
+                    self.assertEqual((target / "weights.bin").read_text(encoding="utf-8"), "a" * 40)
+                    self.assertFalse(stale_snapshot.exists())
 
                     second.start()
                     self.assertTrue(second_started.wait(5))
