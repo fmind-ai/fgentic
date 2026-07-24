@@ -437,7 +437,7 @@ def _write_temporary(directory: Path, prefix: str, content: bytes, mode: int = F
 
 
 def _read_exact(path: Path, maximum: int) -> bytes:
-    flags = os.O_RDONLY | os.O_CLOEXEC
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
     if hasattr(os, "O_NOFOLLOW"):
         flags |= os.O_NOFOLLOW
     try:
