@@ -845,7 +845,7 @@ def _expect_object(
     if missing:
         raise MaterializationError(f"{name} is missing required fields: {', '.join(sorted(missing))}")
     if unknown:
-        raise MaterializationError(f"{name} has unknown fields: {', '.join(sorted(unknown))}")
+        raise MaterializationError(f"{name} has unknown fields")
     return cast(dict[str, object], value)
 
 

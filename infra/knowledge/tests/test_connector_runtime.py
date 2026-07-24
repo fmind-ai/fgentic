@@ -364,6 +364,44 @@ def test_rejects_duplicate_action_keys_without_reflection(
     assert not output_root.exists()
 
 
+def test_rejects_unknown_action_keys_without_reflection(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    connector = connector_for("docs/source.md", b"# Trusted\n")
+    action = action_for(connector)
+    hostile_key = "attacker\nforged-log"
+    action[hostile_key] = True
+    action_path = write_action(tmp_path / "work", action)
+    output_root = tmp_path / "selected"
+
+    with pytest.raises(connector_runtime.MaterializationError) as caught:
+        connector_runtime.parse_connector_action(action_path)
+
+    assert str(caught.value) == "connector action has unknown fields"
+    assert hostile_key not in str(caught.value)
+    assert "forged-log" not in "".join(traceback.format_exception(caught.value))
+
+    assert (
+        connector_runtime.main(
+            [
+                "materialize",
+                "--action",
+                os.fspath(action_path),
+                "--source-root",
+                os.fspath(tmp_path / "missing-acquisition"),
+                "--output-root",
+                os.fspath(output_root),
+            ]
+        )
+        == 2
+    )
+    assert "connector action has unknown fields" in caplog.text
+    assert hostile_key not in caplog.text
+    assert "forged-log" not in caplog.text
+    assert not output_root.exists()
+
+
 def test_rejects_retained_inventory_that_disagrees_with_action(tmp_path: Path) -> None:
     connector = connector_for("docs/source.md", b"# Trusted\n")
     source_root = tmp_path / "acquisition"

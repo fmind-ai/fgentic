@@ -483,6 +483,39 @@ def test_manifest_rejects_duplicate_json_keys_without_reflection(
     assert "forged-log" not in caplog.text
 
 
+def test_manifest_rejects_unknown_json_fields_without_reflection(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    document = valid_manifest()
+    hostile_key = "attacker\nforged-log"
+    document[hostile_key] = True
+    manifest_path, source_root = write_bundle(tmp_path, document)
+
+    with pytest.raises(ingestion.IngestionError) as caught:
+        ingestion.load_manifest(manifest_path, source_root)
+
+    assert str(caught.value) == "manifest has unknown fields"
+    assert hostile_key not in str(caught.value)
+    assert "forged-log" not in "".join(traceback.format_exception(caught.value))
+
+    assert (
+        ingestion.main(
+            [
+                "validate",
+                "--manifest",
+                str(manifest_path),
+                "--source-root",
+                str(source_root),
+            ]
+        )
+        == 2
+    )
+    assert "manifest has unknown fields" in caplog.text
+    assert hostile_key not in caplog.text
+    assert "forged-log" not in caplog.text
+
+
 def test_manifest_rejects_json_escaped_surrogate_as_ingestion_error(tmp_path: Path) -> None:
     document = valid_manifest()
     document["corpus"] = "\ud800"
