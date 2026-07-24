@@ -141,6 +141,11 @@ def _structured_forms(repository_root: Path = REPOSITORY_ROOT) -> tuple[Path, ..
     return tuple(sorted((*issue_forms, *discussion_directory.glob("*.yml"))))
 
 
+def _is_nonblank_string(value: object) -> bool:
+    """Return whether a form value is a nonblank string."""
+    return isinstance(value, str) and bool(value.strip())
+
+
 def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaViolation]:
     """Return violations of GitHub's documented structured-form contract."""
     source_name = _display_path(source, repository_root)
@@ -180,16 +185,61 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
             has_input = True
 
         identifier = element.get("id")
-        if identifier is None:
-            continue
-        if element_type == "markdown":
+        if identifier is not None and element_type == "markdown":
             violations.append((source_name, f"{location}.id is not supported for markdown elements"))
-        elif not isinstance(identifier, str) or FORM_ID.fullmatch(identifier) is None:
+        elif identifier is not None and (not isinstance(identifier, str) or FORM_ID.fullmatch(identifier) is None):
             violations.append((source_name, f"{location}.id is invalid: {identifier!r}"))
-        elif identifier in identifiers:
+        elif identifier is not None and identifier in identifiers:
             violations.append((source_name, f"{location}.id is duplicated: {identifier!r}"))
-        else:
+        elif isinstance(identifier, str):
             identifiers.add(identifier)
+
+        attributes = element.get("attributes")
+        if not isinstance(attributes, dict):
+            violations.append((source_name, f"{location}.attributes must be a mapping"))
+        else:
+            required_attribute = "value" if element_type == "markdown" else "label"
+            if not _is_nonblank_string(attributes.get(required_attribute)):
+                violations.append(
+                    (source_name, f"{location}.attributes.{required_attribute} must be a nonblank string")
+                )
+
+            options = attributes.get("options")
+            if element_type == "dropdown":
+                if not isinstance(options, list) or not options:
+                    violations.append((source_name, f"{location}.attributes.options must be a nonempty array"))
+                else:
+                    choices: set[str] = set()
+                    for option_index, option in enumerate(options):
+                        option_location = f"{location}.attributes.options[{option_index}]"
+                        if not isinstance(option, str) or not option.strip():
+                            violations.append((source_name, f"{option_location} must be a nonblank string"))
+                        elif option in choices:
+                            violations.append((source_name, f"{option_location} is duplicated: {option!r}"))
+                        else:
+                            choices.add(option)
+            elif element_type == "checkboxes":
+                if not isinstance(options, list) or not options:
+                    violations.append((source_name, f"{location}.attributes.options must be a nonempty array"))
+                else:
+                    choices = set()
+                    for option_index, option in enumerate(options):
+                        option_location = f"{location}.attributes.options[{option_index}]"
+                        label = option.get("label") if isinstance(option, dict) else None
+                        if not isinstance(label, str) or not label.strip():
+                            violations.append((source_name, f"{option_location}.label must be a nonblank string"))
+                        elif label in choices:
+                            violations.append((source_name, f"{option_location}.label is duplicated: {label!r}"))
+                        else:
+                            choices.add(label)
+
+        validations = element.get("validations")
+        if validations is not None and not isinstance(validations, dict):
+            violations.append((source_name, f"{location}.validations must be a mapping"))
+        elif isinstance(validations, dict):
+            required = validations.get("required")
+            if "required" in validations and not isinstance(required, bool):
+                violations.append((source_name, f"{location}.validations.required must be a Boolean"))
 
     if not has_input:
         violations.append((source_name, "body must contain at least one non-Markdown field"))
@@ -460,10 +510,18 @@ class CommunityRouteIntegrityTest(TestCase):
                         "  - type: button",
                         "  - type: input",
                         "    id: bad.id",
+                        "    attributes:",
+                        "      label: Bad identifier",
                         "  - type: textarea",
                         "    id: repeated",
+                        "    attributes:",
+                        "      label: First identifier",
                         "  - type: dropdown",
                         "    id: repeated",
+                        "    attributes:",
+                        "      label: Repeated identifier",
+                        "      options:",
+                        "        - Choice",
                     )
                 ),
                 encoding="utf-8",
@@ -477,6 +535,93 @@ class CommunityRouteIntegrityTest(TestCase):
                     (".github/ISSUE_TEMPLATE/broken.yml", "body[0].type is unsupported: 'button'"),
                     (".github/ISSUE_TEMPLATE/broken.yml", "body[1].id is invalid: 'bad.id'"),
                     (".github/ISSUE_TEMPLATE/broken.yml", "body[3].id is duplicated: 'repeated'"),
+                ],
+            )
+
+    def test_rejects_invalid_form_attributes_and_choices(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Broken",
+                        "description: Exercises invalid element attributes",
+                        "body:",
+                        "  - type: markdown",
+                        "    attributes: {}",
+                        "  - type: input",
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: true",
+                        "  - type: dropdown",
+                        "    attributes:",
+                        "      label: Empty choices",
+                        "      options: []",
+                        "  - type: dropdown",
+                        "    attributes:",
+                        "      label: Invalid choices",
+                        "      options:",
+                        "        - Choice",
+                        "        - Choice",
+                        "        - true",
+                        "  - type: checkboxes",
+                        "    attributes:",
+                        "      label: Invalid checks",
+                        "      options:",
+                        '        - label: ""',
+                        "        - label: Repeated",
+                        "        - label: Repeated",
+                        "  - type: input",
+                        "    attributes:",
+                        "      label: Invalid validation",
+                        "    validations:",
+                        '      required: "true"',
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[0].attributes.value must be a nonblank string",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[1].attributes must be a mapping",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[2].attributes.label must be a nonblank string",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[3].attributes.options must be a nonempty array",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[4].attributes.options[1] is duplicated: 'Choice'",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[4].attributes.options[2] must be a nonblank string",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[5].attributes.options[0].label must be a nonblank string",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[5].attributes.options[2].label is duplicated: 'Repeated'",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[6].validations.required must be a Boolean",
+                    ),
                 ],
             )
 
