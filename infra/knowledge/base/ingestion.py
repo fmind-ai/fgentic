@@ -364,12 +364,16 @@ def _expect_list(value: object, *, name: str, maximum: int, non_empty: bool = Fa
 def _clean_text(value: object, *, name: str, max_bytes: int) -> str:
     if not isinstance(value, str):
         raise IngestionError(f"{name} must be a string")
-    normalized = unicodedata.normalize("NFC", value)
+    try:
+        normalized = unicodedata.normalize("NFC", value)
+        encoded = normalized.encode("utf-8")
+    except UnicodeError:
+        raise IngestionError(f"{name} must be valid Unicode text") from None
     if normalized != value:
         raise IngestionError(f"{name} must already use NFC normalization")
     if normalized != normalized.strip() or not normalized:
         raise IngestionError(f"{name} must be non-empty with no surrounding whitespace")
-    if len(normalized.encode("utf-8")) > max_bytes:
+    if len(encoded) > max_bytes:
         raise IngestionError(f"{name} exceeds {max_bytes} UTF-8 bytes")
     if any(unicodedata.category(character).startswith("C") for character in normalized):
         raise IngestionError(f"{name} contains a control or format character")
@@ -770,10 +774,14 @@ def prepare_parser_boundaries(
 
 
 def _normalized_chunk_text(value: str) -> str:
-    normalized = unicodedata.normalize("NFC", value.replace("\r\n", "\n").replace("\r", "\n")).strip()
+    try:
+        normalized = unicodedata.normalize("NFC", value.replace("\r\n", "\n").replace("\r", "\n")).strip()
+        encoded = normalized.encode("utf-8")
+    except UnicodeError:
+        raise IngestionError("Docling chunk must be valid Unicode text") from None
     if not normalized:
         raise IngestionError("Docling produced an empty chunk")
-    if len(normalized.encode("utf-8")) > MAX_CHUNK_BYTES:
+    if len(encoded) > MAX_CHUNK_BYTES:
         raise IngestionError(f"Docling chunk exceeds {MAX_CHUNK_BYTES} UTF-8 bytes")
     for character in normalized:
         if unicodedata.category(character).startswith("C") and character not in {"\n", "\t"}:

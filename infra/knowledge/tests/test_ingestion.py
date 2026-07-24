@@ -316,6 +316,18 @@ def test_manifest_rejects_duplicate_json_keys(tmp_path: Path) -> None:
         ingestion.load_manifest(manifest_path, source_root)
 
 
+def test_manifest_rejects_json_escaped_surrogate_as_ingestion_error(tmp_path: Path) -> None:
+    document = valid_manifest()
+    document["corpus"] = "\ud800"
+    manifest_path, source_root = write_bundle(tmp_path, document)
+
+    with pytest.raises(ingestion.IngestionError) as caught:
+        ingestion.load_manifest(manifest_path, source_root)
+
+    assert str(caught.value) == "manifest.corpus must be valid Unicode text"
+    assert "\ud800" not in str(caught.value)
+
+
 def test_manifest_validates_every_source_before_docling(tmp_path: Path) -> None:
     document = valid_manifest()
     document["sources"][0]["classification"] = "internal"
@@ -722,6 +734,16 @@ def test_jsonl_reader_rejects_one_oversized_physical_line(tmp_path: Path) -> Non
 
     with pytest.raises(ingestion.IngestionError, match="bounded line size"):
         ingestion.read_raw_records(path)
+
+
+def test_jsonl_reader_rejects_json_escaped_surrogate_as_ingestion_error(tmp_path: Path) -> None:
+    path = tmp_path / "invalid-unicode.jsonl"
+    path.write_bytes(b'{"ordinal":1,"content":"\\ud800"}\n')
+
+    with pytest.raises(ingestion.IngestionError) as caught:
+        ingestion.read_raw_records(path)
+
+    assert str(caught.value) == "Docling chunk must be valid Unicode text"
 
 
 def test_vector_jsonl_budget_covers_every_bounded_float32_value() -> None:
