@@ -40,6 +40,7 @@ _MAX_ALERT_NAME_BYTES = 128
 _MAX_SEVERITY_BYTES = 32
 _MAX_LABEL_VALUE_BYTES = 128
 _MAX_GENERATOR_URL_BYTES = 2_048
+_UNSAFE_TEXT_CATEGORIES = frozenset({"Cc", "Cf", "Cs", "Co", "Cn", "Zl", "Zp"})
 # Four full header sets stay small beside the interpreter baseline in the 64 MiB container.
 _MAX_HEADER_BYTES = 16_384
 _MAX_REQUEST_BYTES = 65_536
@@ -70,7 +71,7 @@ def _clean_scalar(value: object, *, fallback: str, maximum: int) -> str:
         or not normalized
         or normalized != normalized.strip()
         or len(encoded) > maximum
-        or any(unicodedata.category(character).startswith("C") for character in normalized)
+        or any(unicodedata.category(character) in _UNSAFE_TEXT_CATEGORIES for character in normalized)
     ):
         return fallback
     return normalized

@@ -161,8 +161,9 @@ def test_render_replaces_malformed_projected_values() -> None:
                         "alertname": "é" * (receiver._MAX_ALERT_NAME_BYTES // 2 + 1),
                         "severity": "warn\u202eing",
                         "namespace": "monitoring\nSECRET-LABEL",
+                        "job_name": "before\u2028after",
                     },
-                    "generatorURL": "http://prometheus/\ud800",
+                    "generatorURL": "http://prometheus/before\u2029after",
                 }
             ],
         }
