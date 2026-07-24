@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import multiprocessing
 import os
 import re
 import sys
@@ -11,6 +12,7 @@ import types
 import unittest
 from collections.abc import Callable
 from pathlib import Path
+from typing import Protocol
 from unittest import mock
 
 ROOT = Path(__file__).resolve().parent
@@ -23,6 +25,12 @@ INIT_MANIFESTS = (
     ROOT / "embeddings" / "embeddings-helmrelease.yaml",
     ROOT / "embeddings" / "reranker-helmrelease.yaml",
 )
+
+
+class _Event(Protocol):
+    def set(self) -> None: ...
+
+    def wait(self, timeout: float | None = None) -> bool: ...
 
 
 def _literal_blocks(path: Path, needle: str) -> list[str]:
@@ -53,6 +61,8 @@ def _run_loader(
     root: Path,
     revision: str,
     download: Callable[..., None],
+    *,
+    after_transaction: Callable[[], None] | None = None,
 ) -> None:
     testable = script.replace(
         'root = Path("/models")',
@@ -60,6 +70,11 @@ def _run_loader(
     )
     if testable == script:
         raise AssertionError("loader no longer declares the canonical /models root")
+    if after_transaction is not None:
+        original = 'remove(root / f".{target.name}.legacy")'
+        if testable.count(original) != 1:
+            raise AssertionError("loader no longer has one exact final garbage-collection boundary")
+        testable = testable.replace(original, f"{original}\nafter_transaction()", 1)
     module = types.ModuleType("huggingface_hub")
     module.snapshot_download = download
     with (
@@ -70,7 +85,45 @@ def _run_loader(
         ),
         mock.patch.dict(sys.modules, {"huggingface_hub": module}),
     ):
-        exec(compile(testable, "<model-loader>", "exec"), {"__name__": "__main__"})
+        namespace: dict[str, object] = {
+            "__name__": "__main__",
+            "after_transaction": after_transaction,
+        }
+        try:
+            exec(compile(testable, "<model-loader>", "exec"), namespace)
+        finally:
+            descriptor = namespace.get("lock_descriptor")
+            if type(descriptor) is int and descriptor >= 0:
+                os.close(descriptor)
+
+
+def _loader_child(
+    script: str,
+    root: Path,
+    revision: str,
+    started: _Event,
+    download_started: _Event,
+    transaction_complete: _Event,
+    release: _Event,
+) -> None:
+    started.set()
+
+    def download(*, local_dir: Path, **_kwargs: object) -> None:
+        download_started.set()
+        (local_dir / "weights.bin").write_text(revision, encoding="utf-8")
+
+    def wait_after_transaction() -> None:
+        transaction_complete.set()
+        if not release.wait(10):
+            raise TimeoutError("test did not release the loader transaction")
+
+    _run_loader(
+        script,
+        root,
+        revision,
+        download,
+        after_transaction=wait_after_transaction,
+    )
 
 
 def _successful_download(
@@ -95,6 +148,144 @@ def _successful_download(
 
 
 class ModelCacheContractTest(unittest.TestCase):
+    def test_loader_transactions_are_serialized_per_target(self) -> None:
+        scripts = _loader_scripts()
+        self.assertEqual(len(scripts), 3)
+        context = multiprocessing.get_context("fork")
+        for script in scripts:
+            target_name = re.search(r'target = root / "([^"]+)"', script)
+            if target_name is None:
+                raise AssertionError("loader omits its target")
+
+            with self.subTest(target=target_name.group(1)), tempfile.TemporaryDirectory() as temporary:
+                root = Path(temporary)
+                stale_snapshot = root / f".{target_name.group(1)}-stale.snapshot"
+                stale_snapshot.mkdir()
+                first_started = context.Event()
+                first_download = context.Event()
+                first_complete = context.Event()
+                first_release = context.Event()
+                first = context.Process(
+                    target=_loader_child,
+                    args=(
+                        script,
+                        root,
+                        "a" * 40,
+                        first_started,
+                        first_download,
+                        first_complete,
+                        first_release,
+                    ),
+                )
+                second_started = context.Event()
+                second_download = context.Event()
+                second_complete = context.Event()
+                second_release = context.Event()
+                second = context.Process(
+                    target=_loader_child,
+                    args=(
+                        script,
+                        root,
+                        "b" * 40,
+                        second_started,
+                        second_download,
+                        second_complete,
+                        second_release,
+                    ),
+                )
+                try:
+                    first.start()
+                    self.assertTrue(first_started.wait(5))
+                    self.assertTrue(first_download.wait(5))
+                    self.assertTrue(first_complete.wait(5))
+                    target = root / target_name.group(1)
+                    self.assertTrue(target.is_symlink())
+                    self.assertEqual((target / "weights.bin").read_text(encoding="utf-8"), "a" * 40)
+                    self.assertFalse(stale_snapshot.exists())
+
+                    second.start()
+                    self.assertTrue(second_started.wait(5))
+                    self.assertFalse(second_download.wait(0.5))
+                    self.assertTrue(first.is_alive())
+                    self.assertTrue(second.is_alive())
+
+                    first.terminate()
+                    first.join(5)
+                    self.assertFalse(first.is_alive())
+                    self.assertNotEqual(first.exitcode, 0)
+
+                    self.assertTrue(second_download.wait(5))
+                    self.assertTrue(second_complete.wait(5))
+                    second_release.set()
+                    second.join(5)
+                    self.assertFalse(second.is_alive())
+                    self.assertEqual(second.exitcode, 0)
+                finally:
+                    for process in (first, second):
+                        if process.is_alive():
+                            process.terminate()
+                        process.join(5)
+
+    def test_different_model_targets_are_independently_lockable(self) -> None:
+        first_script, second_script, *_ = _loader_scripts()
+        context = multiprocessing.get_context("fork")
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            first_started = context.Event()
+            first_download = context.Event()
+            first_complete = context.Event()
+            first_release = context.Event()
+            first = context.Process(
+                target=_loader_child,
+                args=(
+                    first_script,
+                    root,
+                    "a" * 40,
+                    first_started,
+                    first_download,
+                    first_complete,
+                    first_release,
+                ),
+            )
+            second_started = context.Event()
+            second_download = context.Event()
+            second_complete = context.Event()
+            second_release = context.Event()
+            second = context.Process(
+                target=_loader_child,
+                args=(
+                    second_script,
+                    root,
+                    "b" * 40,
+                    second_started,
+                    second_download,
+                    second_complete,
+                    second_release,
+                ),
+            )
+            try:
+                first.start()
+                self.assertTrue(first_complete.wait(5))
+                self.assertTrue(first.is_alive())
+
+                second.start()
+                self.assertTrue(second_started.wait(5))
+                self.assertTrue(second_download.wait(5))
+                self.assertTrue(second_complete.wait(5))
+                self.assertTrue(first.is_alive())
+
+                second_release.set()
+                second.join(5)
+                self.assertEqual(second.exitcode, 0)
+                first_release.set()
+                first.join(5)
+                self.assertEqual(first.exitcode, 0)
+            finally:
+                for process in (first, second):
+                    if process.is_alive():
+                        process.terminate()
+                    process.join(5)
+
     def test_all_loaders_publish_one_exact_revision_snapshot(self) -> None:
         scripts = _loader_scripts()
         self.assertEqual(len(scripts), 3)
