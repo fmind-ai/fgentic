@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -20,6 +21,7 @@ ACTION_FILENAME = "connector-action.json"
 CURRENT_FILENAME = "current.json"
 INVENTORY_FILENAME = "inventory.json"
 MANIFEST_FILENAME = "manifest.json"
+LOGGER = logging.getLogger("fgentic.knowledge_connector_runtime")
 
 MAX_ACTION_BYTES = 64 * 1024
 MAX_INVENTORY_BYTES = 32 * 1024 * 1024
@@ -866,7 +868,7 @@ def _strict_object(pairs: list[tuple[str, object]]) -> dict[str, object]:
     result: dict[str, object] = {}
     for key, value in pairs:
         if key in result:
-            raise MaterializationError(f"JSON object contains duplicate key: {key}")
+            raise MaterializationError("JSON object contains duplicate key")
         result[key] = value
     return result
 
@@ -895,14 +897,19 @@ def _parser() -> argparse.ArgumentParser:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """Run the bounded materialization helper."""
+    logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s %(message)s")
     arguments = _parser().parse_args(argv)
     if arguments.command != "materialize":
         raise AssertionError(f"unhandled connector runtime command: {arguments.command}")
-    materialize_connector_source(
-        source_root=arguments.source_root,
-        action_path=arguments.action,
-        output_root=arguments.output_root,
-    )
+    try:
+        materialize_connector_source(
+            source_root=arguments.source_root,
+            action_path=arguments.action,
+            output_root=arguments.output_root,
+        )
+    except MaterializationError as error:
+        LOGGER.error("materialization denied: %s", error)
+        return 2
     return 0
 
 

@@ -8,6 +8,7 @@ import io
 import json
 import os
 import tarfile
+import traceback
 from pathlib import Path
 from typing import Any, cast
 
@@ -323,6 +324,44 @@ def test_rejects_json_escaped_surrogate_as_materialization_error(tmp_path: Path)
 
     assert str(caught.value) == "connector action.source_revision must be valid Unicode text"
     assert "\ud800" not in str(caught.value)
+
+
+def test_rejects_duplicate_action_keys_without_reflection(
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    action_path = tmp_path / "work" / connector_runtime.ACTION_FILENAME
+    action_path.parent.mkdir(parents=True)
+    output_root = tmp_path / "selected"
+    hostile_key = "attacker\nforged-log"
+    encoded_key = json.dumps(hostile_key)
+    action_path.write_text(f"{{{encoded_key}:1,{encoded_key}:2}}", encoding="utf-8")
+
+    with pytest.raises(connector_runtime.MaterializationError) as caught:
+        connector_runtime.parse_connector_action(action_path)
+
+    assert "JSON object contains duplicate key" in str(caught.value)
+    assert hostile_key not in str(caught.value)
+    assert "forged-log" not in "".join(traceback.format_exception(caught.value))
+
+    assert (
+        connector_runtime.main(
+            [
+                "materialize",
+                "--action",
+                os.fspath(action_path),
+                "--source-root",
+                os.fspath(tmp_path / "missing-acquisition"),
+                "--output-root",
+                os.fspath(output_root),
+            ]
+        )
+        == 2
+    )
+    assert "JSON object contains duplicate key" in caplog.text
+    assert hostile_key not in caplog.text
+    assert "forged-log" not in caplog.text
+    assert not output_root.exists()
 
 
 def test_rejects_retained_inventory_that_disagrees_with_action(tmp_path: Path) -> None:
