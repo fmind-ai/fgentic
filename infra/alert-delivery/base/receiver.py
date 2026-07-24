@@ -19,6 +19,7 @@ from __future__ import annotations
 import hashlib
 import http.client
 import http.server
+import ipaddress
 import json
 import os
 import queue
@@ -64,6 +65,7 @@ _MEDIA_TYPE = re.compile(
     rf"^[ \t]*(?P<type>{_HTTP_TOKEN})/(?P<subtype>{_HTTP_TOKEN})"
     rf"(?:[ \t]*;[ \t]*(?:{_HTTP_TOKEN}=(?:{_HTTP_TOKEN}|{_HTTP_QUOTED_STRING}))?)*[ \t]*$"
 )
+_HOST_LABEL = re.compile(r"^[A-Za-z0-9](?:[-A-Za-z0-9]{0,61}[A-Za-z0-9])?$")
 _LISTEN_PORT_ERROR = (
     f"ALERTBOT_LISTEN_PORT must be a canonical ASCII integer from {_MIN_LISTEN_PORT} to {_MAX_LISTEN_PORT}"
 )
@@ -155,6 +157,47 @@ def _safe_label_summary(labels: dict) -> str:
     return " ".join(parts)
 
 
+def _valid_hostname(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+        return True
+    except ValueError:
+        pass
+    hostname = value.removesuffix(".")
+    labels = hostname.split(".")
+    return (
+        bool(hostname)
+        and len(hostname.encode("ascii")) <= 253
+        and all(_HOST_LABEL.fullmatch(label) is not None for label in labels)
+    )
+
+
+def _generator_link(value: object) -> str:
+    link = _clean_scalar(value, fallback="", maximum=_MAX_GENERATOR_URL_BYTES)
+    if not link or not link.isascii() or any(character.isspace() for character in link) or "\\" in link:
+        return ""
+    try:
+        parsed = urllib.parse.urlsplit(link)
+        hostname = parsed.hostname
+        port = parsed.port
+        username = parsed.username
+        password = parsed.password
+    except ValueError:
+        return ""
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not parsed.netloc
+        or hostname is None
+        or not _valid_hostname(hostname)
+        or username is not None
+        or password is not None
+        or port == 0
+        or parsed.geturl() != link
+    ):
+        return ""
+    return link
+
+
 def _render(payload: dict) -> str:
     """Build one bounded, content-free notice for an Alertmanager group webhook."""
     status = _clean_status(payload.get("status"), fallback="unknown")
@@ -171,12 +214,12 @@ def _render(payload: dict) -> str:
         name = _clean_scalar(labels.get("alertname", "unknown"), fallback="unknown", maximum=_MAX_ALERT_NAME_BYTES)
         severity = _clean_scalar(labels.get("severity", "none"), fallback="unknown", maximum=_MAX_SEVERITY_BYTES)
         summary = _safe_label_summary(labels)
-        link = _clean_scalar(alert.get("generatorURL", ""), fallback="", maximum=_MAX_GENERATOR_URL_BYTES)
+        link = _generator_link(alert.get("generatorURL", ""))
         alert_status = _clean_status(alert.get("status"), fallback=status)
         piece = f"• [{alert_status}] {name} ({severity})"
         if summary:
             piece += f" {summary}"
-        if isinstance(link, str) and link.startswith("http"):
+        if link:
             piece += f" — {link}"
         alert_lines.append(piece)
 

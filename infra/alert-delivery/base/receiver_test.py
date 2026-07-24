@@ -218,6 +218,54 @@ def test_render_is_content_free() -> None:
     print("ok: render is content-free")
 
 
+def test_generator_links_require_credential_free_absolute_http_urls() -> None:
+    valid_links = (
+        "http://prometheus/graph?g0.expr=x",
+        "https://prometheus.example/graph?g0.expr=up%20%3D%3D%200#panel",
+        "http://127.0.0.1:9090/graph",
+        "http://[::1]:9090/graph",
+    )
+    for link in valid_links:
+        assert receiver._generator_link(link) == link
+        assert f" — {link}" in receiver._render(
+            {
+                "status": "firing",
+                "alerts": [{"labels": {"alertname": "GeneratorLink"}, "generatorURL": link}],
+            }
+        )
+
+    invalid_links = (
+        "httpSECRET-PROMPT",
+        "//prometheus/graph",
+        "/graph",
+        "ftp://prometheus/graph",
+        "HTTP://prometheus/graph",
+        "http://",
+        "http://prometheus:0/graph",
+        "http://prometheus:99999/graph",
+        "http://user:secret@prometheus/graph",
+        "http://prometheus/a b",
+        "http://prometheus\\@other/graph",
+        "https://prométheus.example/graph",
+        "http://-prometheus.example/graph",
+        "http://prometheus..example/graph",
+        "http://./graph",
+        "http://%70rometheus.example/graph",
+        "http://prometheus/graph?",
+    )
+    for link in invalid_links:
+        assert receiver._generator_link(link) == ""
+        body = receiver._render(
+            {
+                "status": "firing",
+                "alerts": [{"labels": {"alertname": "GeneratorLink"}, "generatorURL": link}],
+            }
+        )
+        assert body == "🔔 Alertmanager: firing (1 alert(s))\n• [firing] GeneratorLink (none)"
+        assert link not in body
+    print("ok: generator links are canonical credential-free absolute HTTP(S) URLs")
+
+
 def test_statuses_are_semantically_bounded() -> None:
     assert receiver._render({"status": "firing", "alerts": []}) == "🔔 Alertmanager: firing (0 alert(s))"
     assert receiver._render({"status": "resolved", "alerts": []}) == "✅ Alertmanager: resolved (0 alert(s))"
@@ -1050,6 +1098,7 @@ if __name__ == "__main__":
     test_rendered_ports_are_aligned()
     test_network_peers_are_exactly_scoped()
     test_render_is_content_free()
+    test_generator_links_require_credential_free_absolute_http_urls()
     test_statuses_are_semantically_bounded()
     test_render_is_bounded()
     test_render_replaces_malformed_projected_values()
