@@ -196,6 +196,9 @@ def _issue_form_route_error(target: str, templates: set[str]) -> str | None:
 
 def _form_markdown(path: Path) -> str:
     """Return Markdown blocks embedded in one structured GitHub form."""
+    if path.suffix.lower() != ".yml":
+        return ""
+
     document = yaml.safe_load(path.read_text(encoding="utf-8"))
     if not isinstance(document, dict) or not isinstance(body := document.get("body"), list):
         return ""
@@ -311,6 +314,9 @@ def _unique_form_identifiers(body: Sequence[object]) -> set[str]:
 
 def _issue_template_name(source: Path) -> str | None:
     """Return the chooser name declared by one YAML or Markdown issue template."""
+    if source.suffix.lower() == ".yaml":
+        return None
+
     raw_document = source.read_text(encoding="utf-8")
     if source.suffix.lower() == ".md":
         match = MARKDOWN_FRONTMATTER.match(raw_document)
@@ -992,7 +998,7 @@ class CommunityRouteIntegrityTest(TestCase):
             issue_directory.mkdir(parents=True)
             first = issue_directory / "first.yml"
             markdown = issue_directory / "legacy.md"
-            second = issue_directory / "second.yaml"
+            second = issue_directory / "second.yml"
             first.write_text("name: Bug report\n", encoding="utf-8")
             markdown.write_text("---\nname: Bug report\nabout: Report a defect\n---\n", encoding="utf-8")
             second.write_text("name: Bug report\n", encoding="utf-8")
@@ -1006,7 +1012,7 @@ class CommunityRouteIntegrityTest(TestCase):
                         "name duplicates .github/ISSUE_TEMPLATE/first.yml: 'Bug report'",
                     ),
                     (
-                        ".github/ISSUE_TEMPLATE/second.yaml",
+                        ".github/ISSUE_TEMPLATE/second.yml",
                         "name duplicates .github/ISSUE_TEMPLATE/first.yml: 'Bug report'",
                     ),
                 ],
@@ -1216,6 +1222,36 @@ class CommunityRouteIntegrityTest(TestCase):
                             else []
                         )
                         self.assertEqual(_form_schema_violations(source, repository_root), expected)
+
+    def test_rejects_yaml_extensions_before_content_validation(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            issue = repository_root / ".github/ISSUE_TEMPLATE/broken.yaml"
+            discussion = repository_root / ".github/DISCUSSION_TEMPLATE/broken.yaml"
+            issue.parent.mkdir(parents=True)
+            discussion.parent.mkdir(parents=True)
+            issue.write_text("name: [malformed\n", encoding="utf-8")
+            discussion.write_text(
+                "body:\n  - type: markdown\n    attributes:\n      value: '[Missing](../../docs/missing.md)'\n",
+                encoding="utf-8",
+            )
+
+            forms = _structured_forms(repository_root)
+            self.assertEqual(
+                [violation for source in forms for violation in _form_schema_violations(source, repository_root)],
+                [
+                    (
+                        ".github/DISCUSSION_TEMPLATE/broken.yaml",
+                        "structured forms must use the .yml extension",
+                    ),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yaml",
+                        "structured forms must use the .yml extension",
+                    ),
+                ],
+            )
+            _require_valid_form_markdown_links(forms, repository_root)
+            _require_unique_issue_template_names(_issue_templates(repository_root), repository_root)
 
     def test_issue_template_names_are_unique(self) -> None:
         _require_unique_issue_template_names(_issue_templates(), REPOSITORY_ROOT)
