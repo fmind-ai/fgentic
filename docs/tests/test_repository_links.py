@@ -357,11 +357,7 @@ def _markdown_issue_template_violations(source: Path, repository_root: Path) -> 
 
     violations = [(source_name, reason) for reason in _duplicate_yaml_key_reasons(node)]
     violations.extend(
-        (source_name, reason)
-        for reason in _unsupported_key_reasons(
-            cast(dict[object, object], document),
-            MARKDOWN_ISSUE_TEMPLATE_KEYS,
-        )
+        (source_name, reason) for reason in _unsupported_yaml_mapping_key_reasons(node, MARKDOWN_ISSUE_TEMPLATE_KEYS)
     )
     violations.extend(
         (source_name, f"{key} must be a nonblank string")
@@ -415,15 +411,37 @@ def _issue_template_filename_violations(
 
 def _yaml_scalar_key(node: ScalarNode) -> tuple[YamlScalarKey, str]:
     """Return a resolved identity and diagnostic label for one YAML scalar key."""
-    loader = yaml.SafeLoader("")
-    try:
-        value = loader.construct_object(node, deep=True)
-    finally:
-        loader.dispose()
+    if node.tag == "tag:yaml.org,2002:merge":
+        value: object = node.value
+    else:
+        loader = yaml.SafeLoader("")
+        try:
+            value = loader.construct_object(node, deep=True)
+        finally:
+            loader.dispose()
     if not isinstance(value, Hashable):
         raise TypeError(f"YAML scalar key resolved to unhashable {type(value).__name__}")
     label = value if isinstance(value, str) else repr(value)
     return (node.tag, value), label
+
+
+def _unsupported_yaml_mapping_key_reasons(node: Node | None, allowed_keys: frozenset[str]) -> list[str]:
+    """Return unsupported scalar mapping keys using their resolved YAML identities."""
+    if not isinstance(node, MappingNode):
+        return []
+
+    unsupported: dict[YamlScalarKey, str] = {}
+    for key_node, _ in node.value:
+        if not isinstance(key_node, ScalarNode):
+            continue
+        identity, label = _yaml_scalar_key(key_node)
+        value = identity[1]
+        if not isinstance(value, str) or value not in allowed_keys:
+            unsupported.setdefault(identity, label)
+    return [
+        f"{label} is not permitted"
+        for identity, label in sorted(unsupported.items(), key=lambda item: repr(item[0][1]))
+    ]
 
 
 def _duplicate_yaml_key_reasons(node: Node | None, location: str = "") -> list[str]:
@@ -1266,7 +1284,10 @@ class CommunityRouteIntegrityTest(TestCase):
                         "name: Second",
                         "about: Exercises ambiguous metadata",
                         "unexpected: ignored typo",
+                        "11: integer key",
                         "false: non-string key",
+                        "null: null key",
+                        "<<: {}",
                         "---",
                     )
                 ),
@@ -1277,8 +1298,11 @@ class CommunityRouteIntegrityTest(TestCase):
                 _markdown_issue_template_violations(source, repository_root),
                 [
                     (".github/ISSUE_TEMPLATE/broken.md", "name is duplicated"),
+                    (".github/ISSUE_TEMPLATE/broken.md", "<< is not permitted"),
                     (".github/ISSUE_TEMPLATE/broken.md", "unexpected is not permitted"),
+                    (".github/ISSUE_TEMPLATE/broken.md", "11 is not permitted"),
                     (".github/ISSUE_TEMPLATE/broken.md", "False is not permitted"),
+                    (".github/ISSUE_TEMPLATE/broken.md", "None is not permitted"),
                 ],
             )
             with self.assertRaisesRegex(
