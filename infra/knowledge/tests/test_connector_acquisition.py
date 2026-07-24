@@ -132,6 +132,15 @@ def test_projected_file_reader_accepts_symlink_to_regular_file(tmp_path: Path) -
     assert acquisition._read_file(projected, 16) == b"projected"
 
 
+def test_published_path_reader_rejects_fifo_without_blocking(tmp_path: Path) -> None:
+    fifo = tmp_path / "published"
+
+    error = _fifo_reader_error(fifo, lambda: acquisition._read_exact(fifo, 16))
+
+    assert isinstance(error, acquisition.AcquisitionError)
+    assert str(error) == "published path is not one bounded regular file: published"
+
+
 def test_acquire_rejects_symlinked_lock_without_touching_target(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
