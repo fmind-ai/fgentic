@@ -535,6 +535,46 @@ def test_connector_rejects_ambiguous_uppercase_markdown_suffix() -> None:
         build_connector({"docs/source.MD": b"# Source\n"})
 
 
+@pytest.mark.parametrize(
+    "principal",
+    [
+        "@alice:matrix.org",
+        "@alice:MATRIX.ORG",
+        "@alice:matrix-host.example",
+        "@alice:matrix.org.",
+        "@alice:matrix.org:8448",
+        "@alice:1.2.3.4",
+        "@alice:1.2.3.4:8448",
+        "@alice:[2001:db8::1]",
+        "@alice:[2001:db8::1]:8448",
+    ],
+)
+def test_connector_preserves_valid_matrix_server_name_forms(principal: str) -> None:
+    connector = build_connector({"docs/source.md": b"# Source\n"}, document=manifest(principal=principal))
+    source = connector.fetch_source(connector.enumerate_sources()[0].source_id)
+
+    assert source.acl.allowed_principals == (git_markdown.Principal(kind="matrix", principal=principal),)
+
+
+@pytest.mark.parametrize(
+    "server_name",
+    [
+        ".example.org",
+        "example..org",
+        "-example.org",
+        "example-.org",
+        "example.org..",
+        f"{'a' * 64}.example.org",
+    ],
+)
+def test_connector_rejects_malformed_matrix_dns_server_names(server_name: str) -> None:
+    with pytest.raises(git_markdown.ConnectorError, match="invalid server name"):
+        build_connector(
+            {"docs/source.md": b"# Source\n"},
+            document=manifest(principal=f"@alice:{server_name}"),
+        )
+
+
 def test_artifact_rejection_diagnostics_do_not_reflect_source_controlled_values() -> None:
     hostile = "private-partner-redacted"
     base = {
