@@ -69,22 +69,96 @@ spec:
           args:
             - |
               import os
+              import re
+              import shutil
+              import tempfile
               from pathlib import Path
 
               from huggingface_hub import snapshot_download
 
               revision = os.environ["MODEL_REVISION"]
-              target = Path("/models/bge-m3")
-              marker = target / ".ready"
+              if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+                  raise SystemExit("MODEL_REVISION must be one full lowercase Git commit")
 
-              if not marker.is_file() or marker.read_text(encoding="utf-8").strip() != revision:
-                  snapshot_download(
-                      repo_id="BAAI/bge-m3",
-                      revision=revision,
-                      local_dir=target,
-                      max_workers=4,
+              root = Path("/models")
+              target = root / "bge-m3"
+              marker_value = f"snapshot-v2:{revision}"
+              snapshot_prefix = f".{target.name}-{revision}-"
+              next_link = root / f".{target.name}.next"
+              legacy = root / f".{target.name}.legacy"
+
+              # snapshot_download(local_dir=...) pulls current files but does not delete files
+              # removed upstream. Publish a fresh directory so every ready target is one exact pin.
+              def remove(path: Path) -> None:
+                  if path.is_symlink() or path.is_file():
+                      path.unlink()
+                  elif path.exists():
+                      shutil.rmtree(path)
+
+              def published_snapshot() -> Path | None:
+                  if not target.is_symlink():
+                      return None
+                  try:
+                      snapshot = target.resolve(strict=True)
+                  except (OSError, RuntimeError):
+                      return None
+                  marker = snapshot / ".ready"
+                  if (
+                      snapshot.parent != root
+                      or not snapshot.name.startswith(snapshot_prefix)
+                      or not snapshot.name.endswith(".snapshot")
+                      or not marker.is_file()
+                      or marker.read_text(encoding="utf-8").strip() != marker_value
+                  ):
+                      return None
+                  return snapshot
+
+              # A pod can be terminated after moving a legacy directory but before publishing
+              # its replacement symlink. Restore that last known-good tree before any retry.
+              if not target.exists() and not target.is_symlink() and legacy.exists():
+                  if legacy.is_symlink() or not legacy.is_dir():
+                      raise SystemExit("orphaned legacy model cache is not a directory")
+                  legacy.rename(target)
+
+              current = published_snapshot()
+              if current is None:
+                  snapshot = Path(
+                      tempfile.mkdtemp(prefix=snapshot_prefix, suffix=".snapshot", dir=root)
                   )
-                  marker.write_text(f"{revision}\n", encoding="utf-8")
+                  migrated = False
+                  published = False
+                  try:
+                      snapshot_download(
+                          repo_id="BAAI/bge-m3",
+                          revision=revision,
+                          local_dir=snapshot,
+                          max_workers=4,
+                      )
+                      (snapshot / ".ready").write_text(f"{marker_value}\n", encoding="utf-8")
+                      remove(next_link)
+                      next_link.symlink_to(snapshot.name, target_is_directory=True)
+                      if target.exists() and not target.is_symlink():
+                          remove(legacy)
+                          target.rename(legacy)
+                          migrated = True
+                      os.replace(next_link, target)
+                      published = True
+                  except BaseException:
+                      remove(next_link)
+                      if migrated and not target.exists() and legacy.exists():
+                          legacy.rename(target)
+                      if not published:
+                          remove(snapshot)
+                      raise
+
+                  current = published_snapshot()
+                  if current is None:
+                      raise SystemExit("published model snapshot failed validation")
+
+              for candidate in root.glob(f".{target.name}-*.snapshot"):
+                  if candidate != current:
+                      remove(candidate)
+              remove(root / f".{target.name}.legacy")
           env:
             - name: HOME
               value: /tmp
@@ -166,22 +240,96 @@ spec:
           args:
             - |
               import os
+              import re
+              import shutil
+              import tempfile
               from pathlib import Path
 
               from huggingface_hub import snapshot_download
 
               revision = os.environ["MODEL_REVISION"]
-              target = Path("/models/bge-reranker-v2-m3")
-              marker = target / ".ready"
+              if re.fullmatch(r"[0-9a-f]{40}", revision) is None:
+                  raise SystemExit("MODEL_REVISION must be one full lowercase Git commit")
 
-              if not marker.is_file() or marker.read_text(encoding="utf-8").strip() != revision:
-                  snapshot_download(
-                      repo_id="BAAI/bge-reranker-v2-m3",
-                      revision=revision,
-                      local_dir=target,
-                      max_workers=4,
+              root = Path("/models")
+              target = root / "bge-reranker-v2-m3"
+              marker_value = f"snapshot-v2:{revision}"
+              snapshot_prefix = f".{target.name}-{revision}-"
+              next_link = root / f".{target.name}.next"
+              legacy = root / f".{target.name}.legacy"
+
+              # snapshot_download(local_dir=...) pulls current files but does not delete files
+              # removed upstream. Publish a fresh directory so every ready target is one exact pin.
+              def remove(path: Path) -> None:
+                  if path.is_symlink() or path.is_file():
+                      path.unlink()
+                  elif path.exists():
+                      shutil.rmtree(path)
+
+              def published_snapshot() -> Path | None:
+                  if not target.is_symlink():
+                      return None
+                  try:
+                      snapshot = target.resolve(strict=True)
+                  except (OSError, RuntimeError):
+                      return None
+                  marker = snapshot / ".ready"
+                  if (
+                      snapshot.parent != root
+                      or not snapshot.name.startswith(snapshot_prefix)
+                      or not snapshot.name.endswith(".snapshot")
+                      or not marker.is_file()
+                      or marker.read_text(encoding="utf-8").strip() != marker_value
+                  ):
+                      return None
+                  return snapshot
+
+              # A pod can be terminated after moving a legacy directory but before publishing
+              # its replacement symlink. Restore that last known-good tree before any retry.
+              if not target.exists() and not target.is_symlink() and legacy.exists():
+                  if legacy.is_symlink() or not legacy.is_dir():
+                      raise SystemExit("orphaned legacy model cache is not a directory")
+                  legacy.rename(target)
+
+              current = published_snapshot()
+              if current is None:
+                  snapshot = Path(
+                      tempfile.mkdtemp(prefix=snapshot_prefix, suffix=".snapshot", dir=root)
                   )
-                  marker.write_text(f"{revision}\n", encoding="utf-8")
+                  migrated = False
+                  published = False
+                  try:
+                      snapshot_download(
+                          repo_id="BAAI/bge-reranker-v2-m3",
+                          revision=revision,
+                          local_dir=snapshot,
+                          max_workers=4,
+                      )
+                      (snapshot / ".ready").write_text(f"{marker_value}\n", encoding="utf-8")
+                      remove(next_link)
+                      next_link.symlink_to(snapshot.name, target_is_directory=True)
+                      if target.exists() and not target.is_symlink():
+                          remove(legacy)
+                          target.rename(legacy)
+                          migrated = True
+                      os.replace(next_link, target)
+                      published = True
+                  except BaseException:
+                      remove(next_link)
+                      if migrated and not target.exists() and legacy.exists():
+                          legacy.rename(target)
+                      if not published:
+                          remove(snapshot)
+                      raise
+
+                  current = published_snapshot()
+                  if current is None:
+                      raise SystemExit("published model snapshot failed validation")
+
+              for candidate in root.glob(f".{target.name}-*.snapshot"):
+                  if candidate != current:
+                      remove(candidate)
+              remove(root / f".{target.name}.legacy")
           env:
             - name: HOME
               value: /tmp
