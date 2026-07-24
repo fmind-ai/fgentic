@@ -1867,3 +1867,64 @@ def test_production_embedding_url_is_exact() -> None:
             "http://agentgateway-proxy.agentgateway-system.svc.cluster.local:8080/v1/embeddings",
             allow_loopback=False,
         )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        pytest.param("http://localhost:99999/v1/embeddings", id="out-of-range-port"),
+        pytest.param("http://localhost:invalid/v1/embeddings", id="non-numeric-port"),
+        pytest.param("http://[::1/v1/embeddings", id="malformed-ipv6"),
+    ],
+)
+def test_embedding_url_rejects_malformed_authority_without_reflection(url: str) -> None:
+    with pytest.raises(ingestion.IngestionError) as caught:
+        ingestion._validate_embeddings_url(url, allow_loopback=True)
+
+    assert str(caught.value) == "embeddings URL is malformed"
+    assert url not in str(caught.value)
+
+
+def test_embed_cli_rejects_malformed_url_before_resolution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    plan_path = tmp_path / "plan.jsonl"
+    output_path = tmp_path / "chunks.jsonl"
+    credential = tmp_path / "authorization"
+    checkpoint_root = tmp_path / "checkpoint"
+    malformed_url = "http://localhost:99999/v1/embeddings"
+    ingestion.write_jsonl(
+        plan_path,
+        [planned_record(f"sha256:{'9' * 64}", "changed", None)],
+    )
+    credential.write_text("Bearer workload-key")
+    checkpoint_root.mkdir()
+
+    def unexpected_resolution(*_args: object, **_kwargs: object) -> list[str]:
+        raise AssertionError("resolver reached for a malformed embeddings URL")
+
+    monkeypatch.setattr(ingestion, "_resolve_endpoint_addresses", unexpected_resolution)
+
+    assert (
+        ingestion.main(
+            [
+                "embed",
+                "--plan",
+                str(plan_path),
+                "--output",
+                str(output_path),
+                "--url",
+                malformed_url,
+                "--authorization-file",
+                str(credential),
+                "--checkpoint-root",
+                str(checkpoint_root),
+            ]
+        )
+        == 2
+    )
+    assert "embeddings URL is malformed" in caplog.text
+    assert malformed_url not in caplog.text
+    assert not output_path.exists()

@@ -1227,7 +1227,12 @@ def _embedding_vector(value: object, *, name: str) -> list[float]:
 
 
 def _validate_embeddings_url(url: str, *, allow_loopback: bool) -> EmbeddingsEndpoint:
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+        hostname = parts.hostname
+        port = parts.port
+    except ValueError:
+        raise IngestionError("embeddings URL is malformed") from None
     if (
         parts.scheme != "http"
         or parts.username is not None
@@ -1237,10 +1242,9 @@ def _validate_embeddings_url(url: str, *, allow_loopback: bool) -> EmbeddingsEnd
         or parts.path != "/v1/embeddings"
     ):
         raise IngestionError("embeddings URL must be plain in-cluster HTTP on the exact /v1/embeddings path")
-    hostname = parts.hostname
     if hostname is None:
         raise IngestionError("embeddings URL must include a hostname")
-    port = parts.port or 80
+    port = port or 80
     if allow_loopback:
         if hostname not in {"127.0.0.1", "localhost"}:
             raise IngestionError("test embeddings URL must use loopback")
