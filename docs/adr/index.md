@@ -23,3 +23,4 @@ Settled designs (including the D1–D20 register) are revisited by proposing a n
 - [0019 — Snapshot-Backed Synapse Media PVC](0019-synapse-media-store.md) - retained local PVC and explicit CSI snapshot recovery for the GKE reference
 - [0020 — Retain Bash Acceptance Rigs Until a Measured Pilot Trigger](0020-retain-bash-acceptance-rigs.md) - keep ShellCheck-gated rigs until one bounded Go pilot meets explicit evidence thresholds
 - [0021 — Out-of-Band Pinned Key Resolution for the ActivityPub Border](0021-pinned-key-resolution.md) - verify operator-pinned in-cluster signers without a network fetch; unpinned actors stay on the unchanged SSRF guard
+- [0022 — Governed User-Agent Memory Requires Explicit Consent and Exact Erasure](0022-governed-user-agent-memory.md) - keep semantic memory disabled until every user can inspect, bound, and erase one exact scope
