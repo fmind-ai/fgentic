@@ -8,12 +8,15 @@ homeserver. Mirrors the fake-transport fixture discipline of scripts/test-fed-ch
 
 from __future__ import annotations
 
+import contextlib
 import http.server
 import json
 import os
 import subprocess
 import sys
 import threading
+import time
+import urllib.parse
 from pathlib import Path
 from typing import Any, ClassVar
 
@@ -155,7 +158,17 @@ def test_deadline_configuration_contract() -> None:
         "canary: CANARY_DEADLINE_SECONDS must be a canonical ASCII integer "
         f"from 1 to {probe._MAX_DEADLINE_SECONDS}\n"
     )
-    for raw in ("0", "-1", "151", " 1", "1 ", "01", "١", "operator-private-value", "9" * 10_000):
+    for raw in (
+        "0",
+        "-1",
+        "151",
+        " 1",
+        "1 ",
+        "01",
+        "\N{ARABIC-INDIC DIGIT ONE}",
+        "operator-private-value",
+        "9" * 10_000,
+    ):
         result = _run_probe_result([], raw)
         assert result.returncode != 0, f"invalid deadline {raw[:20]!r} must fail closed"
         assert result.stderr == expected_error, f"invalid deadline {raw[:20]!r} leaked unstable diagnostics"
@@ -167,6 +180,9 @@ def test_deadline_configuration_contract() -> None:
     active_deadline = cronjob["spec"]["jobTemplate"]["spec"]["activeDeadlineSeconds"]
     assert configured_default == probe._DEFAULT_DEADLINE_SECONDS
     assert 1 <= configured_default <= probe._MAX_DEADLINE_SECONDS < active_deadline
+    assert probe._sync_request_timeouts(120) == (5_000, 15.0)
+    assert probe._sync_request_timeouts(1) == (1_000, 1)
+    assert probe._sync_request_timeouts(0.0001) == (1, 0.0001)
     print("ok: deadline configuration is canonical, bounded, and content-free")
 
 
@@ -245,6 +261,7 @@ def test_probe_egress_is_exactly_scoped() -> None:
 class _FakeMatrix(http.server.BaseHTTPRequestHandler):
     # Successive ghost timelines; empty -> the probe times out.
     timelines: ClassVar[list[list[dict]]] = []
+    sync_timeouts: ClassVar[list[int]] = []
     sync_index = 0
     response_mode: str | None = None
 
@@ -257,7 +274,21 @@ class _FakeMatrix(http.server.BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(body)
+        # The hard-deadline test intentionally closes before the slow response.
+        with contextlib.suppress(BrokenPipeError):
+            self.wfile.write(body)
+
+    def _send_trickle(self) -> None:
+        body = b'{"x":1}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        for byte in body:
+            with contextlib.suppress(BrokenPipeError):
+                self.wfile.write(bytes([byte]))
+                self.wfile.flush()
+            time.sleep(0.15)
 
     def _send_hostile_login(self) -> bool:
         if self.response_mode == "absent-length-oversized":
@@ -315,10 +346,17 @@ class _FakeMatrix(http.server.BaseHTTPRequestHandler):
         self._send({"event_id": PROBE_EVENT})
 
     def do_GET(self) -> None:
+        if self.response_mode == "trickle-response":
+            self._send_trickle()
+            return
         if "since=" not in self.path:
             cursor = "attacker-secret" if self.response_mode == "hostile-cursor" else "s0"
             self._send({"next_batch": cursor})  # initial cursor, no events yet
             return
+        query = urllib.parse.parse_qs(urllib.parse.urlsplit(self.path).query)
+        _FakeMatrix.sync_timeouts.append(int(query["timeout"][0]))
+        if self.response_mode == "slow-sync":
+            time.sleep(2.5)
         if self.response_mode == "hostile-cursor":
             self.send_response(200)
             self.send_header("Content-Length", "1")
@@ -339,6 +377,7 @@ def _run_probe_result(
     response_mode: str | None = None,
 ) -> subprocess.CompletedProcess[str]:
     _FakeMatrix.timelines = timelines
+    _FakeMatrix.sync_timeouts = []
     _FakeMatrix.sync_index = 0
     _FakeMatrix.response_mode = response_mode
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeMatrix)
@@ -391,6 +430,48 @@ def test_round_trip_timeout() -> None:
     print("ok: round-trip timeout fails closed")
 
 
+def test_round_trip_deadline_is_hard() -> None:
+    started = time.monotonic()
+    result = _run_probe_result(
+        [[_reply(REPLY_EVENT, "late answer")]],
+        "1",
+        response_mode="slow-sync",
+    )
+    elapsed = time.monotonic() - started
+    assert result.returncode != 0, "a reply observed after the deadline must fail"
+    assert elapsed < 2, "the sync request must not retain its fixed five/15-second bounds"
+    assert len(_FakeMatrix.sync_timeouts) == 1
+    assert 1 <= _FakeMatrix.sync_timeouts[0] <= 1_000
+    assert "delegation round-trip ok" not in result.stdout
+    print("ok: round-trip deadline is a hard success and transport bound")
+
+
+def test_request_timeout_is_end_to_end() -> None:
+    _FakeMatrix.response_mode = "trickle-response"
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeMatrix)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    started = time.monotonic()
+    try:
+        try:
+            probe._request(
+                "GET",
+                f"http://127.0.0.1:{server.server_address[1]}",
+                None,
+                None,
+                timeout_seconds=0.2,
+            )
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("a trickled response must not extend the request deadline")
+        assert time.monotonic() - started < 0.5
+    finally:
+        server.shutdown()
+        server.server_close()
+    print("ok: request timeout is an end-to-end wall-clock bound")
+
+
 def test_hostile_responses_fail_closed() -> None:
     for mode in (
         "absent-length-oversized",
@@ -420,6 +501,8 @@ if __name__ == "__main__":
     test_probe_egress_is_exactly_scoped()
     test_round_trip_success()
     test_round_trip_timeout()
+    test_round_trip_deadline_is_hard()
+    test_request_timeout_is_end_to_end()
     test_hostile_responses_fail_closed()
     test_hostile_cursor_never_reaches_failure_log()
     print("canary probe tests passed")

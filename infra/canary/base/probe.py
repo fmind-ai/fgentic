@@ -19,8 +19,10 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import queue
 import secrets
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -36,6 +38,8 @@ _MAX_RESPONSE_BYTES = 262_144
 _MAX_REPLY_STATE = 32
 _DEFAULT_DEADLINE_SECONDS = 120
 _MAX_DEADLINE_SECONDS = 150
+_DEFAULT_REQUEST_TIMEOUT_SECONDS = 15.0
+_MAX_SYNC_TIMEOUT_MILLISECONDS = 5_000
 
 
 def _env(name: str) -> str:
@@ -70,14 +74,30 @@ def _deadline_seconds() -> int:
     return value
 
 
-def _request(method: str, url: str, token: str | None, body: dict | None) -> dict:
+def _sync_request_timeouts(remaining_seconds: float) -> tuple[int, float]:
+    long_poll_milliseconds = max(
+        1,
+        min(_MAX_SYNC_TIMEOUT_MILLISECONDS, int(remaining_seconds * 1_000)),
+    )
+    transport_seconds = min(_DEFAULT_REQUEST_TIMEOUT_SECONDS, remaining_seconds)
+    return long_poll_milliseconds, transport_seconds
+
+
+def _request_io(
+    method: str,
+    url: str,
+    token: str | None,
+    body: dict | None,
+    *,
+    timeout_seconds: float = _DEFAULT_REQUEST_TIMEOUT_SECONDS,
+) -> dict:
     data = json.dumps(body).encode() if body is not None else None
     request = urllib.request.Request(url, data=data, method=method)
     request.add_header("Content-Type", "application/json")
     if token:
         request.add_header("Authorization", f"Bearer {token}")
     try:
-        with urllib.request.urlopen(request, timeout=15) as response:
+        with urllib.request.urlopen(request, timeout=timeout_seconds) as response:
             content_lengths = response.headers.get_all("Content-Length", [])
             if len(content_lengths) > 1 or (
                 content_lengths
@@ -115,6 +135,43 @@ def _request(method: str, url: str, token: str | None, body: dict | None) -> dic
     except (http.client.HTTPException, urllib.error.URLError, TimeoutError, ValueError) as error:
         _fail(f"{method} Matrix request failed: {type(error).__name__}")
     return {}  # unreachable; _fail raises
+
+
+def _request(
+    method: str,
+    url: str,
+    token: str | None,
+    body: dict | None,
+    *,
+    timeout_seconds: float = _DEFAULT_REQUEST_TIMEOUT_SECONDS,
+) -> dict:
+    outcomes: queue.Queue[dict | BaseException] = queue.Queue(maxsize=1)
+
+    def perform_request() -> None:
+        try:
+            outcomes.put(
+                _request_io(
+                    method,
+                    url,
+                    token,
+                    body,
+                    timeout_seconds=timeout_seconds,
+                )
+            )
+        except BaseException as error:
+            # _fail raises SystemExit, which must cross the worker boundary without a traceback.
+            outcomes.put(error)
+
+    # urllib's timeout is per blocking socket operation, not end-to-end. A daemon worker lets the
+    # caller enforce the configured wall-clock bound even when a peer continuously trickles bytes.
+    threading.Thread(target=perform_request, daemon=True).start()
+    try:
+        outcome = outcomes.get(timeout=timeout_seconds)
+    except queue.Empty:
+        _fail(f"{method} Matrix request failed: TimeoutError")
+    if isinstance(outcome, BaseException):
+        raise outcome
+    return outcome
 
 
 def _successful_body(body: object) -> bool:
@@ -253,14 +310,26 @@ def main() -> int:
     # Retain only bounded reply ids and success bits across batches; never accumulate event bodies.
     replies = _ReplyTracker(ghost, probe_event)
     deadline = time.monotonic() + deadline_seconds
-    while time.monotonic() < deadline:
+    while True:
+        remaining_seconds = deadline - time.monotonic()
+        if remaining_seconds <= 0:
+            break
+        sync_timeout_milliseconds, transport_timeout_seconds = _sync_request_timeouts(
+            remaining_seconds
+        )
         encoded_since = urllib.parse.quote(since, safe="")
         sync = _request(
             "GET",
-            f"{homeserver}/_matrix/client/v3/sync?timeout=5000&since={encoded_since}",
+            (
+                f"{homeserver}/_matrix/client/v3/sync"
+                f"?timeout={sync_timeout_milliseconds}&since={encoded_since}"
+            ),
             token,
             None,
+            timeout_seconds=transport_timeout_seconds,
         )
+        if time.monotonic() >= deadline:
+            break
         next_batch = sync.get("next_batch")
         if not isinstance(next_batch, str) or not next_batch:
             _fail("sync response did not return a batch cursor")
