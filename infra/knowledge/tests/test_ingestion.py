@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import http.client
 import json
 import socket
 import stat
@@ -15,6 +16,7 @@ from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, ClassVar, cast, override
+from unittest import mock
 
 import ingestion
 import pytest
@@ -765,6 +767,8 @@ class EmbeddingHandler(BaseHTTPRequestHandler):
     reverse_response = False
     token_count = 1
     tokenize_override: ClassVar[dict[str, object] | bytes | None] = None
+    tokenize_content_types: ClassVar[tuple[str, ...]] = ("application/json",)
+    embedding_content_types: ClassVar[tuple[str, ...]] = ("application/json",)
     response_framing: ClassVar[str] = "content-length"
     response_byte_delay = 0.0
 
@@ -803,7 +807,8 @@ class EmbeddingHandler(BaseHTTPRequestHandler):
                     }
                 ).encode()
             self.send_response(200)
-            self.send_header("Content-Type", "application/json")
+            for content_type in type(self).tokenize_content_types:
+                self.send_header("Content-Type", content_type)
             framing = type(self).response_framing
             if framing == "content-length":
                 self.send_header("Content-Length", str(len(body)))
@@ -851,7 +856,8 @@ class EmbeddingHandler(BaseHTTPRequestHandler):
             }
         ).encode()
         self.send_response(200)
-        self.send_header("Content-Type", "application/json")
+        for content_type in type(self).embedding_content_types:
+            self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self._write_body(body)
@@ -872,6 +878,8 @@ def embedding_server() -> Iterator[str]:
     EmbeddingHandler.reverse_response = False
     EmbeddingHandler.token_count = 1
     EmbeddingHandler.tokenize_override = None
+    EmbeddingHandler.tokenize_content_types = ("application/json",)
+    EmbeddingHandler.embedding_content_types = ("application/json",)
     EmbeddingHandler.response_framing = "content-length"
     EmbeddingHandler.response_byte_delay = 0
     server = ThreadingHTTPServer(("127.0.0.1", 0), EmbeddingHandler)
@@ -1154,6 +1162,92 @@ def test_tokenizer_response_accepts_exact_chunked_framing() -> None:
 
     assert EmbeddingHandler.tokenize_calls == ["chunked"]
     assert EmbeddingHandler.calls == []
+
+
+@pytest.mark.parametrize(
+    "content_types",
+    [
+        (),
+        ("application/json", "application/json"),
+        ("text/plain",),
+        ("application/json; charset",),
+        ("application/json; charset =utf-8",),
+    ],
+    ids=["missing", "duplicate", "non-json", "missing-parameter-value", "space-before-parameter-equals"],
+)
+def test_tokenizer_response_rejects_invalid_media_types_before_body_read(
+    content_types: tuple[str, ...],
+) -> None:
+    with embedding_server() as url:
+        EmbeddingHandler.tokenize_content_types = content_types
+        with (
+            mock.patch.object(
+                http.client.HTTPResponse,
+                "read1",
+                side_effect=AssertionError("invalid media type reached body read"),
+            ),
+            pytest.raises(ingestion.IngestionError, match="tokenization backend returned a non-JSON content type"),
+        ):
+            ingestion._preflight_tokenize(
+                url,
+                model=ingestion.EMBEDDING_MODEL,
+                content="media-type",
+                timeout_seconds=1,
+                allow_loopback=True,
+                authorization=None,
+            )
+
+    assert EmbeddingHandler.calls == []
+
+
+def test_embedding_response_rejects_invalid_media_type_before_body_read() -> None:
+    with embedding_server() as url:
+        EmbeddingHandler.embedding_content_types = ("text/plain",)
+        with (
+            mock.patch.object(
+                http.client.HTTPResponse,
+                "read1",
+                side_effect=AssertionError("invalid media type reached body read"),
+            ),
+            pytest.raises(ingestion.IngestionError, match="embedding backend returned a non-JSON content type"),
+        ):
+            ingestion._post_embeddings(
+                url,
+                model=ingestion.EMBEDDING_MODEL,
+                inputs=["media-type"],
+                timeout_seconds=1,
+                allow_loopback=True,
+                authorization=None,
+            )
+
+    assert EmbeddingHandler.calls == [["media-type"]]
+
+
+def test_embedding_and_tokenizer_accept_parameterized_json_media_types() -> None:
+    content_type = 'Application/JSON; profile="knowledge"; charset=UTF-8'
+    with embedding_server() as url:
+        EmbeddingHandler.tokenize_content_types = (content_type,)
+        EmbeddingHandler.embedding_content_types = (content_type,)
+        ingestion._preflight_tokenize(
+            url,
+            model=ingestion.EMBEDDING_MODEL,
+            content="parameterized",
+            timeout_seconds=1,
+            allow_loopback=True,
+            authorization=None,
+        )
+        vectors = ingestion._post_embeddings(
+            url,
+            model=ingestion.EMBEDDING_MODEL,
+            inputs=["parameterized"],
+            timeout_seconds=1,
+            allow_loopback=True,
+            authorization=None,
+        )
+
+    assert EmbeddingHandler.tokenize_calls == ["parameterized"]
+    assert EmbeddingHandler.calls == [["parameterized"]]
+    assert len(vectors) == 1
 
 
 @pytest.mark.parametrize(
