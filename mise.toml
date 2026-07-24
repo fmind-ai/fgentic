@@ -10,7 +10,7 @@ run_auto_install = false # fail fast in hooks/CI on a missing tool (never silent
 [tools]
 age = "1.3.1"
 dprint = "0.55.2"
-flux2 = "2.9.2"
+flux2 = "2.9.3"
 gitleaks = "8.30.1"
 git-cliff = "2.13.1"
 lefthook = "2.1.10"
