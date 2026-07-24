@@ -18,4 +18,6 @@
 
 - [ ] `mise run check` passes
 - [ ] `mise run test` passes
+- [ ] Required hosted CI checks pass on the final pushed head
+- [ ] Peer review is complete; all actionable findings are addressed
 - [ ] Commits are DCO signed-off (`git commit -s`)
