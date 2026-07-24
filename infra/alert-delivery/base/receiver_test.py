@@ -215,6 +215,26 @@ def test_render_is_content_free() -> None:
     print("ok: render is content-free")
 
 
+def test_statuses_are_semantically_bounded() -> None:
+    assert receiver._render({"status": "firing", "alerts": []}) == "🔔 Alertmanager: firing (0 alert(s))"
+    assert receiver._render({"status": "resolved", "alerts": []}) == "✅ Alertmanager: resolved (0 alert(s))"
+    assert receiver._render({"status": "healthy", "alerts": []}) == "⚠️ Alertmanager: unknown (0 alert(s))"
+
+    body = receiver._render(
+        {
+            "status": "firing",
+            "alerts": [
+                {"status": "healthy", "labels": {"alertname": "Arbitrary"}},
+                {"status": "resolved", "labels": {"alertname": "Canonical"}},
+            ],
+        }
+    )
+    assert "• [firing] Arbitrary (none)" in body
+    assert "• [resolved] Canonical (none)" in body
+    assert "[healthy]" not in body
+    print("ok: alert statuses retain canonical operational semantics")
+
+
 def test_render_is_bounded() -> None:
     many = {"status": "firing", "alerts": [{"status": "firing", "labels": {"alertname": f"A{i}"}} for i in range(50)]}
     body = receiver._render(many)
@@ -241,7 +261,7 @@ def test_render_replaces_malformed_projected_values() -> None:
             ],
         }
     )
-    assert body == "✅ Alertmanager: unknown (1 alert(s))\n• [unknown] unknown (unknown)"
+    assert body == "⚠️ Alertmanager: unknown (1 alert(s))\n• [unknown] unknown (unknown)"
     assert "SECRET" not in body
     body.encode("utf-8")
     print("ok: malformed projected values use content-free fallbacks")
@@ -657,6 +677,7 @@ if __name__ == "__main__":
     test_rendered_ports_are_aligned()
     test_network_peers_are_exactly_scoped()
     test_render_is_content_free()
+    test_statuses_are_semantically_bounded()
     test_render_is_bounded()
     test_render_replaces_malformed_projected_values()
     test_render_notice_bytes_are_bounded()
