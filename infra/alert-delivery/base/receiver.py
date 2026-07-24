@@ -82,6 +82,14 @@ def _is_json_content_type(value: str) -> bool:
     )
 
 
+def _has_supported_transfer_coding(values: list[Any]) -> bool:
+    return not values or (
+        len(values) == 1
+        and isinstance(values[0], str)
+        and values[0].lower() == "chunked"
+    )
+
+
 def _env(name: str, default: str | None = None) -> str:
     value = os.environ.get(name, "").strip()
     if not value:
@@ -200,7 +208,11 @@ def _validate_matrix_response(response: Any) -> None:
 
     content_lengths = response.headers.get_all("Content-Length", [])
     transfer_encodings = response.headers.get_all("Transfer-Encoding", [])
-    if len(content_lengths) > 1 or (content_lengths and transfer_encodings):
+    if (
+        len(content_lengths) > 1
+        or not _has_supported_transfer_coding(transfer_encodings)
+        or (content_lengths and transfer_encodings)
+    ):
         raise MatrixResponseError
 
     declared_length: int | None = None
