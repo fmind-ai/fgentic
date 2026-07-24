@@ -25,6 +25,33 @@ SAME_REPOSITORY_MAIN_PREFIXES = (
 SAME_REPOSITORY_MAIN_URL = re.compile(r"https://github\.com/fmind-ai/fgentic/(?:blob|tree)/main/[^\s<>()\[\]`\"']+")
 FORM_ID = re.compile(r"[A-Za-z0-9_-]+")
 FORM_ELEMENT_TYPES = frozenset({"checkboxes", "dropdown", "input", "markdown", "textarea", "upload"})
+ISSUE_FORM_KEYS = frozenset({"assignees", "body", "description", "labels", "name", "projects", "title", "type"})
+DISCUSSION_FORM_KEYS = frozenset({"body", "labels", "title"})
+FORM_ELEMENT_KEYS = {
+    "checkboxes": frozenset({"attributes", "id", "type", "validations"}),
+    "dropdown": frozenset({"attributes", "id", "type", "validations"}),
+    "input": frozenset({"attributes", "id", "type", "validations"}),
+    "markdown": frozenset({"attributes", "type"}),
+    "textarea": frozenset({"attributes", "id", "type", "validations"}),
+    "upload": frozenset({"attributes", "id", "type", "validations"}),
+}
+FORM_ATTRIBUTE_KEYS = {
+    "checkboxes": frozenset({"description", "label", "options"}),
+    "dropdown": frozenset({"default", "description", "label", "multiple", "options"}),
+    "input": frozenset({"description", "label", "placeholder", "value"}),
+    "markdown": frozenset({"value"}),
+    "textarea": frozenset({"description", "label", "placeholder", "render", "value"}),
+    "upload": frozenset({"description", "label"}),
+}
+FORM_VALIDATION_KEYS = {
+    "checkboxes": frozenset({"required"}),
+    "dropdown": frozenset({"required"}),
+    "input": frozenset({"required"}),
+    "markdown": frozenset(),
+    "textarea": frozenset({"required"}),
+    "upload": frozenset({"accept", "required"}),
+}
+CHECKBOX_OPTION_KEYS = frozenset({"label", "required"})
 RAW_URL_TRAILING_DELIMITERS = ".,;:!?*~}"
 PUBLIC_ENTRYPOINTS = (
     ".agents/AGENTS.md",
@@ -153,6 +180,20 @@ def _is_nonblank_string_collection(value: object) -> bool:
     return isinstance(value, list) and all(_is_nonblank_string(item) for item in value)
 
 
+def _unsupported_key_reasons(
+    mapping: dict[object, object],
+    allowed_keys: frozenset[str],
+    location: str = "",
+) -> list[str]:
+    """Return stable exact-path diagnostics for unsupported mapping keys."""
+    prefix = f"{location}." if location else ""
+    unsupported = sorted(
+        (key for key in mapping if not isinstance(key, str) or key not in allowed_keys),
+        key=repr,
+    )
+    return [f"{prefix}{key if isinstance(key, str) else repr(key)} is not permitted" for key in unsupported]
+
+
 def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaViolation]:
     """Return violations of GitHub's documented structured-form contract."""
     source_name = _display_path(source, repository_root)
@@ -161,7 +202,12 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
         return [(source_name, "form must be a mapping")]
 
     is_issue_form = source.parent.name == "ISSUE_TEMPLATE"
-    violations: list[SchemaViolation] = (
+    allowed_form_keys = ISSUE_FORM_KEYS if is_issue_form else DISCUSSION_FORM_KEYS
+    violations: list[SchemaViolation] = [
+        (source_name, reason)
+        for reason in _unsupported_key_reasons(cast(dict[object, object], document), allowed_form_keys)
+    ]
+    violations.extend(
         [
             (source_name, f"{key} must be a nonblank string")
             for key in ("name", "description")
@@ -206,20 +252,39 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
         if element_type != "markdown":
             has_input = True
 
+        violations.extend(
+            (source_name, reason)
+            for reason in _unsupported_key_reasons(
+                cast(dict[object, object], element),
+                FORM_ELEMENT_KEYS[element_type],
+                location,
+            )
+        )
+
         identifier = element.get("id")
-        if identifier is not None and element_type == "markdown":
-            violations.append((source_name, f"{location}.id is not supported for markdown elements"))
-        elif identifier is not None and (not isinstance(identifier, str) or FORM_ID.fullmatch(identifier) is None):
+        if (
+            identifier is not None
+            and element_type != "markdown"
+            and (not isinstance(identifier, str) or FORM_ID.fullmatch(identifier) is None)
+        ):
             violations.append((source_name, f"{location}.id is invalid: {identifier!r}"))
-        elif identifier is not None and identifier in identifiers:
+        elif element_type != "markdown" and identifier is not None and identifier in identifiers:
             violations.append((source_name, f"{location}.id is duplicated: {identifier!r}"))
-        elif isinstance(identifier, str):
+        elif element_type != "markdown" and isinstance(identifier, str):
             identifiers.add(identifier)
 
         attributes = element.get("attributes")
         if not isinstance(attributes, dict):
             violations.append((source_name, f"{location}.attributes must be a mapping"))
         else:
+            violations.extend(
+                (source_name, reason)
+                for reason in _unsupported_key_reasons(
+                    cast(dict[object, object], attributes),
+                    FORM_ATTRIBUTE_KEYS[element_type],
+                    f"{location}.attributes",
+                )
+            )
             required_attribute = "value" if element_type == "markdown" else "label"
             if not _is_nonblank_string(attributes.get(required_attribute)):
                 violations.append(
@@ -277,6 +342,15 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
                     for option_index, option in enumerate(options):
                         option_location = f"{location}.attributes.options[{option_index}]"
                         label = option.get("label") if isinstance(option, dict) else None
+                        if isinstance(option, dict):
+                            violations.extend(
+                                (source_name, reason)
+                                for reason in _unsupported_key_reasons(
+                                    cast(dict[object, object], option),
+                                    CHECKBOX_OPTION_KEYS,
+                                    option_location,
+                                )
+                            )
                         if (
                             isinstance(option, dict)
                             and "required" in option
@@ -291,9 +365,19 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
                             choices.add(label)
 
         validations = element.get("validations")
+        if "validations" not in FORM_ELEMENT_KEYS[element_type]:
+            continue
         if validations is not None and not isinstance(validations, dict):
             violations.append((source_name, f"{location}.validations must be a mapping"))
         elif isinstance(validations, dict):
+            violations.extend(
+                (source_name, reason)
+                for reason in _unsupported_key_reasons(
+                    cast(dict[object, object], validations),
+                    FORM_VALIDATION_KEYS[element_type],
+                    f"{location}.validations",
+                )
+            )
             required = validations.get("required")
             if "required" in validations and not isinstance(required, bool):
                 violations.append((source_name, f"{location}.validations.required must be a Boolean"))
@@ -953,6 +1037,92 @@ class CommunityRouteIntegrityTest(TestCase):
             )
 
             self.assertEqual(_form_schema_violations(source, repository_root), [])
+
+    def test_rejects_unsupported_issue_form_keys(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Broken",
+                        "description: Exercises unsupported issue form keys",
+                        "unexpected: true",
+                        "body:",
+                        "  - type: input",
+                        "    validation: {}",
+                        "    attributes:",
+                        "      label: Contact",
+                        "      placehoder: Email",
+                        "    validations:",
+                        "      optional: true",
+                        "  - type: checkboxes",
+                        "    attributes:",
+                        "      label: Agreement",
+                        "      options:",
+                        "        - label: I agree",
+                        "          checked: true",
+                        "  - type: dropdown",
+                        "    attributes:",
+                        "      label: Version",
+                        "      placeholder: Stable",
+                        "      options:",
+                        "        - Stable",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (".github/ISSUE_TEMPLATE/broken.yml", "unexpected is not permitted"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[0].validation is not permitted"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[0].attributes.placehoder is not permitted"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[0].validations.optional is not permitted"),
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body[1].attributes.options[0].checked is not permitted",
+                    ),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[2].attributes.placeholder is not permitted"),
+                ],
+            )
+
+    def test_rejects_unsupported_discussion_form_keys(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/DISCUSSION_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Discussion",
+                        "body:",
+                        "  - type: markdown",
+                        "    id: context",
+                        "    attributes:",
+                        "      value: Context",
+                        "    validations: {}",
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: Proposal",
+                        "    validations:",
+                        "      accept: .txt",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (".github/DISCUSSION_TEMPLATE/broken.yml", "name is not permitted"),
+                    (".github/DISCUSSION_TEMPLATE/broken.yml", "body[0].id is not permitted"),
+                    (".github/DISCUSSION_TEMPLATE/broken.yml", "body[0].validations is not permitted"),
+                    (".github/DISCUSSION_TEMPLATE/broken.yml", "body[1].validations.accept is not permitted"),
+                ],
+            )
 
     def test_rejects_non_boolean_checkbox_option_requirement(self) -> None:
         with TemporaryDirectory() as temporary:
