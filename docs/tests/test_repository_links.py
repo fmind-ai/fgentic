@@ -165,7 +165,7 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
         return violations
 
     identifiers: set[str] = set()
-    has_discussion_input = False
+    has_input = False
     for index, element in enumerate(body):
         location = f"body[{index}]"
         if not isinstance(element, dict):
@@ -177,7 +177,7 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
             violations.append((source_name, f"{location}.type is unsupported: {element_type!r}"))
             continue
         if element_type != "markdown":
-            has_discussion_input = True
+            has_input = True
 
         identifier = element.get("id")
         if identifier is None:
@@ -191,7 +191,7 @@ def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaV
         else:
             identifiers.add(identifier)
 
-    if not is_issue_form and not has_discussion_input:
+    if not has_input:
         violations.append((source_name, "body must contain at least one non-Markdown field"))
     return violations
 
@@ -505,6 +505,35 @@ class CommunityRouteIntegrityTest(TestCase):
                 r"body must contain at least one non-Markdown field",
             ):
                 _require_valid_form_schemas((source,), repository_root)
+
+    def test_rejects_markdown_only_issue_form(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Broken",
+                        "description: Collects no user input",
+                        "body:",
+                        "  - type: markdown",
+                        "    attributes:",
+                        "      value: No input is collected.",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body must contain at least one non-Markdown field",
+                    )
+                ],
+            )
 
     def test_reports_broken_embedded_form_markdown_against_its_source(self) -> None:
         canonical_existing = "https://github.com/fmind-ai/fgentic/blob/main/docs/guide.md"
