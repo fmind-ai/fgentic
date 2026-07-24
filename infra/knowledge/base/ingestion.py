@@ -989,34 +989,57 @@ def _read_jsonl_values(
     *,
     max_bytes: int = MAX_JSONL_BYTES,
 ) -> Iterable[tuple[int, object]]:
+    flags = os.O_RDONLY | os.O_CLOEXEC | os.O_NONBLOCK
     try:
-        handle = path.open("rb")
+        descriptor = os.open(path, flags)
     except OSError as error:
         raise IngestionError(f"could not open JSONL input {path}: {error}") from error
+    try:
+        before = os.fstat(descriptor)
+    except OSError as error:
+        os.close(descriptor)
+        raise IngestionError(f"could not open JSONL input {path}: {error}") from error
+    if not stat.S_ISREG(before.st_mode):
+        os.close(descriptor)
+        raise IngestionError("JSONL input must be a regular file")
     total_bytes = 0
     line_number = 0
-    with handle:
-        while True:
-            raw_line = handle.readline(MAX_JSONL_LINE_BYTES + 1)
-            if not raw_line:
-                break
-            line_number += 1
-            total_bytes += len(raw_line)
-            if len(raw_line) > MAX_JSONL_LINE_BYTES or not raw_line.endswith(b"\n"):
-                raise IngestionError(f"JSONL line {line_number} exceeds the bounded line size")
-            if total_bytes > max_bytes:
-                raise IngestionError(f"JSONL input exceeds {max_bytes} bytes")
-            if not raw_line.strip():
-                raise IngestionError(f"JSONL line {line_number} is empty")
-            try:
-                value = json.loads(
-                    raw_line.decode("utf-8"),
-                    object_pairs_hook=_strict_object,
-                    parse_constant=_reject_json_constant,
-                )
-            except (RecursionError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
-                raise IngestionError(f"JSONL line {line_number} is invalid") from error
-            yield line_number, value
+    try:
+        with os.fdopen(descriptor, "rb", closefd=False) as handle:
+            while True:
+                raw_line = handle.readline(MAX_JSONL_LINE_BYTES + 1)
+                if not raw_line:
+                    break
+                line_number += 1
+                total_bytes += len(raw_line)
+                if len(raw_line) > MAX_JSONL_LINE_BYTES or not raw_line.endswith(b"\n"):
+                    raise IngestionError(f"JSONL line {line_number} exceeds the bounded line size")
+                if total_bytes > max_bytes:
+                    raise IngestionError(f"JSONL input exceeds {max_bytes} bytes")
+                if not raw_line.strip():
+                    raise IngestionError(f"JSONL line {line_number} is empty")
+                try:
+                    value = json.loads(
+                        raw_line.decode("utf-8"),
+                        object_pairs_hook=_strict_object,
+                        parse_constant=_reject_json_constant,
+                    )
+                except (RecursionError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as error:
+                    raise IngestionError(f"JSONL line {line_number} is invalid") from error
+                yield line_number, value
+        after = os.fstat(descriptor)
+    except OSError as error:
+        raise IngestionError(f"could not read JSONL input {path}: {error}") from error
+    finally:
+        os.close(descriptor)
+    if (
+        before.st_dev != after.st_dev
+        or before.st_ino != after.st_ino
+        or before.st_size != after.st_size
+        or before.st_mtime_ns != after.st_mtime_ns
+        or after.st_size != total_bytes
+    ):
+        raise IngestionError(f"JSONL input changed while it was being read: {path}")
 
 
 def read_raw_records(path: Path) -> list[dict[str, object]]:

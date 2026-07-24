@@ -13,7 +13,7 @@ import stat
 import threading
 import time
 import zipfile
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path, PurePosixPath
@@ -132,22 +132,21 @@ def build_bound_records(
     return ingestion.bind_raw_records(manifest, raw_root)
 
 
-def test_bounded_reader_rejects_fifo_without_waiting_for_writer(tmp_path: Path) -> None:
-    fifo = tmp_path / "manifest.json"
+def _fifo_reader_error(fifo: Path, operation: Callable[[], object]) -> Exception:
     os.mkfifo(fifo)
     finished = threading.Event()
     errors: list[Exception] = []
 
     def read_fifo() -> None:
         try:
-            ingestion._read_bounded_bytes(fifo, 16)
+            operation()
         except Exception as error:
             errors.append(error)
         finally:
             finished.set()
 
-    reader = threading.Thread(target=read_fifo, daemon=True)
-    reader.start()
+    reader_thread = threading.Thread(target=read_fifo, daemon=True)
+    reader_thread.start()
     if not finished.wait(timeout=1):
         try:
             descriptor = os.open(fifo, os.O_WRONLY | os.O_NONBLOCK)
@@ -159,14 +158,21 @@ def test_bounded_reader_rejects_fifo_without_waiting_for_writer(tmp_path: Path) 
             os.write(descriptor, b"{}")
         finally:
             os.close(descriptor)
-        reader.join(timeout=1)
-        if reader.is_alive():
+        reader_thread.join(timeout=1)
+        if reader_thread.is_alive():
             pytest.fail("bounded reader remained blocked after FIFO wake-up")
         pytest.fail("bounded reader blocked waiting for a FIFO writer")
 
     assert len(errors) == 1
-    assert isinstance(errors[0], ingestion.IngestionError)
-    assert str(errors[0]) == "ingestion input must be a regular file"
+    return errors[0]
+
+
+def test_bounded_reader_rejects_fifo_without_waiting_for_writer(tmp_path: Path) -> None:
+    fifo = tmp_path / "manifest.json"
+    error = _fifo_reader_error(fifo, lambda: ingestion._read_bounded_bytes(fifo, 16))
+
+    assert isinstance(error, ingestion.IngestionError)
+    assert str(error) == "ingestion input must be a regular file"
 
 
 def test_bounded_reader_accepts_symlink_to_regular_file(tmp_path: Path) -> None:
@@ -869,6 +875,24 @@ def test_jsonl_reader_rejects_one_oversized_physical_line(tmp_path: Path) -> Non
 
     with pytest.raises(ingestion.IngestionError, match="bounded line size"):
         ingestion.read_raw_records(path)
+
+
+def test_jsonl_reader_rejects_fifo_without_waiting_for_writer(tmp_path: Path) -> None:
+    fifo = tmp_path / "chunks.jsonl"
+    error = _fifo_reader_error(fifo, lambda: list(ingestion._read_jsonl_values(fifo)))
+
+    assert isinstance(error, ingestion.IngestionError)
+    assert str(error) == "JSONL input must be a regular file"
+
+
+def test_jsonl_reader_accepts_symlink_to_regular_file(tmp_path: Path) -> None:
+    target = tmp_path / "..data" / "chunks.jsonl"
+    target.parent.mkdir()
+    target.write_bytes(b'{"ordinal":1,"content":"bounded"}\n')
+    projected = tmp_path / "chunks.jsonl"
+    projected.symlink_to(Path("..data") / "chunks.jsonl")
+
+    assert ingestion.read_raw_records(projected) == [{"ordinal": 1, "content": "bounded"}]
 
 
 def test_jsonl_reader_rejects_json_escaped_surrogate_as_ingestion_error(tmp_path: Path) -> None:
