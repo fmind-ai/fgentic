@@ -118,7 +118,7 @@ def test_reply_correlation_state_is_bounded() -> None:
     print("ok: reply correlation state is bounded")
 
 
-def test_probe_egress_is_exactly_scoped() -> None:
+def _render_enabled_profile() -> list[dict[str, Any]]:
     manifest = subprocess.run(
         ["kubectl", "kustomize", ENABLED_PROFILE],
         check=True,
@@ -133,6 +133,45 @@ def test_probe_egress_is_exactly_scoped() -> None:
         text=True,
     )
     resources = json.loads(rendered.stdout)
+    assert isinstance(resources, list)
+    assert all(isinstance(resource, dict) for resource in resources)
+    return resources
+
+
+def test_deadline_configuration_contract() -> None:
+    original = os.environ.pop("CANARY_DEADLINE_SECONDS", None)
+    try:
+        assert probe._deadline_seconds() == probe._DEFAULT_DEADLINE_SECONDS
+        for raw, expected in (("1", 1), ("120", 120), ("150", 150)):
+            os.environ["CANARY_DEADLINE_SECONDS"] = raw
+            assert probe._deadline_seconds() == expected
+    finally:
+        if original is None:
+            os.environ.pop("CANARY_DEADLINE_SECONDS", None)
+        else:
+            os.environ["CANARY_DEADLINE_SECONDS"] = original
+
+    expected_error = (
+        "canary: CANARY_DEADLINE_SECONDS must be a canonical ASCII integer "
+        f"from 1 to {probe._MAX_DEADLINE_SECONDS}\n"
+    )
+    for raw in ("0", "-1", "151", " 1", "1 ", "01", "١", "operator-private-value", "9" * 10_000):
+        result = _run_probe_result([], raw)
+        assert result.returncode != 0, f"invalid deadline {raw[:20]!r} must fail closed"
+        assert result.stderr == expected_error, f"invalid deadline {raw[:20]!r} leaked unstable diagnostics"
+
+    resources = _render_enabled_profile()
+    cronjob = next(resource for resource in resources if resource.get("kind") == "CronJob")
+    config = next(resource for resource in resources if resource.get("kind") == "ConfigMap")
+    configured_default = int(config["data"]["CANARY_DEADLINE_SECONDS"])
+    active_deadline = cronjob["spec"]["jobTemplate"]["spec"]["activeDeadlineSeconds"]
+    assert configured_default == probe._DEFAULT_DEADLINE_SECONDS
+    assert 1 <= configured_default <= probe._MAX_DEADLINE_SECONDS < active_deadline
+    print("ok: deadline configuration is canonical, bounded, and content-free")
+
+
+def test_probe_egress_is_exactly_scoped() -> None:
+    resources = _render_enabled_profile()
     policies = {
         resource["metadata"]["name"]: resource["spec"]
         for resource in resources
@@ -377,6 +416,7 @@ def test_hostile_cursor_never_reaches_failure_log() -> None:
 if __name__ == "__main__":
     test_reply_detection_contract()
     test_reply_correlation_state_is_bounded()
+    test_deadline_configuration_contract()
     test_probe_egress_is_exactly_scoped()
     test_round_trip_success()
     test_round_trip_timeout()
