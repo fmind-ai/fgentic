@@ -246,9 +246,9 @@ def _canonical_source_path(value: str) -> bool:
     if not filename.endswith(".tar.gz"):
         return False
     stem = filename.removesuffix(".tar.gz")
-    if not stem or stem in {".", ".."}:
+    if not stem or not stem.isascii() or not stem[0].isalnum():
         return False
-    return all(character not in filename for character in ("/", "\\", "%"))
+    return all(character.isalnum() or character in "._-" for character in stem)
 
 
 def _download_artifact(status: git_markdown.ArtifactStatus) -> bytes:

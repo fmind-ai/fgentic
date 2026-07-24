@@ -165,7 +165,7 @@ def test_strict_json_requires_an_object_root() -> None:
     [
         "http://source-controller.flux-system.svc.cluster.local/gitrepository/flux-system/flux-system/latest.tar.gz",
         "http://source-controller.flux-system.svc.cluster.local.:80"
-        "/gitrepository/flux-system/flux-system/sha-0123456789abcdef.tar.gz",
+        "/gitrepository/flux-system/flux-system/0123456789abcdef0123456789abcdef01234567.tar.gz",
     ],
 )
 def test_source_url_accepts_canonical_artifact_paths(url: str) -> None:
@@ -182,6 +182,10 @@ def test_source_url_accepts_canonical_artifact_paths(url: str) -> None:
         "/private-partner-redacted.tar.gz",
         "private%2fpartner-redacted.tar.gz",
         r"private\partner-redacted.tar.gz",
+        "private partner-redacted.tar.gz",
+        "privaté-partner-redacted.tar.gz",
+        "private:partner-redacted.tar.gz",
+        "private-partner-redacted-\x7f.tar.gz",
         ".tar.gz",
     ],
 )
