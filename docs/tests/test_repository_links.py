@@ -23,6 +23,8 @@ SAME_REPOSITORY_MAIN_PREFIXES = (
     "/fmind-ai/fgentic/tree/main/",
 )
 SAME_REPOSITORY_MAIN_URL = re.compile(r"https://github\.com/fmind-ai/fgentic/(?:blob|tree)/main/[^\s<>()\[\]`\"']+")
+FORM_ID = re.compile(r"[A-Za-z0-9_-]+")
+FORM_ELEMENT_TYPES = frozenset({"checkboxes", "dropdown", "input", "markdown", "textarea", "upload"})
 RAW_URL_TRAILING_DELIMITERS = ".,;:!?*~}"
 PUBLIC_ENTRYPOINTS = (
     ".agents/AGENTS.md",
@@ -39,6 +41,7 @@ PUBLIC_ENTRYPOINTS = (
 
 type LinkViolation = tuple[str, str, str]
 type RouteViolation = tuple[str, str, str]
+type SchemaViolation = tuple[str, str]
 
 
 class _RenderedTargetParser(HTMLParser):
@@ -136,6 +139,71 @@ def _structured_forms(repository_root: Path = REPOSITORY_ROOT) -> tuple[Path, ..
     discussion_directory = repository_root / ".github/DISCUSSION_TEMPLATE"
     issue_forms = (path for path in issue_directory.glob("*.yml") if path.name != "config.yml")
     return tuple(sorted((*issue_forms, *discussion_directory.glob("*.yml"))))
+
+
+def _form_schema_violations(source: Path, repository_root: Path) -> list[SchemaViolation]:
+    """Return violations of GitHub's documented structured-form contract."""
+    source_name = _display_path(source, repository_root)
+    document = yaml.safe_load(source.read_text(encoding="utf-8"))
+    if not isinstance(document, dict):
+        return [(source_name, "form must be a mapping")]
+
+    is_issue_form = source.parent.name == "ISSUE_TEMPLATE"
+    violations: list[SchemaViolation] = (
+        [
+            (source_name, f"{key} must be a nonblank string")
+            for key in ("name", "description")
+            if not isinstance(value := document.get(key), str) or not value.strip()
+        ]
+        if is_issue_form
+        else []
+    )
+
+    body = document.get("body")
+    if not isinstance(body, list):
+        violations.append((source_name, "body must be an array"))
+        return violations
+
+    identifiers: set[str] = set()
+    has_input = False
+    for index, element in enumerate(body):
+        location = f"body[{index}]"
+        if not isinstance(element, dict):
+            violations.append((source_name, f"{location} must be a mapping"))
+            continue
+
+        element_type = element.get("type")
+        if not isinstance(element_type, str) or element_type not in FORM_ELEMENT_TYPES:
+            violations.append((source_name, f"{location}.type is unsupported: {element_type!r}"))
+            continue
+        if element_type != "markdown":
+            has_input = True
+
+        identifier = element.get("id")
+        if identifier is None:
+            continue
+        if element_type == "markdown":
+            violations.append((source_name, f"{location}.id is not supported for markdown elements"))
+        elif not isinstance(identifier, str) or FORM_ID.fullmatch(identifier) is None:
+            violations.append((source_name, f"{location}.id is invalid: {identifier!r}"))
+        elif identifier in identifiers:
+            violations.append((source_name, f"{location}.id is duplicated: {identifier!r}"))
+        else:
+            identifiers.add(identifier)
+
+    if not has_input:
+        violations.append((source_name, "body must contain at least one non-Markdown field"))
+    return violations
+
+
+def _require_valid_form_schemas(sources: tuple[Path, ...], repository_root: Path) -> None:
+    """Reject structured GitHub forms that violate the documented schema."""
+    violations = [violation for source in sources for violation in _form_schema_violations(source, repository_root)]
+    if not violations:
+        return
+
+    details = "\n".join(f"  {source}: {reason}" for source, reason in violations)
+    raise AssertionError(f"structured GitHub form schema drift:\n{details}")
 
 
 def _issue_form_route_violations(sources: dict[str, list[str]], templates: set[str]) -> list[RouteViolation]:
@@ -376,6 +444,96 @@ class CommunityRouteIntegrityTest(TestCase):
 
     def test_embedded_form_markdown_targets_resolve(self) -> None:
         _require_valid_form_markdown_links(_structured_forms(), REPOSITORY_ROOT)
+
+    def test_structured_forms_follow_github_schema(self) -> None:
+        _require_valid_form_schemas(_structured_forms(), REPOSITORY_ROOT)
+
+    def test_rejects_invalid_issue_form_structure_and_elements(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "body:",
+                        "  - type: button",
+                        "  - type: input",
+                        "    id: bad.id",
+                        "  - type: textarea",
+                        "    id: repeated",
+                        "  - type: dropdown",
+                        "    id: repeated",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (".github/ISSUE_TEMPLATE/broken.yml", "name must be a nonblank string"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "description must be a nonblank string"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[0].type is unsupported: 'button'"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[1].id is invalid: 'bad.id'"),
+                    (".github/ISSUE_TEMPLATE/broken.yml", "body[3].id is duplicated: 'repeated'"),
+                ],
+            )
+
+    def test_rejects_markdown_only_discussion_form(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/DISCUSSION_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        'title: "[Broken] "',
+                        "body:",
+                        "  - type: markdown",
+                        "    attributes:",
+                        "      value: No input is collected.",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            with self.assertRaisesRegex(
+                AssertionError,
+                r"structured GitHub form schema drift:\n"
+                r"  \.github/DISCUSSION_TEMPLATE/broken\.yml: "
+                r"body must contain at least one non-Markdown field",
+            ):
+                _require_valid_form_schemas((source,), repository_root)
+
+    def test_rejects_markdown_only_issue_form(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/broken.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Broken",
+                        "description: Collects no user input",
+                        "body:",
+                        "  - type: markdown",
+                        "    attributes:",
+                        "      value: No input is collected.",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(
+                _form_schema_violations(source, repository_root),
+                [
+                    (
+                        ".github/ISSUE_TEMPLATE/broken.yml",
+                        "body must contain at least one non-Markdown field",
+                    )
+                ],
+            )
 
     def test_reports_broken_embedded_form_markdown_against_its_source(self) -> None:
         canonical_existing = "https://github.com/fmind-ai/fgentic/blob/main/docs/guide.md"
