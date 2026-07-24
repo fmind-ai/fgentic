@@ -160,6 +160,76 @@ def test_strict_json_requires_an_object_root() -> None:
         acquisition._strict_json_object(b"[]", name="GitRepository")
 
 
+def _git_repository_document(revision: str) -> dict[str, object]:
+    return {
+        "apiVersion": "source.toolkit.fluxcd.io/v1",
+        "kind": "GitRepository",
+        "metadata": {
+            "namespace": "flux-system",
+            "name": "flux-system",
+            "generation": 1,
+        },
+        "status": {
+            "observedGeneration": 1,
+            "conditions": [
+                {
+                    "type": "Ready",
+                    "status": "True",
+                    "observedGeneration": 1,
+                }
+            ],
+            "artifact": {
+                "revision": revision,
+                "digest": f"sha256:{'0' * 64}",
+                "url": (
+                    "http://source-controller.flux-system.svc.cluster.local/"
+                    "gitrepository/flux-system/flux-system/latest.tar.gz"
+                ),
+                "size": 1,
+            },
+        },
+    }
+
+
+def test_artifact_status_preserves_canonical_revision() -> None:
+    revision = f"main@sha1:{'a' * 40}"
+
+    assert acquisition._artifact_status(_git_repository_document(revision)).revision == revision
+
+
+@pytest.mark.parametrize(
+    "revision",
+    [
+        f"main@sha1:{'a' * 39}\ud800",
+        f"main@sha1:{'a' * 39}\x7f",
+        f"main@sha1:{'a' * 39}\u202e",
+        f"ma\u0301in@sha1:{'a' * 40}",
+    ],
+    ids=["lone-surrogate", "delete-control", "bidi-format", "non-nfc"],
+)
+def test_acquire_rejects_unclean_revision_before_artifact_download(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    revision: str,
+) -> None:
+    downloaded = False
+
+    def unexpected_download(_status: object) -> bytes:
+        nonlocal downloaded
+        downloaded = True
+        raise AssertionError("artifact download reached for an invalid revision")
+
+    monkeypatch.setattr(acquisition, "_api_document", lambda _token, _ca: _git_repository_document(revision))
+    monkeypatch.setattr(acquisition, "_download_artifact", unexpected_download)
+
+    with pytest.raises(acquisition.AcquisitionError) as caught:
+        acquisition.acquire(tmp_path / "output", tmp_path / "token", tmp_path / "ca")
+
+    assert str(caught.value) == "artifact.revision is not bounded clean text"
+    assert revision not in str(caught.value)
+    assert not downloaded
+
+
 @pytest.mark.parametrize(
     "url",
     [
