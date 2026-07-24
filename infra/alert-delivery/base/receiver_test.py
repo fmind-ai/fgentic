@@ -613,7 +613,9 @@ class _FakeSynapse(http.server.BaseHTTPRequestHandler):
             "absent-content-type": (),
             "duplicate-content-type": ("application/json", "application/json"),
             "non-json-content-type": ("text/plain",),
-            "parameterized-content-type": ("Application/JSON; charset=UTF-8",),
+            "missing-content-type-parameter-value": ("application/json; charset",),
+            "unterminated-content-type-parameter": ('application/json; profile="ops',),
+            "parameterized-content-type": ('Application/JSON; profile="ops;alerts"; charset=UTF-8',),
         }.get(self.response_mode, ("application/json",))
         for content_type in content_types:
             self.send_header("Content-Type", content_type)
@@ -770,6 +772,8 @@ def test_matrix_responses_are_bounded_and_strictly_framed() -> None:
             "absent-content-type",
             "duplicate-content-type",
             "non-json-content-type",
+            "missing-content-type-parameter-value",
+            "unterminated-content-type-parameter",
         )
         errors = io.StringIO()
         with contextlib.redirect_stderr(errors):

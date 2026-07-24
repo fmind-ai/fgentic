@@ -273,7 +273,9 @@ class _FakeMatrix(http.server.BaseHTTPRequestHandler):
             "absent-content-type": (),
             "duplicate-content-type": ("application/json", "application/json"),
             "non-json-content-type": ("text/plain",),
-            "parameterized-content-type": ("Application/JSON; charset=UTF-8",),
+            "missing-content-type-parameter-value": ("application/json; charset",),
+            "unterminated-content-type-parameter": ('application/json; profile="ops',),
+            "parameterized-content-type": ('Application/JSON; profile="ops;canary"; charset=UTF-8',),
         }.get(self.response_mode, ("application/json",))
         for content_type in content_types:
             self.send_header("Content-Type", content_type)
@@ -526,7 +528,13 @@ def test_non_200_success_responses_fail_closed() -> None:
 
 
 def test_matrix_content_type_is_strict_and_parameterized_json_is_accepted() -> None:
-    for mode in ("absent-content-type", "duplicate-content-type", "non-json-content-type"):
+    for mode in (
+        "absent-content-type",
+        "duplicate-content-type",
+        "non-json-content-type",
+        "missing-content-type-parameter-value",
+        "unterminated-content-type-parameter",
+    ):
         result = _run_probe_result([], "1", response_mode=mode)
         assert result.returncode != 0, f"{mode} must fail closed"
         assert result.stdout == ""
