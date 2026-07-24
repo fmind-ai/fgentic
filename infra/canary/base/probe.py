@@ -19,8 +19,10 @@ from __future__ import annotations
 import http.client
 import json
 import os
+import queue
 import secrets
 import sys
+import threading
 import time
 import urllib.error
 import urllib.parse
@@ -81,7 +83,7 @@ def _sync_request_timeouts(remaining_seconds: float) -> tuple[int, float]:
     return long_poll_milliseconds, transport_seconds
 
 
-def _request(
+def _request_io(
     method: str,
     url: str,
     token: str | None,
@@ -133,6 +135,43 @@ def _request(
     except (http.client.HTTPException, urllib.error.URLError, TimeoutError, ValueError) as error:
         _fail(f"{method} Matrix request failed: {type(error).__name__}")
     return {}  # unreachable; _fail raises
+
+
+def _request(
+    method: str,
+    url: str,
+    token: str | None,
+    body: dict | None,
+    *,
+    timeout_seconds: float = _DEFAULT_REQUEST_TIMEOUT_SECONDS,
+) -> dict:
+    outcomes: queue.Queue[dict | BaseException] = queue.Queue(maxsize=1)
+
+    def perform_request() -> None:
+        try:
+            outcomes.put(
+                _request_io(
+                    method,
+                    url,
+                    token,
+                    body,
+                    timeout_seconds=timeout_seconds,
+                )
+            )
+        except BaseException as error:
+            # _fail raises SystemExit, which must cross the worker boundary without a traceback.
+            outcomes.put(error)
+
+    # urllib's timeout is per blocking socket operation, not end-to-end. A daemon worker lets the
+    # caller enforce the configured wall-clock bound even when a peer continuously trickles bytes.
+    threading.Thread(target=perform_request, daemon=True).start()
+    try:
+        outcome = outcomes.get(timeout=timeout_seconds)
+    except queue.Empty:
+        _fail(f"{method} Matrix request failed: TimeoutError")
+    if isinstance(outcome, BaseException):
+        raise outcome
+    return outcome
 
 
 def _successful_body(body: object) -> bool:

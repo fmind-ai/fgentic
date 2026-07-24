@@ -278,6 +278,18 @@ class _FakeMatrix(http.server.BaseHTTPRequestHandler):
         with contextlib.suppress(BrokenPipeError):
             self.wfile.write(body)
 
+    def _send_trickle(self) -> None:
+        body = b'{"x":1}'
+        self.send_response(200)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        for byte in body:
+            with contextlib.suppress(BrokenPipeError):
+                self.wfile.write(bytes([byte]))
+                self.wfile.flush()
+            time.sleep(0.15)
+
     def _send_hostile_login(self) -> bool:
         if self.response_mode == "absent-length-oversized":
             self.send_response(200)
@@ -334,6 +346,9 @@ class _FakeMatrix(http.server.BaseHTTPRequestHandler):
         self._send({"event_id": PROBE_EVENT})
 
     def do_GET(self) -> None:
+        if self.response_mode == "trickle-response":
+            self._send_trickle()
+            return
         if "since=" not in self.path:
             cursor = "attacker-secret" if self.response_mode == "hostile-cursor" else "s0"
             self._send({"next_batch": cursor})  # initial cursor, no events yet
@@ -431,6 +446,32 @@ def test_round_trip_deadline_is_hard() -> None:
     print("ok: round-trip deadline is a hard success and transport bound")
 
 
+def test_request_timeout_is_end_to_end() -> None:
+    _FakeMatrix.response_mode = "trickle-response"
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), _FakeMatrix)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    started = time.monotonic()
+    try:
+        try:
+            probe._request(
+                "GET",
+                f"http://127.0.0.1:{server.server_address[1]}",
+                None,
+                None,
+                timeout_seconds=0.2,
+            )
+        except SystemExit:
+            pass
+        else:
+            raise AssertionError("a trickled response must not extend the request deadline")
+        assert time.monotonic() - started < 0.5
+    finally:
+        server.shutdown()
+        server.server_close()
+    print("ok: request timeout is an end-to-end wall-clock bound")
+
+
 def test_hostile_responses_fail_closed() -> None:
     for mode in (
         "absent-length-oversized",
@@ -461,6 +502,7 @@ if __name__ == "__main__":
     test_round_trip_success()
     test_round_trip_timeout()
     test_round_trip_deadline_is_hard()
+    test_request_timeout_is_end_to_end()
     test_hostile_responses_fail_closed()
     test_hostile_cursor_never_reaches_failure_log()
     print("canary probe tests passed")
