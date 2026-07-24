@@ -238,11 +238,18 @@ class _DeadlineHTTPSConnection(http.client.HTTPSConnection):
         cancelled: threading.Event,
     ) -> None:
         super().__init__(host, port, timeout=timeout, context=context)
+        self._tls_context = context
         self._cancelled = cancelled
 
     @override
     def connect(self) -> None:
-        super().connect()
+        http.client.HTTPConnection.connect(self)
+        if self._cancelled.is_set():
+            _abort_connection(self)
+            raise TimeoutError
+        if self.sock is None:
+            raise OSError("HTTPS connection did not establish a socket")
+        self.sock = self._tls_context.wrap_socket(self.sock, server_hostname=self.host)
         if self._cancelled.is_set():
             _abort_connection(self)
             raise TimeoutError

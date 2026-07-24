@@ -7,6 +7,7 @@ import fcntl
 import http.client
 import importlib.util
 import os
+import socket
 import socketserver
 import ssl
 import stat
@@ -80,6 +81,16 @@ class _BlockedConnection(http.client.HTTPConnection):
     def close(self) -> None:
         super().close()
         self.closed.set()
+
+
+class _RejectTLSContext:
+    def __init__(self) -> None:
+        self.wrapped = False
+
+    def wrap_socket(self, sock: socket.socket, *, server_hostname: str) -> socket.socket:
+        del server_hostname
+        self.wrapped = True
+        return sock
 
 
 @contextmanager
@@ -370,6 +381,35 @@ def test_request_deadline_does_not_wait_for_blocked_connection_setup() -> None:
     assert connection.closed.wait(timeout=1)
     assert str(caught.value) == "fixture request exceeded its total deadline"
     assert elapsed < 0.5
+
+
+def test_https_connection_skips_tls_after_tcp_completes_past_deadline(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cancelled = threading.Event()
+    context = _RejectTLSContext()
+    connection = acquisition._DeadlineHTTPSConnection(
+        "kubernetes.invalid",
+        443,
+        timeout=1,
+        context=cast(ssl.SSLContext, context),
+        cancelled=cancelled,
+    )
+    client, server = socket.socketpair()
+
+    def complete_tcp_after_deadline(target: http.client.HTTPConnection) -> None:
+        target.sock = client
+        cancelled.set()
+
+    monkeypatch.setattr(http.client.HTTPConnection, "connect", complete_tcp_after_deadline)
+    try:
+        with pytest.raises(TimeoutError):
+            connection.connect()
+    finally:
+        connection.close()
+        server.close()
+
+    assert not context.wrapped
 
 
 def test_response_reader_accepts_content_length_with_optional_whitespace() -> None:
