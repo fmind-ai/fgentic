@@ -149,7 +149,7 @@ def _is_nonblank_string(value: object) -> bool:
 def _is_nonblank_string_collection(value: object) -> bool:
     """Return whether form metadata is a nonblank string collection."""
     if isinstance(value, str):
-        return bool(value.strip())
+        return all(part.strip() for part in value.split(","))
     return isinstance(value, list) and all(_is_nonblank_string(item) for item in value)
 
 
@@ -582,7 +582,7 @@ class CommunityRouteIntegrityTest(TestCase):
                         "assignees:",
                         "  - octocat",
                         '  - " "',
-                        "projects: true",
+                        'projects: "octo-org/1, "',
                         "body:",
                         "  - type: textarea",
                         "    attributes:",
@@ -611,6 +611,30 @@ class CommunityRouteIntegrityTest(TestCase):
                     ),
                 ],
             )
+
+    def test_accepts_empty_form_metadata_arrays(self) -> None:
+        with TemporaryDirectory() as temporary:
+            repository_root = Path(temporary)
+            source = repository_root / ".github/ISSUE_TEMPLATE/empty.yml"
+            source.parent.mkdir(parents=True)
+            source.write_text(
+                "\n".join(
+                    (
+                        "name: Empty metadata",
+                        "description: Exercises documented empty arrays",
+                        "labels: []",
+                        "assignees: []",
+                        "projects: []",
+                        "body:",
+                        "  - type: textarea",
+                        "    attributes:",
+                        "      label: Details",
+                    )
+                ),
+                encoding="utf-8",
+            )
+
+            self.assertEqual(_form_schema_violations(source, repository_root), [])
 
     def test_rejects_invalid_discussion_form_metadata(self) -> None:
         with TemporaryDirectory() as temporary:
