@@ -1345,11 +1345,14 @@ def _declared_response_length(
         if declared_length > max_response_bytes:
             raise IngestionError(f"{operation} response exceeds {max_response_bytes} bytes")
         return declared_length
-    # Keep this exact apart from case: HTTPResponse only enables its chunk decoder for
-    # an exact "chunked" field value, so accepting padded values here would disagree
-    # with the component that actually reads the body.
-    if transfer_encodings and (len(transfer_encodings) != 1 or transfer_encodings[0].lower() != "chunked"):
-        raise IngestionError(f"{operation} backend returned unsupported response framing")
+    if transfer_encodings:
+        if len(transfer_encodings) != 1 or transfer_encodings[0].strip(" \t").lower() != "chunked":
+            raise IngestionError(f"{operation} backend returned unsupported response framing")
+        # HTTPResponse recognizes only the unpadded spelling during begin(). Enable the
+        # decoder after stricter HTTP OWS validation so accepted framing and body reads agree.
+        response.chunked = True
+        response.chunk_left = None
+        response.length = None
     return None
 
 

@@ -1050,8 +1050,10 @@ class EmbeddingHandler(BaseHTTPRequestHandler):
                 self.send_header("Transfer-Encoding", "chunked")
             elif framing == "invalid-content-length":
                 self.send_header("Content-Length", "invalid")
-            elif framing == "non-ows-content-length":
-                self.send_header("Content-Length", f"\v{len(body)}\f")
+            elif framing == "vertical-tab-content-length":
+                self.send_header("Content-Length", f"\v{len(body)}\v")
+            elif framing == "form-feed-content-length":
+                self.send_header("Content-Length", f"\f{len(body)}\f")
             elif framing == "ows-content-length":
                 self.send_header("Content-Length", f" \t{len(body)}\t ")
             elif framing == "oversized-content-length":
@@ -1062,8 +1064,10 @@ class EmbeddingHandler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", str(len(body) + 1))
             elif framing == "unsupported-transfer-encoding":
                 self.send_header("Transfer-Encoding", "gzip")
-            elif framing == "non-ows-transfer-encoding":
-                self.send_header("Transfer-Encoding", "\vchunked\f")
+            elif framing == "vertical-tab-transfer-encoding":
+                self.send_header("Transfer-Encoding", "\vchunked\v")
+            elif framing == "form-feed-transfer-encoding":
+                self.send_header("Transfer-Encoding", "\fchunked\f")
             elif framing == "chunked":
                 self.send_header("Transfer-Encoding", "chunked")
             elif framing == "ows-chunked":
@@ -1361,13 +1365,14 @@ def test_embedding_plan_rejects_tokenizer_contract_drift_before_embedding(
         ("duplicate-content-length", "ambiguous response framing"),
         ("content-length-and-transfer-encoding", "ambiguous response framing"),
         ("invalid-content-length", "invalid response framing"),
-        ("non-ows-content-length", "invalid response framing"),
+        ("vertical-tab-content-length", "invalid response framing"),
+        ("form-feed-content-length", "invalid response framing"),
         ("oversized-content-length", "response exceeds 262144 bytes"),
         ("huge-content-length", "response exceeds 262144 bytes"),
         ("incomplete-content-length", "incomplete response body"),
         ("unsupported-transfer-encoding", "unsupported response framing"),
-        ("non-ows-transfer-encoding", "unsupported response framing"),
-        ("ows-chunked", "unsupported response framing"),
+        ("vertical-tab-transfer-encoding", "unsupported response framing"),
+        ("form-feed-transfer-encoding", "unsupported response framing"),
     ],
 )
 def test_tokenizer_response_rejects_ambiguous_or_invalid_framing(
@@ -1389,7 +1394,7 @@ def test_tokenizer_response_rejects_ambiguous_or_invalid_framing(
     assert EmbeddingHandler.calls == []
 
 
-@pytest.mark.parametrize("framing", ["ows-content-length", "chunked"])
+@pytest.mark.parametrize("framing", ["ows-content-length", "chunked", "ows-chunked"])
 def test_tokenizer_response_accepts_http_optional_whitespace(framing: str) -> None:
     with embedding_server() as url:
         EmbeddingHandler.response_framing = framing
