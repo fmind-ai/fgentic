@@ -23,7 +23,7 @@ jobs:
           fetch-depth: 0 # check:leaks scans recent git history
           persist-credentials: false
       - name: Install mise system
-        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+        uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
         with:
           # Pin mise: 2026.7.12 broke the npm backend's renovate install (resolution succeeds,
           # install fails), failing this job's toolchain setup on every PR. 2026.7.11 is known-good.
@@ -67,7 +67,7 @@ jobs:
           fi
       - name: Install bridge integration toolchain
         if: steps.bridge-changes.outputs.run == 'true'
-        uses: jdx/mise-action@dad1bfd3df957f44999b559dd69dc1671cb4e9ea # v4
+        uses: jdx/mise-action@9e7f7633ff6f6d6048a9418a68d48f288f50eb14 # v4.2.3
         with:
           version: 2026.7.11 # pin: keep the toolchain on the known-good mise (see above)
           # The app config supplies kind and kubectl; the inherited root config supplies jq and
